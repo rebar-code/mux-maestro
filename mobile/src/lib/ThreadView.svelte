@@ -74,18 +74,6 @@
 		{/each}
 	</div>
 	<button
-		class="tb size"
-		aria-label="Smaller text"
-		disabled={text.atMin}
-		onclick={() => text.step(-1)}>A−</button
-	>
-	<button
-		class="tb size"
-		aria-label="Larger text"
-		disabled={text.atMax}
-		onclick={() => text.step(1)}>A+</button
-	>
-	<button
 		class="tb"
 		aria-label="Refresh"
 		disabled={ui.refreshing !== null}
@@ -212,11 +200,6 @@
 	.tabs .seg {
 		flex: 1;
 		margin-right: 0;
-	}
-
-	.size {
-		font-size: 14px;
-		font-weight: 600;
 	}
 
 	.seg button {

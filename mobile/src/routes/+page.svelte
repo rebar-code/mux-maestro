@@ -3,7 +3,7 @@
 	import { age } from '$lib/format';
 	import { pullToRefresh, swipeAway, ui } from '$lib/gestures.svelte';
 	import { counts } from '$lib/group';
-	import { can, live } from '$lib/live.svelte';
+	import { can, isOff, live, OFF_LABEL } from '$lib/live.svelte';
 	import { needsYouCards } from '$lib/manager';
 	import { manager } from '$lib/manager.svelte';
 	import PullIndicator from '$lib/PullIndicator.svelte';
@@ -19,6 +19,7 @@
 	const managerOn = $derived(can('manager'));
 	// A take goes to the manager, so voice needs the manager's switch too.
 	const voiceOn = $derived(managerOn && can('voice'));
+	const boxLabel = $derived(isOff('manager') ? OFF_LABEL : 'Ask the manager');
 	const waiting = $derived(needsYouCards(live.threads ?? [], managerOn ? manager.needsYou : []));
 	const review = $derived(managerOn ? manager.review : []);
 	const canSend = $derived(manager.draft.trim() !== '');
@@ -54,14 +55,9 @@
 
 <div class="scroll home" data-pull={PULL} {@attach pullToRefresh(PULL, reload)}>
 	<PullIndicator key={PULL} />
-	<!-- Until the Mac says which features are on, hold the button's place. -->
-	{#if managerOn}
-		<div class="hero">
-			<TalkButton target="manager" sink={manager.voice} orb off={!voiceOn} />
-		</div>
-	{:else if live.config === null}
-		<div class="hero" aria-hidden="true"></div>
-	{/if}
+	<div class="hero">
+		<TalkButton target="manager" sink={manager.voice} orb off={!voiceOn} />
+	</div>
 
 	{#if managerOn}
 		<div class="said" aria-live="polite" data-said {@attach manager.watch}>
@@ -151,7 +147,10 @@
 
 {#if managerOn}
 	<VoiceBar target="manager" sink={manager.voice} off={!voiceOn} />
-	<form class="compose" onsubmit={submit}>
+{/if}
+<!-- With the Manager switch off the box stays, disabled, and says where the switch is. -->
+<form class="compose" class:bare={!managerOn} onsubmit={submit}>
+	{#if managerOn}
 		<input
 			bind:value={manager.draft}
 			placeholder="Ask the manager"
@@ -160,14 +159,16 @@
 			autocomplete="off"
 			autocapitalize="sentences"
 		/>
-		<!-- Typing is always there: with text in the box the button sends it. -->
-		{#if canSend}
-			<button class="pill send grow" type="submit" disabled={manager.busy}>↑ Send</button>
-		{:else}
-			<TalkButton target="manager" sink={manager.voice} off={!voiceOn} />
-		{/if}
-	</form>
-{/if}
+	{:else}
+		<input disabled placeholder={boxLabel} aria-label={boxLabel} data-off={isOff('manager')} />
+	{/if}
+	<!-- Typing is always there: with text in the box the button sends it. -->
+	{#if managerOn && canSend}
+		<button class="pill send grow" type="submit" disabled={manager.busy}>↑ Send</button>
+	{:else}
+		<TalkButton target="manager" sink={manager.voice} off={!voiceOn} />
+	{/if}
+</form>
 
 <style>
 	.home {
@@ -388,6 +389,18 @@
 		font: inherit;
 		font-size: 16px;
 		outline: none;
+	}
+
+	/* No voice bar above it: the box draws its own top edge. */
+	.compose.bare {
+		padding-top: 8px;
+		border-top: 1px solid var(--border);
+	}
+
+	.compose input:disabled {
+		opacity: 1;
+		color: var(--muted);
+		-webkit-text-fill-color: var(--muted);
 	}
 
 	.compose input:focus-visible {

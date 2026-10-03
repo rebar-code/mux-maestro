@@ -49,6 +49,7 @@
 		class="pill grow {status}"
 		type="button"
 		{disabled}
+		aria-label={face.label}
 		data-primary={kind}
 		onclick={() => voice.primary(target, sink)}
 		><span class="icon {kind}">{face.icon}</span> {face.label}</button

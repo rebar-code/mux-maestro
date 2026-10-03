@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { live, OFF_LABEL } from './live.svelte';
 	import { voice, type VoiceSink, type VoiceTarget } from './voice.svelte';
 
 	/** The bar of one target: the manager, or (later) a thread. */
@@ -13,9 +14,6 @@
 		off?: boolean;
 	} = $props();
 
-	/** The one line a switched-off bar shows: where to turn voice on. */
-	const OFF = 'Off in MuxMaestro Settings';
-
 	const status = $derived(voice.statusOf(target));
 </script>
 
@@ -23,7 +21,8 @@
 	<div class="vbar off" data-voicebar data-voice="off">
 		<div class="vstat" role="status" data-voice-status>
 			<span class="wave" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
-			{OFF}
+			<!-- Not before the Mac has answered: until then nothing is known to be off. -->
+			{live.config === null ? '' : OFF_LABEL}
 		</div>
 	</div>
 {:else}
