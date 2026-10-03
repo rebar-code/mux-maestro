@@ -151,9 +151,26 @@ struct MobileScreen: Equatable {
         String(line).trimmingCharacters(in: frame)
     }
 
-    /// A rule or a box edge: nothing but box-drawing characters.
+    /// A rule or a box edge: nothing but box-drawing characters, or the block
+    /// characters Claude Code draws a dialog's top edge with.
     private static func isRule(_ line: String) -> Bool {
-        !line.isEmpty && line.unicodeScalars.allSatisfy { (0x2500...0x257F).contains($0.value) }
+        !line.isEmpty && line.unicodeScalars.allSatisfy {
+            (0x2500...0x257F).contains($0.value) || (0x2580...0x259F).contains($0.value)
+        }
+    }
+
+    /// `… +2 models`: a menu's count of the rows that do not fit.
+    private static func countsMore(_ line: String) -> Bool {
+        let rest: Substring
+        if line.hasPrefix("…") {
+            rest = line.dropFirst()
+        } else if line.hasPrefix("...") {
+            rest = line.dropFirst(3)
+        } else {
+            return false
+        }
+        let count = rest.drop(while: \.isWhitespace)
+        return count.first == "+" && count.dropFirst().first?.isNumber == true
     }
 
     /// The line starts with the cursor an input box or a list shows.
@@ -280,7 +297,8 @@ struct MobileScreen: Equatable {
     ]
     /// Words of a line that asks for a key or offers a choice.
     private static let asks = [
-        "y/n", "(y)es", "(n)o", "yes/no", "[y", "password", "passphrase", "--more--", "(end)",
+        "y/n", "y or n", "(y)es", "(n)o", "yes/no", "[y", "password", "passphrase", "--more--",
+        "-- more --", "(end)", "any key",
         "enter continue", "enter to ", "to continue", "to confirm", "to select", "esc back",
     ]
 
@@ -296,7 +314,9 @@ struct MobileScreen: Equatable {
               !choiceMarks.contains(first)
         else { return false }
         let trimmed = text.trimmingCharacters(in: .whitespaces).lowercased()
-        guard let last = trimmed.last, !"?:$#>".contains(last) else { return false }
+        // A status line may end in a colon or a percentage; a question, a
+        // shell prompt or a redirect does not belong under the box.
+        guard let last = trimmed.last, !"?$#>".contains(last) else { return false }
         if ["[x]", "[ ]", "(x)", "( )", "(*)", "(•)"].contains(where: trimmed.hasPrefix) { return false }
         if trimmed.hasPrefix("press ") || trimmed.contains(" press ") { return false }
         return !asks.contains { trimmed.contains($0) }
@@ -338,7 +358,10 @@ struct MobileScreen: Equatable {
             }
             index -= 1
         }
-        guard found[0].row.n == 1 || found[0].row.above else { return nil }
+        // Rows off screen above: the menu's `↑` mark, or a count over the list.
+        let countAbove = (max(found[0].index - maxGap - 1, 0)..<found[0].index)
+            .contains { countsMore(lines[$0]) }
+        guard found[0].row.n == 1 || found[0].row.above || countAbove else { return nil }
         // Down to the last choice on screen.
         want = picked.n + 1
         index = at + 1
@@ -354,6 +377,10 @@ struct MobileScreen: Equatable {
             index += 1
         }
         guard found.count >= 2 else { return nil }
+        // Rows off screen below: the `↓` mark, or a count under the list.
+        let lastRow = found[found.count - 1].index
+        let countBelow = ((lastRow + 1)..<min(lastRow + maxGap + 2, lines.count))
+            .contains { countsMore(lines[$0]) }
 
         // What is asked: the block above choice 1, back to the box's top edge.
         var header: [String] = []
@@ -377,8 +404,8 @@ struct MobileScreen: Equatable {
         let prompt = MobilePrompt(
             kind: permission ? .permission : .question, title: title, detail: detail,
             question: question, options: found.map { .init(n: $0.row.n, label: $0.row.label) },
-            selected: picked.n, moreAbove: found[0].row.above,
-            moreBelow: found[found.count - 1].row.below, truncated: truncated)
+            selected: picked.n, moreAbove: found[0].row.above || countAbove,
+            moreBelow: found[found.count - 1].row.below || countBelow, truncated: truncated)
         return (prompt, found[0].index...found[found.count - 1].index)
     }
 }
@@ -475,10 +502,10 @@ enum MobileReply {
     /// prompt the phone can show as a card, and a digit needs to be a choice
     /// on that card. A prompt the human has not seen is answered by no key.
     ///
-    /// With no prompt to name, a key that can answer goes only into a
-    /// verified input box, on every pane and whatever its status says: a
-    /// status can be old, and a shell or a question may be in front.
-    /// Keys that move or cancel answer nothing and stay allowed.
+    /// With no prompt to name, every key goes only into a verified input box,
+    /// on every pane and whatever its status says: a status can be old, and
+    /// a shell or a question may be in front. Keys that move or cancel stay
+    /// allowed for a prompt the phone names, and for the box.
     static func press(
         _ key: String, prompt sent: String?, target: String, io: MobilePaneIO, state: MobilePaneState?
     ) -> MobileResponse {
@@ -496,7 +523,9 @@ enum MobileReply {
                     return .error(409, "no_option", message: noOptionMessage)
                 }
             }
-        } else if answers(key), !seen.inputBox {
+        } else if !seen.inputBox {
+            // No card, and the status does not say waiting. That is not proof
+            // of an input box: "press any key" takes any key at all.
             return .error(409, "no_input", message: noInputMessage)
         }
         let response = send(key: key, target: target, io: io)

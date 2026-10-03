@@ -238,6 +238,25 @@ enum DemoPrompt {
         ────────────────────────────────────────
         """
 
+    /// Claude Code's model menu as 2.1.289 draws it: the dialog's top edge is
+    /// a row of upper-block characters, not a line rule, and rows that do not
+    /// fit are counted on a line under the last one, with no arrow.
+    static let modelMenu = """
+         ▐▛███▜▌   Claude Code v2.1.289
+        ▝▜█████▛▘  ~/acme-app
+
+        ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+         Select model
+         Switch between models. Applies to this session.
+
+         ❯ 1. Default (recommended)
+           2. Large
+           3. Small
+           … +2 models
+
+         Enter to confirm · Esc to exit
+        """
+
     /// The permission prompt with the cursor moved to its third choice.
     static let permissionOnThird = permission
         .replacingOccurrences(of: "❯ 1. Yes ", with: "  1. Yes ")
@@ -939,6 +958,25 @@ final class MobileReplyTests: XCTestCase {
             MobileReply.press("9", prompt: id, target: "%12", io: pane.io, state: waiting).status, 200)
     }
 
+    func testReadsClaudesModelMenuWithItsBlockEdgeAndRowCount() throws {
+        let prompt = try XCTUnwrap(seen(DemoPrompt.modelMenu, cursor: .lastLine).prompt)
+        XCTAssertEqual(prompt.options.map(\.label), ["Default (recommended)", "Large", "Small"])
+        XCTAssertTrue(prompt.moreBelow)
+        XCTAssertFalse(prompt.moreAbove)
+        // The banner is above the dialog's top edge: it is not the title.
+        XCTAssertEqual(prompt.title, "Select model")
+        XCTAssertFalse(prompt.truncated)
+        // A count over a list that starts past 1 says rows are off screen above.
+        let above = try XCTUnwrap(seen("… +3 more\n  4. d\n❯ 5. e\n  6. f", cursor: .lastLine).prompt)
+        XCTAssertTrue(above.moreAbove)
+        XCTAssertEqual(above.options.map(\.n), [4, 5, 6])
+        XCTAssertNil(seen("more\n  4. d\n❯ 5. e\n  6. f", cursor: .lastLine).prompt)
+        // Three dots do as well as the ellipsis; a line that only starts
+        // with dots does not.
+        XCTAssertEqual(seen("❯ 1. a\n  2. b\n  ... +4 rows", cursor: .lastLine).prompt?.moreBelow, true)
+        XCTAssertEqual(seen("❯ 1. a\n  2. b\n  … and so on", cursor: .lastLine).prompt?.moreBelow, false)
+    }
+
     func testReadsCodexsPromptAsItDrawsIt() throws {
         let prompt = try XCTUnwrap(seen(DemoPrompt.codexTrust, cursor: .lastLine).prompt)
         XCTAssertEqual(prompt.options, [
@@ -964,11 +1002,11 @@ final class MobileReplyTests: XCTestCase {
                     XCTAssertEqual(
                         body(refused), #"{"error":"no_input","message":"Thread shows no input box"}"#, screen)
                 }
-                // Keys that answer nothing stay.
+                // With nothing to name and no box, no key goes at all.
                 XCTAssertEqual(
                     MobileReply.press("Escape", prompt: nil, target: "%12", io: pane.io, state: unverified)
-                        .status, 200)
-                XCTAssertEqual(pane.argv.map(\.last), ["Escape"])
+                        .status, 409)
+                XCTAssertEqual(pane.argv.count, 0)
             }
             let idle = FakePane()
             XCTAssertEqual(
@@ -985,7 +1023,8 @@ final class MobileReplyTests: XCTestCase {
                     .status, 409)
             XCTAssertEqual(
                 MobileReply.press("C-c", prompt: nil, target: "%12", io: local.io, state: state(status))
-                    .status, 200)
+                    .status, 409)
+            XCTAssertEqual(local.argv.count, 0)
         }
     }
 

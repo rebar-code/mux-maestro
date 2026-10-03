@@ -1307,11 +1307,10 @@ final class MobileServerTests: XCTestCase {
             }
         }
         XCTAssertEqual(pane.argv.count, 0)
-        // Escape and the arrows answer nothing and stay.
-        XCTAssertEqual(post(shell + "/key", json: #"{"key":"Escape"}"#).status, 200)
-        // An agent's idle input box, with the cursor in it, takes Enter.
+        // An agent's idle input box, with the cursor in it, takes keys.
         pane.screen = DemoPrompt.idle
         pane.cursor = .inBox
+        XCTAssertEqual(post(shell + "/key", json: #"{"key":"Escape"}"#).status, 200)
         XCTAssertEqual(post(shell + "/key", json: #"{"key":"Enter"}"#).status, 200)
         XCTAssertEqual(pane.argv.map(\.last), ["Escape", "Enter"])
     }
@@ -1324,7 +1323,7 @@ final class MobileServerTests: XCTestCase {
         for below in [
             "  Overwrite? [y/N] ", " Password:", " $ ", "  ❯ Yes, proceed\n    No, go back",
             "\t? for shortcuts", "\u{A0}\u{A0}? for shortcuts", "\u{3000}? for shortcuts",
-            "  Continue?", "  name:",
+            "  Continue?",
         ] {
             for cursor in [FakePane.Cursor.lastLine, .inBox] {
                 pane.screen = box + below
@@ -1455,10 +1454,10 @@ final class MobileServerTests: XCTestCase {
             }
         }
         XCTAssertEqual(pane.argv.count, 0)
-        // Keys that submit nothing stay, and the box takes Enter.
-        XCTAssertEqual(post(Self.thread + "/key", json: #"{"key":"C-c"}"#).status, 200)
+        // The box takes them.
         pane.screen = DemoPrompt.claudeIdle
         pane.cursor = .inBox
+        XCTAssertEqual(post(Self.thread + "/key", json: #"{"key":"C-c"}"#).status, 200)
         XCTAssertEqual(post(Self.thread + "/key", json: #"{"key":"Enter"}"#).status, 200)
         XCTAssertEqual(pane.argv.map(\.last), ["C-c", "Enter"])
     }
@@ -1544,5 +1543,66 @@ final class MobileServerTests: XCTestCase {
         XCTAssertEqual(post(Self.thread + "/key", json: #"{"key":"2","prompt":"\#(id)"}"#).status, 409)
         XCTAssertEqual(post(Self.thread + "/key", json: #"{"key":"9","prompt":"\#(id)"}"#).status, 200)
         XCTAssertEqual(pane.argv.map(\.last), ["9"])
+    }
+
+    // MARK: replies, fifth review
+
+    func testARowCountUnderTheLastChoiceMeansMoreBelow() throws {
+        repliesOn()
+        pane.status = .waiting
+        pane.cursor = .lastLine
+        pane.screen = DemoPrompt.modelMenu
+        let prompt = try XCTUnwrap(try shownPrompt()["prompt"] as? [String: Any])
+        XCTAssertEqual((prompt["options"] as? [[String: Any]])?.count, 3)
+        XCTAssertEqual(prompt["moreBelow"] as? Bool, true)
+        XCTAssertEqual(prompt["moreAbove"] as? Bool, false)
+        // The dialog's own title, not the banner above its top edge.
+        XCTAssertEqual(prompt["title"] as? String, "Select model")
+        XCTAssertEqual(prompt["truncated"] as? Bool, false)
+    }
+
+    func testEveryKeyNeedsAnInputBoxOrAPromptToName() {
+        repliesOn()
+        // "Press any key": no card, and the status does not say waiting. Any
+        // key at all would answer it.
+        for status in [AttentionStatus.idle, .busy, nil] {
+            pane.status = status
+            pane.cursor = .lastLine
+            let thread = status == nil ? Self.shell : Self.thread
+            for screen in ["Press any key to continue", "$ less notes.txt\n(END)", "$ "] {
+                pane.screen = screen
+                for key in ["Escape", "Down", "Tab", "C-c", "C-u", "C-z", "Enter", "1"] {
+                    let refused = post(thread + "/key", json: #"{"key":"\#(key)"}"#)
+                    XCTAssertEqual(refused.status, 409, "\(screen) \(key)")
+                    XCTAssertEqual(
+                        refused.body, #"{"error":"no_input","message":"Thread shows no input box"}"#)
+                }
+            }
+        }
+        XCTAssertEqual(pane.argv.count, 0)
+        // An agent at work shows its box: Ctrl-C and Escape reach it.
+        pane.status = .busy
+        pane.screen = DemoPrompt.claudeIdle
+        pane.cursor = .inBox
+        XCTAssertEqual(post(Self.thread + "/key", json: #"{"key":"C-c"}"#).status, 200)
+        XCTAssertEqual(post(Self.thread + "/key", json: #"{"key":"Escape"}"#).status, 200)
+        XCTAssertEqual(pane.argv.map(\.last), ["C-c", "Escape"])
+    }
+
+    func testMorePagerAndAnyKeyLinesAreNotAFooterAndAColonIsFine() {
+        repliesOn()
+        let box = "────────────\n❯ \n────────────\n"
+        pane.cursor = .inBox
+        for below in ["  -- More --", "  --More--", "  Hit any key to continue", "  Overwrite (y or n)",
+                      "  press any key"] {
+            pane.screen = box + below
+            XCTAssertEqual(post(Self.thread + "/text", json: #"{"text":"y"}"#).status, 409, below)
+        }
+        XCTAssertEqual(pane.argv.count, 0)
+        // A status line may end in a colon.
+        for below in ["  ➜ acme-app git:(main) model:", "  branch: main · ctx:"] {
+            pane.screen = box + below
+            XCTAssertEqual(post(Self.thread + "/text", json: #"{"text":"go on"}"#).status, 200, below)
+        }
     }
 }
