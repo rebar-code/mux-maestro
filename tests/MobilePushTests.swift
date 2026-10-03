@@ -299,7 +299,7 @@ final class MobilePushTests: XCTestCase {
         for bad in [
             body(p256dh: offCurve), body(p256dh: compressed), body(p256dh: ""),
             body(p256dh: Base64URL.encode(Data(count: 65))),
-            body(p256dh: phone.p256dh + "AAAA"), body(p256dh: phone.p256dh.replacingOccurrences(of: "-", with: "+")),
+            body(p256dh: phone.p256dh + "AAAA"), body(p256dh: "+" + phone.p256dh.dropFirst()),
             body(p256dh: String(repeating: "A", count: 4000)),
             body(auth: Base64URL.encode(Data(count: 15))), body(auth: Base64URL.encode(Data(count: 17))),
             body(auth: ""), body(auth: "not base64!"), body(auth: String(repeating: "A", count: 4000)),
