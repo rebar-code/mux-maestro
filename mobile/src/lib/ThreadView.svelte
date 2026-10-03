@@ -1,11 +1,14 @@
 <script lang="ts">
 	import AttachButton from './AttachButton.svelte';
 	import Composer from './Composer.svelte';
+	import { Find } from './find.svelte';
+	import FindBar from './FindBar.svelte';
 	import { dotClass, statusLabel } from './format';
 	import { pages, pullToRefresh, ui } from './gestures.svelte';
 	import KeyBar from './KeyBar.svelte';
 	import { overKeyboard } from './keyboard';
 	import { can, live } from './live.svelte';
+	import Marked from './Marked.svelte';
 	import NextBar from './NextBar.svelte';
 	import PromptCard from './PromptCard.svelte';
 	import PullIndicator from './PullIndicator.svelte';
@@ -40,6 +43,14 @@
 		stick: (change) => feed.keepEnd(mode, false, change)
 	});
 
+	// svelte-ignore state_referenced_locally
+	const find = new Find(
+		id,
+		() => feed.messages ?? [],
+		() => mode
+	);
+	const finding = $derived(find.open && can('find'));
+
 	const repliesOn = $derived(can('replies'));
 	const keysOn = $derived(can('keyBar'));
 	// A take goes to the thread as a reply, so voice needs that switch too.
@@ -58,7 +69,10 @@
 	function selectTab(index: number): void {
 		// The first tab is also a switch: a tap while it is showing flips the
 		// page between the chat and the pane's terminal.
-		if (index === 0 && ui.index === 0 && canChat) terminal = !terminal;
+		if (index === 0 && ui.index === 0 && canChat) {
+			terminal = !terminal;
+			if (finding) find.switched(mode);
+		}
 		ui.goTo(index);
 	}
 </script>
@@ -83,8 +97,17 @@
 			<span class="skel" style:width="35%" style:height="11px"></span>
 		</div>
 	{/if}
-	<button class="tb" disabled aria-disabled="true" aria-label="Find">🔍</button>
+	<button
+		class="tb"
+		disabled={!can('find') || closed}
+		aria-disabled={!can('find')}
+		aria-label="Find"
+		aria-pressed={finding}
+		onclick={find.toggle}>🔍</button
+	>
 </header>
+
+{#if finding}<FindBar {find} />{/if}
 
 <div class="tabs">
 	<div class="seg" role="tablist">
@@ -138,12 +161,20 @@
 								{/each}
 							{:else}
 								{#each feed.messages as message (message.n)}
+									{@const hits = finding ? find.chat.byRow.get(message.n) : undefined}
+									{#snippet body()}
+										{#if hits}
+											<Marked text={message.text} {hits} current={find.current} />
+										{:else}
+											{message.text}
+										{/if}
+									{/snippet}
 									{#if message.role === 'user'}
-										<div class="u">{message.text}</div>
+										<div class="u">{@render body()}</div>
 									{:else if message.role === 'assistant'}
-										<div class="a">{message.text}</div>
+										<div class="a">{@render body()}</div>
 									{:else}
-										<div class="tool"><b>{message.tool}</b> {message.text}</div>
+										<div class="tool"><b>{message.tool}</b> {@render body()}</div>
 									{/if}
 								{/each}
 								{#if reply.turn}
@@ -171,6 +202,13 @@
 									<span class="skel" style:width="{width}%" style:height="11px"></span>
 								{/each}
 							</div>
+						{:else if finding && find.result}
+							<!-- The pane's scrollback, as the Mac searched it. -->
+							<pre class="screen mono" data-hscroll data-find-text><Marked
+									text={find.result.text}
+									hits={find.terminal}
+									current={find.current}
+								/></pre>
 						{:else}
 							<pre class="screen mono" class:carded={card !== null} data-hscroll>{feed.screen}</pre>
 						{/if}

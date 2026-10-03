@@ -1,13 +1,16 @@
 import { tokenFrom, withoutPair } from './pairing';
 import { frameParser, readOrStall, STALLED, type Frame } from './sse';
 import type {
+	ActionTarget,
 	ChatPage,
 	Command,
 	Config,
+	FindResult,
 	Host,
 	ManagerHome,
 	Prompt,
 	Thread,
+	TmuxAction,
 	TurnEnd
 } from './types';
 
@@ -143,8 +146,8 @@ function post(path: string, body: unknown, accept = 'application/json'): Promise
 	return request(path, accept, undefined, undefined, { json: body });
 }
 
-async function get<T>(path: string, as?: string): Promise<T> {
-	return (await (await request(path, 'application/json', as)).json()) as T;
+async function get<T>(path: string, as?: string, signal?: AbortSignal): Promise<T> {
+	return (await (await request(path, 'application/json', as, signal)).json()) as T;
 }
 
 /**
@@ -224,6 +227,37 @@ export async function uploadFile(id: string, file: File): Promise<string> {
 		{ bytes: file, type: 'application/octet-stream' }
 	);
 	return ((await response.json()) as { path: string }).path;
+}
+
+/** What a session action answers: the new window's thread, or the new session's name. */
+export interface ActionResult {
+	thread?: string;
+	session?: string;
+}
+
+/**
+ * Run one session action on the Mac. A kill must carry `confirm: true`; the
+ * Mac refuses it otherwise.
+ */
+export async function tmuxAction(
+	action: TmuxAction,
+	body: (ActionTarget | { host: string }) & { name?: string; dir?: string; confirm?: true }
+): Promise<ActionResult> {
+	return (await (await post(`/api/tmux/${action}`, body)).json()) as ActionResult;
+}
+
+/** The directories a host offers for a new session. */
+export async function fetchDirs(host: string): Promise<string[]> {
+	return (await get<{ dirs: string[] }>(`/api/hosts/${encodeURIComponent(host)}/dirs`)).dirs;
+}
+
+/** Find `query` in the thread's scrollback. */
+export function fetchFind(id: string, query: string, signal?: AbortSignal): Promise<FindResult> {
+	return get<FindResult>(
+		`${threadPath(id)}/find?q=${encodeURIComponent(query)}`,
+		undefined,
+		signal
+	);
 }
 
 export function fetchManager(): Promise<ManagerHome> {

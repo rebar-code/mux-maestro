@@ -1,5 +1,6 @@
 <script lang="ts">
 	import '../app.css';
+	import ActionSheet from '$lib/ActionSheet.svelte';
 	import Drawer from '$lib/Drawer.svelte';
 	import { gestures, ui } from '$lib/gestures.svelte';
 	import { connect, live } from '$lib/live.svelte';
@@ -27,6 +28,7 @@
 			onclick={() => ui.closeDrawer()}
 		></button>
 		<Drawer />
+		<ActionSheet />
 	{/if}
 </div>
 

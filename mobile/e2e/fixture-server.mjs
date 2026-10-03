@@ -8,7 +8,7 @@
 // /__fixture/capability?name=&on=, /__fixture/manager-status?value=,
 // /__fixture/mac-turn?text=&reply=, /__fixture/voice?mode=&speaker=&heard=&delay=,
 // /__fixture/voice-takes, /__fixture/replies, /__fixture/prompt?id=&pid=&kind=,
-// /__fixture/upload-max?value=, /__fixture/status?id=&value=
+// /__fixture/upload-max?value=, /__fixture/status?id=&value=, /__fixture/panes?id=&value=
 //
 // Every /api/ request needs the header `X-MuxMaestro-Token: demo-token`.
 import { createServer } from 'node:http';
@@ -171,6 +171,8 @@ const DEMO_TOKEN = 'demo-token';
 let started, threads, chats, grouping, deny, token, capabilities, manager, voice;
 // Per thread id: the prompt on the pane. And everything the phone wrote.
 let prompts, replies, uploadMax, promptSeq;
+// Makes one thread row; set by `reset`, used again for a new window or session.
+let makeThread;
 const streams = new Set();
 
 function reset() {
@@ -178,11 +180,20 @@ function reset() {
 	grouping = 'recent';
 	deny = false;
 	token = DEMO_TOKEN;
-	capabilities = { manager: true, voice: false, replies: false, keyBar: false, upload: false };
+	capabilities = {
+		manager: true,
+		voice: false,
+		replies: false,
+		keyBar: false,
+		upload: false,
+		sessionActions: false,
+		kill: false,
+		find: false
+	};
 	prompts = {};
 	promptSeq = 0;
 	uploadMax = 10485760;
-	replies = { texts: [], keys: [], answers: [], uploads: [], commandFetches: 0 };
+	replies = { texts: [], keys: [], answers: [], uploads: [], actions: [], commandFetches: 0 };
 	// The Mac's voice defaults, what the next take is heard as, how long the
 	// Mac "thinks" before it has the transcript, and every take it was sent.
 	voice = { mode: 'manual', speaker: true, heard: 'What needs me?', delay: 300, takes: [] };
@@ -249,6 +260,7 @@ function reset() {
 			chat: local
 		};
 	};
+	makeThread = make;
 	threads = [
 		...AWAKE.map(([s, w, h, st, p, a, stage], i) =>
 			make(i + 1, s, w, h, st, p, a, stage ?? 'awake')
@@ -319,8 +331,9 @@ const configBody = () => ({
 		replies: capabilities.replies,
 		keyBar: capabilities.keyBar,
 		upload: capabilities.upload,
-		sessionActions: false,
-		kill: false,
+		sessionActions: capabilities.sessionActions,
+		kill: capabilities.kill,
+		find: capabilities.find,
 		artifacts: false,
 		localServers: false,
 		stopServers: false,
@@ -716,6 +729,166 @@ function screen(t) {
 	return [`⏺ ${last.slice(0, 50)}`, wide, '', ...tail, ''].join('\n');
 }
 
+const ACTIONS = [
+	'new-session',
+	'new-window',
+	'rename-session',
+	'rename-window',
+	'kill-session',
+	'kill-window',
+	'kill-pane',
+	'zoom-pane'
+];
+const NAME_ASCII = /^[A-Za-z0-9 \-_/,]$/;
+const NAME_HIDDEN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Co}\p{Cn}]/u;
+
+/** The Mac's rule for a session or window name. */
+function nameOf(raw) {
+	if (typeof raw !== 'string') return null;
+	const name = raw.trim();
+	if (!name || name.startsWith('-') || [...name].length > 64) return null;
+	for (const char of name) {
+		const code = char.codePointAt(0);
+		if (code < 0x80 ? !NAME_ASCII.test(char) : code !== 0x200d && NAME_HIDDEN.test(char))
+			return null;
+	}
+	return name;
+}
+
+const dirsOf = (host) =>
+	[...new Set(threads.filter((t) => t.host === host).map((t) => t.cwd))].sort();
+
+/** One session action, checked the way the Mac checks it. */
+function tmuxApi(req, res, path, body) {
+	if (!capabilities.sessionActions) return send(res, 403, { error: 'disabled' });
+	const action = decodeURIComponent(path.slice('/api/tmux/'.length));
+	if (action.startsWith('kill') && !capabilities.kill) return send(res, 403, { error: 'disabled' });
+	if (!ACTIONS.includes(action)) return send(res, 400, { error: 'bad_action' });
+	if (req.method !== 'POST') return send(res, 405, { error: 'method_not_allowed' });
+	let fields;
+	try {
+		fields = JSON.parse(body);
+	} catch {
+		fields = null;
+	}
+	if (fields === null || typeof fields !== 'object' || Array.isArray(fields))
+		return send(res, 400, { error: 'bad_request' });
+
+	const byThread = ['rename-window', 'kill-window', 'kill-pane', 'zoom-pane'].includes(action);
+	let thread = null;
+	let host = null;
+	let session = null;
+	if (byThread || (action !== 'new-session' && fields.thread !== undefined)) {
+		if (typeof fields.thread !== 'string') return send(res, 400, { error: 'bad_request' });
+		thread = threads.find((t) => t.id === fields.thread);
+		if (!thread) return send(res, 404, { error: 'not_found' });
+		({ host, session } = thread);
+	} else {
+		if (typeof fields.host !== 'string') return send(res, 400, { error: 'bad_request' });
+		if (!HOSTS.some((h) => h.name === fields.host)) return send(res, 404, { error: 'not_found' });
+		host = fields.host;
+		if (action !== 'new-session') {
+			if (typeof fields.session !== 'string') return send(res, 400, { error: 'bad_request' });
+			session = fields.session;
+			thread = threads.find((t) => t.host === host && t.session === session);
+			if (!thread) return send(res, 404, { error: 'not_found' });
+		}
+	}
+	const inSession = (t) => t.host === host && t.session === session;
+	const taken = (name) => threads.some((t) => t.host === host && t.session === name);
+	const next = Math.max(...threads.map((t) => t.window)) + 1;
+	const result = { ok: true };
+
+	if (action === 'new-session') {
+		let dir = null;
+		if (fields.dir !== undefined && fields.dir !== null) {
+			if (!dirsOf(host).includes(fields.dir)) return send(res, 400, { error: 'bad_dir' });
+			dir = fields.dir;
+		}
+		let name = dir ? nameOf(dir.split('/').at(-1).replace(/[.:]/g, '_')) : null;
+		if (fields.name !== undefined && fields.name !== null) {
+			name = nameOf(fields.name);
+			if (!name) return send(res, 400, { error: 'bad_name' });
+		}
+		name ??= 'session';
+		const base = name;
+		for (let n = 2; taken(name); n += 1) name = `${base}-${n}`;
+		const made = makeThread(next, name, 'zsh', host, 'idle', '', 0, 'awake');
+		Object.assign(made, { command: 'zsh', chat: false, ...(dir ? { cwd: dir } : {}) });
+		threads.push(made);
+		result.session = name;
+	} else if (action === 'new-window') {
+		const made = makeThread(next, session, 'zsh', host, 'idle', '', 0, 'awake');
+		Object.assign(made, { command: 'zsh', chat: false, cwd: thread.cwd });
+		threads.push(made);
+		result.thread = made.id;
+	} else if (action === 'rename-session' || action === 'rename-window') {
+		const name = nameOf(fields.name);
+		if (!name) return send(res, 400, { error: 'bad_name' });
+		if (action === 'rename-session') {
+			if (name !== session && taken(name)) return send(res, 409, { error: 'exists' });
+			for (const t of threads.filter(inSession)) t.session = name;
+		} else {
+			for (const t of threads.filter((t) => inSession(t) && t.window === thread.window))
+				t.name = name;
+		}
+	} else if (action !== 'zoom-pane') {
+		if (fields.confirm !== true) return send(res, 400, { error: 'confirm_required' });
+		const { id, window } = thread;
+		threads = threads.filter((t) =>
+			action === 'kill-pane'
+				? t.id !== id
+				: action === 'kill-window'
+					? !(inSession(t) && t.window === window)
+					: !inSession(t)
+		);
+	}
+	replies.actions.push({ action, ...fields });
+	push('threads', threadsBody());
+	push('hosts', hostsBody());
+	return send(res, 200, result);
+}
+
+/** A pane's scrollback: a test run that scrolled off, then what the pane shows. */
+function scrollback(t) {
+	const run = ['$ pnpm exec playwright test tests/checkout.spec.ts', ''];
+	for (let n = 1; n <= 60; n += 1) {
+		run.push(
+			n % 9 === 0
+				? `  ✓ ${n} the Tax line renders before the total (${40 + n} ms)`
+				: `  ✓ ${n} checkout step ${n} keeps the cart (${10 + n} ms)`
+		);
+	}
+	return [...run, '', '  60 passed (4.1s)', '', ...screen(t).trimEnd().split('\n')];
+}
+
+const FIND_MAX_QUERY = 200;
+const FIND_MAX_MATCHES = 200;
+
+/** Find in a pane's scrollback: plain text, no case until the query has an uppercase letter. */
+function findApi(res, url, thread) {
+	if (!capabilities.find) return send(res, 403, { error: 'disabled' });
+	if (!thread) return send(res, 404, { error: 'not_found' });
+	const query = (url.searchParams.get('q') ?? '').trim();
+	if (!query || [...query].length > FIND_MAX_QUERY || CONTROL.test(query) || /[\n\t]/.test(query))
+		return send(res, 400, { error: 'bad_query' });
+	const exact = query !== query.toLowerCase();
+	const needle = exact ? query : query.toLowerCase();
+	const lines = scrollback(thread);
+	const matches = [];
+	let truncated = false;
+	lines.forEach((line, index) => {
+		const hay = exact ? line : line.toLowerCase();
+		const ranges = [];
+		for (let at = hay.indexOf(needle); at >= 0; at = hay.indexOf(needle, at + needle.length))
+			ranges.push([at, at + needle.length]);
+		if (!ranges.length) return;
+		if (matches.length >= FIND_MAX_MATCHES) truncated = true;
+		else matches.push({ line: index, ranges });
+	});
+	return send(res, 200, { text: lines.join('\n'), matches, truncated });
+}
+
 const send = (res, status, body, type = 'application/json') => {
 	res.writeHead(status, { 'content-type': type, 'cache-control': 'no-store' });
 	res.end(typeof body === 'string' ? body : JSON.stringify(body));
@@ -749,9 +922,20 @@ function api(req, res, url, body) {
 			res.write(`event: manager\ndata: ${JSON.stringify(managerLive())}\n\n`);
 		return;
 	}
+	if (path.startsWith('/api/tmux/')) return tmuxApi(req, res, path, String(body));
+	const dirs = /^\/api\/hosts\/([^/]+)\/dirs$/.exec(path);
+	if (dirs) {
+		if (!capabilities.sessionActions) return send(res, 403, { error: 'disabled' });
+		const host = decodeURIComponent(dirs[1]);
+		if (!HOSTS.some((h) => h.name === host)) return send(res, 404, { error: 'not_found' });
+		return send(res, 200, { dirs: dirsOf(host) });
+	}
 	const match =
-		/^\/api\/threads\/([^/]+)\/(chat|screen|text|key|prompt|answer|commands|upload)$/.exec(path);
+		/^\/api\/threads\/([^/]+)\/(chat|screen|text|key|prompt|answer|commands|upload|find)$/.exec(
+			path
+		);
 	const thread = match && threads.find((t) => t.id === decodeURIComponent(match[1]));
+	if (match && match[2] === 'find') return findApi(res, url, thread);
 	if (match && match[2] !== 'chat' && match[2] !== 'screen')
 		return replyApi(req, res, url, thread, match[2], body);
 	if (!thread) return send(res, 404, { error: 'not_found' });
@@ -793,6 +977,11 @@ function hook(res, url) {
 				idleStage: 'awake'
 			});
 			if (thread.status !== 'waiting') delete prompts[thread.id];
+			break;
+		case '/__fixture/panes':
+			// The window was split: it holds this many threads now.
+			if (!thread) return send(res, 404, { error: 'not_found' });
+			thread.panes = Number(url.searchParams.get('value') ?? 2);
 			break;
 		case '/__fixture/prompt':
 			// The pane moved on to another prompt while the phone showed the first.

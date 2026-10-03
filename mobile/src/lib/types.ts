@@ -70,6 +70,7 @@ export const CAPABILITIES = [
 	'upload',
 	'sessionActions',
 	'kill',
+	'find',
 	'artifacts',
 	'localServers',
 	'stopServers',
@@ -179,4 +180,36 @@ export interface TurnEnd {
 /** The last event of a voice stream. `empty` and `failed` never reached the target. */
 export interface VoiceEnd extends Omit<TurnEnd, 'outcome'> {
 	outcome: TurnEnd['outcome'] | 'empty' | 'failed';
+}
+
+/** The last segment of `/api/tmux/<action>`. The Mac takes no other word. */
+export type TmuxAction =
+	| 'new-session'
+	| 'new-window'
+	| 'rename-session'
+	| 'rename-window'
+	| 'kill-session'
+	| 'kill-window'
+	| 'kill-pane'
+	| 'zoom-pane';
+
+/** What an action is done to: a thread, or a session by its host and name. */
+export type ActionTarget = { thread: string } | { host: string; session: string };
+
+/** A start and an end offset in a string. */
+export type Range = [number, number];
+
+export interface FindMatch {
+	/** The line of `text`, from 0. */
+	line: number;
+	/** Where the query is in that line. */
+	ranges: Range[];
+}
+
+/** A thread's scrollback and where the query is in it. */
+export interface FindResult {
+	text: string;
+	matches: FindMatch[];
+	/** There were more matches than the Mac sends. */
+	truncated: boolean;
 }

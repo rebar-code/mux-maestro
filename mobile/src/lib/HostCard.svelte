@@ -1,5 +1,8 @@
 <script lang="ts">
+	import { menu } from './actions.svelte';
 	import { hostStatLabels } from './format';
+	import { can } from './live.svelte';
+	import { longPress } from './longpress';
 	import type { Host } from './types';
 
 	const { host }: { host: Host } = $props();
@@ -8,11 +11,24 @@
 	const down = $derived(host.reachability === 'unreachable' || host.reachability === 'tmuxMissing');
 </script>
 
-<div class="hcard" class:down style:border-left-color={host.color} data-host={host.name}>
+<div
+	class="hcard"
+	class:down
+	style:border-left-color={host.color}
+	data-host={host.name}
+	{@attach can('sessionActions') && longPress(() => menu.open({ kind: 'host', host: host.name }))}
+>
 	<div class="l1">
 		<span class="hname" style:color={host.color}>{host.name}</span>
 		<span class="cnt">{host.threads} {host.threads === 1 ? 'thread' : 'threads'}</span>
-		<button class="tb add" disabled aria-disabled="true" aria-label="New session on {host.name}">
+		<button
+			class="tb add"
+			disabled={!can('sessionActions')}
+			aria-disabled={!can('sessionActions')}
+			aria-label="New session on {host.name}"
+			data-no-hold
+			onclick={() => menu.openDirs(host.name)}
+		>
 			＋
 		</button>
 	</div>

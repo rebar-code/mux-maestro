@@ -1,10 +1,12 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
+	import { menu } from './actions.svelte';
 	import { pullToRefresh, ui } from './gestures.svelte';
 	import { counts, GROUPINGS, sections } from './group';
 	import HostCard from './HostCard.svelte';
 	import { can, live } from './live.svelte';
+	import { longPress } from './longpress';
 	import PullIndicator from './PullIndicator.svelte';
 	import ThreadRow from './ThreadRow.svelte';
 
@@ -75,7 +77,14 @@
 					<div class="sect" class:mono={section.mono}>{section.title}</div>
 				{/if}
 				{#each section.sessions as session (session.key)}
-					<div class="shead" data-session={session.key}>
+					<div
+						class="shead"
+						data-session={session.key}
+						{@attach can('sessionActions') &&
+							longPress(() =>
+								menu.open({ kind: 'session', host: session.host, session: session.name })
+							)}
+					>
 						<b>{session.name}</b>
 						<span
 							class="host"
@@ -85,9 +94,13 @@
 						<span class="cnt">{session.threads.length}</span>
 						<button
 							class="tb add"
-							disabled
-							aria-disabled="true"
-							aria-label="New window in {session.name}">＋</button
+							disabled={!can('sessionActions') || menu.busy}
+							aria-disabled={!can('sessionActions')}
+							aria-label="New window in {session.name}"
+							data-no-hold
+							onclick={() =>
+								menu.newWindow({ kind: 'session', host: session.host, session: session.name })}
+							>＋</button
 						>
 					</div>
 					{#each session.threads as thread (thread.id)}
