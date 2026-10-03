@@ -6,12 +6,26 @@ export async function reset(page: Page): Promise<void> {
 	await page.request.post('/__fixture/reset');
 }
 
-/** Open a page with nothing left over from the test before. */
+export const TOKEN = 'demo-token';
+export const TOKEN_HEADER = { 'X-MuxMaestro-Token': TOKEN };
+
+/** The link the Mac shows as a QR code. */
+export const pairingLink = (path = '/'): string => `${path}#pair=${TOKEN}`;
+
+/** Empty this origin's storage, from a page that does not start the app. */
+export async function forget(page: Page): Promise<void> {
+	await page.goto('/manifest.webmanifest');
+	await page.evaluate(() => localStorage.clear());
+}
+
+/**
+ * Open a page with nothing left over from the test before. The app is opened
+ * through the pairing link, as a phone that scanned the QR code would.
+ */
 export async function fresh(page: Page, path = '/'): Promise<void> {
 	await reset(page);
-	await page.goto(path);
-	await page.evaluate(() => localStorage.clear());
-	await page.goto(path);
+	await forget(page);
+	await page.goto(pairingLink(path));
 }
 
 export const threadPath = (id: string): string => `/t/${encodeURIComponent(id)}`;

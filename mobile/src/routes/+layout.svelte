@@ -3,12 +3,15 @@
 	import Drawer from '$lib/Drawer.svelte';
 	import { gestures, ui } from '$lib/gestures.svelte';
 	import { connect, live } from '$lib/live.svelte';
+	import Pair from '$lib/Pair.svelte';
 
 	const { children } = $props();
 </script>
 
 <div class="app" {@attach gestures} {@attach connect}>
-	{#if live.forbidden}
+	{#if live.unpaired}
+		<Pair />
+	{:else if live.forbidden}
 		<div class="denied" role="alert">Not allowed</div>
 	{:else}
 		<div class="view" inert={ui.drawerOpen}>
