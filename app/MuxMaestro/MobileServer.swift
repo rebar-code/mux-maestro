@@ -262,13 +262,18 @@ final class MobileServer {
         setStreamCount(0)
     }
 
+    /// Drop every push subscription. Called with every new pairing token: a
+    /// phone that was signed out gets no more notifications either.
+    func forgetPhones() {
+        push?.forgetAll()
+    }
+
     /// Replace the pairing token. Every open stream is closed: a phone holding
     /// the old token is signed out at once.
     func setToken(_ token: String) {
         queue.async {
             guard self.listener != nil else { return }
             self.token = token
-            // A signed-out phone gets no more notifications either.
             self.push?.forgetAll()
             for client in self.clients.values where client.streaming { self.drop(client) }
         }

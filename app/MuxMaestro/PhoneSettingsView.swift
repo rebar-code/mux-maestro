@@ -417,14 +417,25 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
         pushCount.stringValue = count == 0 ? "" : count == 1 ? "1 phone" : "\(count) phones"
     }
 
+    /// What the test came to. A refusal shows what the push service said
+    /// (a contact it does not accept is "403 BadJwtToken"); the tooltip has
+    /// the whole line when the column cuts it.
     func renderPushTest(_ result: MobilePushCenter.TestResult) {
+        let text: String
         switch result {
-        case .noPhone: pushTestStatus.stringValue = "No phone"
-        case .unavailable: pushTestStatus.stringValue = "Failed"
-        case .sent(let accepted, let total):
-            pushTestStatus.stringValue = accepted == total
-                ? "Sent" : accepted == 0 ? "Failed" : "Sent to \(accepted) of \(total)"
+        case .noPhone: text = "No phone"
+        case .unavailable: text = "Failed"
+        case .sent(let accepted, let total, let error):
+            if accepted == total {
+                text = "Sent"
+            } else if accepted == 0 {
+                text = error.isEmpty ? "Failed" : "Failed: \(error)"
+            } else {
+                text = "Sent to \(accepted) of \(total)" + (error.isEmpty ? "" : ": \(error)")
+            }
         }
+        pushTestStatus.stringValue = text
+        pushTestStatus.toolTip = text
     }
 
     /// Show the dev-server ports that are published on the tailnet now.

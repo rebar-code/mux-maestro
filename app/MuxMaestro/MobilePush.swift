@@ -91,13 +91,23 @@ enum MobilePush {
               raw.hasPrefix("https://"),
               let parts = URLComponents(string: raw), parts.scheme == "https",
               parts.user == nil, parts.password == nil, parts.fragment == nil,
+              // A subscription is a path on the service, never the service itself.
+              parts.path.count > 1,
               parts.port == nil || parts.port == 443,
               let host = parts.host, host == host.lowercased(), allows(host: host),
+              // The authority as written, not as a parser decodes it: a host with
+              // a percent escape, `:0443` and an empty port are other spellings.
+              authority(of: raw) == host || authority(of: raw) == host + ":443",
               let url = parts.url, url.host == host,
               // What is sent is exactly what was checked.
               url.absoluteString == raw
         else { return nil }
         return url
+    }
+
+    /// What stands between `https://` and the path, exactly as sent.
+    private static func authority(of raw: String) -> String {
+        String(raw.dropFirst("https://".count).prefix { $0 != "/" && $0 != "?" })
     }
 
     /// The phone's public key: 65 bytes that are a point on P-256.
@@ -165,10 +175,13 @@ enum MobilePush {
     }
 
     /// The `Topic` of a thread's messages: a push service keeps only the
-    /// newest message of a topic for a phone that is offline. A hash, keyed
-    /// with this Mac's public key, so the push service learns no name.
-    static func topic(thread: String, key: String) -> String {
-        Base64URL.encode(Data(SHA256.hash(data: Data((key + "\n" + thread).utf8)).prefix(18)))
+    /// newest message of a topic for a phone that is offline. A keyed hash,
+    /// with a key the push service never sees (this Mac's private key), so
+    /// the service cannot guess a thread id and check it against the topic.
+    static func topic(thread: String, secret: Data) -> String {
+        let code = HMAC<SHA256>.authenticationCode(
+            for: Data(("topic\n" + thread).utf8), using: SymmetricKey(data: secret))
+        return Base64URL.encode(Data(code.prefix(18)))
     }
 }
 
@@ -407,12 +420,34 @@ extension MobilePush {
 
 // MARK: - Transport
 
+/// What a push service said to one message.
+struct PushAnswer: Equatable {
+    /// The HTTP status, or nil when there was no answer.
+    var status: Int?
+    /// The start of the answer's body, or why there was none. A push service
+    /// names its reason here ("BadJwtToken"); Settings shows it for a test.
+    var text = ""
+
+    /// One printable line, cut short: it is shown in a label.
+    static func clip(_ text: String) -> String {
+        let line = text.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
+        let clean = String(line.unicodeScalars.filter { $0.value >= 0x20 && $0.value != 0x7F })
+            .trimmingCharacters(in: .whitespaces)
+        return clean.count > 120 ? String(clean.prefix(120)) + "…" : clean
+    }
+
+    /// "403 BadJwtToken", "410", "No answer: timed out".
+    var summary: String {
+        guard let status else { return text.isEmpty ? "No answer" : "No answer: \(text)" }
+        return text.isEmpty ? String(status) : "\(status) \(text)"
+    }
+}
+
 /// The one call that leaves the Mac. The tests replace it; nothing in them
 /// reaches a push service.
 protocol PushTransport {
-    /// Post `request`. `completion` gets the HTTP status, or nil when there
-    /// was no answer. It may come on any queue.
-    func send(_ request: URLRequest, completion: @escaping (Int?) -> Void)
+    /// Post `request`. `completion` may come on any queue.
+    func send(_ request: URLRequest, completion: @escaping (PushAnswer) -> Void)
 }
 
 /// `URLSession` with the rules a call to a phone-supplied URL needs: a short
@@ -433,9 +468,14 @@ final class URLSessionPushTransport: NSObject, PushTransport, URLSessionTaskDele
         return URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
     }()
 
-    func send(_ request: URLRequest, completion: @escaping (Int?) -> Void) {
-        session.dataTask(with: request) { _, response, _ in
-            completion((response as? HTTPURLResponse)?.statusCode)
+    func send(_ request: URLRequest, completion: @escaping (PushAnswer) -> Void) {
+        session.dataTask(with: request) { data, response, error in
+            guard let status = (response as? HTTPURLResponse)?.statusCode else {
+                return completion(PushAnswer(
+                    status: nil, text: PushAnswer.clip(error?.localizedDescription ?? "")))
+            }
+            let body = String(decoding: (data ?? Data()).prefix(400), as: UTF8.self)
+            completion(PushAnswer(status: status, text: PushAnswer.clip(body)))
         }.resume()
     }
 
@@ -458,15 +498,21 @@ final class MobilePushCenter {
     /// What "Send test notification" came to.
     enum TestResult: Equatable {
         case noPhone
+        /// The Keychain did not answer, or too many tests in a minute.
         case unavailable
-        /// How many phones' push services took the message, of how many.
-        case sent(Int, of: Int)
+        /// How many phones' push services took the message, of how many, and
+        /// what the first one that did not take it said ("" when all did).
+        case sent(Int, of: Int, error: String)
     }
 
     /// How long a phone's "I show this thread" lasts without a new one. The
     /// phone repeats it while the thread is on screen.
     static let focusSeconds = 60
     static let ttlSeconds = 1800
+    /// A push service answers 403 when it will not take this Mac's messages
+    /// for a subscription. After this many in a row, with none accepted
+    /// between, the subscription is dropped. A test does not count.
+    static let maxRefusals = 5
 
     private let keys: PhoneTokenStore
     private let store: PhoneTokenStore
@@ -477,10 +523,14 @@ final class MobilePushCenter {
     // Confined to `queue`.
     private var options = MobilePushOptions()
     private var limiter: MobilePushLimiter
+    /// The test button's own allowance: a burst of events does not disable it,
+    /// and it does not use up theirs.
+    private var testLimiter = MobilePushLimiter(perThread: 6, overall: 6, window: 60)
     private var loaded: [MobilePushSubscription]?
     private var vapid: VAPIDKey?
     private var focused: [String: (thread: String, at: Int)] = [:]
     private var tokens: [String: (token: String, madeAt: Int)] = [:]
+    private var refusals: [String: Int] = [:]
 
     /// Called with the number of subscribed phones when it changes, on the
     /// center's queue.
@@ -511,24 +561,31 @@ final class MobilePushCenter {
     }
 
     /// The subscribed phones. Blocks on the Keychain.
-    var count: Int { queue.sync { subscriptions().count } }
+    var count: Int { queue.sync { subscriptions()?.count ?? 0 } }
 
     /// Read the count off the caller's queue; `onCount` gets it.
     func reportCount() {
-        queue.async { self.onCount?(self.subscriptions().count) }
+        queue.async { self.onCount?(self.subscriptions()?.count ?? 0) }
     }
 
     // MARK: Storage
 
-    private func subscriptions() -> [MobilePushSubscription] {
+    /// The stored phones, or nil when the Keychain could not be read. nil is
+    /// never treated as "none": a list written over one that was not read
+    /// would drop every phone.
+    private func subscriptions() -> [MobilePushSubscription]? {
         if let loaded { return loaded }
-        let stored = store.load().flatMap {
-            try? JSONDecoder().decode([MobilePushSubscription].self, from: Data($0.utf8))
-        } ?? []
+        var stored: [MobilePushSubscription] = []
+        switch store.read() {
+        case .failed: return nil
+        case .missing: break
+        case .found(let text):
+            stored = (try? JSONDecoder().decode([MobilePushSubscription].self, from: Data(text.utf8))) ?? []
+        }
         // What the Keychain held is checked like what a phone sends.
-        let valid = stored.filter(Self.valid).prefix(MobilePush.maxSubscriptions)
-        loaded = Array(valid)
-        return Array(valid)
+        let valid = Array(stored.filter(Self.valid).prefix(MobilePush.maxSubscriptions))
+        loaded = valid
+        return valid
     }
 
     private static func valid(_ subscription: MobilePushSubscription) -> Bool {
@@ -546,22 +603,36 @@ final class MobilePushCenter {
         let changed = loaded?.count != list.count
         loaded = list
         focused = focused.filter { entry in list.contains { $0.endpoint == entry.key } }
+        refusals = refusals.filter { entry in list.contains { $0.endpoint == entry.key } }
         if changed { onCount?(list.count) }
         return true
     }
 
     /// This Mac's key pair, made on first use. A new pair orphans every
     /// subscription made with the old one, so those are dropped with it.
+    ///
+    /// A pair is made only when the Keychain says there is none. A read that
+    /// fails (a locked Keychain, a refused dialog) gives nil and changes
+    /// nothing: the key and the phones are still there for the next read.
     private func key() -> VAPIDKey? {
         if let vapid { return vapid }
-        if let found = keys.load().flatMap(VAPIDKey.init(stored:)) {
-            vapid = found
-            return found
+        switch keys.read() {
+        case .failed:
+            return nil
+        case .found(let stored):
+            if let found = VAPIDKey(stored: stored) {
+                vapid = found
+                return found
+            }
+        case .missing:
+            break
         }
+        // The phones first: an old list must not outlive the key it was made for.
+        guard subscriptions() != nil, save([]) else { return nil }
         let fresh = VAPIDKey()
         guard keys.save(fresh.stored) else { return nil }
-        save([])
         vapid = fresh
+        tokens.removeAll()
         return fresh
     }
 
@@ -579,8 +650,7 @@ final class MobilePushCenter {
             guard let subscription = MobilePush.subscription(in: body, now: seconds) else {
                 return .error(400, "bad_subscription")
             }
-            guard key() != nil else { return .error(503, "unavailable") }
-            var list = subscriptions()
+            guard key() != nil, var list = subscriptions() else { return .error(503, "unavailable") }
             if let index = list.firstIndex(where: { $0.endpoint == subscription.endpoint }) {
                 // The same phone again: nothing to store unless its keys changed.
                 let held = list[index]
@@ -599,7 +669,7 @@ final class MobilePushCenter {
     func unsubscribe(_ body: Data) -> MobileResponse {
         queue.sync {
             guard let endpoint = MobilePush.endpoint(in: body) else { return .error(400, "bad_request") }
-            let list = subscriptions()
+            guard let list = subscriptions() else { return .error(503, "unavailable") }
             let rest = list.filter { $0.endpoint != endpoint }
             if rest.count != list.count, !save(rest) { return .error(503, "unavailable") }
             return .json(["ok": true])
@@ -611,7 +681,8 @@ final class MobilePushCenter {
     func focus(_ body: Data) -> MobileResponse {
         queue.sync {
             guard let focus = MobilePush.focus(in: body) else { return .error(400, "bad_request") }
-            guard subscriptions().contains(where: { $0.endpoint == focus.endpoint }) else {
+            guard let list = subscriptions() else { return .error(503, "unavailable") }
+            guard list.contains(where: { $0.endpoint == focus.endpoint }) else {
                 return .error(404, "not_found")
             }
             focused[focus.endpoint] = focus.thread.map { ($0, seconds) }
@@ -619,11 +690,11 @@ final class MobilePushCenter {
         }
     }
 
-    /// Forget every phone: the pairing code was replaced, so every phone was
-    /// signed out.
+    /// Forget every phone: there is a new pairing code, so every phone was
+    /// signed out. Written even over a list that could not be read.
     func forgetAll() {
         queue.async {
-            guard !self.subscriptions().isEmpty else { return }
+            if self.subscriptions()?.isEmpty == true { return }
             self.save([])
         }
     }
@@ -649,41 +720,69 @@ final class MobilePushCenter {
 
     private func deliver(_ event: MobilePushEvent, completion: ((TestResult) -> Void)?) {
         let at = seconds
-        let targets = subscriptions().filter { subscription in
+        let test = event.kind == .test
+        guard let all = subscriptions() else { completion?(.unavailable); return }
+        let targets = all.filter { subscription in
             guard let focus = focused[subscription.endpoint] else { return true }
             return !(focus.thread == event.thread && at - focus.at < Self.focusSeconds)
         }
         guard !targets.isEmpty else { completion?(.noPhone); return }
-        guard let key = key(), limiter.allow(thread: event.thread, now: at) else {
+        guard let key = key(),
+              test ? testLimiter.allow(thread: "", now: at) : limiter.allow(thread: event.thread, now: at)
+        else {
             completion?(.unavailable)
             return
         }
-        let tag = MobilePush.topic(thread: event.kind == .test ? "test" : event.thread, key: key.publicKey)
+        let tag = MobilePush.topic(thread: test ? "test" : event.thread, secret: key.key.rawRepresentation)
         let payload = MobilePush.payload(event, detail: options.detail, tag: tag)
         var pending = targets.count
         var accepted = 0
+        var failure = ""
+        let finish = { completion?(.sent(accepted, of: targets.count, error: failure)) }
         for subscription in targets {
             guard let request = request(to: subscription, payload: payload, event: event, tag: tag, key: key, at: at)
             else {
                 pending -= 1
+                if failure.isEmpty { failure = "Not sent" }
                 continue
             }
-            transport.send(request) { [weak self] status in
+            transport.send(request) { [weak self] answer in
                 self?.queue.async {
                     guard let self else { return }
-                    // The push service says the phone unsubscribed.
-                    if status == 404 || status == 410 { self.remove(subscription.endpoint) }
-                    if let status, (200..<300).contains(status) { accepted += 1 }
+                    if let status = answer.status, (200..<300).contains(status) {
+                        accepted += 1
+                        self.refusals[subscription.endpoint] = nil
+                    } else {
+                        if failure.isEmpty { failure = answer.summary }
+                        self.failed(subscription.endpoint, status: answer.status, counts: !test)
+                    }
                     pending -= 1
-                    if pending == 0 { completion?(.sent(accepted, of: targets.count)) }
+                    if pending == 0 { finish() }
                 }
             }
         }
-        if pending == 0 { completion?(.sent(0, of: targets.count)) }
+        if pending == 0 { finish() }
+    }
+
+    /// A message the push service did not take. 404 and 410 say the phone
+    /// unsubscribed. 403 says this Mac may not send to it; that can also be a
+    /// contact the service does not like, so it takes `maxRefusals` in a row.
+    /// Anything else (429, 5xx, no answer) may pass, and the phone is kept.
+    private func failed(_ endpoint: String, status: Int?, counts: Bool) {
+        switch status {
+        case 404, 410:
+            remove(endpoint)
+        case 403 where counts:
+            let count = (refusals[endpoint] ?? 0) + 1
+            refusals[endpoint] = count
+            if count >= Self.maxRefusals { remove(endpoint) }
+        default:
+            break
+        }
     }
 
     private func remove(_ endpoint: String) {
-        let list = subscriptions()
+        guard let list = subscriptions() else { return }
         let rest = list.filter { $0.endpoint != endpoint }
         if rest.count != list.count { save(rest) }
     }

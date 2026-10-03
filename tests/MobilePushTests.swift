@@ -7,17 +7,35 @@ final class MemoryTokenStore: PhoneTokenStore {
     private let lock = NSLock()
     private var value: String?
     private var refusing = false
+    private var unreadable = false
+    private var writes = 0
 
     init(_ value: String? = nil) { self.value = value }
 
     var stored: String? { lock.lock(); defer { lock.unlock() }; return value }
+    var saves: Int { lock.lock(); defer { lock.unlock() }; return writes }
     func refuse() { lock.lock(); refusing = true; lock.unlock() }
+    /// Reads fail, as a locked Keychain or a denied dialog makes them. What
+    /// is stored stays stored.
+    func failReads(_ on: Bool) { lock.lock(); unreadable = on; lock.unlock() }
 
-    func load() -> String? { stored }
+    func load() -> String? {
+        if case .found(let token) = read() { return token }
+        return nil
+    }
+
+    func read() -> PhoneTokenRead {
+        lock.lock()
+        defer { lock.unlock() }
+        if unreadable { return .failed }
+        return value.map(PhoneTokenRead.found) ?? .missing
+    }
+
     func save(_ token: String) -> Bool {
         lock.lock()
         defer { lock.unlock() }
         guard !refusing else { return false }
+        writes += 1
         value = token
         return true
     }
@@ -28,20 +46,25 @@ final class FakePushTransport: PushTransport {
     private let lock = NSLock()
     private var _requests: [URLRequest] = []
     private var statuses: [String: Int?] = [:]
+    private var texts: [String: String] = [:]
 
     var requests: [URLRequest] { lock.lock(); defer { lock.unlock() }; return _requests }
 
     /// What the service answers for `endpoint` (default 201). nil: no answer.
-    func answer(_ endpoint: String, _ status: Int?) {
-        lock.lock(); statuses.updateValue(status, forKey: endpoint); lock.unlock()
+    func answer(_ endpoint: String, _ status: Int?, text: String = "") {
+        lock.lock()
+        statuses.updateValue(status, forKey: endpoint)
+        texts[endpoint] = text
+        lock.unlock()
     }
 
-    func send(_ request: URLRequest, completion: @escaping (Int?) -> Void) {
+    func send(_ request: URLRequest, completion: @escaping (PushAnswer) -> Void) {
         lock.lock()
         _requests.append(request)
-        let status = statuses[request.url?.absoluteString ?? ""] ?? 201
+        let endpoint = request.url?.absoluteString ?? ""
+        let answer = PushAnswer(status: statuses[endpoint] ?? 201, text: texts[endpoint] ?? "")
         lock.unlock()
-        completion(status)
+        completion(answer)
     }
 }
 
@@ -268,6 +291,12 @@ final class MobilePushTests: XCTestCase {
             "https://evil.example/#@fcm.googleapis.com", "https://evil.example\\@fcm.googleapis.com/",
             "https://fcm.googleapis.com\\.evil.example/", "https://fcm.googleapis.com%2eevil.example/",
             "https://fcm.googleapis.com#.evil.example/",
+            // Another spelling of a host or a port on the list.
+            "https://fcm.googleapis%2Ecom/abc", "https://%66cm.googleapis.com/abc",
+            "https://web.push.apple.co%6d/abc", "https://fcm.googleapis.com:0443/abc",
+            "https://fcm.googleapis.com:/abc", "https://fcm.googleapis.com:443:443/abc",
+            "https://fcm.googleapis.com:+443/abc", "https://fcm.googleapis.com",
+            "https://fcm.googleapis.com/", "https://fcm.googleapis.com?x=1",
             // Addresses.
             "https://127.0.0.1/abc", "https://169.254.169.254/latest/meta-data",
             "https://10.0.0.1/abc", "https://[::1]/abc", "https://2130706433/abc",
@@ -483,6 +512,15 @@ final class MobilePushTests: XCTestCase {
         XCTAssertEqual(topics.count, 3)
         XCTAssertEqual(topics[0], topics[1])
         XCTAssertNotEqual(topics[0], topics[2])
+        // Keyed with the private key: the push service, which sees the public
+        // key and the topic, cannot check a guessed thread id against it.
+        let key = try XCTUnwrap(keys.stored.flatMap(VAPIDKey.init(stored:)))
+        XCTAssertEqual(topics[0], MobilePush.topic(thread: "devbox:7", secret: key.key.rawRepresentation))
+        XCTAssertNotEqual(
+            topics[0],
+            MobilePush.topic(thread: "devbox:7", secret: key.key.publicKey.x963Representation))
+        XCTAssertNotEqual(
+            topics[0], MobilePush.topic(thread: "devbox:7", secret: VAPIDKey().key.rawRepresentation))
         for topic in topics {
             XCTAssertLessThanOrEqual(topic.count, 32)
             XCTAssertNotNil(Base64URL.decode(topic))
@@ -608,13 +646,158 @@ final class MobilePushTests: XCTestCase {
         _ = center.subscribe(phone.body)
         // Both events off: the test still goes out.
         center.configure(MobilePushOptions(waiting: false, done: false))
-        XCTAssertEqual(test(), .sent(1, of: 1))
+        XCTAssertEqual(test(), .sent(1, of: 1, error: ""))
         let message = try phone.open(XCTUnwrap(transport.requests.last))
         XCTAssertEqual(message["kind"] as? String, "test")
         XCTAssertEqual(message["body"] as? String, "Test notification")
         XCTAssertEqual(message["thread"] as? String, "")
+        // What the push service says is passed on, so a contact it refuses shows.
+        transport.answer(phone.endpoint, 403, text: "BadJwtToken")
+        XCTAssertEqual(test(), .sent(0, of: 1, error: "403 BadJwtToken"))
+        transport.answer(phone.endpoint, nil, text: "The request timed out.")
+        XCTAssertEqual(test(), .sent(0, of: 1, error: "No answer: The request timed out."))
+        // A test that is refused does not cost the phone its subscription.
+        for _ in 0..<3 { _ = test() }
+        XCTAssertEqual(center.count, 1)
+    }
+
+    func testTheAnswerTextIsOneShortPrintableLine() {
+        XCTAssertEqual(PushAnswer.clip("  BadJwtToken\r\nmore"), "BadJwtToken")
+        XCTAssertEqual(PushAnswer.clip("a\u{1B}[31mb\u{7}"), "a[31mb")
+        XCTAssertEqual(PushAnswer.clip(String(repeating: "x", count: 500)).count, 121)
+        XCTAssertEqual(PushAnswer(status: 410).summary, "410")
+        XCTAssertEqual(PushAnswer(status: nil).summary, "No answer")
+    }
+
+    func testTheTestButtonHasItsOwnAllowance() {
+        let center = center(limiter: MobilePushLimiter(perThread: 1, overall: 1, window: 300))
+        _ = center.subscribe(FakePhone().body)
+        func test() -> MobilePushCenter.TestResult? {
+            var result: MobilePushCenter.TestResult?
+            center.sendTest { result = $0 }
+            settle(center)
+            return result
+        }
+        // The events used up their cap; the test still goes out.
+        center.notify([waiting("localhost:12"), waiting("localhost:13")])
+        settle(center)
+        XCTAssertEqual(transport.requests.count, 1)
+        XCTAssertEqual(test(), .sent(1, of: 1, error: ""))
+        // And tests do not use up the events' cap.
+        clock += 300
+        for _ in 0..<6 { XCTAssertEqual(test(), .sent(1, of: 1, error: "")) }
+        // Six in a minute; one more is refused.
+        XCTAssertEqual(test(), .unavailable)
+        center.notify([waiting("localhost:12")])
+        settle(center)
+        XCTAssertEqual(transport.requests.count, 9)
+    }
+
+    func testAPhoneThePushServiceKeepsRefusingIsDropped() {
+        let center = center(limiter: MobilePushLimiter(perThread: 100, overall: 100, window: 300))
+        let phone = FakePhone()
+        _ = center.subscribe(phone.body)
+        func push() {
+            center.notify([waiting()])
+            settle(center)
+        }
         transport.answer(phone.endpoint, 403)
-        XCTAssertEqual(test(), .sent(0, of: 1))
+        for _ in 0..<(MobilePushCenter.maxRefusals - 1) { push() }
+        XCTAssertEqual(center.count, 1)
+        // One that is taken starts the count again.
+        transport.answer(phone.endpoint, 201)
+        push()
+        transport.answer(phone.endpoint, 403)
+        for _ in 0..<(MobilePushCenter.maxRefusals - 1) { push() }
+        XCTAssertEqual(center.count, 1)
+        push()
+        XCTAssertEqual(center.count, 0)
+    }
+
+    // MARK: A Keychain that cannot be read
+
+    func testOnlyItemNotFoundMeansThereIsNoToken() {
+        XCTAssertEqual(
+            KeychainTokenStore.outcome(status: errSecSuccess, data: Data("abc".utf8)), .found("abc"))
+        XCTAssertEqual(KeychainTokenStore.outcome(status: errSecItemNotFound, data: nil), .missing)
+        XCTAssertEqual(KeychainTokenStore.outcome(status: errSecSuccess, data: Data()), .missing)
+        for status in [errSecAuthFailed, errSecInteractionNotAllowed, errSecUserCanceled,
+                       errSecNotAvailable, errSecIO, errSecDecode, errSecMissingEntitlement] {
+            XCTAssertEqual(KeychainTokenStore.outcome(status: status, data: nil), .failed, "\(status)")
+        }
+        XCTAssertEqual(KeychainTokenStore.outcome(status: errSecSuccess, data: nil), .failed)
+    }
+
+    func testAFailedReadOfTheKeyKeepsTheKeyAndEveryPhone() throws {
+        let phone = FakePhone()
+        XCTAssertEqual(center().subscribe(phone.body).status, 200)
+        let key = try XCTUnwrap(keys.stored)
+        let list = try XCTUnwrap(store.stored)
+        let (keySaves, listSaves) = (keys.saves, store.saves)
+
+        // The app starts again and the Keychain does not answer.
+        keys.failReads(true)
+        let locked = center()
+        XCTAssertEqual(locked.keyResponse().status, 503)
+        XCTAssertEqual(locked.subscribe(FakePhone("https://web.push.apple.com/QOther").body).status, 503)
+        locked.notify([waiting()])
+        var result: MobilePushCenter.TestResult?
+        locked.sendTest { result = $0 }
+        settle(locked)
+        XCTAssertEqual(result, .unavailable)
+        XCTAssertEqual(transport.requests.count, 0)
+        // Nothing was written: the same key and the same phone are stored.
+        XCTAssertEqual(keys.stored, key)
+        XCTAssertEqual(store.stored, list)
+        XCTAssertEqual(keys.saves, keySaves)
+        XCTAssertEqual(store.saves, listSaves)
+
+        // It answers again: the same center sends with the same key.
+        keys.failReads(false)
+        XCTAssertEqual(
+            try JSONSerialization.jsonObject(with: locked.keyResponse().body) as? [String: String],
+            ["key": try XCTUnwrap(VAPIDKey(stored: key)).publicKey])
+        XCTAssertEqual(locked.count, 1)
+        locked.notify([waiting()])
+        settle(locked)
+        XCTAssertEqual(transport.requests.count, 1)
+    }
+
+    func testAFailedReadOfThePhonesWritesNothingOverThem() throws {
+        let phone = FakePhone()
+        XCTAssertEqual(center().subscribe(phone.body).status, 200)
+        let list = try XCTUnwrap(store.stored)
+        let saves = store.saves
+
+        store.failReads(true)
+        let locked = center()
+        XCTAssertEqual(locked.count, 0)
+        XCTAssertEqual(locked.subscribe(FakePhone("https://web.push.apple.com/QOther").body).status, 503)
+        XCTAssertEqual(locked.unsubscribe(phone.focus(nil)).status, 503)
+        XCTAssertEqual(locked.focus(phone.focus("localhost:12")).status, 503)
+        locked.notify([waiting()])
+        settle(locked)
+        XCTAssertEqual(transport.requests.count, 0)
+        XCTAssertEqual(store.stored, list)
+        XCTAssertEqual(store.saves, saves)
+
+        // A key that is gone is not replaced while the phones cannot be read.
+        let lost = MobilePushCenter(keys: MemoryTokenStore(), store: store, transport: transport)
+        XCTAssertEqual(lost.keyResponse().status, 503)
+        XCTAssertEqual(store.stored, list)
+
+        store.failReads(false)
+        XCTAssertEqual(locked.count, 1)
+    }
+
+    func testForgetAllWritesEvenOverAListItCannotRead() {
+        XCTAssertEqual(center().subscribe(FakePhone().body).status, 200)
+        store.failReads(true)
+        let locked = center()
+        locked.forgetAll()
+        settle(locked)
+        store.failReads(false)
+        XCTAssertEqual(center().count, 0)
     }
 
     func testForgetAllDropsEveryPhone() {
@@ -719,7 +902,7 @@ final class MobilePushTests: XCTestCase {
         let answered = expectation(description: "answered")
         var status: Int?
         URLSessionPushTransport().send(request) {
-            status = $0
+            status = $0.status
             answered.fulfill()
         }
         wait(for: [answered], timeout: 10)
