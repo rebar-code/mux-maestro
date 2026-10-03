@@ -28,3 +28,7 @@ zig-cache/
 # screenshots and pasted images dropped in the repo root
 /Screenshot*.png
 /pasted-*.png
+
+# local planning notes; never published
+/tasks/
+/STATUS.md
