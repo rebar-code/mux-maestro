@@ -8,8 +8,11 @@ import type {
 	ManagerItem,
 	ManagerLive,
 	ManagerStatus,
-	ManagerTurn
+	ManagerTurn,
+	TurnEnd,
+	VoiceEnd
 } from './types';
+import type { VoiceSink } from './voice.svelte';
 
 const KEY = 'mm.manager';
 
@@ -110,33 +113,35 @@ class Manager {
 		untrack(() => void this.load());
 	};
 
-	send = async (): Promise<void> => {
-		const text = this.draft.trim();
-		if (!text || this.sending) return;
+	private begin(text: string): void {
 		this.sending = true;
-		this.draft = '';
 		this.note = null;
 		this.turn = { prompt: text, reply: '' };
-		let refused: string | null = null;
-		try {
-			const end = await sendManagerText(text, (delta) => {
-				this.turn = { prompt: text, reply: (this.turn?.reply ?? '') + delta };
-			});
-			if (end.outcome === 'refused' || end.outcome === 'unreachable') {
-				refused = end.message ?? 'The manager did not take the message';
-			} else {
-				const n = (this.chat.at(-1)?.n ?? 0) + 1;
-				const reply = this.turn?.reply || end.reply;
-				this.chat = [
-					...this.chat,
-					{ n, role: 'user', text },
-					...(reply ? [{ n: n + 1, role: 'assistant' as const, text: reply }] : [])
-				];
-				this.note = end.message;
-			}
-		} catch (error) {
-			if (error instanceof ApiError && error.forbidden) live.forbidden = true;
-			refused = error instanceof ApiError && error.detail ? error.detail : 'The Mac did not answer';
+	}
+
+	private append = (delta: string): void => {
+		if (this.turn) this.turn = { ...this.turn, reply: this.turn.reply + delta };
+	};
+
+	/**
+	 * A turn of this phone is over. `end` is how the Mac ended it; `failed` is
+	 * why it never got that far. A turn that did not land leaves its text in
+	 * the box, to send again.
+	 */
+	private finish(end: TurnEnd | VoiceEnd | null, failed: string | null = null): void {
+		const text = this.turn?.prompt ?? '';
+		let refused = failed;
+		if (end?.outcome === 'refused' || end?.outcome === 'unreachable') {
+			refused = end.message ?? 'The manager did not take the message';
+		} else if (end) {
+			const n = (this.chat.at(-1)?.n ?? 0) + 1;
+			const reply = this.turn?.reply || end.reply;
+			this.chat = [
+				...this.chat,
+				{ n, role: 'user', text },
+				...(reply ? [{ n: n + 1, role: 'assistant' as const, text: reply }] : [])
+			];
+			this.note = end.message;
 		}
 		this.turn = null;
 		this.sending = false;
@@ -145,6 +150,35 @@ class Manager {
 			if (!this.draft) this.draft = text;
 		}
 		void this.load();
+	}
+
+	send = async (): Promise<void> => {
+		const text = this.draft.trim();
+		if (!text || this.sending) return;
+		this.draft = '';
+		this.begin(text);
+		try {
+			this.finish(await sendManagerText(text, this.append));
+		} catch (error) {
+			if (error instanceof ApiError && error.forbidden) live.forbidden = true;
+			this.finish(
+				null,
+				error instanceof ApiError && error.detail ? error.detail : 'The Mac did not answer'
+			);
+		}
+	};
+
+	/** A turn this phone spoke: drawn and kept like one it typed. */
+	readonly voice: VoiceSink = {
+		begin: (prompt) => this.begin(prompt),
+		delta: this.append,
+		end: (end) => this.finish(end),
+		fail: (message) => this.finish(null, message),
+		// The Mac still runs the turn: its events draw the rest.
+		detach: () => {
+			this.sending = false;
+			void this.load();
+		}
 	};
 
 	dismiss = async (key: string): Promise<void> => {

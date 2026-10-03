@@ -22,8 +22,8 @@ test('the app opens on the manager home', async ({ page }) => {
 
 test('a message to the manager streams its reply onto the home', async ({ page }) => {
 	await fresh(page);
-	// With nothing typed the button is Talk, which arrives with voice.
-	await expect(page.getByRole('button', { name: 'Talk', exact: true })).toBeDisabled();
+	// With nothing typed there is nothing to send.
+	await expect(page.getByRole('button', { name: '↑ Send' })).toBeDisabled();
 	await box(page).fill('what needs me?');
 	const sent = page.waitForRequest((request) => request.url().endsWith('/api/manager/text'));
 	await page.getByRole('button', { name: '↑ Send' }).click();
@@ -180,13 +180,14 @@ test('with the Manager switch off the home and its row are hidden', async ({ pag
 	await expect(box(page)).toHaveCount(0);
 });
 
-test('voice controls are drawn and do nothing', async ({ page }) => {
+test('with the Voice switch off its controls are hidden and typing still works', async ({
+	page
+}) => {
 	await fresh(page);
-	await expect(page.getByRole('button', { name: 'Talk to the manager' })).toBeDisabled();
-	for (const button of await page.locator('[data-voicebar] button').all()) {
-		await expect(button).toBeDisabled();
-	}
-	await expect(page.locator('[data-voicebar] button')).toHaveCount(6);
+	await expect(box(page)).toBeVisible();
+	await expect(page.locator('[data-voicebar]')).toHaveCount(0);
+	await expect(page.locator('[data-orb]')).toHaveCount(0);
+	await expect(page.locator('[data-primary]')).toHaveCount(0);
 });
 
 test('a write from another origin, or without the header, is refused', async ({ page }) => {

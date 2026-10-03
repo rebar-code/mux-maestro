@@ -7,11 +7,16 @@
 	import { needsYouCards } from '$lib/manager';
 	import { manager } from '$lib/manager.svelte';
 	import PullIndicator from '$lib/PullIndicator.svelte';
+	import TalkButton from '$lib/TalkButton.svelte';
+	import { voice } from '$lib/voice.svelte';
+	import VoiceBar from '$lib/VoiceBar.svelte';
 
 	const PULL = 'home';
 
 	const tally = $derived(live.threads ? counts(live.threads) : null);
 	const managerOn = $derived(can('manager'));
+	// A take goes to the manager, so voice needs the manager's switch too.
+	const voiceOn = $derived(managerOn && can('voice'));
 	const waiting = $derived(needsYouCards(live.threads ?? [], managerOn ? manager.needsYou : []));
 	const review = $derived(managerOn ? manager.review : []);
 	const canSend = $derived(manager.draft.trim() !== '');
@@ -22,6 +27,8 @@
 
 	function submit(event: SubmitEvent): void {
 		event.preventDefault();
+		// A typed turn takes over: a reply that is still being read stops.
+		if (voiceOn) voice.skip();
 		void manager.send();
 	}
 </script>
@@ -46,12 +53,12 @@
 <div class="scroll home" data-pull={PULL} {@attach pullToRefresh(PULL, reload)}>
 	<PullIndicator key={PULL} />
 	<!-- Until the Mac says which features are on, hold the button's place. -->
-	{#if managerOn || live.config === null}
+	{#if voiceOn}
 		<div class="hero">
-			<button class="orb" disabled aria-disabled="true" aria-label="Talk to the manager">
-				<span>🎙</span>
-			</button>
+			<TalkButton target="manager" sink={manager.voice} orb />
 		</div>
+	{:else if live.config === null}
+		<div class="hero" aria-hidden="true"></div>
 	{/if}
 
 	{#if managerOn}
@@ -118,21 +125,10 @@
 </div>
 
 {#if managerOn}
-	<!-- Voice arrives later: its controls are drawn and do nothing. -->
-	<div class="vbar" data-voicebar>
-		<span class="wave" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
-		<div class="vrow">
-			<div class="vseg" role="group" aria-label="Voice mode">
-				<button disabled aria-disabled="true">Auto</button>
-				<button class="on" disabled aria-disabled="true">Manual</button>
-			</div>
-			<button class="ip" disabled aria-disabled="true" aria-label="Speaker">🔊</button>
-			<button class="ip" disabled aria-disabled="true" aria-label="Replay">↻</button>
-			<button class="ip" disabled aria-disabled="true" aria-label="Skip">⏭</button>
-			<button class="ip" disabled aria-disabled="true" aria-label="Microphone">🎙</button>
-		</div>
-	</div>
-	<form class="compose" onsubmit={submit}>
+	{#if voiceOn}
+		<VoiceBar target="manager" sink={manager.voice} />
+	{/if}
+	<form class="compose" class:bare={!voiceOn} onsubmit={submit}>
 		<input
 			bind:value={manager.draft}
 			placeholder="Ask the manager"
@@ -141,12 +137,13 @@
 			autocomplete="off"
 			autocapitalize="sentences"
 		/>
-		{#if canSend}
-			<button class="pill send grow" type="submit" disabled={manager.busy}>↑ Send</button>
-		{:else}
-			<button class="pill grow" type="button" disabled aria-disabled="true" aria-label="Talk"
-				>🎙 Talk</button
+		<!-- Typing is always there: with text in the box the button sends it. -->
+		{#if canSend || !voiceOn}
+			<button class="pill send grow" type="submit" disabled={!canSend || manager.busy}
+				>↑ Send</button
 			>
+		{:else}
+			<TalkButton target="manager" sink={manager.voice} />
 		{/if}
 	</form>
 {/if}
@@ -160,21 +157,9 @@
 		display: flex;
 		flex-direction: column;
 		align-items: center;
+		/* The button's height, so the lines below do not move when it lands. */
+		min-height: 180px;
 		padding: 22px 0 10px;
-	}
-
-	.orb {
-		width: 148px;
-		height: 148px;
-		border-radius: 50%;
-		background: radial-gradient(circle at 35% 30%, #b99cff, #6b3fd6);
-		font-size: 52px;
-		color: #fff;
-	}
-
-	.orb:disabled {
-		opacity: 0.28;
-		filter: grayscale(0.6);
 	}
 
 	.said {
@@ -321,67 +306,6 @@
 		height: 24px;
 	}
 
-	.vbar {
-		flex: none;
-		padding: 7px 12px 2px;
-		border-top: 1px solid var(--border);
-		background: var(--bar);
-	}
-
-	.wave {
-		display: flex;
-		align-items: center;
-		gap: 2px;
-		height: 14px;
-		margin: 0 2px 7px;
-		opacity: 0.4;
-	}
-
-	.vrow {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-	}
-
-	.wave i {
-		width: 3px;
-		height: 5px;
-		border-radius: 2px;
-		background: #666;
-	}
-
-	.vseg {
-		display: flex;
-		width: 136px;
-		margin-right: auto;
-		padding: 2px;
-		border-radius: 9px;
-		background: var(--surface);
-	}
-
-	.vseg button {
-		flex: 1;
-		padding: 5px 0;
-		border-radius: 7px;
-		font-size: 12px;
-		color: var(--muted);
-	}
-
-	.vseg button.on {
-		background: #2a2a2a;
-		color: var(--text);
-	}
-
-	.ip {
-		flex: none;
-		width: 36px;
-		height: 36px;
-		border-radius: 50%;
-		background: var(--surface);
-		border: 1px solid var(--border);
-		font-size: 15px;
-	}
-
 	.compose {
 		flex: none;
 		display: flex;
@@ -391,6 +315,12 @@
 		padding: 6px max(10px, env(safe-area-inset-right)) calc(10px + env(safe-area-inset-bottom))
 			max(10px, env(safe-area-inset-left));
 		background: var(--bar);
+	}
+
+	/* With no voice bar above it, the text box draws the top edge itself. */
+	.compose.bare {
+		padding-top: 8px;
+		border-top: 1px solid var(--border);
 	}
 
 	.compose input {

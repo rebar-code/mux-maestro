@@ -182,7 +182,6 @@ test('hosts section: every host with colour, thread count and stats', async ({ p
 });
 
 test('controls that arrive later are drawn but do nothing', async ({ page }) => {
-	await expect(page.getByRole('button', { name: 'Talk to the manager' })).toBeDisabled();
 	await page.getByRole('button', { name: 'Menu' }).click();
 	await expect(page.getByRole('button', { name: 'New window in acme-app' })).toBeDisabled();
 	await drawer(page).locator('[data-hosts]').scrollIntoViewIfNeeded();

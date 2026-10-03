@@ -81,6 +81,18 @@ export interface Config {
 	/** A key the server did not send counts as off. */
 	capabilities: Partial<Record<Capability, boolean>>;
 	grouping: 'recent' | 'host' | 'directory';
+	/** What a phone starts with until its own voice controls are used. */
+	voice?: VoiceDefaults;
+}
+
+export type VoiceMode = 'auto' | 'manual';
+
+export interface VoiceDefaults {
+	mode: VoiceMode;
+	/** On: the reply is spoken. Off: input only. */
+	speaker: boolean;
+	/** The longest take the Mac accepts. */
+	maxSeconds: number;
 }
 
 export type ManagerStatus = 'off' | 'idle' | 'busy' | 'waiting';
@@ -131,4 +143,9 @@ export interface TurnEnd {
 	reply: string;
 	/** Set when there is something to tell the human. */
 	message: string | null;
+}
+
+/** The last event of a voice stream. `empty` and `failed` never reached the target. */
+export interface VoiceEnd extends Omit<TurnEnd, 'outcome'> {
+	outcome: TurnEnd['outcome'] | 'empty' | 'failed';
 }

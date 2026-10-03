@@ -5,7 +5,8 @@
 //
 // Test hooks (POST): /__fixture/reset, /__fixture/wait?id=, /__fixture/say?id=&text=,
 // /__fixture/grouping?value=, /__fixture/deny?on=1, /__fixture/capability?name=&on=,
-// /__fixture/manager-status?value=, /__fixture/mac-turn?text=&reply=
+// /__fixture/manager-status?value=, /__fixture/mac-turn?text=&reply=,
+// /__fixture/voice?mode=&speaker=&heard=&delay=, /__fixture/voice-takes
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { extname, join, normalize, resolve } from 'node:path';
@@ -121,14 +122,17 @@ const CHATS = {
 // Why each waiting thread waits, as the manager's "Needs you" list says it.
 const REASONS = { 'localhost:1': 'Permission · Bash', 'devbox:2': 'Question' };
 
-let started, threads, chats, grouping, deny, capabilities, manager;
+let started, threads, chats, grouping, deny, capabilities, manager, voice;
 const streams = new Set();
 
 function reset() {
 	started = Math.floor(Date.now() / 1000);
 	grouping = 'recent';
 	deny = false;
-	capabilities = { manager: true };
+	capabilities = { manager: true, voice: false };
+	// The Mac's voice defaults, what the next take is heard as, how long the
+	// Mac "thinks" before it has the transcript, and every take it was sent.
+	voice = { mode: 'manual', speaker: true, heard: 'What needs me?', delay: 300, takes: [] };
 	manager = {
 		status: 'idle',
 		turn: null,
@@ -239,7 +243,7 @@ const threadsBody = () => ({ threads });
 const configBody = () => ({
 	capabilities: {
 		manager: capabilities.manager,
-		voice: false,
+		voice: capabilities.voice,
 		replies: false,
 		upload: false,
 		sessionActions: false,
@@ -250,7 +254,8 @@ const configBody = () => ({
 		notifications: false,
 		liveTerminal: false
 	},
-	grouping
+	grouping,
+	voice: { mode: voice.mode, speaker: voice.speaker, maxSeconds: 120 }
 });
 
 const managerLive = () => ({
@@ -360,6 +365,110 @@ function managerApi(req, res, path, body) {
 	);
 }
 
+/** One spoken sentence: a quiet tone as a 24 kHz WAV, like the Mac's clips. */
+function clip(seconds) {
+	const rate = 24000;
+	const count = Math.floor(rate * seconds);
+	const wav = Buffer.alloc(44 + count * 2);
+	wav.write('RIFF', 0);
+	wav.writeUInt32LE(36 + count * 2, 4);
+	wav.write('WAVEfmt ', 8);
+	wav.writeUInt32LE(16, 16);
+	wav.writeUInt16LE(1, 20);
+	wav.writeUInt16LE(1, 22);
+	wav.writeUInt32LE(rate, 24);
+	wav.writeUInt32LE(rate * 2, 28);
+	wav.writeUInt16LE(2, 32);
+	wav.writeUInt16LE(16, 34);
+	wav.write('data', 36);
+	wav.writeUInt32LE(count * 2, 40);
+	for (let i = 0; i < count; i += 1) {
+		wav.writeInt16LE(Math.round(Math.sin((2 * Math.PI * 220 * i) / rate) * 1200), 44 + i * 2);
+	}
+	return wav.toString('base64');
+}
+
+/** What a posted take is: its WAV header, as the Mac would read it. */
+function describeTake(body, url) {
+	const riff = body.length >= 44 && body.toString('latin1', 0, 4) === 'RIFF';
+	const rate = riff ? body.readUInt32LE(24) : 0;
+	const samples = riff ? (body.length - 44) / 2 : 0;
+	let sum = 0;
+	for (let i = 0; i < samples; i += 1) sum += (body.readInt16LE(44 + i * 2) / 32768) ** 2;
+	return {
+		riff,
+		rate,
+		channels: riff ? body.readUInt16LE(22) : 0,
+		bits: riff ? body.readUInt16LE(34) : 0,
+		seconds: rate ? samples / rate : 0,
+		// Loudness: a take of silence would be near 0.
+		rms: samples ? Math.sqrt(sum / samples) : 0,
+		target: url.searchParams.get('target'),
+		speaker: url.searchParams.get('speaker') === '1'
+	};
+}
+
+function voiceApi(req, res, url, body) {
+	const path = url.pathname;
+	if (!capabilities.voice) return send(res, 403, { error: 'disabled' });
+	if (req.method !== 'POST') return send(res, 405, { error: 'method_not_allowed' });
+	if (path === '/api/voice/warm') return send(res, 200, { ok: true });
+	if (path !== '/api/voice' && path !== '/api/voice/replay')
+		return send(res, 404, { error: 'not_found' });
+	if (url.searchParams.get('target') !== 'manager')
+		return send(res, 400, {
+			error: 'unsupported_target',
+			message: 'Voice goes to the manager only'
+		});
+	if (!capabilities.manager) return send(res, 403, { error: 'disabled' });
+	const stream = () =>
+		res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' });
+	const event = (name, data) => res.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
+	const speak = (reply) =>
+		reply
+			.split(/(?<=[.!?:])\s+/)
+			.forEach((text, seq) => event('audio', { seq, text, wav: clip(0.9) }));
+
+	if (path === '/api/voice/replay') {
+		const reply = manager.chat.findLast((message) => message.role === 'assistant')?.text;
+		if (!reply) return send(res, 404, { error: 'nothing', message: 'Nothing to replay' });
+		stream();
+		speak(reply);
+		event('end', { outcome: 'done', reply, message: null });
+		return res.end();
+	}
+
+	const take = describeTake(body, url);
+	if (body.length > 4194304) return send(res, 413, { error: 'too_long' });
+	if (!take.riff) return send(res, 400, { error: 'bad_audio', message: 'Not a WAV recording' });
+	if (manager.turn) return send(res, 409, { error: 'busy', message: 'A turn is running' });
+	if (manager.status === 'waiting')
+		return send(res, 409, { error: 'waiting', message: 'Manager is waiting on a prompt' });
+	voice.takes.push(take);
+	stream();
+	const { heard, delay } = voice;
+	const mine = manager;
+	setTimeout(() => {
+		if (manager !== mine || res.destroyed) return res.end();
+		if (!heard) {
+			event('end', { outcome: 'empty', reply: '', message: 'Heard nothing' });
+			return res.end();
+		}
+		event('transcript', { text: heard });
+		const reply = managerReply();
+		runTurn(
+			heard,
+			reply,
+			(word) => event('delta', { text: word }),
+			() => {
+				if (take.speaker) speak(reply);
+				event('end', { outcome: 'done', reply, message: null });
+				res.end();
+			}
+		);
+	}, delay);
+}
+
 function screen(t) {
 	const last =
 		(chats[t.id] ?? []).filter((m) => m.role === 'assistant').at(-1)?.text ?? `${t.session} $ `;
@@ -403,9 +512,8 @@ function api(req, res, url, body) {
 	if (path === '/api/threads') return send(res, 200, threadsBody());
 	if (path === '/api/hosts') return send(res, 200, hostsBody());
 	if (path === '/api/config') return send(res, 200, configBody());
-	if (path.startsWith('/api/manager')) return managerApi(req, res, path, body);
-	// A later PR's endpoint, switched off: proves "disabled" is not "forbidden".
-	if (path === '/api/voice') return send(res, 403, { error: 'disabled' });
+	if (path.startsWith('/api/manager')) return managerApi(req, res, path, String(body));
+	if (path.startsWith('/api/voice')) return voiceApi(req, res, url, body);
 	if (path === '/api/events') {
 		res.writeHead(200, {
 			'content-type': 'text/event-stream',
@@ -471,6 +579,17 @@ function hook(res, url) {
 		case '/__fixture/manager-status':
 			manager.status = url.searchParams.get('value') ?? 'idle';
 			break;
+		case '/__fixture/voice':
+			// The Mac's voice settings, and how the next take goes.
+			for (const [key, value] of url.searchParams) {
+				if (key === 'speaker') voice.speaker = value === '1';
+				else if (key === 'delay') voice.delay = Number(value);
+				else if (key === 'mode' || key === 'heard') voice[key] = value;
+			}
+			push('config', configBody());
+			break;
+		case '/__fixture/voice-takes':
+			return send(res, 200, { takes: voice.takes });
 		case '/__fixture/mac-turn':
 			// A turn typed into the Mac rail: the phone must follow it.
 			runTurn(url.searchParams.get('text') ?? '', url.searchParams.get('reply') ?? '');
@@ -506,9 +625,10 @@ async function asset(res, url) {
 createServer((req, res) => {
 	const url = new URL(req.url, `http://${req.headers.host}`);
 	if (url.pathname.startsWith('/api/')) {
-		let body = '';
-		req.on('data', (chunk) => (body += chunk));
-		req.on('end', () => api(req, res, url, body));
+		// A take is audio: the body stays bytes until a route wants text.
+		const chunks = [];
+		req.on('data', (chunk) => chunks.push(chunk));
+		req.on('end', () => api(req, res, url, Buffer.concat(chunks)));
 		return;
 	}
 	if (url.pathname.startsWith('/__fixture/'))
