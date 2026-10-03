@@ -636,7 +636,10 @@ final class MobileServerTests: XCTestCase {
         let deadline = Date().addingTimeInterval(5)
         var next = (status: 0, head: "", body: "")
         repeat {
-            next = post("/api/manager/text", json: #"{"text":"again"}"#) { self.whole($0) || $0.contains("event: end") }
+            // A refusal is whole once its body is in; a stream only at its end event.
+            next = post("/api/manager/text", json: #"{"text":"again"}"#) {
+                $0.contains("event: end") || (!$0.hasPrefix("HTTP/1.1 200") && self.whole($0))
+            }
             if next.status != 200 { usleep(20_000) }
         } while next.status != 200 && Date() < deadline
         XCTAssertEqual(next.status, 200)
