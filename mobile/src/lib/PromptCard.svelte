@@ -2,48 +2,76 @@
 	import type { Prompt } from './types';
 
 	const {
+		id,
 		prompt,
-		answering,
+		readonly = false,
+		answering = null,
 		onanswer,
 		onterminal
 	}: {
-		prompt: Prompt;
+		/** Names what the pane waits on. */
+		id: string;
+		/** `null`: the pane waits on something with no readable choices. */
+		prompt: Prompt | null;
+		/** The options are shown, not offered: this phone may not answer. */
+		readonly?: boolean;
 		/** The option an answer in flight picked. */
-		answering: number | null;
-		onanswer: (option: number) => void;
+		answering?: number | null;
+		onanswer?: (option: number) => void;
 		/** Open the pane's own text. Not given when it is already showing. */
 		onterminal?: () => void;
 	} = $props();
 
-	const permission = $derived(prompt.kind === 'permission');
+	const permission = $derived(prompt?.kind === 'permission');
 	// A question may come with no heading of its own.
-	const title = $derived(prompt.title || (permission ? '' : 'Question'));
+	const title = $derived(
+		prompt ? prompt.title || (permission ? '' : 'Question') : 'Waiting on a prompt'
+	);
+	// The terminal has what the card does not: the rest of the text, or all of it.
+	const more = $derived(prompt === null || prompt.truncated === true);
 </script>
 
-<div class="card" data-prompt={prompt.id} data-kind={prompt.kind}>
+<div
+	class="card"
+	data-prompt={id}
+	data-kind={prompt?.kind ?? 'bare'}
+	data-readonly={readonly ? '' : undefined}
+>
 	{#if title}<h3>{title}</h3>{/if}
-	{#if prompt.detail || prompt.truncated}
-		<pre class="mono">{prompt.detail}{#if prompt.truncated}<span class="more" data-more>…</span
-				>{/if}</pre>
-	{/if}
-	{#if prompt.question}<p class="q">{prompt.question}</p>{/if}
-	<div class="opts">
-		{#each prompt.options as option, index (option.n)}
-			<button
-				type="button"
-				class:yes={permission && index === 0}
-				disabled={answering !== null}
-				aria-busy={answering === option.n}
-				onclick={() => onanswer(option.n)}
-			>
-				<span class="label">{option.label}</span>
-				<span class="k" aria-hidden="true">{option.n}</span>
-			</button>
-		{/each}
-		{#if prompt.truncated && onterminal}
-			<button type="button" class="term" onclick={onterminal}>Show terminal</button>
+	{#if prompt}
+		{#if prompt.detail || prompt.truncated}
+			<pre class="mono">{prompt.detail}{#if prompt.truncated}<span class="more" data-more>…</span
+					>{/if}</pre>
 		{/if}
-	</div>
+		{#if prompt.question}<p class="q">{prompt.question}</p>{/if}
+	{/if}
+	{#if prompt?.options.length || (more && onterminal)}
+		<div class="opts">
+			{#each prompt?.options ?? [] as option, index (option.n)}
+				{#if readonly}
+					<div class="opt" data-option={option.n}>
+						<span class="label">{option.label}</span>
+						<span class="k">{option.n}</span>
+					</div>
+				{:else}
+					<button
+						type="button"
+						class="opt"
+						class:yes={permission && index === 0}
+						disabled={answering !== null}
+						aria-busy={answering === option.n}
+						onclick={() => onanswer?.(option.n)}
+					>
+						<span class="label">{option.label}</span>
+						<span class="k" aria-hidden="true">{option.n}</span>
+					</button>
+				{/if}
+			{/each}
+			{#if more && onterminal}
+				<button type="button" class="opt term" onclick={onterminal}>Show terminal</button>
+			{/if}
+		</div>
+	{/if}
 </div>
 
 <style>
@@ -76,13 +104,17 @@
 		overflow-wrap: anywhere;
 	}
 
+	h3:last-child {
+		margin-bottom: 0;
+	}
+
 	.opts {
 		display: flex;
 		flex-direction: column;
 		gap: 8px;
 	}
 
-	button {
+	.opt {
 		display: flex;
 		align-items: baseline;
 		gap: 10px;
@@ -95,13 +127,23 @@
 		font-weight: 500;
 	}
 
-	button.yes {
+	/* Read-only: a list to read, not a row of things to press. */
+	div.opt {
+		min-height: 0;
+		padding: 2px 2px;
+		background: none;
+		border: 0;
+		border-radius: 0;
+		color: #cfcfcf;
+	}
+
+	.opt.yes {
 		background: var(--accent);
 		border-color: var(--accent);
 		color: #fff;
 	}
 
-	button:not(:disabled):active {
+	button.opt:not(:disabled):active {
 		filter: brightness(1.4);
 	}
 
@@ -109,7 +151,7 @@
 		color: var(--muted);
 	}
 
-	button.term {
+	.opt.term {
 		justify-content: center;
 		background: none;
 		color: var(--muted);

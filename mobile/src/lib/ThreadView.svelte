@@ -47,7 +47,9 @@
 	const docked = $derived(!closed && (repliesOn || keysOn));
 	const next = $derived(repliesOn ? nextWaiting(live.threads ?? [], id) : null);
 	// The pane can ask while its status says nothing of it: the prompt decides.
-	const card = $derived(repliesOn ? reply.prompt : null);
+	// With the key bar alone the card is read-only: it shows what a key would answer.
+	const cardId = $derived(repliesOn || keysOn ? reply.promptId : null);
+	const card = $derived(cardId === null ? null : reply.prompt);
 
 	/** The card shows only part of the pane's text: the terminal has it all. */
 	function showTerminal(): void {
@@ -69,6 +71,17 @@
 		ui.goTo(index);
 	}
 </script>
+
+{#snippet promptCard(shown: string, onterminal?: () => void)}
+	<PromptCard
+		id={shown}
+		prompt={card}
+		readonly={!repliesOn}
+		answering={reply.answering}
+		onanswer={reply.answer}
+		{onterminal}
+	/>
+{/snippet}
 
 <header
 	class="tbar thread"
@@ -158,13 +171,8 @@
 									{#if spoken.reply}<div class="a" data-live>{reply.turn.reply}</div>{/if}
 								{/if}
 							{/if}
-							{#if card}
-								<PromptCard
-									prompt={card}
-									answering={reply.answering}
-									onanswer={reply.answer}
-									onterminal={showTerminal}
-								/>
+							{#if cardId !== null}
+								{@render promptCard(cardId, showTerminal)}
 							{/if}
 						</div>
 					</div>
@@ -184,12 +192,13 @@
 								{/each}
 							</div>
 						{:else}
-							<pre class="screen mono" class:carded={card !== null} data-hscroll>{feed.screen}</pre>
+							<pre
+								class="screen mono"
+								class:carded={cardId !== null}
+								data-hscroll>{feed.screen}</pre>
 						{/if}
-						{#if card}
-							<div class="chat">
-								<PromptCard prompt={card} answering={reply.answering} onanswer={reply.answer} />
-							</div>
+						{#if cardId !== null}
+							<div class="chat">{@render promptCard(cardId)}</div>
 						{/if}
 					</div>
 				{/if}

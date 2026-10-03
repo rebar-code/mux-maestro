@@ -639,7 +639,8 @@ test('with the features off, the thread shows none of this', async ({ page }) =>
 	await page.request.post('/__fixture/capability?name=keyBar&on=1');
 	await expect(keybar(page)).toBeVisible();
 	await expect(box(page)).toHaveCount(0);
-	await expect(card(page)).toHaveCount(0);
+	// The keys answer the prompt, so the card shows what they would answer: read-only.
+	await expect(card(page)).toHaveAttribute('data-readonly', '');
 	// With no text box there is nothing to type into: only the pane's keys.
 	await expect(keybar(page).locator('.keys button')).toHaveCount(9);
 	await expect(page.getByRole('button', { name: 'Hide keyboard' })).toHaveCount(0);
@@ -653,7 +654,8 @@ test('with the features off, the thread shows none of this', async ({ page }) =>
 
 	await page.request.post('/__fixture/capability?name=replies&on=1');
 	await expect(box(page)).toBeVisible();
-	await expect(card(page)).toBeVisible();
+	await expect(card(page)).not.toHaveAttribute('data-readonly', '');
+	await expect(card(page).getByRole('button')).toHaveCount(3);
 	await expect(page.getByRole('button', { name: 'Attach' })).toBeVisible();
 	await expect(page.locator('[data-voicebar]')).toBeVisible();
 	await expect(keybar(page).locator('.keys button')).toHaveCount(14);
@@ -941,16 +943,51 @@ test('a key aimed at a prompt that changed is not sent again', async ({ page }) 
 	await expect(note(page)).toHaveCount(0);
 });
 
-test('a wait with no readable choices still gives its id to the keys', async ({ page }) => {
-	await open(page, IDLE, ['replies', 'keyBar']);
-	await page.request.post(`/__fixture/prompt?id=${IDLE}&pid=bare-1&bare=1`);
-	await expect(page.locator('.tbar .title span')).toContainText('needs you');
-	await expect(card(page)).toHaveCount(0);
-	await page.waitForTimeout(300);
-	await key(page, 'Enter').tap();
+test('a wait with no readable choices: a small card, and Enter is refused once', async ({
+	page
+}) => {
+	await open(page, PERMISSION, ['replies', 'keyBar']);
+	await expect(card(page)).toHaveAttribute('data-kind', 'permission');
+	await page.request.post(`/__fixture/prompt?id=${PERMISSION}&pid=bare-1&bare=1`);
+	await expect(card(page)).toHaveAttribute('data-kind', 'bare');
+	await expect(card(page)).toHaveAttribute('data-prompt', 'bare-1');
+	await expect(card(page).locator('h3')).toHaveText('Waiting on a prompt');
+	// The heading and the way to the terminal, nothing else.
+	await expect(card(page).locator('pre, .q, [data-option]')).toHaveCount(0);
+	const show = card(page).getByRole('button');
+	await expect(show).toHaveText(['Show terminal']);
+	expect((await show.boundingBox())?.height).toBeGreaterThanOrEqual(44);
+	await expect(card(page)).toBeInViewport({ ratio: 1 });
+	await shot(page, 'bare-card');
+
+	// Nobody can read what Enter would pick: refused, said, and not sent again.
+	let posts = 0;
+	page.on('request', (request) => {
+		if (request.url().endsWith('/key')) posts += 1;
+	});
+	const refused = page.waitForResponse((response) => response.url().endsWith('/key'));
+	await keybar(page).evaluate((bar) => {
+		for (const label of ['Enter', 'Down'])
+			bar.querySelector<HTMLElement>(`[aria-label="${label}"]`)?.click();
+	});
+	const response = await refused;
+	expect(response.status()).toBe(409);
+	expect(((await response.json()) as { error: string }).error).toBe('unseen');
+	await expect(note(page)).toHaveText('Open the terminal to answer');
+	await page.waitForTimeout(400);
+	// The key that waited behind it went nowhere.
+	expect(posts).toBe(1);
+	expect((await received(page)).keys).toEqual([]);
+
+	// Escape is safe at any prompt: it goes, with the id of the card on screen.
+	await key(page, 'Escape').tap();
 	await expect
 		.poll(async () => (await received(page)).keys)
-		.toEqual([{ thread: IDLE, key: 'Enter', prompt: 'bare-1' }]);
+		.toEqual([{ thread: PERMISSION, key: 'Escape', prompt: 'bare-1' }]);
+
+	await show.tap();
+	await expect(page.locator('[data-tab="main"]')).toHaveText(/Terminal\s*⇄/);
+	await expect(card(page).getByRole('button')).toHaveCount(0);
 });
 
 test('a prompt the status does not tell of shows after the refusal', async ({ page }) => {
@@ -996,27 +1033,83 @@ test('a truncated card says so and opens the terminal', async ({ page }) => {
 	await expect(show).toHaveCount(0);
 });
 
-test('with the key bar alone, a waiting thread has no card and its keys name the prompt', async ({
-	page
-}) => {
+test('with the key bar alone the card is read-only, and the keys name it', async ({ page }) => {
 	await open(page, PERMISSION, ['keyBar']);
-	const asked = page.waitForResponse((response) => response.url().endsWith('/prompt'));
-	await page.reload();
-	const state = (await (await asked).json()) as { id: string; prompt: unknown };
-	expect(state.id).toBeTruthy();
-	expect(state.prompt).not.toBeNull();
-	await expect(keybar(page)).toBeVisible();
-	// Answering needs the reply switch: the card stays away.
-	await page.waitForTimeout(300);
-	await expect(card(page)).toHaveCount(0);
+	await expect(card(page)).toHaveAttribute('data-readonly', '');
+	await expect(card(page).locator('h3')).toHaveText('Bash command');
+	await expect(card(page).locator('pre')).toHaveText(
+		'pnpm exec playwright test tests/checkout.spec.ts'
+	);
+	await expect(card(page).locator('.q')).toHaveText('Do you want to proceed?');
+	// The answers are listed with their numbers, and none of them is a control.
+	await expect(card(page).locator('[data-option]')).toHaveText([
+		/Yes\s*1/,
+		/Yes, and don’t ask again for pnpm exec\s*2/,
+		/No, and tell Claude what to do differently\s*3/
+	]);
+	await expect(card(page).getByRole('button')).toHaveCount(0);
+	await expect(card(page).locator('[data-option]').first()).not.toHaveCSS(
+		'background-color',
+		'rgb(50, 145, 255)'
+	);
 	await expect(box(page)).toHaveCount(0);
+	await expect(card(page)).toBeInViewport({ ratio: 1 });
+	await shot(page, 'readonly-card');
 
+	// A tap on an answer does nothing.
+	let answers = 0;
+	page.on('request', (request) => {
+		if (request.url().endsWith('/answer')) answers += 1;
+	});
+	await card(page).locator('[data-option]').first().tap();
+	await page.waitForTimeout(200);
+	expect(answers).toBe(0);
+
+	const shown = await card(page).getAttribute('data-prompt');
 	const sent = page.waitForRequest((request) => request.url().endsWith('/key'));
 	await key(page, 'Enter').tap();
-	expect((await sent).postDataJSON()).toEqual({ key: 'Enter', prompt: state.id });
+	expect((await sent).postDataJSON()).toEqual({ key: 'Enter', prompt: shown });
 	await expect
 		.poll(async () => (await received(page)).keys)
-		.toEqual([{ thread: PERMISSION, key: 'Enter', prompt: state.id }]);
+		.toEqual([{ thread: PERMISSION, key: 'Enter', prompt: shown }]);
+
+	// A long command still has its way to the terminal.
+	await page.request.post(`/__fixture/prompt?id=${PERMISSION}&pid=long-2&truncated=1`);
+	await expect(card(page)).toHaveAttribute('data-prompt', 'long-2');
+	await expect(card(page).getByRole('button')).toHaveText(['Show terminal']);
+	await card(page).getByRole('button').tap();
+	await expect(page.locator('pre.screen')).toContainText('kubectl get pods -n staging');
+});
+
+test('a prompt that came up after the paste: the box empties and the card shows', async ({
+	page
+}) => {
+	await open(page, IDLE, ['replies']);
+	// The fixture answers as the Mac does: at a prompt it sends no keys, so nothing is cleared.
+	await page.request.post('/__fixture/not-sent?cleared=1&reason=waiting');
+	let posts = 0;
+	page.on('request', (request) => {
+		if (request.url().endsWith('/text')) posts += 1;
+	});
+	await box(page).fill('ship it');
+	const refused = page.waitForResponse((response) => response.url().endsWith('/text'));
+	await sendButton(page).click();
+	expect(await (await refused).json()).toMatchObject({
+		error: 'not_sent',
+		reason: 'waiting',
+		cleared: false
+	});
+	await expect(note(page)).toHaveText('Left in the pane');
+	await expect(box(page)).toHaveValue('');
+	await expect(card(page)).toHaveAttribute('data-kind', 'permission');
+	// Nothing to send, by the pill or by Enter.
+	await expect(sendButton(page)).toBeDisabled();
+	await box(page).press('Enter');
+	await page.waitForTimeout(300);
+	expect(posts).toBe(1);
+	const got = await received(page);
+	expect(got.texts).toEqual([]);
+	expect(got.left).toEqual([{ thread: IDLE, text: 'ship it' }]);
 });
 
 test('the prompt is closed to a phone with both switches off', async ({ page }) => {

@@ -465,6 +465,9 @@ function replyApi(req, res, url, thread, route, body) {
 		// The pane waits on a prompt the phone did not name: the key could answer the wrong one.
 		const asked = promptOf(thread);
 		if (asked && asked.id !== json.prompt) return send(res, 409, { error: 'stale' });
+		// Nobody could read what Enter or a digit would pick.
+		if (asked?.bare && /^(Enter|[1-9])$/.test(json.key))
+			return send(res, 409, { error: 'unseen', message: 'Open the terminal to answer' });
 		keyLocks.add(thread.id);
 		const locks = keyLocks;
 		return void setTimeout(() => {
@@ -496,8 +499,19 @@ function replyApi(req, res, url, thread, route, body) {
 	if (refused) return send(res, 409, refused);
 	if (notSent) {
 		// Pasted, not submitted. The Mac tried to take it out of the input box again.
-		const { cleared, reason } = notSent;
+		const { reason } = notSent;
+		// A prompt came up after the paste: the Mac sends no keys at a prompt,
+		// so the text stays in the pane.
+		const cleared = reason === 'waiting' ? false : notSent.cleared;
 		notSent = null;
+		if (reason === 'waiting') {
+			promptSeq += 1;
+			prompts[thread.id] = {
+				id: `p${promptSeq}-${thread.window}`,
+				...PERMISSION,
+				truncated: false
+			};
+		}
 		if (!cleared) replies.left.push({ thread: thread.id, text });
 		return send(res, 409, {
 			error: 'not_sent',
