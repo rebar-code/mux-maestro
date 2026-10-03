@@ -7,7 +7,7 @@
 	const status = $derived(voice.statusOf(target));
 </script>
 
-<div class="vbar" data-voicebar data-status={status} {@attach voice.unlockOnTap}>
+<div class="vbar" data-voicebar data-status={status} {@attach voice.attach}>
 	<div class="vstat {status}" class:paused={voice.paused} role="status" data-voice-status>
 		<span class="wave" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
 		{voice.note ?? voice.label(target)}

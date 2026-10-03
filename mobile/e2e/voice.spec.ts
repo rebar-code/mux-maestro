@@ -14,7 +14,7 @@ interface Take {
 
 declare global {
 	interface Window {
-		__mic: { opened: number; speak: (on: boolean) => void };
+		__mic: { opened: number; speak: (on: boolean) => void; live: () => number };
 		/** Reply clips that started to play. */
 		__clips: number;
 	}
@@ -52,11 +52,16 @@ async function say(page: Page, ms: number): Promise<void> {
 async function open(page: Page, hooks: string[] = []): Promise<void> {
 	await page.addInitScript(() => {
 		let gain: GainNode | null = null;
+		const streams: MediaStream[] = [];
 		window.__mic = {
 			opened: 0,
 			speak: (on) => {
 				if (gain) gain.gain.value = on ? 0.5 : 0;
-			}
+			},
+			// Streams the page still holds open: what lights the phone's mic indicator.
+			live: () =>
+				streams.filter((stream) => stream.getTracks().some((track) => track.readyState === 'live'))
+					.length
 		};
 		navigator.mediaDevices.getUserMedia = async () => {
 			window.__mic.opened += 1;
@@ -69,6 +74,7 @@ async function open(page: Page, hooks: string[] = []): Promise<void> {
 			const out = context.createMediaStreamDestination();
 			tone.connect(gain).connect(out);
 			tone.start();
+			streams.push(out.stream);
 			return out.stream;
 		};
 		// A reply clip is longer than the cue that follows a take.
@@ -331,6 +337,55 @@ test('a muted mic takes nothing, and a refused take says why', async ({ page }) 
 	await say(page, 600);
 	await primary(page).click();
 	await expect(status(page)).toHaveText('Heard nothing');
+});
+
+test('the mic is given back when it is not needed', async ({ page }) => {
+	const live = (): Promise<number> => page.evaluate(() => window.__mic.live());
+	await open(page, ['/__fixture/voice?delay=1500']);
+	expect(await live()).toBe(0);
+
+	// Manual: held for the take only.
+	await primary(page).click();
+	await expect(primary(page)).toHaveText('↑ Submit');
+	expect(await live()).toBe(1);
+	await say(page, 600);
+	await primary(page).click();
+	await expect(primary(page)).toHaveText('■ Stop');
+	expect(await live()).toBe(0);
+	await expect(status(page)).toHaveText('Start talking', { timeout: 10000 });
+	expect(await live()).toBe(0);
+
+	// A take that is stopped, not sent, gives it back too.
+	await primary(page).click();
+	await expect(primary(page)).toHaveText('↑ Submit');
+	await bar(page, 'Microphone').click();
+	await expect(status(page)).toHaveText('Mic muted');
+	expect(await live()).toBe(0);
+	await bar(page, 'Microphone').click();
+
+	// Auto holds it while it listens; mute and Manual give it back.
+	await bar(page, 'Auto').click();
+	await expect(status(page)).toHaveText('Listening…');
+	expect(await live()).toBe(1);
+	await bar(page, 'Microphone').click();
+	expect(await live()).toBe(0);
+	await bar(page, 'Microphone').click();
+	await expect(status(page)).toHaveText('Listening…');
+	expect(await live()).toBe(1);
+	await bar(page, 'Manual').click();
+	expect(await live()).toBe(0);
+
+	// Leaving the page gives it back, whatever the mode.
+	await bar(page, 'Auto').click();
+	await expect(status(page)).toHaveText('Listening…');
+	expect(await live()).toBe(1);
+	await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
+	expect(await live()).toBe(0);
+	await expect(status(page)).toHaveText('Start talking');
+	// One tap brings it back.
+	await primary(page).click();
+	await expect(primary(page)).toHaveText('↑ Submit');
+	expect(await live()).toBe(1);
 });
 
 test('the first tap creates the audio the reply needs', async ({ page }) => {
