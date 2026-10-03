@@ -137,6 +137,7 @@ final class MobileServer {
     /// The port the listener is bound to: the one port no mapping may publish.
     private var boundPort: Int?
     private var token: String?
+    private var shellPolicyCache: (shell: Data, policy: String)?
     private var snapshot = MobileSnapshot()
     private var threadsBody = MobileSnapshot().threadsJSON()
     private var hostsBody = MobileSnapshot().hostsJSON()
@@ -1116,12 +1117,23 @@ final class MobileServer {
             data = try? Data(contentsOf: staticRoot.appendingPathComponent(served))
         }
         guard let data else { return .error(404, "not_found") }
+        let shell = served == "index.html"
+            ? data : (try? Data(contentsOf: staticRoot.appendingPathComponent("index.html"))) ?? Data()
         return MobileResponse(
             status: 200,
             headers: [
                 "Content-Type": MobileAPI.contentType(forPath: served),
                 "Cache-Control": MobileAPI.cacheControl(forPath: served),
+                "Content-Security-Policy": shellPolicy(for: shell),
             ],
             body: data)
+    }
+
+    /// The bundle's policy, worked out once for each shell it is read from.
+    private func shellPolicy(for shell: Data) -> String {
+        if let cached = shellPolicyCache, cached.shell == shell { return cached.policy }
+        let policy = MobileAPI.shellPolicy(html: String(decoding: shell, as: UTF8.self))
+        shellPolicyCache = (shell, policy)
+        return policy
     }
 }

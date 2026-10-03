@@ -40,16 +40,26 @@ struct KeychainTokenStore: PhoneTokenStore {
 /// Where the ports this app published for dev servers are kept between
 /// launches, so a mapping a crash left behind can be found and removed.
 protocol PhonePortStore {
-    func load() -> [Int]
-    func save(_ ports: [Int])
+    func load() -> [Int: String]
+    func save(_ ports: [Int: String])
 }
 
 struct DefaultsPortStore: PhonePortStore {
     var defaults = UserDefaults.standard
     var key = "phone.mappedPorts"
 
-    func load() -> [Int] { defaults.array(forKey: key) as? [Int] ?? [] }
-    func save(_ ports: [Int]) { defaults.set(ports, forKey: key) }
+    func load() -> [Int: String] {
+        var out: [Int: String] = [:]
+        for (port, target) in defaults.dictionary(forKey: key) as? [String: String] ?? [:] {
+            if let port = Int(port) { out[port] = target }
+        }
+        return out
+    }
+
+    func save(_ ports: [Int: String]) {
+        defaults.set(
+            Dictionary(uniqueKeysWithValues: ports.map { (String($0.key), $0.value) }), forKey: key)
+    }
 }
 
 /// The "Phone" switch: starts the loopback server and publishes it on the
@@ -278,19 +288,23 @@ final class PhoneLink {
                 return .unavailable("Tailscale did not answer")
             }
             let holder = MobileServing.holder(serveStatusJSON: serving, port: port)
-            if holder == .ours, mapped[port] != nil {
+            if let existing = mapped[port],
+               MobileServing.proxy(serveStatusJSON: serving, port: port) == existing.target {
                 // Open already: the tap counts as use.
                 mapped[port]?.openedAt = now()
                 publishMappings()
                 return .ok
             }
-            // A mapping that looks like ours and is not in the table is someone's own.
+            // A mapping this app did not make, or one that no longer proxies
+            // where this app pointed it, is someone's own.
             guard holder == .nobody else { return .taken }
             guard mapped.keys.filter({ $0 != port }).count < MobileServing.maxMappings else {
                 return .limit
             }
             // Stored first: a crash right after the command still leaves a record.
-            ports.save(Array(Set(ports.load()).union([port])).sorted())
+            var stored = ports.load()
+            stored[port] = MobileServing.target(port: port, https: https)
+            ports.save(stored)
             let (ok, text) = runner.runCapturing(
                 tailscale, MobileServing.serveOnArgv(port: port, https: https))
             mapped[port] = ok
@@ -330,7 +344,8 @@ final class PhoneLink {
             let serving = runner.run(tailscale, MobileTailnet.serveStatusArgv)
             for port in closing {
                 // Gone already, or replaced by someone's own mapping: not ours to remove.
-                if let serving, MobileServing.holder(serveStatusJSON: serving, port: port) != .ours {
+                if let serving,
+                   MobileServing.proxy(serveStatusJSON: serving, port: port) != mapped[port]?.target {
                     continue
                 }
                 _ = runner.runCapturing(tailscale, MobileTailnet.serveOffArgv(port: port))
@@ -343,7 +358,10 @@ final class PhoneLink {
     /// Store the open ports and tell the readers. A stored port is dropped
     /// only when it is in `removing`: one a start could not check yet stays.
     private func publishMappings(removing: [Int] = []) {
-        ports.save(Array(Set(ports.load()).subtracting(removing).union(mapped.keys)).sorted())
+        var stored = ports.load()
+        for port in removing { stored[port] = nil }
+        for mapping in mapped.values { stored[mapping.port] = mapping.target }
+        ports.save(stored)
         let list = mapped.values.sorted { $0.port < $1.port }
         lock.lock()
         let changed = listed != list
@@ -353,15 +371,17 @@ final class PhoneLink {
     }
 
     /// Take away the dev-server mappings a crash or a forced quit left behind.
-    /// Only a stored port whose handler still proxies to our own target is
-    /// removed: the same port may by now be another project's.
+    /// A stored port is removed only when it still proxies to the exact
+    /// target this app set for it: the port may by now be another project's,
+    /// or someone's own mapping to the same server.
     private func removeLeftoverPorts(tailscale: String, serving: String) {
-        let stored = ports.load().filter { mapped[$0] == nil }
+        let stored = ports.load().filter { mapped[$0.key] == nil }
         guard !stored.isEmpty else { return }
-        for port in stored where MobileServing.holder(serveStatusJSON: serving, port: port) == .ours {
+        for (port, target) in stored.sorted(by: { $0.key < $1.key })
+        where MobileServing.proxy(serveStatusJSON: serving, port: port) == target {
             _ = runner.runCapturing(tailscale, MobileTailnet.serveOffArgv(port: port))
         }
-        publishMappings(removing: stored)
+        publishMappings(removing: Array(stored.keys))
     }
 
     private func teardown() {

@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { fileSize, framedHtml, hasThumb, inlineArtifacts, isViewable } from './artifacts';
+import {
+	fileSize,
+	framedHtml,
+	hasThumb,
+	imageAddress,
+	inlineArtifacts,
+	isViewable,
+	SAVED_TYPE
+} from './artifacts';
 import type { ArtifactFile, ChatMessage } from './types';
 
 const file = (
@@ -92,5 +100,62 @@ describe('framedHtml', () => {
 		expect(framed.startsWith('<meta http-equiv="Content-Security-Policy"')).toBe(true);
 		expect(framed).toContain("default-src 'none'");
 		expect(framed).not.toMatch(/script-src|connect-src|unsafe-eval/);
+	});
+
+	it('keeps the doctype first, so the page stays in standards mode', () => {
+		for (const head of [
+			'<!doctype html>',
+			'<!DOCTYPE html>\n',
+			'\n <!-- made by a tool -->\n<!doctype html>'
+		]) {
+			const framed = framedHtml(`${head}<html><head><title>x</title></head></html>`);
+			expect(framed.startsWith(`${head}<meta http-equiv="Content-Security-Policy"`)).toBe(true);
+			expect(framed.match(/Content-Security-Policy/g)).toHaveLength(1);
+		}
+	});
+
+	it('sends every link to a new window, which the sandbox then refuses', () => {
+		const framed = framedHtml(
+			'<!doctype html><base target="_self"><a href="https://example.com">x</a>'
+		);
+		expect(framed.indexOf('<base target="_blank">')).toBeGreaterThan(0);
+		expect(framed.indexOf('<base target="_blank">')).toBeLessThan(
+			framed.indexOf('<base target="_self">')
+		);
+	});
+});
+
+describe('imageAddress', () => {
+	it('gives a picture format a blob of that exact type', () => {
+		for (const type of ['image/png', 'image/jpeg', 'image/gif', 'image/webp']) {
+			expect(imageAddress(type)).toEqual({ as: 'blob', type });
+		}
+		expect(imageAddress('IMAGE/PNG; charset=binary')).toEqual({ as: 'blob', type: 'image/png' });
+	});
+
+	it('never gives SVG a blob: it becomes a data address with no origin', () => {
+		expect(imageAddress('image/svg+xml')).toEqual({ as: 'data', type: 'image/svg+xml' });
+		expect(imageAddress('image/svg+xml; charset=utf-8')).toEqual({
+			as: 'data',
+			type: 'image/svg+xml'
+		});
+	});
+
+	it('shows nothing for a type that could be a page', () => {
+		for (const type of [
+			'text/html',
+			'application/xhtml+xml',
+			'text/xml',
+			'application/xml',
+			'',
+			'application/pdf',
+			'text/plain'
+		]) {
+			expect(imageAddress(type)).toBeNull();
+		}
+	});
+
+	it('saves every file as plain bytes', () => {
+		expect(SAVED_TYPE).toBe('application/octet-stream');
 	});
 });

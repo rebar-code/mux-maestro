@@ -1,5 +1,6 @@
 import { untrack } from 'svelte';
 import { ApiError, fetchArtifacts, fetchFile } from './api';
+import { imageAddress, SAVED_TYPE } from './artifacts';
 import { ui } from './gestures.svelte';
 import { live } from './live.svelte';
 import type { ArtifactFile, ArtifactList } from './types';
@@ -57,13 +58,19 @@ export class Artifacts {
 		return found;
 	}
 
-	/** The file as an address an `<img>` can show. It needs no token and dies with the view. */
+	/**
+	 * The file as an address an `<img>` can show. It needs no token and dies
+	 * with the view. See `imageAddress` for which kind of address a type gets.
+	 */
 	url(file: ArtifactFile): Promise<string> {
 		const key = this.key(file);
 		let found = this.urls.get(key);
 		if (!found) {
 			found = this.blob(file).then((blob) => {
-				const url = URL.createObjectURL(blob);
+				const address = imageAddress(blob.type);
+				if (!address) throw new Error('not an image');
+				if (address.as === 'data') return dataAddress(blob, address.type);
+				const url = URL.createObjectURL(new Blob([blob], { type: address.type }));
 				this.made.push(url);
 				return url;
 			});
@@ -138,10 +145,21 @@ export async function share(blob: Blob, name: string): Promise<void> {
 		}
 		return;
 	}
-	const url = URL.createObjectURL(blob);
+	// Saved as plain bytes: this address is in the app's origin, and must
+	// never be one a browser would open as a page.
+	const url = URL.createObjectURL(new Blob([blob], { type: SAVED_TYPE }));
 	const link = document.createElement('a');
 	link.href = url;
 	link.download = name;
 	link.click();
 	setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
+async function dataAddress(blob: Blob, type: string): Promise<string> {
+	const bytes = new Uint8Array(await blob.arrayBuffer());
+	let binary = '';
+	for (let i = 0; i < bytes.length; i += 0x8000) {
+		binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+	}
+	return `data:${type};base64,${btoa(binary)}`;
 }

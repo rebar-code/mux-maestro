@@ -95,6 +95,118 @@ final class MobileServingTests: XCTestCase {
         XCTAssertEqual(MobileServing.holder(serveStatusJSON: "not json", port: 5173), .other)
     }
 
+    /// What `tailscale serve status --json` answers on a Mac with four
+    /// mappings, with the names replaced. Every HTTPS mapping has a `TCP`
+    /// entry as well as its `Web` handler, and there is no `AllowFunnel` key
+    /// while nothing is funnelled.
+    private static let recorded = """
+        {"TCP":{"443":{"HTTPS":true},"5174":{"HTTPS":true},"5175":{"HTTPS":true},"7433":{"HTTPS":true}},
+         "Web":{"devmac.example.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:3773"}}},
+                "devmac.example.ts.net:5174":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:5174"}}},
+                "devmac.example.ts.net:5175":{"Handlers":{"/":{"Proxy":"https+insecure://localhost:5175"}}},
+                "devmac.example.ts.net:7433":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:7433"}}}}}
+        """
+
+    func testTheRecordedServeStatusIsReadAsItIs() throws {
+        let status = Self.recorded
+        XCTAssertEqual(MobileServing.holder(serveStatusJSON: status, port: 5174), .other)
+        XCTAssertEqual(MobileServing.holder(serveStatusJSON: status, port: 5175), .ours)
+        XCTAssertEqual(MobileServing.holder(serveStatusJSON: status, port: 443), .other)
+        XCTAssertEqual(MobileServing.holder(serveStatusJSON: status, port: 7433), .other)
+        XCTAssertEqual(MobileServing.holder(serveStatusJSON: status, port: 9999), .nobody)
+        // 75 is the tail of 5175 and a port of its own.
+        XCTAssertEqual(MobileServing.holder(serveStatusJSON: status, port: 75), .nobody)
+        XCTAssertEqual(MobileServing.proxy(serveStatusJSON: status, port: 5175), "https+insecure://localhost:5175")
+        XCTAssertNil(MobileServing.proxy(serveStatusJSON: status, port: 9999))
+
+        // The phone server's own mapping, as PR 1 reads it.
+        XCTAssertTrue(MobileTailnet.servesOurs(serveStatusJSON: status, port: 7433))
+        XCTAssertFalse(MobileTailnet.portTaken(serveStatusJSON: status, port: 7433))
+        // A port that proxies elsewhere, or to `localhost`, is someone else's.
+        XCTAssertTrue(MobileTailnet.portTaken(serveStatusJSON: status, port: 443))
+        XCTAssertFalse(MobileTailnet.servesOurs(serveStatusJSON: status, port: 443))
+        XCTAssertTrue(MobileTailnet.portTaken(serveStatusJSON: status, port: 5175))
+        XCTAssertFalse(MobileTailnet.servesOurs(serveStatusJSON: status, port: 5175))
+        // The phone server's own form is `127.0.0.1` on the same port: for the
+        // port it is set to, such a mapping reads as its own leftover.
+        XCTAssertFalse(MobileTailnet.portTaken(serveStatusJSON: status, port: 5174))
+        XCTAssertFalse(MobileTailnet.portTaken(serveStatusJSON: status, port: 9999))
+
+        // A raw TCP forward has a `TCP` entry and no handler.
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(status.utf8)) as? [String: Any])
+        var tcp = try XCTUnwrap(object["TCP"] as? [String: Any])
+        tcp["2222"] = ["TCPForward": "127.0.0.1:22"]
+        object["TCP"] = tcp
+        // The funnel list names a port as the handlers do: `host:port`.
+        object["AllowFunnel"] = ["devmac.example.ts.net:5175": true, "devmac.example.ts.net:5174": false]
+        let changed = String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self)
+        XCTAssertEqual(MobileServing.holder(serveStatusJSON: changed, port: 2222), .other)
+        XCTAssertTrue(MobileTailnet.portTaken(serveStatusJSON: changed, port: 2222))
+        XCTAssertEqual(MobileServing.holder(serveStatusJSON: changed, port: 5175), .other)
+        XCTAssertNil(MobileServing.proxy(serveStatusJSON: changed, port: 5175))
+        // A port whose funnel is off is judged by its handler alone.
+        XCTAssertEqual(MobileServing.holder(serveStatusJSON: changed, port: 5174), .other)
+        // The CLI's keys with a null value, as Go writes an empty map.
+        XCTAssertEqual(
+            MobileServing.holder(serveStatusJSON: #"{"TCP":null,"Web":null,"AllowFunnel":null}"#, port: 5175),
+            .nobody)
+    }
+
+    // MARK: the sweep
+
+    private func tree(panes: [String]) -> MobileSnapshot {
+        MobileSnapshot.build([MobileHostInput(
+            host: .local, colorHex: "#3291ff", reachability: .reachable, stats: nil,
+            sessions: [TmuxSession(name: "acme-app", attached: true, windows: panes.enumerated().map {
+                TmuxWindow(index: $0.offset + 1, name: "w", active: $0.offset == 0, panes: [
+                    TmuxPane(id: $0.element, index: 0, command: "zsh", title: "", active: true),
+                ])
+            })])])
+    }
+
+    func testAMappingIsGoneOnceItsThreadLeftOrItsServerStopped() {
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        let mapping = { (port: Int, thread: String) in
+            MobilePortMapping(port: port, thread: thread, label: "acme-app", https: false, openedAt: start)
+        }
+        let mappings = [
+            mapping(5173, "localhost:12"), mapping(6006, "localhost:12"), mapping(8080, "localhost:13"),
+            mapping(9000, "localhost:14"), mapping(4000, "localhost:99"),
+        ]
+        var asked: [String] = []
+        let gone = MobileServing.gone(
+            mappings, snapshot: tree(panes: ["%12", "%13", "%14"]),
+            running: { thread in
+                asked.append(thread.id)
+                switch thread.id {
+                // Known, and 6006 is no longer in it.
+                case "localhost:12":
+                    return RunningSet(known: true, resources: [server(5173, url: "http://localhost:5173")], unknowns: [])
+                // Not known yet: an empty list is not "nothing runs".
+                case "localhost:13":
+                    return RunningSet(known: false, resources: [], unknowns: ["ports not checked yet on localhost"])
+                // The pane was not found for the scan: that proves nothing either.
+                default:
+                    return nil
+                }
+            }, ownPort: 7433)
+        // 6006 stopped; the thread of 4000 left the tree.
+        XCTAssertEqual(gone, [6006, 4000])
+        // A thread that left is not asked about.
+        XCTAssertFalse(asked.contains("localhost:99"))
+
+        // The phone server's own port is never a server of a thread.
+        let own = MobileServing.gone(
+            [mapping(7433, "localhost:12")], snapshot: tree(panes: ["%12"]),
+            running: { _ in
+                RunningSet(known: true, resources: [self.server(7433, url: "http://localhost:7433")], unknowns: [])
+            }, ownPort: 7433)
+        XCTAssertEqual(own, [7433])
+        XCTAssertEqual(
+            MobileServing.gone([], snapshot: tree(panes: []), running: { _ in nil }, ownPort: nil), [])
+    }
+
     func testAnOpenRequestTakesAThreadAndAnIntegerPortAndNothingElse() {
         let ask = MobileServing.openRequest(Data(#"{"thread":"localhost:12","port":5173}"#.utf8))
         XCTAssertEqual(ask?.thread, "localhost:12")

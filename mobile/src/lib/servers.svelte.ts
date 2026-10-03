@@ -5,24 +5,14 @@ import { live } from './live.svelte';
 import type { Mapping, RunningList } from './types';
 
 const POLL_MS = 5000;
-const AGREED_KEY = 'mm.serve.agreed';
-
 /** The page key of the Servers tab. */
 export const SERVERS = 'servers';
-
-function agreed(): boolean {
-	try {
-		return localStorage.getItem(AGREED_KEY) === '1';
-	} catch {
-		return false;
-	}
-}
 
 /** One thread's running servers, and the ports the Mac publishes on the tailnet. */
 export class Servers {
 	running = $state.raw<RunningList | null>(null);
 	mappings = $state.raw<Mapping[]>([]);
-	/** The port waiting on the confirmation, shown before the first mapping. */
+	/** The port waiting on the confirmation. Every port that is not open yet asks. */
 	asking = $state<number | null>(null);
 	/** The port being opened or closed. */
 	busy = $state<number | null>(null);
@@ -51,23 +41,19 @@ export class Servers {
 		}
 	};
 
-	/** A tap on a server that is not published yet. */
+	/**
+	 * A tap on a server that is not published yet. It always asks: each port is
+	 * one more thing the whole tailnet can reach.
+	 */
 	tap(port: number): void {
 		this.note = '';
-		if (agreed()) void this.publish(port);
-		else this.asking = port;
+		this.asking = port;
 	}
 
 	confirm = (): void => {
 		const port = this.asking;
 		this.asking = null;
-		if (port === null) return;
-		try {
-			localStorage.setItem(AGREED_KEY, '1');
-		} catch {
-			// Storage is blocked: the question comes again next time.
-		}
-		void this.publish(port);
+		if (port !== null) void this.publish(port);
 	};
 
 	cancel = (): void => {

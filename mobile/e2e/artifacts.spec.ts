@@ -62,7 +62,7 @@ test('swipe chain: left goes Chat, Artifacts, Servers; right comes back and then
 	await drag(page, ...LEFT);
 	await expectTab(page, 1);
 	await expect(tab(page, 'artifacts')).toHaveAttribute('aria-selected', 'true');
-	await expect(pageOf(page, 'artifacts').getByText('Files · 5')).toBeVisible();
+	await expect(pageOf(page, 'artifacts').getByText('Files · 6')).toBeVisible();
 
 	await drag(page, ...LEFT);
 	await expectTab(page, 2);
@@ -111,8 +111,8 @@ test('chat: an image is a thumbnail and other files are chips, under the message
 }) => {
 	await open(page);
 	const chat = pageOf(page, 'main');
-	const thumb = chat.locator('.thumb');
-	await expect(thumb).toHaveCount(1);
+	await expect(chat.locator('.thumb')).toHaveCount(2);
+	const thumb = chat.locator('.thumb', { hasText: 'settings-after.png' });
 	await expect(thumb).toContainText('settings-after.png');
 	await expect(thumb.locator('img')).toHaveJSProperty('naturalWidth', 780);
 	// The image is read with the token and shown from memory, never by its API address.
@@ -135,7 +135,7 @@ test('a thumbnail opens the viewer; back returns to the same message at the same
 }) => {
 	await open(page);
 	const scroller = page.locator('[data-view="chat"]');
-	const thumb = pageOf(page, 'main').locator('.thumb');
+	const thumb = pageOf(page, 'main').locator('.thumb', { hasText: 'settings-after.png' });
 	await thumb.scrollIntoViewIfNeeded();
 	await scroller.evaluate((el) => (el.scrollTop -= 40));
 	const before = await scroller.evaluate((el) => el.scrollTop);
@@ -156,13 +156,17 @@ test('a thumbnail opens the viewer; back returns to the same message at the same
 	expect((await thumb.boundingBox())!.y).toBe(top);
 
 	// The same by a right swipe: it goes to the chat, not to the sidebar.
-	await pageOf(page, 'main').locator('.fchip', { hasText: 'PLAN.md' }).click();
+	const chip = pageOf(page, 'main').locator('.fchip', { hasText: 'PLAN.md' });
+	// The tap itself may scroll the chip into view: measure after that.
+	await chip.scrollIntoViewIfNeeded();
+	const from = await scroller.evaluate((el) => el.scrollTop);
+	await chip.click();
 	await expectTab(page, 1);
 	await expect(viewer.locator('.md h1')).toHaveText('Plan');
 	await drag(page, ...RIGHT);
 	await expectTab(page, 0);
 	await expectDrawerClosed(page);
-	expect(await scroller.evaluate((el) => el.scrollTop)).toBe(before);
+	expect(await scroller.evaluate((el) => el.scrollTop)).toBe(from);
 	// Opened from the chat and left: the Artifacts tab shows its list again.
 	await tab(page, 'artifacts').click();
 	await expect(viewer).toHaveCount(0);
@@ -175,7 +179,7 @@ test('from the list: a right swipe in an open file goes to the list first, then 
 	await tab(page, 'artifacts').click();
 	await expectTab(page, 1);
 	const list = pageOf(page, 'artifacts');
-	await expect(list.locator('[data-file]')).toHaveCount(5);
+	await expect(list.locator('[data-file]')).toHaveCount(6);
 	await expect(list.locator('[data-file]').first()).toContainText('index.html');
 	await expect(list.locator('[data-file].missing')).toContainText('old-notes.txt');
 	await expect(list.locator('[data-link]')).toHaveAttribute(
@@ -197,7 +201,7 @@ test('from the list: a right swipe in an open file goes to the list first, then 
 	await page.mouse.up();
 	await expect(viewer).toHaveCount(0);
 	await expectTab(page, 1);
-	await expect(list.getByText('Files · 5')).toBeVisible();
+	await expect(list.getByText('Files · 6')).toBeVisible();
 
 	await drag(page, ...RIGHT);
 	await expectTab(page, 0);
@@ -271,14 +275,19 @@ test('an HTML artifact is sandboxed: no script runs, no origin, nothing loads', 
 	expect(await frame.getAttribute('sandbox')).toBe('');
 	// The page is handed over as text. The frame has no address that could carry the token.
 	expect(await frame.getAttribute('src')).toBeNull();
-	expect(await frame.getAttribute('srcdoc')).toMatch(/^<meta http-equiv="Content-Security-Policy"/);
 
 	const inside = page.frameLocator('[data-viewer] iframe');
 	await expect(inside.locator('h2')).toHaveText('Coverage');
 	await expect(inside.locator('.ln')).toHaveCount(3);
 	// The page's script would have changed this line and called the app.
 	await expect(inside.locator('#probe')).toHaveText('Generated nightly');
+	// The policy sits after the doctype, so the page keeps standards mode.
+	expect(await frame.getAttribute('srcdoc')).toMatch(/^<!doctype html><meta http-equiv/i);
+	expect(await inside.locator('html').evaluate(() => document.compatMode)).toBe('CSS1Compat');
+	// A tapped link loads nothing in the frame.
+	await inside.locator('#out').click();
 	await page.waitForTimeout(300);
+	await expect(inside.locator('h2')).toHaveText('Coverage');
 	expect(told).toEqual([]);
 	// Its image was stopped by the frame's policy, and its fetch never ran.
 	expect(answered).toEqual([]);
@@ -411,10 +420,15 @@ test('opening a server asks once, publishes the port and opens the tailnet link'
 	await expect(list.locator('.sect').first()).toHaveText('On tailnet · 1');
 	await expect(list.locator('[data-mapping="5173"]')).toContainText('mobile');
 
-	// The second port is not asked about again. Only numbers go to the Mac.
+	// A second port asks again: each one is a new door on the tailnet.
+	await list.locator('button[data-port="54323"]').click();
+	await expect(sheet).toContainText('Open port 54323 on your tailnet?');
+	expect(await published()).toEqual([5173]);
+	await page.evaluate(() => (window.open = () => null));
+	// Only numbers go to the Mac.
 	const [request] = await Promise.all([
 		page.waitForRequest((r) => r.url().endsWith('/api/servers/open')),
-		list.locator('button[data-port="54323"]').click()
+		sheet.getByRole('button', { name: 'Open' }).click()
 	]);
 	expect(request.postDataJSON()).toEqual({ thread: MAKER, port: 54323 });
 	await expect(sheet).toHaveCount(0);
@@ -429,11 +443,11 @@ test('opening a server asks once, publishes the port and opens the tailnet link'
 
 test('a port the Mac will not publish says why and opens nothing', async ({ page, context }) => {
 	await open(page);
-	await page.evaluate(() => localStorage.setItem('mm.serve.agreed', '1'));
 	await tab(page, 'servers').click();
 	await page.request.post('/__fixture/serve-fails?code=taken');
 	const list = pageOf(page, 'servers');
 	await list.locator('button[data-server="6006"]').click();
+	await page.getByRole('alertdialog').getByRole('button', { name: 'Open' }).click();
 	await expect(list.getByRole('alert')).toHaveText('Tailscale already serves port 6006');
 	await expect(list.locator('button[data-server="6006"]')).toBeVisible();
 	expect(context.pages()).toHaveLength(1);
@@ -447,4 +461,97 @@ test('a feature switched off on the Mac takes its tab away', async ({ page }) =>
 	await page.request.post('/__fixture/drop');
 	await expect(tab(page, 'servers')).toHaveCount(0);
 	await expect(tab(page, 'artifacts')).toBeVisible();
+});
+
+/** Record the type of every blob the page turns into an address. */
+async function watchBlobs(page: Page): Promise<() => Promise<string[]>> {
+	await page.addInitScript(() => {
+		const types: string[] = [];
+		(window as unknown as { __blobTypes: string[] }).__blobTypes = types;
+		const make = URL.createObjectURL.bind(URL);
+		URL.createObjectURL = (source: Blob | MediaSource): string => {
+			types.push(source instanceof Blob ? source.type : 'media');
+			return make(source);
+		};
+	});
+	return () => page.evaluate(() => (window as unknown as { __blobTypes: string[] }).__blobTypes);
+}
+
+const SCRIPTABLE = /svg|html|xml/i;
+
+test('an SVG artifact is never given an address in the app origin', async ({ page }) => {
+	const blobTypes = await watchBlobs(page);
+	await open(page);
+	const thumb = pageOf(page, 'main').locator('.thumb', { hasText: 'chart.svg' });
+	await expect(thumb.locator('img')).toHaveJSProperty('naturalWidth', 300);
+	// A `blob:` address belongs to the app's origin; opened as a page, its script would run there.
+	expect(await thumb.locator('img').getAttribute('src')).toMatch(/^data:image\/svg\+xml;base64,/);
+
+	await thumb.click();
+	const image = page.locator('[data-viewer] .stage img');
+	await expect(image).toHaveJSProperty('naturalWidth', 300);
+	expect(await image.getAttribute('src')).toMatch(/^data:image\/svg\+xml;base64,/);
+
+	// Share, on a browser with no share sheet, saves the file: as plain bytes.
+	await page.evaluate(() => {
+		Object.defineProperty(navigator, 'canShare', { value: undefined, configurable: true });
+	});
+	const [download] = await Promise.all([
+		page.waitForEvent('download'),
+		page.locator('[data-viewer]').getByRole('button', { name: 'Share' }).click()
+	]);
+	expect(download.suggestedFilename()).toBe('chart.svg');
+
+	const types = await blobTypes();
+	expect(types.length).toBeGreaterThan(0);
+	expect(types.filter((type) => SCRIPTABLE.test(type))).toEqual([]);
+	expect(await page.evaluate(() => (window as unknown as { __svgRan?: string }).__svgRan)).toBe(
+		undefined
+	);
+	expect(await page.title()).not.toContain('ran');
+});
+
+test('an HTML artifact saved from Share is plain bytes too', async ({ page }) => {
+	const blobTypes = await watchBlobs(page);
+	await open(page);
+	await page.evaluate(() => {
+		Object.defineProperty(navigator, 'canShare', { value: undefined, configurable: true });
+	});
+	await tab(page, 'artifacts').click();
+	await pageOf(page, 'artifacts').locator('[data-file]', { hasText: 'index.html' }).click();
+	const [download] = await Promise.all([
+		page.waitForEvent('download'),
+		page.locator('[data-viewer]').getByRole('button', { name: 'Share' }).click()
+	]);
+	expect(download.suggestedFilename()).toBe('index.html');
+	expect((await blobTypes()).filter((type) => SCRIPTABLE.test(type))).toEqual([]);
+});
+
+test('the app shell comes with a policy that runs only its own scripts', async ({ page }) => {
+	for (const path of ['/', threadPath(MAKER), '/manifest.webmanifest']) {
+		const policy = (await page.request.get(path)).headers()['content-security-policy'] ?? '';
+		expect(policy, path).toMatch(/script-src 'self'( 'sha256-[A-Za-z0-9+/=]+')*;/);
+		expect(policy, path).toContain("object-src 'none'");
+		expect(policy, path).toContain("base-uri 'none'");
+		expect(policy, path).not.toMatch(/unsafe-eval|script-src[^;]*unsafe-inline|script-src[^;]*\*/);
+	}
+	// The app runs under it: nothing it needs is refused.
+	const refused: string[] = [];
+	page.on('console', (message) => {
+		if (/Content Security Policy/i.test(message.text())) refused.push(message.text());
+	});
+	await open(page);
+	await tab(page, 'artifacts').click();
+	await pageOf(page, 'artifacts').locator('[data-file]', { hasText: 'PLAN.md' }).click();
+	await expect(page.locator('[data-viewer] .md h1')).toHaveText('Plan');
+	expect(refused).toEqual([]);
+	// A script that is not the app's own does not run.
+	expect(
+		await page.evaluate(() => {
+			const script = document.createElement('script');
+			script.textContent = 'window.__inline = 1';
+			document.head.append(script);
+			return (window as unknown as { __inline?: number }).__inline ?? 0;
+		})
+	).toBe(0);
 });

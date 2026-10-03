@@ -51,19 +51,84 @@ enum MobileArtifacts {
     }
 
     private static let secretNames: Set<String> = [
-        "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa", ".netrc", ".npmrc", "credentials",
+        "credentials", "credentials.json", "kubeconfig", "secrets.json", "secrets.yml",
+        "secrets.yaml", "secret.json", "terraform.tfstate", "terraform.tfstate.backup", "htpasswd",
+        "authorized_keys", "known_hosts", "shadow", "passwd", "master.key",
     ]
-    private static let secretExtensions: Set<String> = ["pem", "key", "p12", "pfx", "keychain"]
-    private static let secretFolders: Set<String> = [".ssh", ".aws", ".gnupg"]
+    private static let secretExtensions: Set<String> = [
+        "pem", "key", "p12", "pfx", "keychain", "jks", "keystore", "kdbx", "ovpn", "tfvars", "asc",
+        "gpg",
+    ]
 
-    /// Whether `path` looks like it holds a secret. An agent that edits a
-    /// `.env` lists it like any file it made; the phone never gets it.
+    /// Whether the file's name says it holds a secret. A transcript lists such
+    /// a file like any other the agent touched; the phone never gets it.
     static func isSecret(_ path: String) -> Bool {
-        let parts = path.split(separator: "/").map { $0.lowercased() }
-        guard let name = parts.last else { return false }
-        return name.hasPrefix(".env") || secretNames.contains(name)
-            || secretExtensions.contains((name as NSString).pathExtension)
-            || parts.dropLast().contains(where: secretFolders.contains)
+        let name = (path as NSString).lastPathComponent.lowercased()
+        let ext = (name as NSString).pathExtension
+        return secretNames.contains(name) || secretExtensions.contains(ext)
+            || name.hasSuffix("_history")
+            // A private key by its usual name; the `.pub` half is not one.
+            || (name.hasPrefix("id_") && ext != "pub")
+            || name.hasPrefix("service-account") || name.hasPrefix("serviceaccount")
+    }
+
+    /// Whether a path below a root has a dotfile or a dot-folder in it. Those
+    /// hold settings, tokens and history (`.env`, `.git`, `.aws`), not work.
+    static func hidden(_ relative: String) -> Bool {
+        relative.split(separator: "/").contains { $0.hasPrefix(".") }
+    }
+
+    /// The folders screenshots are written to. An image there is offered
+    /// though it is outside the thread's folder; nothing else is.
+    static let tempRoots: [String] = {
+        var roots = ["/tmp", "/private/tmp", "/var/folders", "/private/var/folders"]
+        // This user's own temp folder, as it is named and as it resolves.
+        let own = (NSTemporaryDirectory() as NSString).standardizingPath
+        for root in [own, resolved(own) ?? own] where root.count > 1 && !roots.contains(root) {
+            roots.append(root)
+        }
+        return roots
+    }()
+
+    /// The path the system gives for what `path` names, with every link
+    /// resolved and in the letter case on disk. nil when nothing is there.
+    static func resolved(_ path: String) -> String? {
+        let fd = open(path, O_EVTONLY | O_CLOEXEC)
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+        return realPath(of: fd)
+    }
+
+    private static func realPath(of fd: Int32) -> String? {
+        var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        return fcntl(fd, F_GETPATH, &buffer) == -1 ? nil : String(cString: buffer)
+    }
+
+    /// `path` below `root`, or nil when it is not inside it.
+    private static func below(_ path: String, root: String) -> String? {
+        guard root.count > 1, path.hasPrefix(root + "/") else { return nil }
+        return String(path.dropFirst(root.count + 1))
+    }
+
+    /// The one rule for what the phone may have, applied to a path whose links
+    /// are resolved: it lies in the thread's own folder, or it is an image in
+    /// a temp folder, and nothing below that root is hidden. A transcript can
+    /// name any path on the Mac (an edit that was refused is still listed), so
+    /// being listed is not enough.
+    static func permitted(
+        _ real: String, cwd: String, image: Bool, tempRoots: [String] = tempRoots
+    ) -> Bool {
+        // Each root as it is named and as it resolves: a file that is gone
+        // is judged by its name, one that is there by where it really is.
+        let named = [cwd] + (image ? tempRoots : [])
+        return (named + named.compactMap(resolved)).contains { root in
+            below(real, root: root).map { !hidden($0) } ?? false
+        }
+    }
+
+    private static func isImage(_ artifact: Artifact) -> Bool {
+        let kind = kind(of: artifact)
+        return kind == .image || kind == .pdf
     }
 
     private static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "svg"]
@@ -116,11 +181,18 @@ enum MobileArtifacts {
             ArtifactScanner.web(urls: mentions.urls, running: [], runningKnown: false).links)
     }
 
-    /// The files of `source` the phone may see, in the scanner's order.
+    /// The files of `source` the phone may see, in the scanner's order. A
+    /// file that is gone is judged by the path it had.
     static func files(
-        _ source: MobileArtifactSource?, size: (String) -> Int? = fileSize
+        _ source: MobileArtifactSource?, cwd: String, size: (String) -> Int? = fileSize,
+        tempRoots: [String] = tempRoots
     ) -> [MobileArtifactFile] {
-        (source?.artifacts ?? []).filter { !isSecret($0.path) }.map {
+        (source?.artifacts ?? []).filter { artifact in
+            !isSecret(artifact.path) && permitted(
+                resolved(artifact.path) ?? (artifact.path as NSString).standardizingPath,
+                cwd: cwd, image: isImage(artifact),
+                tempRoots: tempRoots)
+        }.map {
             MobileArtifactFile(artifact: $0, size: $0.exists ? size($0.path) : nil)
         }
     }
@@ -145,7 +217,7 @@ enum MobileArtifacts {
             ]
         }
         return .json(
-            ["files": files(found).map(\.json), "links": links, "remote": false] as [String: Any])
+            ["files": files(found, cwd: thread.cwd).map(\.json), "links": links, "remote": false] as [String: Any])
     }
 
     /// The `/file` response: the one file of the thread's list that `id`
@@ -155,9 +227,10 @@ enum MobileArtifacts {
         id: String, thread: MobileThread, source: (MobileThread) -> MobileArtifactSource?
     ) -> MobileResponse {
         guard thread.host.isLocal,
-              let file = files(source(thread), size: { _ in nil }).first(where: { $0.id == id })
+              let file = files(source(thread), cwd: thread.cwd, size: { _ in nil })
+                  .first(where: { $0.id == id })
         else { return .error(404, "not_found") }
-        switch read(path: file.artifact.path, cwd: thread.cwd) {
+        switch read(path: file.artifact.path, cwd: thread.cwd, image: isImage(file.artifact)) {
         case .missing:
             return .error(404, "not_found")
         case .tooLarge:
@@ -188,44 +261,25 @@ enum MobileArtifacts {
     /// the check and the read:
     /// - a symlink as the last component is not followed;
     /// - it must be a regular file, no larger than `limit`;
-    /// - the path the system gives for the open file must be the listed path,
-    ///   or lie inside the thread's own directory. A listed path that passes
-    ///   through a symlinked folder to somewhere else is refused.
-    static func read(path: String, cwd: String, limit: Int = maxFileBytes) -> FileRead {
+    /// - the path the system gives for the open file must pass `permitted`.
+    ///   A listed path that goes through a symlinked folder to somewhere else
+    ///   is refused, and one written in another letter case is still found.
+    static func read(
+        path: String, cwd: String, image: Bool, limit: Int = maxFileBytes,
+        tempRoots: [String] = tempRoots
+    ) -> FileRead {
         let fd = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
         guard fd >= 0 else { return .missing }
         defer { close(fd) }
         var info = stat()
         guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG else { return .missing }
         guard info.st_size <= off_t(limit) else { return .tooLarge }
-        var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
-        guard fcntl(fd, F_GETPATH, &buffer) != -1 else { return .missing }
-        let real = String(cString: buffer)
-        guard unaliased(real) == unaliased(path) || isInside(real, directory: cwd) else {
-            return .missing
-        }
+        guard let real = realPath(of: fd), !isSecret(real),
+              permitted(real, cwd: cwd, image: image, tempRoots: tempRoots)
+        else { return .missing }
         // One byte past the limit: a file that grew since `fstat` is still refused.
         let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: false)
         guard let data = try? handle.read(upToCount: limit + 1) ?? Data() else { return .missing }
         return data.count > limit ? .tooLarge : .data(data)
-    }
-
-    /// `path` without the `/private` that macOS puts under `/tmp`, `/var` and
-    /// `/etc`: those three are fixed links of the system, not an escape.
-    static func unaliased(_ path: String) -> String {
-        for alias in ["/tmp", "/var", "/etc"] {
-            let long = "/private" + alias
-            if path == long || path.hasPrefix(long + "/") { return String(path.dropFirst(8)) }
-        }
-        return path
-    }
-
-    /// Whether the resolved `real` path is in `directory` once that is
-    /// resolved too. The root directory contains everything, so it never counts.
-    static func isInside(_ real: String, directory: String) -> Bool {
-        guard !directory.isEmpty, let resolved = realpath(directory, nil) else { return false }
-        defer { free(resolved) }
-        let root = String(cString: resolved)
-        return root != "/" && real.hasPrefix(root + "/")
     }
 }

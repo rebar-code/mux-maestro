@@ -50,30 +50,172 @@ final class MobileArtifactsTests: XCTestCase {
         XCTAssertNotEqual(id, MobileArtifacts.id(path: "/Users/me/acme-app/plan.md"))
     }
 
-    func testSecretLookingFilesAreNeverListed() {
-        for path in [
-            "/Users/me/acme-app/.env", "/Users/me/acme-app/.env.local", "/Users/me/acme-app/.ENV.production",
-            "/Users/me/acme-app/certs/server.pem", "/Users/me/acme-app/certs/server.key",
-            "/Users/me/acme-app/dist/app.p12", "/Users/me/acme-app/dist/app.pfx",
-            "/Users/me/Library/Keychains/login.keychain", "/Users/me/.ssh/config",
-            "/Users/me/.ssh/id_ed25519.pub", "/Users/me/keys/id_rsa", "/Users/me/keys/id_ed25519",
-            "/Users/me/keys/id_ecdsa", "/Users/me/keys/id_dsa", "/Users/me/.aws/config",
-            "/Users/me/.gnupg/pubring.kbx", "/Users/me/.netrc", "/Users/me/acme-app/.npmrc",
-            "/Users/me/.aws/credentials", "/Users/me/acme-app/credentials",
+    func testSecretLookingNamesAreNeverListed() throws {
+        for name in [
+            "server.pem", "server.key", "app.p12", "app.pfx", "login.keychain", "app.jks",
+            "release.keystore", "vault.kdbx", "office.ovpn", "deploy.tfvars", "backup.asc", "backup.gpg",
+            "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa", "id_custom", "ID_RSA",
+            "credentials", "Credentials.json", "kubeconfig", "secrets.json", "secrets.yml",
+            "secrets.yaml", "secret.json", "terraform.tfstate", "terraform.tfstate.backup",
+            "htpasswd", "authorized_keys", "known_hosts", "shadow", "passwd", "master.key",
+            "zsh_history", "psql_history", "service-account.json", "service-account-prod.json",
+            "serviceaccount.json",
         ] {
-            XCTAssertTrue(MobileArtifacts.isSecret(path), path)
+            XCTAssertTrue(MobileArtifacts.isSecret("/Users/me/acme-app/config/" + name), name)
         }
-        for path in [
-            "/Users/me/acme-app/PLAN.md", "/Users/me/acme-app/src/env.ts", "/Users/me/acme-app/keys.md",
-            "/Users/me/acme-app/id_rsa.pub", "/Users/me/acme-app/docs/credentials.md",
-            "/Users/me/acme-app/src/keychain.swift",
+        for name in [
+            "PLAN.md", "env.ts", "keys.md", "id_rsa.pub", "id_ed25519.pub", "credentials.md",
+            "keychain.swift", "history.md", "secrets.md", "passwd.ts", "identity.ts", "tfvars.md",
         ] {
-            XCTAssertFalse(MobileArtifacts.isSecret(path), path)
+            XCTAssertFalse(MobileArtifacts.isSecret("/Users/me/acme-app/src/" + name), name)
         }
-        let listed = MobileArtifacts.files(
-            ([artifact("/Users/me/acme-app/.env"), artifact("/Users/me/acme-app/PLAN.md")], []),
-            size: { _ in 12 })
+
+        // In the thread's own folder, and still not offered.
+        var made: [Artifact] = []
+        for name in ["kubeconfig", "secrets.json", "terraform.tfstate", "deploy.tfvars", "app.jks", "PLAN.md"] {
+            made.append(artifact(try write("x", to: project.appendingPathComponent(name))))
+        }
+        let listed = MobileArtifacts.files((made, []), cwd: project.path)
         XCTAssertEqual(listed.map(\.artifact.name), ["PLAN.md"])
+        for hidden in made.dropLast() {
+            let refused = MobileArtifacts.file(
+                id: MobileArtifacts.id(path: hidden.path), thread: thread(cwd: project.path)
+            ) { _ in (made, []) }
+            XCTAssertEqual(refused.status, 404, hidden.name)
+        }
+    }
+
+    func testNoDotfileAndNothingInADotFolderIsOffered() throws {
+        for relative in [
+            ".env", ".env.local", ".npmrc", ".git/config", "src/.secret/notes.md", "a/b/.hidden",
+            ".github/workflows/ci.yml", "docs/.DS_Store",
+        ] {
+            XCTAssertTrue(MobileArtifacts.hidden(relative), relative)
+        }
+        for relative in ["PLAN.md", "src/env.ts", "a.b/c.d", "docs/v1.2/notes.md", ""] {
+            XCTAssertFalse(MobileArtifacts.hidden(relative), relative)
+        }
+
+        let fm = FileManager.default
+        try fm.createDirectory(at: project.appendingPathComponent(".cache"), withIntermediateDirectories: true)
+        let made = [
+            artifact(try write("TOKEN=1", to: project.appendingPathComponent(".env"))),
+            artifact(try write("x", to: project.appendingPathComponent(".cache/report.html"))),
+            artifact(try write("# Plan", to: project.appendingPathComponent("PLAN.md"))),
+            // A dotfile that is gone is not offered as missing either.
+            artifact(project.appendingPathComponent(".env.old").path, exists: false),
+        ]
+        XCTAssertEqual(
+            MobileArtifacts.files((made, []), cwd: project.path).map(\.artifact.name), ["PLAN.md"])
+        // The rule is about what lies under the thread's folder: a project
+        // that itself lives in a dot-folder keeps its files.
+        let nested = root.appendingPathComponent(".worktrees/acme-app")
+        try fm.createDirectory(at: nested, withIntermediateDirectories: true)
+        let plan = artifact(try write("# Plan", to: nested.appendingPathComponent("PLAN.md")))
+        XCTAssertEqual(MobileArtifacts.files(([plan], []), cwd: nested.path).map(\.artifact.name), ["PLAN.md"])
+        XCTAssertEqual(
+            MobileArtifacts.read(path: plan.path, cwd: nested.path, image: false), .data(Data("# Plan".utf8)))
+        XCTAssertEqual(
+            MobileArtifacts.read(path: made[0].path, cwd: project.path, image: false), .missing)
+        XCTAssertEqual(
+            MobileArtifacts.read(path: made[1].path, cwd: project.path, image: false), .missing)
+    }
+
+    /// The paths an agent can be made to name with an edit that never ran:
+    /// credentials in the home folder. None is in the thread's folder.
+    func testAFileOutsideTheThreadsFolderIsNotOfferedAndNotRead() throws {
+        let fm = FileManager.default
+        let home = root.appendingPathComponent("home")
+        let sibling = home.appendingPathComponent("code/other-app")
+        let cwd = home.appendingPathComponent("code/acme-app")
+        for folder in [cwd, sibling, home.appendingPathComponent(".config/gh"),
+                       home.appendingPathComponent(".kube"), home.appendingPathComponent(".docker")] {
+            try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        }
+        var outsiders: [Artifact] = []
+        for relative in [
+            ".config/gh/hosts.yml", ".kube/config", ".docker/config.json", ".git-credentials",
+            ".pgpass", ".zsh_history", "code/other-app/notes.md", "code/other-app/index.html",
+            "notes.txt",
+        ] {
+            outsiders.append(artifact(try write("secret", to: home.appendingPathComponent(relative))))
+        }
+        // Named, and not there.
+        outsiders.append(artifact(home.appendingPathComponent("code/other-app/gone.md").path, exists: false))
+        outsiders.append(artifact("/etc/hosts"))
+        let plan = artifact(try write("# Plan", to: cwd.appendingPathComponent("PLAN.md")))
+        let source: MobileArtifactSource = (outsiders + [plan], [])
+
+        XCTAssertEqual(MobileArtifacts.files(source, cwd: cwd.path).map(\.artifact.name), ["PLAN.md"])
+        let body = try object(MobileArtifacts.list(thread: thread(cwd: cwd.path)) { _ in source })
+        XCTAssertEqual((body["files"] as? [[String: Any]])?.map { $0["name"] as? String }, ["PLAN.md"])
+        for outsider in outsiders {
+            let refused = MobileArtifacts.file(
+                id: MobileArtifacts.id(path: outsider.path), thread: thread(cwd: cwd.path)) { _ in source }
+            XCTAssertEqual(refused.status, 404, outsider.path)
+            XCTAssertEqual(
+                MobileArtifacts.read(path: outsider.path, cwd: cwd.path, image: false), .missing, outsider.path)
+        }
+        // With no folder to be in, nothing is offered.
+        for none in ["", "/"] {
+            XCTAssertEqual(MobileArtifacts.files(source, cwd: none, tempRoots: []), [], none)
+            XCTAssertEqual(MobileArtifacts.read(path: plan.path, cwd: none, image: false, tempRoots: []), .missing)
+        }
+        // A folder whose name starts like the thread's is another folder.
+        let twin = home.appendingPathComponent("code/acme-app-old")
+        try fm.createDirectory(at: twin, withIntermediateDirectories: true)
+        let old = artifact(try write("old", to: twin.appendingPathComponent("PLAN.md")))
+        XCTAssertEqual(MobileArtifacts.files(([old], []), cwd: cwd.path), [])
+    }
+
+    func testAScreenshotInATempFolderIsOfferedAndOtherTempFilesAreNot() throws {
+        let temp = root.appendingPathComponent("tmp")
+        try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+        let shot = artifact(try write("png", to: temp.appendingPathComponent("shot.png")))
+        let paper = artifact(try write("pdf", to: temp.appendingPathComponent("report.pdf")))
+        let notes = artifact(try write("# Notes", to: temp.appendingPathComponent("notes.md")))
+        let page = artifact(try write("<p>", to: temp.appendingPathComponent("page.html")))
+        let hidden = artifact(try write("png", to: temp.appendingPathComponent(".shot.png")))
+        let source: MobileArtifactSource = ([shot, paper, notes, page, hidden], [])
+        let roots = [temp.path]
+
+        XCTAssertEqual(
+            MobileArtifacts.files(source, cwd: project.path, tempRoots: roots).map(\.artifact.name),
+            ["shot.png", "report.pdf"])
+        XCTAssertEqual(
+            MobileArtifacts.read(path: shot.path, cwd: project.path, image: true, tempRoots: roots),
+            .data(Data("png".utf8)))
+        // The same file asked for as anything but an image stays closed.
+        XCTAssertEqual(
+            MobileArtifacts.read(path: shot.path, cwd: project.path, image: false, tempRoots: roots), .missing)
+        XCTAssertEqual(
+            MobileArtifacts.read(path: notes.path, cwd: project.path, image: false, tempRoots: roots), .missing)
+        // An image that is in neither place is not offered.
+        XCTAssertEqual(MobileArtifacts.files(source, cwd: project.path, tempRoots: []), [])
+        XCTAssertEqual(
+            MobileArtifacts.read(path: shot.path, cwd: project.path, image: true, tempRoots: []), .missing)
+        // The system's temp folders are the ones that count.
+        XCTAssertTrue(MobileArtifacts.tempRoots.contains("/private/tmp"))
+        XCTAssertTrue(MobileArtifacts.tempRoots.contains("/private/var/folders"))
+        XCTAssertFalse(MobileArtifacts.tempRoots.contains("/"))
+        XCTAssertFalse(MobileArtifacts.tempRoots.contains(""))
+    }
+
+    func testAPathListedInAnotherLetterCaseStillReads() throws {
+        let real = try write("# Report", to: project.appendingPathComponent("Report.md"))
+        let listed = project.appendingPathComponent("report.md").path
+        // Only where the volume ignores case is this the same file.
+        try XCTSkipUnless(FileManager.default.fileExists(atPath: listed), "case-sensitive volume")
+        XCTAssertNotEqual(real, listed)
+        XCTAssertEqual(
+            MobileArtifacts.read(path: listed, cwd: project.path, image: false), .data(Data("# Report".utf8)))
+        XCTAssertEqual(
+            MobileArtifacts.read(path: listed, cwd: project.path.uppercased(), image: false),
+            .data(Data("# Report".utf8)))
+        let source: MobileArtifactSource = ([artifact(listed)], [])
+        let served = MobileArtifacts.file(
+            id: MobileArtifacts.id(path: listed), thread: thread(cwd: project.path)) { _ in source }
+        XCTAssertEqual(served.status, 200)
     }
 
     func testTheKindAndTheContentTypeComeFromAFixedMap() {
@@ -169,7 +311,8 @@ final class MobileArtifactsTests: XCTestCase {
         let plan = try write("# Plan", to: project.appendingPathComponent("PLAN.md"))
         let secret = try write("TOKEN=1", to: project.appendingPathComponent(".env"))
         let other = try write("other", to: outside.appendingPathComponent("notes.txt"))
-        let source: MobileArtifactSource = ([artifact(plan), artifact(secret)], [])
+        // `other` is listed by the scanner too, and lies outside the thread's folder.
+        let source: MobileArtifactSource = ([artifact(plan), artifact(secret), artifact(other)], [])
         for id in [
             "", "PLAN.md", plan, other, "../PLAN.md", "../../outside/notes.txt", "..", "/etc/passwd",
             "%2e%2e%2fPLAN.md", "..%2f..%2fetc%2fpasswd", "file://" + plan,
@@ -192,27 +335,27 @@ final class MobileArtifactsTests: XCTestCase {
         // The listed file is itself a link.
         let link = project.appendingPathComponent("shot.png").path
         try fm.createSymbolicLink(atPath: link, withDestinationPath: target)
-        XCTAssertEqual(MobileArtifacts.read(path: link, cwd: cwd), .missing)
+        XCTAssertEqual(MobileArtifacts.read(path: link, cwd: cwd, image: true, tempRoots: []), .missing)
         // Also when it points at a file of the same project.
         let inner = try write("inside", to: project.appendingPathComponent("real.txt"))
         let innerLink = project.appendingPathComponent("alias.txt").path
         try fm.createSymbolicLink(atPath: innerLink, withDestinationPath: inner)
-        XCTAssertEqual(MobileArtifacts.read(path: innerLink, cwd: cwd), .missing)
+        XCTAssertEqual(MobileArtifacts.read(path: innerLink, cwd: cwd, image: false), .missing)
 
         // A folder of the listed path is a link that leads out of the project.
         let folder = project.appendingPathComponent("out").path
         try fm.createSymbolicLink(atPath: folder, withDestinationPath: outside.path)
-        XCTAssertEqual(MobileArtifacts.read(path: folder + "/notes.txt", cwd: cwd), .missing)
+        XCTAssertEqual(MobileArtifacts.read(path: folder + "/notes.txt", cwd: cwd, image: false), .missing)
         // The same outside the project, with no directory to be inside of.
-        XCTAssertEqual(MobileArtifacts.read(path: folder + "/notes.txt", cwd: ""), .missing)
-        XCTAssertEqual(MobileArtifacts.read(path: folder + "/notes.txt", cwd: "/"), .missing)
+        XCTAssertEqual(MobileArtifacts.read(path: folder + "/notes.txt", cwd: "", image: false), .missing)
+        XCTAssertEqual(MobileArtifacts.read(path: folder + "/notes.txt", cwd: "/", image: false), .missing)
 
         // A linked folder that stays inside the project is the project's own.
         try fm.createDirectory(at: project.appendingPathComponent("build"), withIntermediateDirectories: true)
         _ = try write("built", to: project.appendingPathComponent("build/index.html"))
         let latest = project.appendingPathComponent("latest").path
         try fm.createSymbolicLink(atPath: latest, withDestinationPath: "build")
-        XCTAssertEqual(MobileArtifacts.read(path: latest + "/index.html", cwd: cwd), .data(Data("built".utf8)))
+        XCTAssertEqual(MobileArtifacts.read(path: latest + "/index.html", cwd: cwd, image: false), .data(Data("built".utf8)))
 
         // The route answers 404 for each.
         let source: MobileArtifactSource = ([artifact(link), artifact(folder + "/notes.txt")], [])
@@ -226,19 +369,20 @@ final class MobileArtifactsTests: XCTestCase {
     func testOnlyAPlainFileUnderTheSizeCapIsRead() throws {
         let cwd = project.path
         let plain = try write("hello", to: project.appendingPathComponent("a.txt"))
-        XCTAssertEqual(MobileArtifacts.read(path: plain, cwd: cwd), .data(Data("hello".utf8)))
-        // A file outside the project is read when it is the listed path itself.
-        let shot = try write("png", to: outside.appendingPathComponent("shot.png"))
-        XCTAssertEqual(MobileArtifacts.read(path: shot, cwd: cwd), .data(Data("png".utf8)))
+        XCTAssertEqual(MobileArtifacts.read(path: plain, cwd: cwd, image: false), .data(Data("hello".utf8)))
         let empty = try write("", to: project.appendingPathComponent("empty.txt"))
-        XCTAssertEqual(MobileArtifacts.read(path: empty, cwd: cwd), .data(Data()))
+        XCTAssertEqual(MobileArtifacts.read(path: empty, cwd: cwd, image: false), .data(Data()))
 
-        XCTAssertEqual(MobileArtifacts.read(path: project.appendingPathComponent("gone.txt").path, cwd: cwd), .missing)
-        XCTAssertEqual(MobileArtifacts.read(path: cwd, cwd: cwd), .missing)
-        XCTAssertEqual(MobileArtifacts.read(path: "/dev/null", cwd: cwd), .missing)
+        XCTAssertEqual(
+            MobileArtifacts.read(path: project.appendingPathComponent("gone.txt").path, cwd: cwd, image: false),
+            .missing)
+        XCTAssertEqual(MobileArtifacts.read(path: cwd, cwd: cwd, image: false), .missing)
+        XCTAssertEqual(MobileArtifacts.read(path: "/dev/null", cwd: cwd, image: false), .missing)
+        XCTAssertEqual(MobileArtifacts.read(path: "/dev/null", cwd: "/dev", image: false), .missing)
 
-        XCTAssertEqual(MobileArtifacts.read(path: plain, cwd: cwd, limit: 5), .data(Data("hello".utf8)))
-        XCTAssertEqual(MobileArtifacts.read(path: plain, cwd: cwd, limit: 4), .tooLarge)
+        XCTAssertEqual(
+            MobileArtifacts.read(path: plain, cwd: cwd, image: false, limit: 5), .data(Data("hello".utf8)))
+        XCTAssertEqual(MobileArtifacts.read(path: plain, cwd: cwd, image: false, limit: 4), .tooLarge)
 
         // One byte over the real cap: 413, and nothing of the file.
         let big = project.appendingPathComponent("big.log")
@@ -252,14 +396,5 @@ final class MobileArtifactsTests: XCTestCase {
             id: MobileArtifacts.id(path: big.path), thread: thread(cwd: cwd)) { _ in source }
         XCTAssertEqual(refused.status, 413)
         XCTAssertEqual(String(decoding: refused.body, as: UTF8.self), #"{"error":"too_large"}"#)
-    }
-
-    func testTheSystemsOwnPrivateLinksAreNotAnEscape() {
-        XCTAssertEqual(MobileArtifacts.unaliased("/private/tmp/shot.png"), "/tmp/shot.png")
-        XCTAssertEqual(MobileArtifacts.unaliased("/private/var/folders/x/shot.png"), "/var/folders/x/shot.png")
-        XCTAssertEqual(MobileArtifacts.unaliased("/private/etc"), "/etc")
-        XCTAssertEqual(MobileArtifacts.unaliased("/tmp/shot.png"), "/tmp/shot.png")
-        XCTAssertEqual(MobileArtifacts.unaliased("/private/tmpfile"), "/private/tmpfile")
-        XCTAssertEqual(MobileArtifacts.unaliased("/private/secret/a"), "/private/secret/a")
     }
 }

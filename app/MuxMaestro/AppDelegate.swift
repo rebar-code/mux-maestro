@@ -1053,16 +1053,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let snapshot = sidebar.mobileSnapshot()
         mobileServer.update(snapshot)
         // A published dev server is closed once it stops, or its thread goes.
-        // A list that is not known yet closes nothing.
-        let ownPort = Settings.phonePort()
-        let gone = phoneLink.mappings.filter { mapping in
-            guard let thread = snapshot.thread(id: mapping.thread),
-                  let running = sidebar.runningSet(paneID: thread.pane, host: thread.host)
-            else { return true }
-            return running.known
-                && MobileServing.mappable(in: running, ownPort: ownPort)[mapping.port] == nil
-        }
-        phoneLink.sweepMappings(gone: Set(gone.map(\.port)))
+        phoneLink.sweepMappings(gone: MobileServing.gone(
+            phoneLink.mappings, snapshot: snapshot,
+            running: { sidebar.runningSet(paneID: $0.pane, host: $0.host) },
+            ownPort: Settings.phonePort()))
     }
 
     /// Run a Setup install recipe in the terminal, like the remote mosh install:
