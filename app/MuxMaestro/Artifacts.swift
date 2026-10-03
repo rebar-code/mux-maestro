@@ -23,6 +23,9 @@ struct ArtifactMentions: Equatable {
     var threadStart: Date?
     var made: [String: Date] = [:]
     var imageCandidates: [String: Date] = [:]
+    /// `http(s)` URLs from the agent's own text (never tool input or results:
+    /// those are full of URLs the agent only read). URL → newest mention.
+    var urls: [String: Date] = [:]
     /// The cwd of the newest record that carried one. Relative paths resolve
     /// against it.
     var cwd = ""
@@ -66,7 +69,9 @@ struct ArtifactMentions: Equatable {
             case "tool_result" where !assistant:
                 noteImages(in: ArtifactScanner.strings(in: block["content"] ?? ""), at: at)
             case "text" where assistant:
-                noteImages(in: [block["text"] as? String ?? ""], at: at)
+                let text = block["text"] as? String ?? ""
+                noteImages(in: [text], at: at)
+                noteURLs(in: [text], at: at)
             default:
                 break
             }
@@ -82,7 +87,9 @@ struct ArtifactMentions: Equatable {
         case "function_call_output", "custom_tool_call_output":
             noteImages(in: ArtifactScanner.strings(in: payload["output"] ?? ""), at: at)
         case "message" where payload["role"] as? String == "assistant":
-            noteImages(in: ArtifactScanner.strings(in: payload["content"] ?? ""), at: at)
+            let texts = ArtifactScanner.strings(in: payload["content"] ?? "")
+            noteImages(in: texts, at: at)
+            noteURLs(in: texts, at: at)
         default:
             break
         }
@@ -91,6 +98,12 @@ struct ArtifactMentions: Equatable {
     private mutating func note(made path: String, at: Date) {
         let abs = ArtifactScanner.absolute(path, cwd: cwd)
         made[abs] = max(made[abs] ?? at, at)
+    }
+
+    private mutating func noteURLs(in texts: [String], at: Date) {
+        for text in texts {
+            for url in ArtifactScanner.urls(in: text) { urls[url] = max(urls[url] ?? at, at) }
+        }
     }
 
     private mutating func noteImages(in texts: [String], at: Date) {
@@ -216,6 +229,110 @@ enum ArtifactScanner {
     }
 }
 
+/// A server this pane's process tree is listening on, as Running reports it.
+struct ArtifactRunningServer: Equatable {
+    let port: Int
+    let url: String?
+}
+
+/// A Servers or Links row.
+struct ArtifactWebItem: Equatable {
+    let url: String
+    let host: String
+    /// Path plus query, "" for a bare origin.
+    let path: String
+    /// Newest mention in the agent's text; nil for a server it never named.
+    let at: Date?
+    /// Servers: whether something listens on the port. nil when Running does
+    /// not know yet (never shown as dead), and always nil for links.
+    let live: Bool?
+}
+
+extension ArtifactScanner {
+    /// `http(s)` URLs in free text. A URL ends at whitespace, a quote, `<>`, a
+    /// backtick, or a `)`/`]` that closes Markdown; trailing sentence
+    /// punctuation and Markdown emphasis are not part of it. The brackets of
+    /// an IPv6 host (`http://[::1]:3000`) do not end it.
+    static func urls(in text: String) -> [String] {
+        guard text.contains("http") else { return [] }
+        let range = NSRange(text.startIndex..., in: text)
+        return urlRegex.matches(in: text, range: range).compactMap { match in
+            guard let r = Range(match.range, in: text) else { return nil }
+            var url = String(text[r])
+            while let last = url.last, ".,;:!?'*".contains(last) { url.removeLast() }
+            // A wildcard host (`https://*.example.com`) is a pattern, not a link.
+            guard let host = URLComponents(string: url)?.host, !host.isEmpty,
+                  !host.contains("*") else { return nil }
+            return url
+        }
+    }
+
+    private static let urlRegex = try! NSRegularExpression(
+        pattern: #"https?://(?:\[[0-9a-f:.]+\])?[^\s<>"'`)\]]*"#, options: [.caseInsensitive])
+
+    /// Loopback, the unspecified address, and mDNS / `.localhost` names.
+    static func isLocalHost(_ host: String) -> Bool {
+        let h = host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        return ["localhost", "127.0.0.1", "0.0.0.0", "::1"].contains(h)
+            || h.hasSuffix(".local") || h.hasSuffix(".localhost")
+    }
+
+    /// Split the agent's URLs into local servers and links. One server row per
+    /// port: it opens the page the agent named most recently on that port, or
+    /// Running's URL when the agent never named it. When Running saw the
+    /// server speak https, the named page opens over https too. Live first,
+    /// then by port. Links: every other URL, newest first.
+    static func web(
+        urls: [String: Date], running: [ArtifactRunningServer], runningKnown: Bool
+    ) -> (servers: [ArtifactWebItem], links: [ArtifactWebItem]) {
+        var links: [ArtifactWebItem] = []
+        var named: [Int: (url: String, at: Date)] = [:]
+        for (url, at) in urls {
+            guard let c = URLComponents(string: url), let host = c.host else { continue }
+            if isLocalHost(host) {
+                let port = c.port ?? (c.scheme?.lowercased() == "https" ? 443 : 80)
+                if let seen = named[port], seen.at > at || (seen.at == at && seen.url < url) { continue }
+                named[port] = (url, at)
+            } else {
+                links.append(ArtifactWebItem(
+                    url: url, host: host, path: pathAndQuery(c), at: at, live: nil))
+            }
+        }
+        let livePorts = Set(running.map(\.port))
+        var servers: [(port: Int, item: ArtifactWebItem)] = []
+        for server in running {
+            var url = named[server.port]?.url ?? server.url ?? "http://localhost:\(server.port)/"
+            if server.url?.lowercased().hasPrefix("https://") == true,
+               var c = URLComponents(string: url), c.scheme?.lowercased() == "http" {
+                c.scheme = "https"
+                url = c.string ?? url
+            }
+            servers.append((server.port, item(url, at: named[server.port]?.at, live: true)))
+        }
+        for (port, mention) in named where !livePorts.contains(port) {
+            servers.append((port, item(mention.url, at: mention.at, live: runningKnown ? false : nil)))
+        }
+        servers.sort { a, b in
+            let la = a.item.live == true, lb = b.item.live == true
+            return la != lb ? la : a.port < b.port
+        }
+        links.sort { ($0.at ?? .distantPast, $1.url) > ($1.at ?? .distantPast, $0.url) }
+        return (servers.map(\.item), links)
+    }
+
+    private static func item(_ url: String, at: Date?, live: Bool?) -> ArtifactWebItem {
+        let c = URLComponents(string: url)
+        let port = c?.port.map { ":\($0)" } ?? ""
+        return ArtifactWebItem(
+            url: url, host: (c?.host ?? url) + port, path: c.map(pathAndQuery) ?? "", at: at, live: live)
+    }
+
+    private static func pathAndQuery(_ c: URLComponents) -> String {
+        let path = c.percentEncodedPath == "/" ? "" : c.percentEncodedPath
+        return path + (c.percentEncodedQuery.map { "?\($0)" } ?? "")
+    }
+}
+
 /// Reads agent transcripts for the Artifacts panel incrementally: each
 /// transcript keeps a byte offset, and a read parses only the whole lines
 /// appended since. Safe to call from any queue.
@@ -322,3 +439,4 @@ final class ArtifactTranscriptReader {
         return nil
     }
 }
+

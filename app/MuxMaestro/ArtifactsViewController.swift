@@ -10,24 +10,40 @@ enum ArtifactsState: Equatable {
     case remote
     /// The pane runs no Claude or Codex thread.
     case noThread
-    case list([Artifact])
+    case list(ArtifactsContent)
+}
+
+/// Everything the panel lists for one pane.
+struct ArtifactsContent: Equatable {
+    var artifacts: [Artifact] = []
+    var servers: [ArtifactWebItem] = []
+    var links: [ArtifactWebItem] = []
+
+    var isEmpty: Bool { artifacts.isEmpty && servers.isEmpty && links.isEmpty }
 }
 
 protocol ArtifactsPaneDelegate: AnyObject {
     /// Double-click or ↩ on an artifact.
     func artifactsPaneDidActivate(_ artifact: Artifact)
+    /// Click or ↩ on a server or link row.
+    func artifactsPaneDidOpenURL(_ url: String)
 }
 
 /// The right sidebar's Artifacts item: what the selected pane's agent made.
 /// Images as a thumbnail grid, files as rows, and a Quick Look preview of the
 /// selection below. Click previews; Space opens the Quick Look panel; arrows
-/// step; double-click opens.
+/// step; double-click opens. Local servers and links are rows that open in
+/// the browser on click; right-click copies.
 final class ArtifactsViewController: NSViewController {
     weak var delegate: ArtifactsPaneDelegate?
 
     private(set) var state: ArtifactsState = .noSelection
     private var images: [Artifact] = []
     private var files: [Artifact] = []
+    private var servers: [ArtifactWebItem] = []
+    private var links: [ArtifactWebItem] = []
+
+    private enum Section: Int, CaseIterable { case images, files, servers, links }
 
     private let collection = ArtifactCollectionView()
     private let scroll = NSScrollView()
@@ -51,6 +67,7 @@ final class ArtifactsViewController: NSViewController {
         collection.collectionViewLayout = layout
         collection.register(ArtifactImageItem.self, forItemWithIdentifier: ArtifactImageItem.id)
         collection.register(ArtifactFileItem.self, forItemWithIdentifier: ArtifactFileItem.id)
+        collection.register(ArtifactWebItemView.self, forItemWithIdentifier: ArtifactWebItemView.id)
         collection.register(
             ArtifactSectionHeader.self,
             forSupplementaryViewOfKind: NSCollectionView.elementKindSectionHeader,
@@ -63,6 +80,14 @@ final class ArtifactsViewController: NSViewController {
         collection.delegate = self
         collection.onActivate = { [weak self] in self?.activateSelected() }
         collection.onSpace = { [weak self] in self?.toggleQuickLook() }
+        collection.onClick = { [weak self] path in
+            if let web = self?.web(at: path) { self?.delegate?.artifactsPaneDidOpenURL(web.url) }
+        }
+        // A server or link already opened on the first click of a double-click.
+        collection.onDoubleClick = { [weak self] path in
+            if self?.web(at: path) == nil { self?.activateSelected() }
+        }
+        collection.menuFor = { [weak self] path in self?.copyMenu(for: path) }
 
         scroll.documentView = collection
         scroll.hasVerticalScroller = true
@@ -135,40 +160,126 @@ final class ArtifactsViewController: NSViewController {
     /// call this freely without resetting selection or scroll.
     func render(_ new: ArtifactsState) {
         guard new != state else { return }
-        let keep = selectedArtifact?.path
+        let keep = selectedKey
         state = new
         guard isViewLoaded else { return }
         applyState()
-        if let keep, let path = indexPath(of: keep) {
+        if let keep, let path = indexPath(ofKey: keep) {
             collection.selectItems(at: [path], scrollPosition: [])
         }
         updatePreview()
     }
 
     private func applyState() {
-        let list: [Artifact]
+        var content = ArtifactsContent()
         switch state {
-        case .noSelection: list = []; emptyLabel.stringValue = "Select a pane"
-        case .remote: list = []; emptyLabel.stringValue = "Local panes only"
-        case .noThread: list = []; emptyLabel.stringValue = "No agent thread in this pane"
-        case .list(let l): list = l; emptyLabel.stringValue = l.isEmpty ? "Nothing made yet" : ""
+        case .noSelection: emptyLabel.stringValue = "Select a pane"
+        case .remote: emptyLabel.stringValue = "Local panes only"
+        case .noThread: emptyLabel.stringValue = "No agent thread in this pane"
+        case .list(let c): content = c; emptyLabel.stringValue = c.isEmpty ? "Nothing made yet" : ""
         }
         emptyLabel.isHidden = emptyLabel.stringValue.isEmpty
-        images = list.filter { $0.kind == .image }
-        files = list.filter { $0.kind == .file }
+        images = content.artifacts.filter { $0.kind == .image }
+        files = content.artifacts.filter { $0.kind == .file }
+        servers = content.servers
+        links = content.links
         collection.reloadData()
     }
 
-    private func artifact(at path: IndexPath) -> Artifact? {
-        let section = path.section == 0 ? images : files
-        return section.indices.contains(path.item) ? section[path.item] : nil
+    private func count(_ section: Int) -> Int {
+        switch Section(rawValue: section) {
+        case .images: return images.count
+        case .files: return files.count
+        case .servers: return servers.count
+        case .links: return links.count
+        case nil: return 0
+        }
     }
 
-    private func indexPath(of filePath: String) -> IndexPath? {
-        if let i = images.firstIndex(where: { $0.path == filePath }) { return IndexPath(item: i, section: 0) }
-        if let i = files.firstIndex(where: { $0.path == filePath }) { return IndexPath(item: i, section: 1) }
+    private func artifact(at path: IndexPath) -> Artifact? {
+        let list: [Artifact]
+        switch Section(rawValue: path.section) {
+        case .images: list = images
+        case .files: list = files
+        default: return nil
+        }
+        return list.indices.contains(path.item) ? list[path.item] : nil
+    }
+
+    private func web(at path: IndexPath) -> ArtifactWebItem? {
+        let list: [ArtifactWebItem]
+        switch Section(rawValue: path.section) {
+        case .servers: list = servers
+        case .links: list = links
+        default: return nil
+        }
+        return list.indices.contains(path.item) ? list[path.item] : nil
+    }
+
+    /// What identifies the selection across a re-render: a path or a URL.
+    private var selectedKey: String? {
+        guard let path = collection.selectionIndexPaths.first else { return nil }
+        return artifact(at: path)?.path ?? web(at: path).map { "\(path.section)|\($0.url)" }
+    }
+
+    private func indexPath(ofKey key: String) -> IndexPath? {
+        if let i = images.firstIndex(where: { $0.path == key }) { return IndexPath(item: i, section: 0) }
+        if let i = files.firstIndex(where: { $0.path == key }) { return IndexPath(item: i, section: 1) }
+        if let i = servers.firstIndex(where: { "2|\($0.url)" == key }) { return IndexPath(item: i, section: 2) }
+        if let i = links.firstIndex(where: { "3|\($0.url)" == key }) { return IndexPath(item: i, section: 3) }
         return nil
     }
+
+    var selectedWebItem: ArtifactWebItem? {
+        collection.selectionIndexPaths.first.flatMap(web(at:))
+    }
+
+    private func copyMenu(for path: IndexPath) -> NSMenu? {
+        guard let url = web(at: path)?.url ?? artifact(at: path)?.path else { return nil }
+        let menu = NSMenu()
+        let item = NSMenuItem(
+            title: web(at: path) != nil ? "Copy Link" : "Copy Path",
+            action: #selector(copyString(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = url
+        menu.addItem(item)
+        return menu
+    }
+
+    @objc private func copyString(_ sender: NSMenuItem) {
+        guard let s = sender.representedObject as? String else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(s, forType: .string)
+    }
+
+    // MARK: Link favicons
+
+    private var favicons: [String: NSImage] = [:]
+    private var faviconMisses: Set<String> = []
+    private var faviconLoads: [String: [(NSImage?) -> Void]] = [:]
+
+    /// The site's own `/favicon.ico`, fetched once per host per run without
+    /// cookies; nil (the row keeps its globe) on any failure.
+    fileprivate func favicon(host: String, completion: @escaping (NSImage?) -> Void) {
+        if let hit = favicons[host] { completion(hit); return }
+        if faviconMisses.contains(host) { completion(nil); return }
+        if faviconLoads[host] != nil { faviconLoads[host]?.append(completion); return }
+        guard let url = URL(string: "https://\(host)/favicon.ico") else { completion(nil); return }
+        faviconLoads[host] = [completion]
+        var request = URLRequest(url: url, timeoutInterval: 5)
+        request.httpShouldHandleCookies = false
+        Self.faviconSession.dataTask(with: request) { [weak self] data, response, _ in
+            let ok = (response as? HTTPURLResponse).map { (200..<300).contains($0.statusCode) } ?? false
+            let image = ok ? data.flatMap(NSImage.init(data:)) : nil
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if let image { self.favicons[host] = image } else { self.faviconMisses.insert(host) }
+                self.faviconLoads.removeValue(forKey: host)?.forEach { $0(image) }
+            }
+        }.resume()
+    }
+
+    private static let faviconSession = URLSession(configuration: .ephemeral)
 
     var selectedArtifact: Artifact? {
         collection.selectionIndexPaths.first.flatMap(artifact(at:))
@@ -183,6 +294,7 @@ final class ArtifactsViewController: NSViewController {
     }
 
     private func activateSelected() {
+        if let web = selectedWebItem { delegate?.artifactsPaneDidOpenURL(web.url); return }
         guard let a = selectedArtifact, a.exists else { return }
         delegate?.artifactsPaneDidActivate(a)
     }
@@ -264,15 +376,21 @@ final class ArtifactsViewController: NSViewController {
 // MARK: - Collection data
 
 extension ArtifactsViewController: NSCollectionViewDataSource, NSCollectionViewDelegateFlowLayout {
-    func numberOfSections(in collectionView: NSCollectionView) -> Int { 2 }
+    func numberOfSections(in collectionView: NSCollectionView) -> Int { Section.allCases.count }
 
     func collectionView(_ collectionView: NSCollectionView, numberOfItemsInSection section: Int) -> Int {
-        section == 0 ? images.count : files.count
+        count(section)
     }
 
     func collectionView(
         _ collectionView: NSCollectionView, itemForRepresentedObjectAt indexPath: IndexPath
     ) -> NSCollectionViewItem {
+        if let web = web(at: indexPath) {
+            let item = collectionView.makeItem(
+                withIdentifier: ArtifactWebItemView.id, for: indexPath) as! ArtifactWebItemView
+            item.configure(web, isServer: indexPath.section == Section.servers.rawValue, owner: self)
+            return item
+        }
         guard let a = artifact(at: indexPath) else { return NSCollectionViewItem() }
         if indexPath.section == 0 {
             let item = collectionView.makeItem(
@@ -292,8 +410,8 @@ extension ArtifactsViewController: NSCollectionViewDataSource, NSCollectionViewD
     ) -> NSView {
         let header = collectionView.makeSupplementaryView(
             ofKind: kind, withIdentifier: ArtifactSectionHeader.id, for: indexPath) as! ArtifactSectionHeader
-        header.set(title: indexPath.section == 0 ? "Images" : "Files",
-                   count: indexPath.section == 0 ? images.count : files.count)
+        let titles = ["Images", "Files", "Servers", "Links"]
+        header.set(title: titles[indexPath.section], count: count(indexPath.section))
         return header
     }
 
@@ -301,16 +419,14 @@ extension ArtifactsViewController: NSCollectionViewDataSource, NSCollectionViewD
         _ collectionView: NSCollectionView, layout collectionViewLayout: NSCollectionViewLayout,
         referenceSizeForHeaderInSection section: Int
     ) -> NSSize {
-        let count = section == 0 ? images.count : files.count
-        return count == 0 ? .zero : NSSize(width: collectionView.bounds.width, height: 24)
+        return count(section) == 0 ? .zero : NSSize(width: collectionView.bounds.width, height: 24)
     }
 
     func collectionView(
         _ collectionView: NSCollectionView, layout collectionViewLayout: NSCollectionViewLayout,
         insetForSectionAt section: Int
     ) -> NSEdgeInsets {
-        let count = section == 0 ? images.count : files.count
-        return count == 0 ? NSEdgeInsetsZero : NSEdgeInsets(top: 0, left: 8, bottom: 8, right: 8)
+        return count(section) == 0 ? NSEdgeInsetsZero : NSEdgeInsets(top: 0, left: 8, bottom: 8, right: 8)
     }
 
     func collectionView(
@@ -318,7 +434,8 @@ extension ArtifactsViewController: NSCollectionViewDataSource, NSCollectionViewD
         sizeForItemAt indexPath: IndexPath
     ) -> NSSize {
         if indexPath.section == 0 { return NSSize(width: Self.thumbSide, height: Self.thumbSide) }
-        return NSSize(width: max(60, collectionView.bounds.width - 16), height: 34)
+        let height: CGFloat = indexPath.section == Section.files.rawValue ? 34 : 28
+        return NSSize(width: max(60, collectionView.bounds.width - 16), height: height)
     }
 
     func collectionView(_ collectionView: NSCollectionView, didSelectItemsAt indexPaths: Set<IndexPath>) {
@@ -351,11 +468,15 @@ extension ArtifactsViewController: QLPreviewPanelDataSource, QLPreviewPanelDeleg
 
 // MARK: - Views
 
-/// Reports ↩ (activate), Space (Quick Look) and double-click. Arrow keys keep
+/// Reports ↩ (activate), Space (Quick Look), click and double-click. Arrow keys keep
 /// the collection view's own stepping.
 final class ArtifactCollectionView: NSCollectionView {
     var onActivate: (() -> Void)?
     var onSpace: (() -> Void)?
+    /// A single click on an item (servers and links open on it).
+    var onClick: ((IndexPath) -> Void)?
+    var onDoubleClick: ((IndexPath) -> Void)?
+    var menuFor: ((IndexPath) -> NSMenu?)?
 
     override func keyDown(with event: NSEvent) {
         switch event.keyCode {
@@ -367,9 +488,16 @@ final class ArtifactCollectionView: NSCollectionView {
 
     override func mouseDown(with event: NSEvent) {
         super.mouseDown(with: event)
-        guard event.clickCount == 2 else { return }
         let point = convert(event.locationInWindow, from: nil)
-        if indexPathForItem(at: point) != nil { onActivate?() }
+        guard let path = indexPathForItem(at: point) else { return }
+        if event.clickCount == 1 { onClick?(path) } else if event.clickCount == 2 { onDoubleClick?(path) }
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let point = convert(event.locationInWindow, from: nil)
+        guard let path = indexPathForItem(at: point) else { return nil }
+        selectionIndexPaths = [path]
+        return menuFor?(path)
     }
 }
 
@@ -513,6 +641,76 @@ final class ArtifactFileItem: NSCollectionViewItem {
             ? (a.parentDir as NSString).abbreviatingWithTildeInPath
             : "missing · " + (a.parentDir as NSString).abbreviatingWithTildeInPath
         view.toolTip = a.path
+    }
+
+    override var isSelected: Bool {
+        didSet {
+            view.layer?.backgroundColor = isSelected
+                ? SidebarPalette.accent.withAlphaComponent(0.25).cgColor : NSColor.clear.cgColor
+        }
+    }
+}
+
+/// A Servers or Links row: a live/dead dot (servers) or the site's favicon
+/// (links), then host and path.
+final class ArtifactWebItemView: NSCollectionViewItem {
+    static let id = NSUserInterfaceItemIdentifier("ArtifactWebItemView")
+    private(set) var item: ArtifactWebItem?
+    private let icon = NSImageView()
+    private let label = NSTextField(labelWithString: "")
+
+    override func loadView() {
+        let v = NSView()
+        v.wantsLayer = true
+        v.layer?.cornerRadius = 5
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        icon.imageScaling = .scaleProportionallyDown
+        label.lineBreakMode = .byTruncatingTail
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        v.addSubview(icon)
+        v.addSubview(label)
+        NSLayoutConstraint.activate([
+            icon.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 6),
+            icon.centerYAnchor.constraint(equalTo: v.centerYAnchor),
+            icon.widthAnchor.constraint(equalToConstant: 16),
+            icon.heightAnchor.constraint(equalToConstant: 16),
+            label.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 8),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: v.trailingAnchor, constant: -4),
+            label.centerYAnchor.constraint(equalTo: v.centerYAnchor),
+        ])
+        view = v
+    }
+
+    func configure(_ web: ArtifactWebItem, isServer: Bool, owner: ArtifactsViewController) {
+        item = web
+        let text = NSMutableAttributedString(string: web.host, attributes: [
+            .foregroundColor: web.live == false ? SidebarPalette.muted : SidebarPalette.text,
+            .font: NSFont.systemFont(ofSize: 12),
+        ])
+        text.append(NSAttributedString(string: web.path, attributes: [
+            .foregroundColor: SidebarPalette.muted, .font: NSFont.systemFont(ofSize: 12),
+        ]))
+        label.attributedStringValue = text
+        if isServer {
+            let config = NSImage.SymbolConfiguration(pointSize: 8, weight: .regular)
+            icon.image = NSImage(
+                systemSymbolName: web.live == nil ? "circle" : "circle.fill",
+                accessibilityDescription: web.live == true ? "Running" : web.live == false ? "Stopped" : "Unknown"
+            )?.withSymbolConfiguration(config)
+            icon.contentTintColor = web.live == true ? SidebarPalette.green : SidebarPalette.muted
+            view.toolTip = web.live == true ? "Running · \(web.url)" : web.live == false ? "Stopped · \(web.url)" : web.url
+        } else {
+            icon.image = NSImage(systemSymbolName: "globe", accessibilityDescription: nil)
+            icon.contentTintColor = SidebarPalette.muted
+            view.toolTip = web.url
+            let host = URLComponents(string: web.url)?.host ?? web.host
+            owner.favicon(host: host) { [weak self] image in
+                guard let self, let image, self.item == web else { return }
+                self.icon.image = image
+                self.icon.contentTintColor = nil
+            }
+        }
     }
 
     override var isSelected: Bool {

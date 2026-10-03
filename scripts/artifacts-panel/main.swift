@@ -120,22 +120,33 @@ let transcript = [
     record("assistant", tool("Bash", ["command": "python3 chart.py --out out/revenue-chart.png"])),
     record("assistant", tool("Bash", ["command": "npx playwright screenshot http://localhost:5173 shots/home.png && npx playwright screenshot http://localhost:5173/checkout shots/checkout.png"])),
     record("assistant", tool("Edit", ["file_path": "\(root)/README.md", "old_string": "a", "new_string": "b"])),
-    record("assistant", [["type": "text", "text": "Done. Screenshots in shots/home.png and shots/checkout.png; chart at out/revenue-chart.png."]]),
+    record("assistant", [["type": "text", "text": "Done. Screenshots in shots/home.png and shots/checkout.png; chart at out/revenue-chart.png. The page is at http://localhost:5173/checkout; the preview build was on http://localhost:4173/. Load docs: https://svelte.dev/docs/kit/load — PR: https://github.com/sveltejs/kit/pull/12345"]]),
 ]
 let transcriptPath = "/tmp/artifacts-demo/demo.jsonl"
 try! (transcript.joined(separator: "\n") + "\n").write(toFile: transcriptPath, atomically: true, encoding: .utf8)
 
 let reader = ArtifactTranscriptReader()
 let mentions = reader.mentions(transcript: transcriptPath)!
-let artifacts = ArtifactScanner.resolve(
-    mentions, fileExists: { fm.fileExists(atPath: $0) },
-    mtime: { (try? fm.attributesOfItem(atPath: $0))?[.modificationDate] as? Date })
+// Running says this pane's process tree listens on 5173 and 6006.
+let running = [ArtifactRunningServer(port: 5173, url: "https://localhost:5173/"),
+               ArtifactRunningServer(port: 6006, url: "http://localhost:6006/")]
+func content(_ m: ArtifactMentions) -> ArtifactsContent {
+    let web = ArtifactScanner.web(urls: m.urls, running: running, runningKnown: true)
+    return ArtifactsContent(
+        artifacts: ArtifactScanner.resolve(
+            m, fileExists: { fm.fileExists(atPath: $0) },
+            mtime: { (try? fm.attributesOfItem(atPath: $0))?[.modificationDate] as? Date }),
+        servers: web.servers, links: web.links)
+}
+let full = content(mentions)
+let artifacts = full.artifacts
 
 // MARK: present at sidebar width
 
 final class Recorder: ArtifactsPaneDelegate {
     var log: [String] = []
     func artifactsPaneDidActivate(_ a: Artifact) { log.append("open \(a.name)") }
+    func artifactsPaneDidOpenURL(_ url: String) { log.append("browse \(url)") }
 }
 let recorder = Recorder()
 
@@ -175,12 +186,12 @@ vc.render(.remote)
 pump(0.2)
 expect("remote state says local only", labels().contains("Local panes only"))
 shoot(window, "artifacts-remote")
-vc.render(.list([]))
+vc.render(.list(ArtifactsContent()))
 pump(0.2)
 expect("empty thread says nothing made", labels().contains("Nothing made yet"))
 
 // The list.
-vc.render(.list(artifacts))
+vc.render(.list(full))
 pump(2.5)  // thumbnails come back async
 let collection = all(ArtifactCollectionView.self, in: vc.view).first!
 let imageNames = (0..<collection.numberOfItems(inSection: 0)).compactMap {
@@ -241,7 +252,7 @@ key(36, "\r")
 expect("↩ opens the selection", recorder.log == ["open \(afterDown?.name ?? "")"], "\(recorder.log)")
 
 // A poll that finds the same list keeps the selection.
-vc.render(.list(artifacts))
+vc.render(.list(full))
 pump(0.2)
 expect("an identical re-render keeps the selection", vc.selectedArtifact == afterDown)
 
@@ -252,10 +263,9 @@ handle.seekToEndOfFile()
 minute = 12
 handle.write((record("assistant", tool("Bash", ["command": "npx playwright screenshot http://localhost:5173/cart shots/cart-empty.png"])) + "\n").data(using: .utf8)!)
 handle.closeFile()
-let grown = ArtifactScanner.resolve(
-    reader.mentions(transcript: transcriptPath)!, fileExists: { fm.fileExists(atPath: $0) },
-    mtime: { (try? fm.attributesOfItem(atPath: $0))?[.modificationDate] as? Date })
-vc.render(.list(grown))
+let grownContent = content(reader.mentions(transcript: transcriptPath)!)
+let grown = grownContent.artifacts
+vc.render(.list(grownContent))
 pump(1.5)
 expect("an appended screenshot shows up first", grown.first?.name == "cart-empty.png"
        && collection.numberOfItems(inSection: 0) == 5, "\(grown.first?.name ?? "nil")")
@@ -275,6 +285,63 @@ if let popoverWindow { shoot(popoverWindow, "artifacts-hover") }
 (hoverItem.view as! ArtifactHoverView).onHover?(false)
 pump(0.2)
 expect("leaving closes it", !NSApp.windows.contains { $0.className.contains("Popover") && $0.isVisible })
+
+// Servers and links.
+let webRows = { (section: Int) in (0..<collection.numberOfItems(inSection: section)).compactMap {
+    (collection.item(at: IndexPath(item: $0, section: section)) as? ArtifactWebItemView)?.item } }
+collection.scrollToItems(at: [IndexPath(item: 0, section: 3)], scrollPosition: .bottom)
+pump(2.0)  // favicons
+let servers = webRows(2), links = webRows(3)
+expect("servers: live 5173 (opens the page the agent named, over https), live 6006, dead 4173",
+       servers.map(\.url) == ["https://localhost:5173/checkout","http://localhost:6006/", "http://localhost:4173/"]
+           && servers.map(\.live) == [true, true, false], "\(servers.map { "\($0.url) \(String(describing: $0.live))" })")
+expect("links: the agent's two, newest first, trailing dash/punctuation trimmed",
+       Set(links.map(\.url)) == ["https://svelte.dev/docs/kit/load", "https://github.com/sveltejs/kit/pull/12345"],
+       "\(links.map(\.url))")
+// For the shot: give the list the room the preview had, and select a server
+// (a URL row has nothing to preview).
+let shotSplit = all(NSSplitView.self, in: vc.view).first!
+let savedDivider = shotSplit.arrangedSubviews[0].frame.height
+shotSplit.setPosition(shotSplit.bounds.height - 120, ofDividerAt: 0)
+collection.selectionIndexPaths = [IndexPath(item: 0, section: 2)]
+collection.delegate?.collectionView?(collection, didSelectItemsAt: [IndexPath(item: 0, section: 2)])
+collection.scroll(.zero)
+pump(0.8)
+shoot(window, "artifacts-servers-links")
+shotSplit.setPosition(savedDivider, ofDividerAt: 0)
+collection.scrollToItems(at: [IndexPath(item: 0, section: 3)], scrollPosition: .bottom)
+pump(0.3)
+
+recorder.log = []
+let linkView = collection.item(at: IndexPath(item: 0, section: 3))!.view
+let linkPoint = linkView.convert(NSPoint(x: linkView.bounds.midX, y: linkView.bounds.midY), to: nil)
+app.postEvent(mouse(.leftMouseUp, at: linkPoint), atStart: false)
+window.sendEvent(mouse(.leftMouseDown, at: linkPoint))
+pump(0.3)
+expect("clicking a link opens it in the browser", recorder.log == ["browse \(links[0].url)"], "\(recorder.log)")
+app.postEvent(mouse(.leftMouseUp, at: linkPoint, clicks: 2), atStart: false)
+window.sendEvent(mouse(.leftMouseDown, at: linkPoint, clicks: 2))
+pump(0.3)
+expect("a double-click opens it once, not twice", recorder.log.count == 1, "\(recorder.log)")
+
+let rightClick = NSEvent.mouseEvent(
+    with: .rightMouseDown, location: linkPoint, modifierFlags: [],
+    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+    context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+let menu = collection.menu(for: rightClick)
+expect("right-click offers Copy Link", menu?.items.map(\.title) == ["Copy Link"], "\(menu?.items.map(\.title) ?? [])")
+let savedBoard = NSPasteboard.general.string(forType: .string)
+if let copy = menu?.items.first, let action = copy.action { NSApp.sendAction(action, to: copy.target, from: copy) }
+expect("Copy Link puts the URL on the pasteboard",
+       NSPasteboard.general.string(forType: .string) == links[0].url)
+NSPasteboard.general.clearContents()
+if let savedBoard { NSPasteboard.general.setString(savedBoard, forType: .string) }
+
+recorder.log = []
+let serverPath = IndexPath(item: 2, section: 2)
+collection.selectionIndexPaths = [serverPath]
+key(36, "\r")
+expect("↩ on a server row opens it", recorder.log == ["browse http://localhost:4173/"], "\(recorder.log)")
 
 window.appearance = NSAppearance(named: .aqua)
 pump(0.8)
