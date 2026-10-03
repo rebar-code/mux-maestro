@@ -47,7 +47,7 @@
 		A0000113 /* SidebarDiff.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000018 /* SidebarDiff.swift */; };
 		A0000114 /* SshConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000023 /* SshConfig.swift */; };
 		A0000115 /* AddServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000025 /* AddServer.swift */; };
-		A0000116 /* ScratchpadTransfer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000027 /* ScratchpadTransfer.swift */; };
+		A0000116 /* FileTransfer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000027 /* FileTransfer.swift */; };
 		A0000903 /* BeamTransfer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000900 /* BeamTransfer.swift */; };
 		A0000904 /* BeamRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000901 /* BeamRunner.swift */; };
 		A0000905 /* BeamTransfer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000900 /* BeamTransfer.swift */; };
@@ -82,8 +82,8 @@
 		A0000310 /* SshConfigTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000024 /* SshConfigTests.swift */; };
 		A0000311 /* AddServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000025 /* AddServer.swift */; };
 		A0000312 /* AddServerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000026 /* AddServerTests.swift */; };
-		A0000313 /* ScratchpadTransfer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000027 /* ScratchpadTransfer.swift */; };
-		A0000314 /* ScratchpadTransferTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000028 /* ScratchpadTransferTests.swift */; };
+		A0000313 /* FileTransfer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000027 /* FileTransfer.swift */; };
+		A0000314 /* FileTransferTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000028 /* FileTransferTests.swift */; };
 		A0000119 /* HerdrModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000401 /* HerdrModel.swift */; };
 		A0000120 /* HerdrService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000402 /* HerdrService.swift */; };
 		A0000317 /* HerdrModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000401 /* HerdrModel.swift */; };
@@ -262,8 +262,8 @@
 		A0000D07 /* WindowPRsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowPRsTests.swift; sourceTree = "<group>"; };
 		A0000025 /* AddServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddServer.swift; sourceTree = "<group>"; };
 		A0000026 /* AddServerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddServerTests.swift; sourceTree = "<group>"; };
-		A0000027 /* ScratchpadTransfer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScratchpadTransfer.swift; sourceTree = "<group>"; };
-		A0000028 /* ScratchpadTransferTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScratchpadTransferTests.swift; sourceTree = "<group>"; };
+		A0000027 /* FileTransfer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileTransfer.swift; sourceTree = "<group>"; };
+		A0000028 /* FileTransferTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileTransferTests.swift; sourceTree = "<group>"; };
 		A0000900 /* BeamTransfer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BeamTransfer.swift; sourceTree = "<group>"; };
 		A0000901 /* BeamRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BeamRunner.swift; sourceTree = "<group>"; };
 		A0000902 /* BeamTransferTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BeamTransferTests.swift; sourceTree = "<group>"; };
@@ -430,7 +430,7 @@
 				A0000018 /* SidebarDiff.swift */,
 				A0000023 /* SshConfig.swift */,
 				A0000025 /* AddServer.swift */,
-				A0000027 /* ScratchpadTransfer.swift */,
+				A0000027 /* FileTransfer.swift */,
 				A0000900 /* BeamTransfer.swift */,
 				A0000901 /* BeamRunner.swift */,
 				A0000401 /* HerdrModel.swift */,
@@ -518,7 +518,7 @@
 				A0000714 /* SettingsTests.swift */,
 				DF1A7E5C0B2E4D6F00000002 /* DefaultsMigrationTests.swift */,
 				A0000026 /* AddServerTests.swift */,
-				A0000028 /* ScratchpadTransferTests.swift */,
+				A0000028 /* FileTransferTests.swift */,
 				A0000902 /* BeamTransferTests.swift */,
 				A0000403 /* HerdrModelTests.swift */,
 				A0000404 /* HerdrServiceTests.swift */,
@@ -700,7 +700,7 @@
 				A0000113 /* SidebarDiff.swift in Sources */,
 				A0000114 /* SshConfig.swift in Sources */,
 				A0000115 /* AddServer.swift in Sources */,
-				A0000116 /* ScratchpadTransfer.swift in Sources */,
+				A0000116 /* FileTransfer.swift in Sources */,
 				A0000903 /* BeamTransfer.swift in Sources */,
 				A0000904 /* BeamRunner.swift in Sources */,
 				A0000119 /* HerdrModel.swift in Sources */,
@@ -810,8 +810,8 @@
 				DF1A7E5C0B2E4D6F00000005 /* DefaultsMigrationTests.swift in Sources */,
 				A0000311 /* AddServer.swift in Sources */,
 				A0000312 /* AddServerTests.swift in Sources */,
-				A0000313 /* ScratchpadTransfer.swift in Sources */,
-				A0000314 /* ScratchpadTransferTests.swift in Sources */,
+				A0000313 /* FileTransfer.swift in Sources */,
+				A0000314 /* FileTransferTests.swift in Sources */,
 				A0000905 /* BeamTransfer.swift in Sources */,
 				A0000906 /* BeamTransferTests.swift in Sources */,
 				A0000317 /* HerdrModel.swift in Sources */,

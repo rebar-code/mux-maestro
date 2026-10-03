@@ -25,7 +25,7 @@ struct GitDiffResult: Equatable {
 
 /// Pure construction of the git argv + synthesis of untracked-file patches for
 /// the M14 Diff pane. No process spawning here so every piece is unit-testable
-/// against a `FakeRunner` (like `BrowserPorts` / `ScratchpadTransfer`): the argv
+/// against a `FakeRunner` (like `BrowserPorts` / `FileTransfer`): the argv
 /// builders return the exact command, and `untrackedFilePatch` / `combine`
 /// produce the patch string from canned contents.
 ///

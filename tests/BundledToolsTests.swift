@@ -36,14 +36,11 @@ final class BundledToolsTests: XCTestCase {
                 try Data(contentsOf: source.appendingPathComponent(tool.rawValue)),
                 tool.rawValue)
         }
-        // scratchpad.py serves its phone icons from a sibling folder.
-        XCTAssertTrue(FileManager.default.fileExists(
-            atPath: destination.appendingPathComponent("icons/icon-192.png").path))
     }
 
     func testReinstallReplacesStaleCopiesAndLeavesNoStagedFiles() throws {
         try FileManager.default.createDirectory(
-            at: destination.appendingPathComponent("icons"), withIntermediateDirectories: true)
+            at: destination, withIntermediateDirectories: true)
         try Data("stale".utf8).write(to: destination.appendingPathComponent("sessions.py"))
 
         try BundledTools.install(from: source, to: destination)

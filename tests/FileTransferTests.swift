@@ -1,9 +1,9 @@
 import XCTest
 
-// ScratchpadTransfer.swift + TmuxService.swift + TmuxCommands.swift +
+// FileTransfer.swift + TmuxService.swift + TmuxCommands.swift +
 // SshConfig.swift are compiled into this test target, so the M11 command
-// construction and the grab/drop sequences can be asserted against a fake
-// CommandRunner with no real scp / ssh / scratchpad / tmux spawned.
+// construction and the drop sequence can be asserted against a fake
+// CommandRunner with no real scp / ssh / tmux spawned.
 
 /// Records every command and replies from a scripted table so the exact argv
 /// sequence + stdin presence can be asserted. (Local to this file; the M5
@@ -27,10 +27,8 @@ private struct StaticStatus: AttentionStatusProvider {
     func statuses() -> [String: AttentionStatus] { [:] }
 }
 
-final class ScratchpadTransferTests: XCTestCase {
+final class FileTransferTests: XCTestCase {
     private let tmux = "/usr/bin/tmux"
-    private let py = "/usr/bin/python3"
-    private let script = "/Users/x/.claude/skills/local-scratchpad/scratchpad.py"
     private let buildbox = Host(name: "buildbox", sshAlias: "buildbox")
 
     private func localService(_ runner: FakeRunner) -> TmuxService {
@@ -43,45 +41,25 @@ final class ScratchpadTransferTests: XCTestCase {
             runner: runner, statusProvider: StaticStatus())
     }
 
-    // MARK: copyArgv — local cp vs remote scp+ControlMaster, src/dst ordering
-
-    func testCopyArgvLocalGrabIsCpRemoteToLocalOrder() {
-        // GRAB on local: remote is the source ⇒ cp <src> <dst>.
-        let (path, args) = ScratchpadTransfer.copyArgv(
-            host: .local, localPath: "/tmp/out.html",
-            remotePath: "/Users/x/report.html", remoteIsSource: true)
-        XCTAssertEqual(path, "/bin/cp")
-        XCTAssertEqual(args, ["/Users/x/report.html", "/tmp/out.html"])
-    }
+    // MARK: copyArgv — local cp vs remote scp+ControlMaster
 
     func testCopyArgvLocalDropIsCpLocalToRemoteOrder() {
-        // DROP on local: remote is the destination ⇒ cp <local> <dest>.
-        let (path, args) = ScratchpadTransfer.copyArgv(
+        // Local host ⇒ cp <local> <dest>.
+        let (path, args) = FileTransfer.copyArgv(
             host: .local, localPath: "/tmp/drop.png",
-            remotePath: "/Users/x/proj/drop.png", remoteIsSource: false)
+            remotePath: "/Users/x/proj/drop.png")
         XCTAssertEqual(path, "/bin/cp")
         XCTAssertEqual(args, ["/tmp/drop.png", "/Users/x/proj/drop.png"])
     }
 
-    func testCopyArgvRemoteGrabIsScpWithControlMaster() {
-        let (path, args) = ScratchpadTransfer.copyArgv(
-            host: buildbox, localPath: "/tmp/out.html",
-            remotePath: "/home/me/report.html", remoteIsSource: true)
+    func testCopyArgvRemoteDropPutsHostOperandLast() {
+        let (path, args) = FileTransfer.copyArgv(
+            host: buildbox, localPath: "/tmp/drop.svg",
+            remotePath: "/home/me/proj/drop.svg")
         XCTAssertEqual(path, "/usr/bin/scp")
         // ControlMaster opts present (connection reuse with the tree loads).
         XCTAssertTrue(args.contains("ControlMaster=auto"))
         XCTAssertTrue(args.contains("BatchMode=yes"))
-        // remote source operand first (path shell-quoted — scp expands it
-        // through the remote login shell), then the local dest (raw argv).
-        XCTAssertEqual(Array(args.suffix(2)),
-            ["buildbox:'/home/me/report.html'", "/tmp/out.html"])
-    }
-
-    func testCopyArgvRemoteDropPutsHostOperandLast() {
-        let (path, args) = ScratchpadTransfer.copyArgv(
-            host: buildbox, localPath: "/tmp/drop.svg",
-            remotePath: "/home/me/proj/drop.svg", remoteIsSource: false)
-        XCTAssertEqual(path, "/usr/bin/scp")
         // local source first (raw argv), remote dest operand last (path
         // shell-quoted — scp expands it through the remote login shell).
         XCTAssertEqual(Array(args.suffix(2)),
@@ -91,23 +69,22 @@ final class ScratchpadTransferTests: XCTestCase {
     func testCopyArgvLocalCpOperandsAreRawArgvRemoteIsShellQuoted() {
         // LOCAL cp: operands are argv elements to /bin/cp (no shell) — a space
         // in the path needs no quoting and must reach cp verbatim.
-        let (_, localArgs) = ScratchpadTransfer.copyArgv(
+        let (_, localArgs) = FileTransfer.copyArgv(
             host: .local, localPath: "/tmp/my out.html",
-            remotePath: "/Users/x/My Proj/my out.html", remoteIsSource: false)
+            remotePath: "/Users/x/My Proj/my out.html")
         XCTAssertEqual(localArgs, ["/tmp/my out.html", "/Users/x/My Proj/my out.html"])
 
         // REMOTE scp: the remote path is expanded by the remote LOGIN SHELL, so
         // the path portion of the `alias:` operand must be shell-quoted. The
         // local operand stays raw argv.
-        let (_, remoteArgs) = ScratchpadTransfer.copyArgv(
+        let (_, remoteArgs) = FileTransfer.copyArgv(
             host: buildbox, localPath: "/tmp/my out.html",
-            remotePath: "/home/me/My Proj/my out.html", remoteIsSource: true)
-        XCTAssertEqual(remoteArgs.last, "/tmp/my out.html")
-        XCTAssertEqual(remoteArgs[remoteArgs.count - 2],
-            "buildbox:'/home/me/My Proj/my out.html'")
+            remotePath: "/home/me/My Proj/my out.html")
+        XCTAssertEqual(remoteArgs[remoteArgs.count - 2], "/tmp/my out.html")
+        XCTAssertEqual(remoteArgs.last, "buildbox:'/home/me/My Proj/my out.html'")
     }
 
-    // MARK: copyArgv — scp remote-operand shell-injection defense (grab + drop)
+    // MARK: copyArgv — scp remote-operand shell-injection defense
 
     /// The remote-shell metacharacters that must never appear UNQUOTED in the
     /// remote operand's path portion (the bit after `alias:`).
@@ -138,7 +115,7 @@ final class ScratchpadTransferTests: XCTestCase {
         return true
     }
 
-    func testCopyArgvRemoteOperandQuotesInjectionPayloadsGrabAndDrop() {
+    func testCopyArgvRemoteOperandQuotesInjectionPayloads() {
         let payloads = [
             "/tmp/a;rm -rf b.png",
             "/x/$(id).png",
@@ -146,13 +123,9 @@ final class ScratchpadTransferTests: XCTestCase {
             "~/r;m.html",          // leading-tilde with metachar → fully quoted
         ]
         for payload in payloads {
-            // GRAB (remoteIsSource: true) — remote operand is first.
-            let (_, grab) = ScratchpadTransfer.copyArgv(
-                host: buildbox, localPath: "/tmp/out", remotePath: payload, remoteIsSource: true)
-            assertRemotePathSafelyQuoted(grab[grab.count - 2])
-            // DROP (remoteIsSource: false) — remote operand is last.
-            let (_, drop) = ScratchpadTransfer.copyArgv(
-                host: buildbox, localPath: "/tmp/out", remotePath: payload, remoteIsSource: false)
+            // The remote operand is last.
+            let (_, drop) = FileTransfer.copyArgv(
+                host: buildbox, localPath: "/tmp/out", remotePath: payload)
             assertRemotePathSafelyQuoted(drop.last!)
         }
     }
@@ -160,158 +133,43 @@ final class ScratchpadTransferTests: XCTestCase {
     func testCopyArgvBenignTildePathKeepsTildeBareRestQuoted() {
         // A safe `~/report.html` still tilde-expands on the remote: the `~/`
         // stays bare, the rest is single-quoted (matches the app's other quoting).
-        let (_, args) = ScratchpadTransfer.copyArgv(
-            host: buildbox, localPath: "/tmp/out", remotePath: "~/report.html",
-            remoteIsSource: true)
-        XCTAssertEqual(args[args.count - 2], "buildbox:~/'report.html'")
+        let (_, args) = FileTransfer.copyArgv(
+            host: buildbox, localPath: "/tmp/out", remotePath: "~/report.html")
+        XCTAssertEqual(args.last, "buildbox:~/'report.html'")
     }
 
     func testCopyArgvMaliciousLeadingTildeFallsBackToFullQuoting() {
         // `~/r;m.html` — the metachar is past the tilde segment, so the tilde
         // stays bare but the `;` is safely inside the single-quoted remainder.
-        let (_, args) = ScratchpadTransfer.copyArgv(
-            host: buildbox, localPath: "/tmp/out", remotePath: "~/r;m.html",
-            remoteIsSource: true)
-        XCTAssertEqual(args[args.count - 2], "buildbox:~/'r;m.html'")
+        let (_, args) = FileTransfer.copyArgv(
+            host: buildbox, localPath: "/tmp/out", remotePath: "~/r;m.html")
+        XCTAssertEqual(args.last, "buildbox:~/'r;m.html'")
 
         // `~;rm.html` — the metachar is INSIDE the tilde segment (no slash), so
         // the helper fails its tilde-segment validation and fully quotes the
         // whole token; the `~` is NOT left bare.
-        let (_, args2) = ScratchpadTransfer.copyArgv(
-            host: buildbox, localPath: "/tmp/out", remotePath: "~;rm.html",
-            remoteIsSource: true)
-        XCTAssertEqual(args2[args2.count - 2], "buildbox:'~;rm.html'")
+        let (_, args2) = FileTransfer.copyArgv(
+            host: buildbox, localPath: "/tmp/out", remotePath: "~;rm.html")
+        XCTAssertEqual(args2.last, "buildbox:'~;rm.html'")
     }
 
     // MARK: capturePaneArgv
 
     func testCapturePaneArgv() {
         XCTAssertEqual(
-            ScratchpadTransfer.capturePaneArgv(target: "web:1.%12"),
+            FileTransfer.capturePaneArgv(target: "web:1.%12"),
             ["capture-pane", "-p", "-t", "web:1.%12"])
     }
 
-    // MARK: scratchpad invocations (add vs push --kind, title)
-
-    func testAddInvocation() {
-        let (path, args) = ScratchpadTransfer.addInvocation(
-            python: py, scriptPath: script, file: "/tmp/out.html", title: "report.html @ buildbox")
-        XCTAssertEqual(path, py)
-        XCTAssertEqual(args, [script, "add", "/tmp/out.html", "--title", "report.html @ buildbox"])
-    }
-
-    func testPushInvocationCarriesKindAndTitle() {
-        let (path, args) = ScratchpadTransfer.pushInvocation(
-            python: py, scriptPath: script, kind: "text", title: "web:1 @ buildbox")
-        XCTAssertEqual(path, py)
-        XCTAssertEqual(args, [script, "push", "--kind", "text", "--title", "web:1 @ buildbox"])
-    }
-
-    // MARK: title + destination helpers
-
-    func testFileTitleIsBasenameAtHost() {
-        XCTAssertEqual(
-            ScratchpadTransfer.fileTitle(path: "/home/me/sub/report.html", host: buildbox),
-            "report.html @ buildbox")
-        XCTAssertEqual(
-            ScratchpadTransfer.fileTitle(path: "/tmp/x.png", host: .local),
-            "x.png @ localhost")
-    }
-
-    func testPaneTitle() {
-        XCTAssertEqual(
-            ScratchpadTransfer.paneTitle(session: "web", window: 2, host: buildbox),
-            "web:2 @ buildbox")
-    }
+    // MARK: destination helper
 
     func testDropDestinationJoinsCwdAndFileNameNormalizingSlash() {
         XCTAssertEqual(
-            ScratchpadTransfer.dropDestination(cwd: "/home/me/proj", fileName: "a.png"),
+            FileTransfer.dropDestination(cwd: "/home/me/proj", fileName: "a.png"),
             "/home/me/proj/a.png")
         XCTAssertEqual(
-            ScratchpadTransfer.dropDestination(cwd: "/home/me/proj/", fileName: "a.png"),
+            FileTransfer.dropDestination(cwd: "/home/me/proj/", fileName: "a.png"),
             "/home/me/proj/a.png")
-    }
-
-    // MARK: grabFileToScratchpad — local adds the file directly
-
-    func testGrabFileLocalAddsFileWithoutCopy() {
-        let runner = FakeRunner()
-        let ok = localService(runner).grabFileToScratchpad(
-            remotePath: "/Users/x/report.html", localStaging: "/tmp/staged.html",
-            python: py, scratchpadScript: script)
-        XCTAssertTrue(ok)
-        // Local: no cp/scp — the file is added directly to the scratchpad.
-        XCTAssertEqual(runner.calls.count, 1)
-        XCTAssertEqual(runner.calls[0].path, py)
-        XCTAssertEqual(runner.calls[0].args,
-            [script, "add", "/Users/x/report.html", "--title", "report.html @ localhost"])
-    }
-
-    // MARK: grabFileToScratchpad — remote scps down, then adds the staged copy
-
-    func testGrabFileRemoteScpsThenAddsStagedCopy() {
-        let runner = FakeRunner()
-        let ok = remoteService(runner).grabFileToScratchpad(
-            remotePath: "/home/me/report.html", localStaging: "/tmp/staged.html",
-            python: py, scratchpadScript: script)
-        XCTAssertTrue(ok)
-        XCTAssertEqual(runner.calls.count, 2)
-        // 1) scp remote:path → staging
-        XCTAssertEqual(runner.calls[0].path, "/usr/bin/scp")
-        XCTAssertEqual(Array(runner.calls[0].args.suffix(2)),
-            ["buildbox:'/home/me/report.html'", "/tmp/staged.html"])
-        // 2) scratchpad add the STAGED local copy (not the remote path)
-        XCTAssertEqual(runner.calls[1].args,
-            [script, "add", "/tmp/staged.html", "--title", "report.html @ buildbox"])
-    }
-
-    func testGrabFileRemoteAbortsWhenScpFails() {
-        let runner = FakeRunner()
-        runner.defaultResponse = String?.none  // scp fails
-        let ok = remoteService(runner).grabFileToScratchpad(
-            remotePath: "/home/me/x.html", localStaging: "/tmp/s.html",
-            python: py, scratchpadScript: script)
-        XCTAssertFalse(ok)
-        XCTAssertEqual(runner.calls.count, 1)  // never reaches the scratchpad add
-    }
-
-    // MARK: grabPaneOutputToScratchpad — capture-pane → push --kind text (stdin)
-
-    func testGrabPaneOutputCapturesThenPushesTextOverStdin() {
-        let runner = FakeRunner()
-        runner.responses["capture-pane -p -t %12"] = "line one\nline two\n"
-        let ok = localService(runner).grabPaneOutputToScratchpad(
-            session: "web", window: 1, paneTarget: "%12",
-            python: py, scratchpadScript: script)
-        XCTAssertTrue(ok)
-        XCTAssertEqual(runner.calls.count, 2)
-        XCTAssertEqual(runner.calls[0].args, ["capture-pane", "-p", "-t", "%12"])
-        // push --kind text --title "web:1 @ localhost", bytes on stdin.
-        XCTAssertEqual(runner.calls[1].args,
-            [script, "push", "--kind", "text", "--title", "web:1 @ localhost"])
-        XCTAssertTrue(runner.calls[1].hadStdin)
-    }
-
-    func testGrabPaneOutputRemoteCaptureIsSshWrapped() {
-        let runner = FakeRunner()
-        runner.responses["'tmux' 'capture-pane' '-p' '-t' '%9'"] = "remote text"
-        // Remote capture-pane is ssh-wrapped + quoted by the transport. The
-        // FakeRunner keys on the FULL args, so script the ssh-wrapped form:
-        let svc = remoteService(runner)
-        // Find the wrapped key dynamically — build the expected args via opts.
-        runner.responses.removeAll()
-        runner.defaultResponse = "remote text"
-        let ok = svc.grabPaneOutputToScratchpad(
-            session: "api", window: 0, paneTarget: "%9",
-            python: py, scratchpadScript: script)
-        XCTAssertTrue(ok)
-        // First call is the ssh-wrapped capture-pane; last is the local push.
-        XCTAssertEqual(runner.calls[0].path, "/usr/bin/ssh")
-        XCTAssertEqual(Array(runner.calls[0].args.suffix(5)),
-            ["'tmux'", "'capture-pane'", "'-p'", "'-t'", "'%9'"])
-        XCTAssertEqual(runner.calls.last!.args,
-            [script, "push", "--kind", "text", "--title", "api:0 @ buildbox"])
     }
 
     // MARK: dropFileToSession — resolve cwd → scp/cp → PASTE the path (no Enter)

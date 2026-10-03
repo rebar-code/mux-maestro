@@ -9,7 +9,6 @@ runs the scripts from there. For a remote host it pushes `sessions.py` to
 | File | Used by |
 |---|---|
 | `sessions.py` | Attention status, local and remote |
-| `scratchpad.py`, `icons/` | Grab to Scratchpad |
 | `spindown.py` | Worktree cleanup after a close |
 | `spin.py` | `mux spin` / Start work |
 
@@ -30,8 +29,8 @@ To add a tool: put the file here, add a `BundledTool` case, and add it to the
     make tools-selftest
 
 Runs each script with an empty temp HOME and `PATH=/usr/bin:/bin` — no
-`~/.claude`, no ports file, no remote host, and no tmux, docker, gh,
-treehouse or tailscale on PATH.
+`~/.claude`, no ports file, no remote host, and no tmux, docker, gh or
+treehouse on PATH.
 
 ## Runtime dependencies (not bundled)
 

@@ -78,7 +78,6 @@ hidden or falls back.
 
 - **[treehouse](https://github.com/kunchenguid/treehouse)** worktree pools:
   needed by "Start work" and `mux spin`. Without it, `mux spin` exits with an error.
-- **Tailscale:** phone access to the scratchpad. Falls back to local HTTP.
 - **tmux window options:** `@mm_prs` (PR numbers) and `@mm_repo` (repo slug) tag
   a window with its PRs; `@tn_base` / `@tn_tags` give it a name plus status tags.
   Without them, PRs come from the window name and `git`.

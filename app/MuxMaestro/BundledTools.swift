@@ -5,8 +5,6 @@ import Foundation
 enum BundledTool: String, CaseIterable {
     /// Claude Code attention status (`sessions.py list`), local and remote.
     case sessions = "sessions.py"
-    /// Grab to Scratchpad (`scratchpad.py add|push`).
-    case scratchpad = "scratchpad.py"
     /// Worktree cleanup after a close (`spindown.py --worktree … --yes --json`).
     case spindown = "spindown.py"
 }

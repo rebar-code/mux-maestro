@@ -232,40 +232,18 @@ is split into a pure core (`AddServer.swift`, fully unit-tested) and thin UI
   are injected, so the whole feature is tested in a temp dir — never the real
   `~/.ssh`.
 
-## Scratchpad artifact transfer (M11)
+## File drop onto a session (M11)
 
-Through M10 MuxMaestro could only *navigate* and *act on* sessions. M11 makes the
-**local-scratchpad** (`scratchpad.py`, bundled in `Resources/tools/` — the
-phone-pinned `/latest` view over the tailnet gateway) a **two-way artifact
-conduit** with any host, driven from the app. Two directions:
-
-### GRAB (server/session → scratchpad)
-
-So an artifact shows on the phone's `/latest`:
-
-- **File-pull** — a "Grab file to scratchpad…" action on a host/session/window/
-  pane row (and the toolbar **Grab** button / **⌘⇧G**). Prompts for a path
-  (defaulting to the session cwd locally, `~` remotely). For a remote host it
-  `scp`s the file down to a local staging path first — **reusing M8's
-  ControlMaster opts** so the pull shares the host's multiplexed connection — then
-  `scratchpad.py add <staged> --title "<basename> @ <host>"` (the scratchpad
-  infers the kind from the extension). For the local host the file is added
-  directly (no copy).
-- **Grab pane output** — a "Grab pane output → scratchpad" action on a pane row.
-  Captures the pane (`tmux capture-pane -p -t <target>`, routed through the host's
-  transport so it's local or ssh-wrapped automatically) and pipes the text into
-  `scratchpad.py push --kind text --title "<session>:<win> @ <host>"`.
-
-### DROP (file → server session)
-
-The inverse, by drag-and-drop: sidebar **session rows are an
-`NSDraggingDestination`** that accept file URLs (from Finder *or* the scratchpad
-store). On a drop onto a session: resolve that session's cwd (`sessionCwd` via the
-host's service), copy the file there (`cp` local / `scp` remote to `<cwd>/`), then
-**paste the resulting path into that pane** — `load-buffer`/`paste-buffer` with
-the path text on stdin, **no auto-Enter** (the M11 decision: paste the path for
-the user to run, never execute it). `validateDrop` only accepts a file-URL drop
-*on* a session row and retargets a drop anywhere in the subtree onto the session.
+Sidebar **session rows are an `NSDraggingDestination`** that accept file URLs
+(e.g. from Finder). On a drop onto a session: resolve that session's cwd
+(`sessionCwd` via the host's service), copy the file there (`cp` local / `scp`
+remote to `<cwd>/`, **reusing M8's ControlMaster opts** so the copy shares the
+host's multiplexed connection), then **paste the resulting path into that
+pane** — `load-buffer`/`paste-buffer` with the path text on stdin, **no
+auto-Enter** (the M11 decision: paste the path for the user to run, never execute
+it). `validateDrop` only accepts a file-URL drop *on* a session row and retargets
+a drop anywhere in the subtree onto the session. A file dropped on the terminal
+takes the same path, with a trailing space after the pasted path.
 
 ### Security — scp remote-operand quoting
 
@@ -273,11 +251,9 @@ The scp **remote** operand (`<alias>:<path>`) is not pure argv: scp expands the
 remote `<path>` through the remote **login shell** (it runs roughly
 `<remote-shell> -c 'scp -t <path>'`), so spaces, `;`, `$()`, backticks, `&&`,
 `|`, etc. in that path would execute on the remote host. This is reachable from
-the user-typed grab path and from a dropped file whose basename carries
-metacharacters. `copyArgv` therefore shell-quotes the path portion before the
-`alias:` prefix — `"\(alias):" + Ssh.shellQuoteAllowingTilde(remotePath)` — for
-**both** grab (remote source) and drop (remote dest). Using
-`shellQuoteAllowingTilde` (not plain `shellQuote`) keeps a user-typed
+a dropped file whose basename carries metacharacters. `copyArgv` therefore shell-quotes the path portion before the
+`alias:` prefix — `"\(alias):" + Ssh.shellQuoteAllowingTilde(remotePath)`. Using
+`shellQuoteAllowingTilde` (not plain `shellQuote`) keeps a
 `~/report.html` tilde-expanding to the remote `$HOME` like the rest of the app;
 a malicious leading `~…` (e.g. `~;rm`) fails that helper's tilde-segment
 validation and falls back to full single-quoting automatically. The local `cp`
@@ -286,18 +262,14 @@ branch stays raw argv (no shell, nothing to quote).
 ### Design (testable seam)
 
 The command construction is a pure, fully unit-tested core
-(`ScratchpadTransfer.swift`): `copyArgv` (local `cp` vs remote `scp` + the shared
-ControlMaster opts, src/dst ordered by grab-vs-drop, paths with spaces safe as
-argv elements), `capturePaneArgv`, the scratchpad `addInvocation` /
-`pushInvocation` (add vs `push --kind`), the `<basename|session:win> @ <host>`
-titles, and `dropDestination`. The runtime methods
-(`TmuxService.grabFileToScratchpad` / `grabPaneOutputToScratchpad` /
-`dropFileToSession`) thread those through the same `CommandRunner`/`TmuxTransport`
-seam every other call uses, so a `FakeRunner` asserts the whole grab/drop
-sequence — including that the drop **pastes the remote path text and never sends
-Enter** — with no real ssh/scp/scratchpad/tmux spawned. All transfers run on the
-off-main `driverQueue` (M7); only the path prompt, success/error alerts, and the
-refresh touch main.
+(`FileTransfer.swift`): `copyArgv` (local `cp` vs remote `scp` + the shared
+ControlMaster opts, paths with spaces safe as argv elements), `capturePaneArgv`,
+and `dropDestination`. The runtime method (`TmuxService.dropFileToSession`)
+threads those through the same `CommandRunner`/`TmuxTransport` seam every other
+call uses, so a `FakeRunner` asserts the whole drop sequence — including that the
+drop **pastes the remote path text and never sends Enter** — with no real
+ssh/scp/tmux spawned. The drop runs on the off-main `driverQueue` (M7); only the
+error alert touches main.
 
 ## Embedded browser pane (M12)
 
@@ -345,14 +317,6 @@ selected session is serving and opens it:
 The lsof/ps parsing, the ssh-forward argv (incl. the ControlMaster opts), and URL
 normalization are pure, fully unit-tested helpers in `BrowserPorts.swift` (a
 `FakeRunner` covers the service paths — no real lsof/ps/ssh spawned in tests).
-
-### Screenshot → scratchpad (Tier 2)
-
-A **camera** button captures the current page via `WKWebView.takeSnapshot`,
-encodes a PNG, and pushes it to the scratchpad — reusing M11's
-`ScratchpadTransfer.addInvocation` (`scratchpad.py add <png> --title …`) so it
-shows on the phone-pinned `/latest`. The encode + transfer run off the main
-thread; only the result alert touches main.
 
 ### Per-session remembered URL
 
@@ -452,7 +416,7 @@ exactly like the browser pane's Open-Port path.
 The pane shows **all uncommitted changes vs HEAD** (`git diff HEAD` — staged +
 unstaged tracked changes) **plus untracked files rendered as additions**, in one
 refreshable patch. `GitDiff` is a Foundation-only, fully unit-tested core (like
-`BrowserPorts` / `ScratchpadTransfer`): it builds the git argv and synthesizes
+`BrowserPorts` / `FileTransfer`): it builds the git argv and synthesizes
 untracked-file patches.
 
 - **argv builders.** `isRepoArgv` (`rev-parse --is-inside-work-tree`),
@@ -539,14 +503,12 @@ version in `scripts/build-libghostty.sh`.
    context menu down the tree: window rows (kill / rename / new) and pane rows
    (kill / split h+v), reusing M6 destructive-safety + M8 per-host routing. See
    "Window / pane context actions" below.
-8. **Scratchpad artifact transfer** (added post-plan) — two-way conduit with the
-   local-scratchpad: GRAB a file or a pane's output from a host/session into the
-   scratchpad (`/latest`), and DROP a file onto a session (copy to its cwd +
-   paste the path, no auto-run) via drag-and-drop. See "Scratchpad artifact
-   transfer" above.
+8. **File drop onto a session** (added post-plan) — drag a file onto a session
+   to copy it to the session's cwd and paste the path (no auto-run). See "File
+   drop onto a session" above.
 9. **Embedded browser pane** (added post-plan) — preview a session's listening
-   dev-server port in an in-app `WKWebView`, with snapshot → scratchpad and a
-   per-session remembered URL. See "Embedded browser pane (M12)" above.
+   dev-server port in an in-app `WKWebView`, with a per-session
+   remembered URL. See "Embedded browser pane (M12)" above.
 10. **herdr provider** (added post-plan) — add **herdr**, a separate non-tmux
    multiplexer, as a second session source via a parallel `HerdrService`
    provider (list / attach / stop / delete + agent-status attention), surfaced
