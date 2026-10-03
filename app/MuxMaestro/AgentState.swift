@@ -309,6 +309,16 @@ struct TranscriptTails: Equatable {
     var clocks: [String: CacheClock] = [:]
     var prompts: [String: LastPrompt] = [:]
     var lastWrites: [String: Int] = [:]
+    /// Claude session id → its transcript as last stat'ed. Codex rollouts are
+    /// left out. Session triage reads from here rather than looking again.
+    var files: [String: TranscriptFile] = [:]
+}
+
+/// A transcript's path, and its size and mtime when last stat'ed.
+struct TranscriptFile: Equatable {
+    let path: String
+    let size: UInt64
+    let mtime: Date
 }
 
 /// Reads the tails of local agent transcripts: Claude Code's
@@ -388,6 +398,7 @@ final class TranscriptTailReader {
             if let clock = entry.clock { out.clocks[sessionId] = clock }
             if let prompt = entry.prompt { out.prompts[sessionId] = prompt }
             if let at = entry.lastWrite { out.lastWrites[sessionId] = at }
+            if !codex { out.files[sessionId] = TranscriptFile(path: path, size: size, mtime: mtime) }
         }
         entries = next
         return out

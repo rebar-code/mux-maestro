@@ -682,6 +682,8 @@ final class TmuxService {
     /// rollout path (see `TranscriptTailReader`). Local host only; nil elsewhere,
     /// so remote panes keep the status-time 💤 and one-line rows.
     private let transcripts: (([String: String], [String: String]) -> TranscriptTails)?
+    /// jev verdicts for idle Claude panes. Local host only; nil elsewhere.
+    let triage: SessionTriageService?
 
     /// Runner for the two commands that legitimately outlive `runner`'s 4s ceiling:
     /// `docker ps` (over five minutes at nine concurrent Supabase stacks on this
@@ -733,6 +735,7 @@ final class TmuxService {
             statusProvider: CachedStatusProvider(SessionsPyStatusProvider(runner: runner)),
             agentStates: AgentStateReader().rows,
             transcripts: TranscriptTailReader().read(sessionCwds:codexRollouts:),
+            triage: SessionTriageService.live,
             slowRunner: ProcessCommandRunner(timeout: Self.slowCommandTimeout))
     }
 
@@ -772,6 +775,7 @@ final class TmuxService {
         statusProvider: AttentionStatusProvider?,
         agentStates: (() -> [AgentStateRow])? = nil,
         transcripts: (([String: String], [String: String]) -> TranscriptTails)? = nil,
+        triage: SessionTriageService? = nil,
         slowRunner: CommandRunner? = nil
     ) {
         self.host = host
@@ -781,6 +785,7 @@ final class TmuxService {
         self.statusProvider = statusProvider ?? SessionsPyStatusProvider(runner: runner)
         self.agentStates = agentStates
         self.transcripts = transcripts
+        self.triage = triage
         self.driverQueue = DispatchQueue(label: "is.rebar.muxmaestro.drivers.\(host.name)")
     }
 
@@ -923,7 +928,7 @@ final class TmuxService {
             (self.agentStates?() ?? []).map { ($0.sessionId, $0) },
             uniquingKeysWith: { first, _ in first })
         let tails = transcripts?(status.sessionCwds, status.codexRollouts) ?? TranscriptTails()
-        let result = TmuxModel.sorted(
+        let sorted = TmuxModel.sorted(
             sessions: sessions, statuses: status.statuses,
             activity: status.activity,
             paneStatuses: status.paneStatuses,
@@ -935,6 +940,7 @@ final class TmuxService {
             cacheClocks: tails.clocks,
             lastPrompts: tails.prompts,
             lastWrites: tails.lastWrites)
+        let result = triage?.apply(to: sorted, transcripts: tails.files) ?? sorted
         // The app explicitly clears the snapshot when its close actions remove the
         // last session. An empty poll can instead mean tmux died, so it must not
         // erase the last useful tree before manual recovery can use it.

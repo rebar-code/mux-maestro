@@ -224,6 +224,100 @@ enum ManagerTranscript {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// The thread's first human prompt: not a harness note, a compact summary, a
+    /// tool result, or text opening with `<` (reminders). A slash command with
+    /// arguments counts as `/bug-fix the sidebar freezes`; one without (`/clear`)
+    /// names no goal and is skipped.
+    static func firstPrompt(lines: [String]) -> String? {
+        for line in lines {
+            guard let record = record(line) else { continue }
+            if isPrompt(record) { return userPromptText(record) }
+            if let command = slashCommand(record) { return command }
+        }
+        return nil
+    }
+
+    /// `/name args` from a slash-command echo, or nil when it has no arguments.
+    private static func slashCommand(_ record: [String: Any]) -> String? {
+        guard record["type"] as? String == "user", record["isMeta"] as? Bool != true else { return nil }
+        let text = userPromptText(record)
+        func tag(_ name: String) -> String? {
+            guard let open = text.range(of: "<\(name)>"),
+                  let close = text.range(of: "</\(name)>", range: open.upperBound..<text.endIndex)
+            else { return nil }
+            return text[open.upperBound..<close.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard let name = tag("command-name"), !name.isEmpty,
+              let args = tag("command-args"), !args.isEmpty
+        else { return nil }
+        return "\(name) \(args)"
+    }
+
+    /// The last `limit` user and assistant turns, oldest first. An assistant
+    /// turn runs across records until the next prompt, so its text blocks join
+    /// and each tool call collapses to `[tool: Name]`. Tool results and thinking
+    /// are left out. Each turn is cut to `maxChars`: a prompt keeps its start, a
+    /// reply its end, where the outcome or the question is.
+    static func recentTurns(
+        lines: [String], limit: Int, maxChars: Int
+    ) -> [(role: String, text: String)] {
+        var turns: [(role: String, text: String)] = []
+        var reply: [String] = []
+        func closeReply() {
+            if !reply.isEmpty { turns.append(("assistant", reply.joined(separator: "\n"))) }
+            reply = []
+        }
+        for line in lines {
+            guard let record = record(line) else { continue }
+            if record["type"] as? String == "assistant" {
+                for block in contentBlocks(record) {
+                    switch block["type"] as? String {
+                    case "text":
+                        let text = (block["text"] as? String ?? "")
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !text.isEmpty { reply.append(text) }
+                    case "tool_use":
+                        reply.append("[tool: \(block["name"] as? String ?? "?")]")
+                    default:
+                        continue
+                    }
+                }
+            } else if isPrompt(record) {
+                closeReply()
+                turns.append(("user", userPromptText(record)))
+            }
+        }
+        closeReply()
+        return turns.suffix(limit).map { turn in
+            guard turn.text.count > maxChars else { return turn }
+            return turn.role == "user"
+                ? (turn.role, String(turn.text.prefix(maxChars - 1)) + "…")
+                : (turn.role, "…" + String(turn.text.suffix(maxChars - 1)))
+        }
+    }
+
+    /// The newest `ai-title` Claude Code wrote for the thread: its one-line summary.
+    static func aiTitle(lines: [String]) -> String? {
+        for line in lines.reversed() where line.contains("\"ai-title\"") {
+            guard let record = record(line), record["type"] as? String == "ai-title",
+                  let title = record["aiTitle"] as? String, !title.isEmpty
+            else { continue }
+            return title
+        }
+        return nil
+    }
+
+    /// A user record the human typed.
+    private static func isPrompt(_ record: [String: Any]) -> Bool {
+        guard record["type"] as? String == "user",
+              record["isMeta"] as? Bool != true,
+              record["isCompactSummary"] as? Bool != true
+        else { return false }
+        let text = userPromptText(record)
+        return !text.isEmpty && !text.hasPrefix("<") && !text.hasPrefix("Caveat:")
+            && !text.hasPrefix("[Request interrupted")
+    }
+
     /// The transcript's lines. Mirrors Python's `splitlines()`: a final newline
     /// does not produce a trailing empty line, so counts line up with the
     /// `start` offsets the watcher carries.

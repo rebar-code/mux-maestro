@@ -193,7 +193,8 @@ final class SidebarNode {
             // cell renders it as a real chip) so a session moving into a worktree,
             // or its tree turning out to hold unique work, reloads the row.
             let wt = worktree.map { " ·\($0.label)" } ?? ""
-            return "\(s.attention.dot) \(s.name) \(s.attention.label)\(wt)"
+            let triage = s.triage?.chip.map { " ·\($0.rawValue)" } ?? ""
+            return "\(s.attention.dot) \(s.name) \(s.attention.label)\(wt)\(triage)"
         case .window(_, _, let w):
             return IdleTag.windowLabel(w)
         case .pane(_, _, _, let p):
@@ -340,8 +341,10 @@ extension SidebarNode: DiffableTreeNode {
             // Fold the host's tint in so re-coloring a server reloads its session
             // cards on the next refresh (the color isn't part of `display`). The
             // sort mode too, so the header's sort button repaints.
+            // The triage tooltip too: its numbers move without the chip changing.
             return "\(display)\u{1}\(Settings.colorHex(host: host))"
                 + "\u{1}\(Settings.sortsByRecent(session: s.name, host: host))"
+                + "\u{1}\(s.triage?.tooltip ?? "")"
         case .directory(_, _, let pinned):
             // Diff-only, like the session tint: the pin renders as a glyph, so
             // folding it in here repaints the row without putting a marker in the
@@ -826,6 +829,39 @@ final class WorktreeChipView: NSTextField {
     }
 }
 
+/// jev's reading of the session's idle Claude threads: `Your move`, `Waiting`,
+/// `Close?`… The tooltip holds the numbers behind it. Inert, like the worktree
+/// chip: the app suggests, it never closes a thread itself.
+final class TriageChipView: NSTextField {
+    init() {
+        super.init(frame: .zero)
+        isEditable = false
+        isBordered = false
+        isSelectable = false
+        drawsBackground = false
+        font = .systemFont(ofSize: 11, weight: .semibold)
+        translatesAutoresizingMaskIntoConstraints = false
+        maximumNumberOfLines = 1
+        lineBreakMode = .byTruncatingTail
+        // Short words that a cut would make wrong ("Close?" as "Clo"), so they
+        // keep their width and the name yields instead.
+        setContentCompressionResistancePriority(.required, for: .horizontal)
+        setContentHuggingPriority(.required, for: .horizontal)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
+
+    func configure(_ chip: TriageChip, tooltip: String) {
+        switch chip {
+        case .urgent: textColor = SidebarPalette.red
+        case .yourMove, .blocked: textColor = SidebarPalette.amber
+        case .waiting, .close, .done: textColor = SidebarPalette.muted
+        }
+        stringValue = chip.rawValue
+        toolTip = tooltip
+    }
+}
+
 /// Custom session row content: an attention dot, name, and status label (the
 /// card itself is drawn by the enclosing `CardRowView`).
 final class SessionCellView: NSTableCellView {
@@ -840,6 +876,8 @@ final class SessionCellView: NSTableCellView {
     let prChip = PRChipButton()
     /// Worktree pill; hidden (and collapsed by the stack) for a plain main checkout.
     let worktreeChip = WorktreeChipView()
+    /// jev's chip; hidden without a gateway key or a verdict worth showing.
+    let triageChip = TriageChipView()
     /// Trailing "+" — adds a window to this session. Wired by the delegate.
     let addButton = SidebarAddButton.make(tooltip: "New window")
     /// Switches the session's windows between index order and newest prompt
@@ -870,7 +908,9 @@ final class SessionCellView: NSTableCellView {
 
         // Trailing accessories in a stack so a hidden PR chip collapses cleanly
         // (no leftover gap) without juggling constraints.
-        let accessories = NSStackView(views: [statusField, worktreeChip, prChip, sortButton, addButton])
+        let accessories = NSStackView(views: [
+            statusField, triageChip, worktreeChip, prChip, sortButton, addButton,
+        ])
         accessories.orientation = .horizontal
         accessories.alignment = .centerY
         accessories.spacing = 6
@@ -956,8 +996,16 @@ final class SessionCellView: NSTableCellView {
         } else {
             worktreeChip.isHidden = true
         }
-        // A chip already tells you something specific about this row; the status
-        // word only repeats the dot. Drop it rather than let it crowd the name.
+        // A worktree or PR chip already tells you something specific about this
+        // row; the status word only repeats the dot. Drop it rather than let it
+        // crowd the name. The triage chip never hides it: `running` or `needs you`
+        // outranks a guess about an idle thread.
+        if let triage = session.triage, let chip = triage.chip {
+            triageChip.configure(chip, tooltip: triage.tooltip)
+            triageChip.isHidden = false
+        } else {
+            triageChip.isHidden = true
+        }
         statusField.isHidden = worktree != nil || pr != nil
         // A resolved favicon takes the leading slot as the row's identity icon
         // (rendered in its own color); otherwise fall back to the muted host glyph.

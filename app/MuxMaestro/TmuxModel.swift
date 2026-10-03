@@ -99,6 +99,10 @@ struct TmuxPane: Equatable {
     /// Epoch seconds the pane's Claude or Codex thread was last written: the
     /// age on the right of line 2. nil for a pane with no readable thread.
     var lastActivityAt: Int? = nil
+    /// jev's last reading of the pane's idle Claude thread (see
+    /// `SessionTriageService`). nil without a gateway key, while the agent runs,
+    /// or until a verdict exists for the transcript as it is now.
+    var triage: TriageVerdict? = nil
 }
 
 /// A tmux window, containing panes.
@@ -198,6 +202,16 @@ struct TmuxSession: Equatable {
     static func == (lhs: TmuxSession, rhs: TmuxSession) -> Bool {
         lhs.name == rhs.name && lhs.attached == rhs.attached
             && lhs.windows == rhs.windows && lhs.attention == rhs.attention
+    }
+
+    /// The session card's triage chip: the most urgent verdict across its panes.
+    /// `Done` and `Close?` need every agent pane idle; a pane with no agent
+    /// (`.unknown`) does not count.
+    var triage: TriageVerdict? {
+        let panes = windows.flatMap(\.panes)
+        return TriageVerdict.rollup(
+            panes.compactMap(\.triage),
+            settled: panes.allSatisfy { $0.attention == .idle || $0.attention == .unknown })
     }
 
     /// The session's working directory: the active pane of the active window

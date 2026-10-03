@@ -7,6 +7,13 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		5E550011 /* GatewayKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E550001 /* GatewayKey.swift */; };
+		5E550012 /* GatewayKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E550001 /* GatewayKey.swift */; };
+		5E550021 /* JevClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E550002 /* JevClient.swift */; };
+		5E550022 /* JevClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E550002 /* JevClient.swift */; };
+		5E550031 /* SessionTriage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E550003 /* SessionTriage.swift */; };
+		5E550032 /* SessionTriage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E550003 /* SessionTriage.swift */; };
+		5E550042 /* SessionTriageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E550004 /* SessionTriageTests.swift */; };
 		A0000101 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000001 /* main.swift */; };
 		A0000102 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000002 /* AppDelegate.swift */; };
 		A0000103 /* GhosttyApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000003 /* GhosttyApp.swift */; };
@@ -210,6 +217,10 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		5E550001 /* GatewayKey.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayKey.swift; sourceTree = "<group>"; };
+		5E550002 /* JevClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JevClient.swift; sourceTree = "<group>"; };
+		5E550003 /* SessionTriage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionTriage.swift; sourceTree = "<group>"; };
+		5E550004 /* SessionTriageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionTriageTests.swift; sourceTree = "<group>"; };
 		A0000001 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		A0000002 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		A0000003 /* GhosttyApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyApp.swift; sourceTree = "<group>"; };
@@ -420,6 +431,9 @@
 				A0000D01 /* Worktrees.swift */,
 				C4B10001 /* DockerAttribution.swift */,
 				C4B10002 /* WorktreeMetrics.swift */,
+				5E550001 /* GatewayKey.swift */,
+				5E550002 /* JevClient.swift */,
+				5E550003 /* SessionTriage.swift */,
 				C4B10003 /* WorktreeRowCell.swift */,
 				C4B1E001 /* Running.swift */,
 				C4B1E0A3 /* HostAddress.swift */,
@@ -510,6 +524,7 @@
 				A0000D02 /* WorktreesTests.swift */,
 				C4B10004 /* DockerAttributionTests.swift */,
 				C4B1000C /* WorktreeMetricsTests.swift */,
+				5E550004 /* SessionTriageTests.swift */,
 				C4B1E004 /* RunningTests.swift */,
 				A0057003 /* HostStatsTests.swift */,
 				C4B1E0A4 /* HostAddressTests.swift */,
@@ -690,6 +705,9 @@
 				A0000D03 /* Worktrees.swift in Sources */,
 				C4B10005 /* DockerAttribution.swift in Sources */,
 				C4B10006 /* WorktreeMetrics.swift in Sources */,
+				5E550011 /* GatewayKey.swift in Sources */,
+				5E550021 /* JevClient.swift in Sources */,
+				5E550031 /* SessionTriage.swift in Sources */,
 				C4B10007 /* WorktreeRowCell.swift in Sources */,
 				C4B1E011 /* Running.swift in Sources */,
 				C4B1E0A1 /* HostAddress.swift in Sources */,
@@ -794,6 +812,10 @@
 				C4B10009 /* WorktreeMetrics.swift in Sources */,
 				C4B1000A /* DockerAttributionTests.swift in Sources */,
 				C4B1000B /* WorktreeMetricsTests.swift in Sources */,
+				5E550012 /* GatewayKey.swift in Sources */,
+				5E550022 /* JevClient.swift in Sources */,
+				5E550032 /* SessionTriage.swift in Sources */,
+				5E550042 /* SessionTriageTests.swift in Sources */,
 				C4B1E021 /* Running.swift in Sources */,
 				C4B1E0A2 /* HostAddress.swift in Sources */,
 				C4B1E024 /* RunningTests.swift in Sources */,
