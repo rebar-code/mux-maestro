@@ -7,10 +7,29 @@ import Foundation
 // The rules, in one place:
 // - Text is `MobileManager.text`: the one filter that keeps a key press out of
 //   pasted text. It goes in as one bracketed paste, never as key presses.
-// - Free text goes only into a pane that is neither busy nor on a prompt, and
-//   the state is read again immediately before the Enter.
-// - A pane on a prompt takes an answer the human tapped, or a whitelisted key.
+// - Free text goes only into a pane that is neither busy nor on a prompt. The
+//   status and the pane's screen are both read before the paste and again
+//   immediately before the Enter. A pane whose status is not known first-hand
+//   (no hooks, or another host) must show an input box.
+// - Text that was pasted and then refused is taken out of the input box.
+// - A pane on a prompt takes an answer the human tapped, or a whitelisted
+//   key; both name the prompt the phone showed, and a prompt that changed
+//   takes neither.
 // - A key is a name from `MobileReply.keys`. Nothing else reaches `send-keys`.
+
+/// What a pane is doing now.
+struct MobilePaneState: Equatable {
+    var status: AttentionStatus
+    /// When it entered that status. It tells two prompts with the same words
+    /// apart.
+    var since: Int?
+    /// The status was read on another host: it comes from the last scan, not
+    /// from this Mac's hooks, so it may be old.
+    var remote = false
+
+    /// Whether the status alone cannot be trusted to say "idle".
+    var unverified: Bool { status == .unknown || remote }
+}
 
 /// What the server may do to one thread's pane. The app builds it from the
 /// host's `TmuxService`; every call may block.
@@ -19,13 +38,12 @@ struct MobilePaneIO {
     var tmux: (_ args: [String], _ stdin: Data?) -> String?
     /// The pane's visible text.
     var screen: () -> String?
-    /// The pane's status now, given its row in the latest tree: the hook state
+    /// The pane's state now, given its row in the latest tree: the hook state
     /// is read again, so it is newer than the tree.
-    var status: (MobileThread) -> AttentionStatus
-    /// Copy a file on this Mac to `path` on the pane's host.
-    var copy: (_ localPath: String, _ path: String) -> Bool
-    /// Whether `path` exists on the pane's host.
-    var exists: (_ path: String) -> Bool
+    var state: (MobileThread) -> MobilePaneState
+    /// Create `path` on the pane's host with `data`. It never overwrites and
+    /// never follows a link.
+    var save: (_ data: Data, _ path: String) -> FileTransfer.Saved
 }
 
 /// A prompt a pane waits on, read from its screen: the choices the phone shows
@@ -44,34 +62,50 @@ struct MobilePrompt: Equatable {
     let detail: String
     let question: String
     let options: [Option]
+    /// The card does not hold all of what the pane shows above the choices.
+    var truncated = false
+    /// When the pane started waiting. Part of the id.
+    var since: Int? = nil
 
-    /// Names this prompt. An answer carries it back, so a tap on a card that
-    /// is no longer on the pane answers nothing.
+    /// Names this prompt. An answer or a key carries it back, so a tap meant
+    /// for a prompt that is no longer on the pane does nothing. `since` is in
+    /// it: the same question asked twice is two prompts.
     var id: String {
-        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
-        let text = ([title, detail, question] + options.map { "\($0.n).\($0.label)" })
-            .joined(separator: "\u{1F}")
-        for byte in text.utf8 {
-            hash ^= UInt64(byte)
-            hash = hash &* 0x0000_0100_0000_01b3
-        }
-        return String(hash, radix: 16)
+        MobileReply.hash(
+            [title, detail, question, since.map(String.init) ?? ""]
+                + options.map { "\($0.n).\($0.label)" })
     }
 
     var json: [String: Any] {
         [
             "id": id, "kind": kind.rawValue, "title": title, "detail": detail,
-            "question": question,
+            "question": question, "truncated": truncated,
             "options": options.map { ["n": $0.n, "label": $0.label] as [String: Any] },
         ]
     }
 
+    /// The lines "1. Yes", "2. No": the choices as the pane shows them.
+    var block: [String] { options.map { "\($0.n). \($0.label)" } }
+}
+
+/// A pane's screen, read for the two things a write depends on: a prompt that
+/// is waiting for a key, and an input box that takes text.
+struct MobileScreen: Equatable {
+    /// The prompt the pane waits on. nil when it shows none.
+    let prompt: MobilePrompt?
+    /// The pane shows an agent's input box, and no prompt.
+    let inputBox: Bool
+    /// The last lines with text, for naming a prompt that has no choices.
+    let tail: [String]
+
     /// How far above the choices the tool and its command are looked for.
-    static let headerLines = 14
+    static let headerLines = 60
     /// Lines between two choices that are not a choice: a question's option
     /// may carry a description.
     static let maxGap = 2
-    static let maxDetailLength = 600
+    static let maxDetailLength = 1200
+    /// The tallest input box that is looked for.
+    static let maxBoxLines = 40
 
     private static let frame = CharacterSet(charactersIn: "│┃|").union(.whitespaces)
     private static let cursors: Set<Character> = ["❯", "›", ">"]
@@ -84,6 +118,12 @@ struct MobilePrompt: Equatable {
     /// A rule or a box edge: nothing but box-drawing characters.
     private static func isRule(_ line: String) -> Bool {
         !line.isEmpty && line.unicodeScalars.allSatisfy { (0x2500...0x257F).contains($0.value) }
+    }
+
+    /// The line starts with the cursor an input box or a list shows.
+    private static func hasCursor(_ line: String) -> Bool {
+        guard let first = line.first, cursors.contains(first) else { return false }
+        return line.count == 1 || line.dropFirst().first == " "
     }
 
     /// `❯ 1. Yes` → (1, "Yes", selected).
@@ -102,22 +142,64 @@ struct MobilePrompt: Equatable {
         return label.isEmpty ? nil : (n, label, selected)
     }
 
-    /// The prompt on `screen`, or nil when it shows none. A prompt is a list
-    /// numbered from 1 with the cursor on one of its lines; the last such list
-    /// on the screen is the live one.
-    static func parse(screen: String) -> MobilePrompt? {
-        let lines = screen.split(separator: "\n", omittingEmptySubsequences: false).map(content)
+    /// `pasted` is text of ours that may sit in the pane's input box: a
+    /// numbered list the human sent looks like a prompt there.
+    init(_ text: String, pasted: String = "") {
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(Self.content)
+        tail = Array(lines.filter { !$0.isEmpty }.suffix(12))
+        let box = Self.inputBox(lines)
+        var found = Self.list(lines)
+        if let list = found, let box {
+            if list.rows.upperBound < box.lowerBound {
+                // Above the input box: an old prompt in the scrollback.
+                found = nil
+            } else if box.contains(list.rows.lowerBound), box.contains(list.rows.upperBound),
+                      Self.isEcho(list.prompt, of: pasted) {
+                found = nil
+            }
+        }
+        prompt = found?.prompt
+        inputBox = box != nil && found == nil
+    }
+
+    /// The last input box on the screen, as the rows inside it: two rules
+    /// with the cursor on the first row between them.
+    private static func inputBox(_ lines: [String]) -> ClosedRange<Int>? {
+        let rules = lines.indices.filter { isRule(lines[$0]) }
+        for (top, bottom) in zip(rules, rules.dropFirst()).reversed()
+        where bottom - top >= 2 && bottom - top <= maxBoxLines + 1 && hasCursor(lines[top + 1]) {
+            return (top + 1)...(bottom - 1)
+        }
+        return nil
+    }
+
+    /// Whether the choices of `prompt` are, line for line, lines of `text`.
+    /// Whole lines, in order and next to each other: text that only mentions
+    /// a choice's words is not that prompt.
+    static func isEcho(_ prompt: MobilePrompt, of text: String) -> Bool {
+        let block = prompt.block
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+        guard !block.isEmpty, lines.count >= block.count else { return false }
+        return (0...(lines.count - block.count)).contains { start in
+            Array(lines[start..<(start + block.count)]) == block
+        }
+    }
+
+    /// The last list numbered from 1 with the cursor on one of its lines, and
+    /// the rows it covers.
+    private static func list(_ lines: [String]) -> (prompt: MobilePrompt, rows: ClosedRange<Int>)? {
         guard let at = lines.lastIndex(where: { option($0)?.selected == true }),
               let picked = option(lines[at]) else { return nil }
 
-        var found: [(index: Int, option: Option)] = [(at, Option(n: picked.n, label: picked.label))]
+        var found: [(index: Int, option: MobilePrompt.Option)] = [(at, .init(n: picked.n, label: picked.label))]
         // Up to choice 1.
         var want = picked.n - 1
         var index = at - 1
         var gap = 0
         while want >= 1, index >= 0, gap <= maxGap {
             if let other = option(lines[index]), other.n == want {
-                found.insert((index, Option(n: other.n, label: other.label)), at: 0)
+                found.insert((index, .init(n: other.n, label: other.label)), at: 0)
                 want -= 1
                 gap = 0
             } else {
@@ -132,7 +214,7 @@ struct MobilePrompt: Equatable {
         gap = 0
         while want <= 9, index < lines.count, gap <= maxGap, !isRule(lines[index]) {
             if let other = option(lines[index]), other.n == want {
-                found.append((index, Option(n: other.n, label: other.label)))
+                found.append((index, .init(n: other.n, label: other.label)))
                 want += 1
                 gap = 0
             } else {
@@ -149,32 +231,45 @@ struct MobilePrompt: Equatable {
             if !lines[index].isEmpty { header.insert(lines[index], at: 0) }
             index -= 1
         }
+        // The top edge was not reached: the start of what is asked is not here.
+        var truncated = index >= 0 && !isRule(lines[index])
         let question = header.popLast() ?? ""
-        let title = header.first ?? ""
-        let detail = String(header.dropFirst().joined(separator: "\n").prefix(maxDetailLength))
+        let title = truncated ? "" : header.first ?? ""
+        var detail = (truncated ? header : Array(header.dropFirst())).joined(separator: "\n")
+        if detail.count > maxDetailLength {
+            // The start of a command says what it does: keep that end.
+            detail = String(detail.prefix(maxDetailLength))
+            truncated = true
+        }
         let permission = question.lowercased().hasPrefix("do you want")
             || question.lowercased().contains("allow")
-        return MobilePrompt(
+        let prompt = MobilePrompt(
             kind: permission ? .permission : .question, title: title, detail: detail,
-            question: question, options: found.map(\.option))
-    }
-
-    /// Whether this "prompt" is only `text` sitting in the pane's input box: a
-    /// numbered list the human sent looks like one.
-    func isEcho(of text: String) -> Bool {
-        options.allSatisfy { text.contains($0.label) }
+            question: question, options: found.map(\.option), truncated: truncated)
+        return (prompt, found[0].index...found[found.count - 1].index)
     }
 }
 
 enum MobileReply {
     static let busyMessage = "Thread is busy"
     static let waitingMessage = "Thread is waiting on a prompt"
+    static let noInputMessage = "Thread shows no input box"
     static let unreachable = "Could not reach the pane"
     static let sending = "A reply is being sent"
 
     /// The pause between the paste and the Enter: the agent's input box takes
     /// a bracketed paste in before it reads the next key.
     static let enterDelay: TimeInterval = 0.3
+
+    /// FNV-1a over the parts, as hex. Names a prompt; it is not a secret.
+    static func hash(_ parts: [String]) -> String {
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        for byte in parts.joined(separator: "\u{1F}").utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x0000_0100_0000_01b3
+        }
+        return String(hash, radix: 16)
+    }
 
     // MARK: Keys
 
@@ -187,21 +282,35 @@ enum MobileReply {
         return keys
     }()
 
-    /// The `key` of a key request; nil when it is not on the whitelist.
-    static func key(in body: Data) -> String? {
+    /// The `key` of a key request, and the prompt the phone was showing; nil
+    /// when the key is not on the whitelist.
+    static func key(in body: Data) -> (key: String, prompt: String?)? {
         guard let object = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any],
               let key = object["key"] as? String, keys.contains(key) else { return nil }
-        return key
+        return (key, object["prompt"] as? String)
     }
 
     static func keyArgv(target: String, key: String) -> [String] {
         ["send-keys", "-t", target, key]
     }
 
-    /// Press one whitelisted key. A pane on a prompt takes it too: Escape is
-    /// how the human backs out of one.
-    static func press(_ key: String, target: String, io: MobilePaneIO) -> MobileResponse {
+    /// Press one whitelisted key. A pane on a prompt takes it too, as a
+    /// terminal would, but only for the prompt the phone was showing: `prompt`
+    /// must name the one on the pane now. A prompt the human has not seen
+    /// takes no Enter and no digit.
+    static func press(
+        _ key: String, prompt sent: String?, target: String, io: MobilePaneIO, state: MobilePaneState?
+    ) -> MobileResponse {
         guard keys.contains(key) else { return .error(400, "bad_key") }
+        guard let state else { return .error(404, "not_found") }
+        guard let screen = io.screen() else { return .error(503, "unavailable", message: unreachable) }
+        if let current = promptID(state: state, screen: screen), current != sent {
+            return .error(409, "stale")
+        }
+        return send(key: key, target: target, io: io)
+    }
+
+    private static func send(key: String, target: String, io: MobilePaneIO) -> MobileResponse {
         guard io.tmux(keyArgv(target: target, key: key), nil) != nil else {
             return .error(503, "unavailable", message: unreachable)
         }
@@ -210,60 +319,82 @@ enum MobileReply {
 
     // MARK: State
 
-    /// The pane's status now. The hook row is newer than the tree, so it wins
+    /// The pane's state now. The hook row is newer than the tree, so it wins
     /// under the rule the sidebar uses (`AgentState.isFresh`); a row from
     /// another session in the same pane is not this thread's.
-    static func status(thread: MobileThread, rows: [AgentStateRow], now: Int) -> AttentionStatus {
-        guard thread.host.isLocal,
+    static func state(thread: MobileThread, rows: [AgentStateRow], now: Int) -> MobilePaneState {
+        let remote = !thread.host.isLocal
+        guard !remote,
               let row = rows.first(where: {
                   $0.pane == thread.pane
                       && ($0.sessionId == thread.claudeSessionId || $0.sessionId == thread.codexSessionId)
               }),
               AgentState.isFresh(row, scanStatus: thread.status, now: now)
-        else { return thread.status }
-        return AgentState.attention(row.state)
+        else { return MobilePaneState(status: thread.status, since: thread.since, remote: remote) }
+        return MobilePaneState(status: AgentState.attention(row.state), since: row.since)
     }
 
-    /// Why free text cannot go into the pane now; nil when it can. A busy pane
-    /// may reach a prompt between the paste and the Enter, and the Enter would
-    /// answer it; a waiting pane is already on one. Where no status is known
-    /// (a pane without hooks), the screen is read for a prompt instead.
-    /// `pasted` is text of ours already in the input box.
+    /// Why free text cannot go into the pane now; nil when it can.
+    ///
+    /// A busy pane may reach a prompt between the paste and the Enter, and
+    /// the Enter would answer it; a waiting pane is already on one. The
+    /// status is not enough on its own: it may be old (another host) or
+    /// missing (no hooks), so the screen is always read too. Any prompt on it
+    /// refuses the text, and a pane whose status is not known first-hand must
+    /// show an input box. `pasted` is text of ours already in that box.
     static func refusal(
-        status: AttentionStatus?, screen: () -> String?, pasted: String = ""
+        state: MobilePaneState?, screen: () -> String?, pasted: String = ""
     ) -> MobileResponse? {
-        switch status {
-        case nil: return .error(404, "not_found")
-        case .busy: return .error(409, "busy", message: busyMessage)
-        case .waiting: return .error(409, "waiting", message: waitingMessage)
-        case .idle: return nil
-        case .unknown:
-            guard let prompt = screen().flatMap(MobilePrompt.parse), !prompt.isEcho(of: pasted)
-            else { return nil }
-            return .error(409, "waiting", message: waitingMessage)
-        }
+        guard let state else { return .error(404, "not_found") }
+        if state.status == .busy { return .error(409, "busy", message: busyMessage) }
+        if state.status == .waiting { return .error(409, "waiting", message: waitingMessage) }
+        guard let text = screen() else { return .error(503, "unavailable", message: unreachable) }
+        let seen = MobileScreen(text, pasted: pasted)
+        if seen.prompt != nil { return .error(409, "waiting", message: waitingMessage) }
+        if state.unverified, !seen.inputBox { return .error(409, "no_input", message: noInputMessage) }
+        return nil
     }
 
     // MARK: Text
 
-    /// Paste `text` into the pane and submit it. `status` is the pane's status
-    /// now, nil once its thread has gone; it is asked before the paste and
-    /// again immediately before the Enter. `text` must have passed
-    /// `MobileManager.text`.
+    /// Paste `text` into the pane and submit it. `state` is the pane's state
+    /// now, nil once its thread has gone; it and the screen are read before
+    /// the paste and again immediately before the Enter. `text` must have
+    /// passed `MobileManager.text`.
     static func send(
-        _ text: String, target: String, io: MobilePaneIO, status: () -> AttentionStatus?,
+        _ text: String, target: String, io: MobilePaneIO, state: () -> MobilePaneState?,
         pause: (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }
     ) -> MobileResponse {
-        if let refusal = refusal(status: status(), screen: io.screen) { return refusal }
+        if let refusal = refusal(state: state(), screen: io.screen) { return refusal }
         if let failure = paste(text, target: target, io: io) { return failure }
         pause(enterDelay)
         // A prompt that came up since the paste would take the Enter as its
-        // answer. The text stays in the input box, unsent.
-        if let refusal = refusal(status: status(), screen: io.screen, pasted: text) { return refusal }
+        // answer.
+        if let refusal = refusal(state: state(), screen: io.screen, pasted: text) {
+            return notSent(refusal, text: text, target: target, io: io)
+        }
         guard io.tmux(TmuxCommands.submitPastedText(target: target), nil) != nil else {
             return .error(503, "unavailable", message: unreachable)
         }
         return .json(["ok": true])
+    }
+
+    /// The answer for text that was pasted and then refused. The text is
+    /// taken out of the input box, or the next Enter in the pane would send
+    /// it. `cleared` tells the phone what the pane holds now: false means the
+    /// text is still in the box.
+    private static func notSent(
+        _ refusal: MobileResponse, text: String, target: String, io: MobilePaneIO
+    ) -> MobileResponse {
+        // A thread that has gone has no pane to clear.
+        guard refusal.status != 404 else { return refusal }
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).count
+        let cleared = io.tmux(TmuxCommands.clearInput(target: target, lines: lines), nil) != nil
+        let body = (try? JSONSerialization.jsonObject(with: refusal.body)) as? [String: Any]
+        return .json([
+            "error": "not_sent", "reason": body?["error"] as? String ?? "unavailable",
+            "message": body?["message"] as? String ?? unreachable, "cleared": cleared,
+        ], status: 409)
     }
 
     /// One bracketed paste, through a buffer of its own. nil when it worked.
@@ -280,11 +411,27 @@ enum MobileReply {
 
     // MARK: Prompts
 
-    /// The prompt the phone may show for a pane in `status`: a pane that is
-    /// idle or working shows none, whatever its screen looks like.
-    static func prompt(status: AttentionStatus?, io: MobilePaneIO) -> MobilePrompt? {
-        guard status == .waiting || status == .unknown else { return nil }
-        return io.screen().flatMap(MobilePrompt.parse)
+    /// The prompt on the pane now, with the time the pane started waiting.
+    static func prompt(state: MobilePaneState?, screen: String?) -> MobilePrompt? {
+        guard let state, let screen, var prompt = MobileScreen(screen).prompt else { return nil }
+        prompt.since = state.since
+        return prompt
+    }
+
+    /// What names the thing the pane waits on: its prompt's id, or, for a
+    /// waiting pane whose prompt has no choices to read, a name made from
+    /// what the screen shows. nil for a pane that waits on nothing.
+    static func promptID(state: MobilePaneState, screen: String) -> String? {
+        if let prompt = prompt(state: state, screen: screen) { return prompt.id }
+        guard state.status == .waiting else { return nil }
+        return "w" + hash([state.since.map(String.init) ?? ""] + MobileScreen(screen).tail)
+    }
+
+    /// The `GET …/prompt` body: the card, and the id a key must carry.
+    static func promptBody(state: MobilePaneState?, screen: String?) -> [String: Any] {
+        let prompt = prompt(state: state, screen: screen)
+        let id = state.flatMap { state in screen.flatMap { promptID(state: state, screen: $0) } }
+        return ["prompt": prompt.map { $0.json as Any } ?? NSNull(), "id": id ?? NSNull()]
     }
 
     /// `{"prompt": "<id>", "option": <n>}`.
@@ -302,16 +449,16 @@ enum MobileReply {
     /// Pick `option` of the prompt the phone showed. The pane's screen is read
     /// again first: when it shows another prompt, or none, nothing is sent.
     static func answer(
-        prompt id: String, option: Int, target: String, io: MobilePaneIO, status: AttentionStatus?
+        prompt id: String, option: Int, target: String, io: MobilePaneIO, state: MobilePaneState?
     ) -> MobileResponse {
-        guard status != nil else { return .error(404, "not_found") }
-        guard let prompt = prompt(status: status, io: io), prompt.id == id else {
+        guard state != nil else { return .error(404, "not_found") }
+        guard let prompt = prompt(state: state, screen: io.screen()), prompt.id == id else {
             return .error(409, "stale")
         }
         guard prompt.options.contains(where: { $0.n == option }) else {
             return .error(400, "bad_request")
         }
-        return press(String(option), target: target, io: io)
+        return send(key: String(option), target: target, io: io)
     }
 
     // MARK: Upload
@@ -321,7 +468,9 @@ enum MobileReply {
     static let maxUploadBytes = 26_214_400
     static let uploadLimits = [5_242_880, 10_485_760, maxUploadBytes]
     static let defaultUploadLimit = 10_485_760
-    static let maxFileNameLength = 100
+    /// A file name is at most 255 bytes on the disks this writes to. The rest
+    /// is room for the number a taken name gets.
+    static let maxFileNameBytes = 240
 
     /// A file name safe to join to a directory and to paste into a prompt:
     /// the last path component, letters, digits, `.`, `-` and `_` only, and
@@ -339,12 +488,25 @@ enum MobileReply {
         }
         name = name.trimmingCharacters(in: CharacterSet(charactersIn: ".-"))
         guard !name.isEmpty else { return nil }
-        guard name.count > maxFileNameLength else { return name }
+        guard name.utf8.count > maxFileNameBytes else { return name }
         // Keep the extension: it is how the agent knows what the file is.
         let ext = (name as NSString).pathExtension
         let stem = (name as NSString).deletingPathExtension
-        guard !ext.isEmpty, ext.count < 12 else { return String(name.prefix(maxFileNameLength)) }
-        return String(stem.prefix(maxFileNameLength - ext.count - 1)) + "." + ext
+        guard !ext.isEmpty, ext.utf8.count < 16 else { return clip(name, bytes: maxFileNameBytes) }
+        return clip(stem, bytes: maxFileNameBytes - ext.utf8.count - 1) + "." + ext
+    }
+
+    /// The longest prefix of `text` that fits in `bytes` of UTF-8, cut
+    /// between characters.
+    private static func clip(_ text: String, bytes: Int) -> String {
+        var out = ""
+        var used = 0
+        for character in text {
+            used += character.utf8.count
+            guard used <= bytes else { break }
+            out.append(character)
+        }
+        return out
     }
 
     /// `photo.png` → `photo-2.png`, for a name that is taken.
@@ -354,13 +516,21 @@ enum MobileReply {
         return ext.isEmpty ? "\(name)-\(n)" : "\(stem)-\(n).\(ext)"
     }
 
+    /// A path as it is pasted into a prompt: quoted when it holds anything a
+    /// shell or an agent could split on.
+    static func pasted(path: String) -> String {
+        let plain = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "/._-"))
+        return path.unicodeScalars.allSatisfy(plain.contains) ? path : Ssh.shellQuote(path)
+    }
+
     /// Save `data` in the thread's working directory and paste its path into
-    /// the pane, as a file drop on the Mac does. Nothing is overwritten and
-    /// nothing is submitted. The path is text like any other, so a pane that
-    /// is busy or on a prompt is refused before anything is written.
+    /// the pane, as a file drop on the Mac does. Nothing is overwritten, no
+    /// link is followed and nothing is submitted. The path is text like any
+    /// other, so a pane that cannot take text is refused before anything is
+    /// written.
     static func upload(
         _ data: Data, name raw: String, thread: MobileThread, io: MobilePaneIO, limit: Int,
-        status: () -> AttentionStatus?, scratch: URL = FileManager.default.temporaryDirectory
+        state: () -> MobilePaneState?
     ) -> MobileResponse {
         guard data.count <= min(limit, maxUploadBytes) else { return .error(413, "too_large") }
         guard !data.isEmpty, let name = fileName(raw) else { return .error(400, "bad_request") }
@@ -368,32 +538,26 @@ enum MobileReply {
         guard thread.cwd.hasPrefix("/"), thread.cwd.unicodeScalars.allSatisfy(MobileManager.isText),
               !thread.cwd.contains("\n")
         else { return .error(503, "unavailable", message: unreachable) }
-        if let refusal = refusal(status: status(), screen: io.screen) { return refusal }
+        if let refusal = refusal(state: state(), screen: io.screen) { return refusal }
 
+        // The create is exclusive, so a name that is taken (a file, or a link
+        // to anywhere) is never written through: the next name is tried.
         var path = FileTransfer.dropDestination(cwd: thread.cwd, fileName: name)
         var n = 2
-        while io.exists(path) {
-            guard n <= 99 else { return .error(409, "exists") }
-            path = FileTransfer.dropDestination(cwd: thread.cwd, fileName: numbered(name, n))
-            n += 1
-        }
-
-        let folder = scratch.appendingPathComponent("muxmaestro-upload-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: folder) }
-        let local = folder.appendingPathComponent(name)
-        do {
-            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            try data.write(to: local)
-        } catch {
-            return .error(500, "failed")
-        }
-        guard io.copy(local.path, path) else {
-            return .error(503, "unavailable", message: unreachable)
+        save: while true {
+            switch io.save(data, path) {
+            case .saved: break save
+            case .failed: return .error(503, "unavailable", message: unreachable)
+            case .exists:
+                guard n <= 99 else { return .error(409, "exists") }
+                path = FileTransfer.dropDestination(cwd: thread.cwd, fileName: numbered(name, n))
+                n += 1
+            }
         }
         // The file is in place. Its path is pasted only into a pane that can
         // still take text.
-        guard refusal(status: status(), screen: io.screen) == nil,
-              paste(path + " ", target: thread.pane, io: io) == nil
+        guard refusal(state: state(), screen: io.screen) == nil,
+              paste(pasted(path: path) + " ", target: thread.pane, io: io) == nil
         else { return .json(["ok": true, "path": path, "pasted": false]) }
         return .json(["ok": true, "path": path, "pasted": true])
     }

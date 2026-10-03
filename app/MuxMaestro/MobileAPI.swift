@@ -347,7 +347,12 @@ enum MobileAPI {
         }
         // Checked before the route is matched: a feature that is off refuses
         // every path under it, built or not.
-        if let capability = capability(forSegments: segments), !config.allows(capability) {
+        // The prompt's id is what a key into a waiting pane must carry, so the
+        // key bar alone may read it too.
+        let promptForKeys = segments.count == 4 && segments[1] == "threads"
+            && segments[3] == "prompt" && config.allows(.keyBar)
+        if let capability = capability(forSegments: segments), !config.allows(capability),
+           !promptForKeys {
             return .disabled(capability)
         }
         let endpoint: MobileEndpoint
@@ -380,7 +385,9 @@ enum MobileAPI {
             endpoint = .upload(id: segments[2], name: request.query["name"] ?? "")
         default: return .notFound
         }
-        guard config.allows(endpoint.capability) else { return .disabled(endpoint.capability) }
+        guard config.allows(endpoint.capability) || promptForKeys else {
+            return .disabled(endpoint.capability)
+        }
         return request.method == endpoint.method ? .api(endpoint) : .methodNotAllowed
     }
 

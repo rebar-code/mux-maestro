@@ -79,6 +79,54 @@ enum FileTransfer {
         return "\(trimmed)/\(fileName)"
     }
 
+    // MARK: Exclusive create (phone uploads)
+
+    /// How an exclusive create ended.
+    enum Saved: Equatable {
+        case saved
+        /// Something already has that name: a file, a folder, or a link.
+        case exists
+        case failed
+    }
+
+    /// Create `path` on this Mac with `data`. It fails when anything has that
+    /// name already and it never follows a link, a dangling one included, so
+    /// it cannot write over or through anything.
+    static func writeExclusive(_ data: Data, to path: String) -> Saved {
+        let fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o644)
+        guard fd >= 0 else { return errno == EEXIST || errno == ELOOP ? .exists : .failed }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        do {
+            try handle.write(contentsOf: data)
+            try handle.close()
+            return .saved
+        } catch {
+            unlink(path)
+            return .failed
+        }
+    }
+
+    /// The same create on a remote host: `ssh <host> sh -c <script>`, with the
+    /// file's bytes on stdin. `set -C` makes the shell's `>` an exclusive
+    /// create. The script prints one word, so a failed ssh (no output) is
+    /// never read as "no such file".
+    static func exclusiveWriteArgv(alias: String, path: String) -> (path: String, args: [String]) {
+        let script = "p=\(Ssh.shellQuote(path)); "
+            + "if ( set -C; : > \"$p\" ) 2>/dev/null; then "
+            + "if cat > \"$p\"; then echo saved; else rm -f \"$p\"; echo failed; fi; "
+            + "elif [ -e \"$p\" ] || [ -L \"$p\" ]; then echo exists; else echo failed; fi"
+        return (Ssh.sshPath, Ssh.opts(host: alias) + ["sh -c " + Ssh.shellQuote(script)])
+    }
+
+    /// What `exclusiveWriteArgv`'s command printed.
+    static func saved(remoteOutput: String?) -> Saved {
+        switch remoteOutput?.trimmingCharacters(in: .whitespacesAndNewlines) {
+        case "saved": return .saved
+        case "exists": return .exists
+        default: return .failed
+        }
+    }
+
     // MARK: Environment resolution
 
     /// Candidate python3 paths (a Finder-launched app has a minimal PATH), same

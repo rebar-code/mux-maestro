@@ -5,12 +5,15 @@ import XCTest
 final class FakePane {
     private let lock = NSLock()
     private var _calls: [(args: [String], stdin: String?)] = []
-    private var _copies: [(name: String, data: Data, path: String)] = []
+    private var _saves: [(path: String, data: Data)] = []
     private var _status: AttentionStatus?
     private var _statusAfterPaste: AttentionStatus?
-    private var _screen: String?
+    private var _screen: String? = DemoPrompt.idle
+    private var _screenAfterPaste: String?
     private var _existing = Set<String>()
     private var _failing = false
+    private var _since: Int?
+    private var _onPaste: (() -> Void)?
 
     private func locked<T>(_ body: () -> T) -> T {
         lock.lock()
@@ -20,26 +23,43 @@ final class FakePane {
 
     var calls: [(args: [String], stdin: String?)] { locked { _calls } }
     var argv: [[String]] { calls.map(\.args) }
-    var copies: [(name: String, data: Data, path: String)] { locked { _copies } }
+    var saves: [(path: String, data: Data)] { locked { _saves } }
     /// The pane's own status; nil for the tree's.
     var status: AttentionStatus? {
         get { locked { _status } }
         set { locked { _status = newValue } }
+    }
+    /// When the pane entered its status; nil for the tree's.
+    var since: Int? {
+        get { locked { _since } }
+        set { locked { _since = newValue } }
     }
     /// What the status turns into once text is in the input box.
     var statusAfterPaste: AttentionStatus? {
         get { locked { _statusAfterPaste } }
         set { locked { _statusAfterPaste = newValue } }
     }
+    /// What the pane shows. An idle agent's input box unless a test says otherwise.
     var screen: String? {
         get { locked { _screen } }
         set { locked { _screen = newValue } }
     }
+    /// What the pane shows once text is in the input box.
+    var screenAfterPaste: String? {
+        get { locked { _screenAfterPaste } }
+        set { locked { _screenAfterPaste = newValue } }
+    }
+    /// Paths that are taken.
     var existing: Set<String> {
         get { locked { _existing } }
         set { locked { _existing = newValue } }
     }
-    /// tmux and copies fail.
+    /// Runs once text is in the input box, before the call returns.
+    var onPaste: (() -> Void)? {
+        get { locked { _onPaste } }
+        set { locked { _onPaste = newValue } }
+    }
+    /// tmux and saves fail.
     var failing: Bool {
         get { locked { _failing } }
         set { locked { _failing = newValue } }
@@ -48,23 +68,33 @@ final class FakePane {
     var io: MobilePaneIO {
         MobilePaneIO(
             tmux: { [self] args, stdin in
-                locked {
+                let result: String? = locked {
                     guard !_failing else { return nil }
                     _calls.append((args, stdin.map { String(decoding: $0, as: UTF8.self) }))
-                    if args.first == "paste-buffer", let after = _statusAfterPaste { _status = after }
+                    if args.first == "paste-buffer" {
+                        if let after = _statusAfterPaste { _status = after }
+                        if let after = _screenAfterPaste { _screen = after }
+                    }
                     return ""
                 }
+                if args.first == "paste-buffer" { onPaste?() }
+                return result
             },
             screen: { [self] in screen },
-            status: { [self] thread in status ?? thread.status },
-            copy: { [self] local, path in
-                locked {
-                    guard !_failing, let data = FileManager.default.contents(atPath: local) else { return false }
-                    _copies.append(((local as NSString).lastPathComponent, data, path))
-                    return true
-                }
+            state: { [self] thread in
+                MobilePaneState(
+                    status: status ?? thread.status, since: since ?? thread.since,
+                    remote: !thread.host.isLocal)
             },
-            exists: { [self] path in existing.contains(path) })
+            save: { [self] data, path in
+                locked {
+                    if _failing { return .failed }
+                    if _existing.contains(path) { return .exists }
+                    _saves.append((path, data))
+                    _existing.insert(path)
+                    return .saved
+                }
+            })
     }
 
     /// The four calls of one sent text, with the buffer's name left out.
@@ -80,6 +110,30 @@ final class FakePane {
 }
 
 enum DemoPrompt {
+    /// An idle agent: its last reply, then the input box between two rules.
+    static let idle = input("")
+
+    /// The same screen with `text` in the input box.
+    static func input(_ text: String) -> String {
+        let rows = text.split(separator: "\n", omittingEmptySubsequences: false)
+        let box = (["❯ " + (rows.first ?? "")] + rows.dropFirst().map { "  " + $0 }).joined(separator: "\n")
+        return """
+            ⏺ Done. 4 files changed, tests pass.
+
+            ────────────────────────────────────────
+            \(box)
+            ────────────────────────────────────────
+              ? for shortcuts
+            """
+    }
+
+    /// A prompt with no numbered choices.
+    static let yesNo = """
+        ⏺ Bash(rm -rf build)
+
+        Remove the build folder? (y/n)
+        """
+
     static let permission = """
         ⏺ Bash(kubectl rollout restart deploy/web -n staging)
 
@@ -140,7 +194,9 @@ final class MobileReplyTests: XCTestCase {
             XCTAssertEqual(endpoint.capability, capability, name)
             // Off by default, and off while every other switch is on.
             XCTAssertEqual(MobileAPI.route(request), .disabled(capability), name)
-            let others = Set(MobileCapability.allCases).subtracting([capability])
+            // The key bar may read the prompt too; see the next test.
+            let others = Set(MobileCapability.allCases)
+                .subtracting(name == "prompt" ? [capability, .keyBar] : [capability])
             XCTAssertEqual(
                 MobileAPI.route(request, config: MobileConfig(capabilities: others)),
                 .disabled(capability), name)
@@ -154,6 +210,23 @@ final class MobileReplyTests: XCTestCase {
         XCTAssertFalse(MobileConfig().allows(.replies))
         XCTAssertFalse(MobileConfig().allows(.keyBar))
         XCTAssertFalse(MobileConfig().allows(.upload))
+    }
+
+    func testThePromptIsReadableWithTheKeyBarAloneAndNothingElseIs() {
+        let keys = MobileConfig(capabilities: [.keyBar])
+        let id = "/api/threads/localhost%3A12"
+        XCTAssertEqual(
+            MobileAPI.route(MobileRequest(method: "GET", path: id + "/prompt"), config: keys),
+            .api(.prompt(id: "localhost:12")))
+        // Reading only: no answer, no text, no commands.
+        for (method, name) in [("POST", "answer"), ("POST", "text"), ("GET", "commands")] {
+            XCTAssertEqual(
+                MobileAPI.route(MobileRequest(method: method, path: id + "/" + name), config: keys),
+                .disabled(.replies), name)
+        }
+        XCTAssertEqual(
+            MobileAPI.route(MobileRequest(method: "POST", path: id + "/prompt"), config: keys),
+            .methodNotAllowed)
     }
 
     func testAnUploadReadsItsNameFromTheQueryAndMayCarryAFile() {
@@ -196,6 +269,16 @@ final class MobileReplyTests: XCTestCase {
 
     // MARK: keys
 
+    private func state(
+        _ status: AttentionStatus, since: Int? = nil, remote: Bool = false
+    ) -> MobilePaneState {
+        MobilePaneState(status: status, since: since, remote: remote)
+    }
+
+    private func body(_ response: MobileResponse) -> String {
+        String(decoding: response.body, as: UTF8.self)
+    }
+
     func testTheKeyWhitelistIsExactlyTheNamedKeys() {
         var expected: Set<String> = ["Enter", "Escape", "Up", "Down", "Left", "Right", "Tab", "BTab"]
         for letter in "abcdefghijklmnopqrstuvwxyz" { expected.insert("C-\(letter)") }
@@ -203,8 +286,11 @@ final class MobileReplyTests: XCTestCase {
         XCTAssertEqual(MobileReply.keys, expected)
         XCTAssertEqual(MobileReply.keys.count, 43)
 
-        XCTAssertEqual(MobileReply.key(in: Data(#"{"key":"Escape"}"#.utf8)), "Escape")
-        XCTAssertEqual(MobileReply.key(in: Data(#"{"key":"C-c"}"#.utf8)), "C-c")
+        XCTAssertEqual(MobileReply.key(in: Data(#"{"key":"Escape"}"#.utf8))?.key, "Escape")
+        XCTAssertNil(MobileReply.key(in: Data(#"{"key":"Escape"}"#.utf8))?.prompt)
+        let named = MobileReply.key(in: Data(#"{"key":"C-c","prompt":"9f2c"}"#.utf8))
+        XCTAssertEqual(named?.key, "C-c")
+        XCTAssertEqual(named?.prompt, "9f2c")
         for refused in [
             "F1", "0", "10", "q", "C-1", "C-C", "M-a", "C-M-a", "S-Tab", "enter", "Enter ", " Enter",
             "Enter; rm -rf /", "-t", "-X", "Space", "BSpace", "DC", "PageUp", "C-", "",
@@ -221,13 +307,77 @@ final class MobileReplyTests: XCTestCase {
 
     func testAKeyIsOneSendKeysCallAndNothingElse() {
         let pane = FakePane()
-        XCTAssertEqual(MobileReply.press("BTab", target: "%12", io: pane.io).status, 200)
+        XCTAssertEqual(
+            MobileReply.press("BTab", prompt: nil, target: "%12", io: pane.io, state: state(.idle)).status, 200)
         XCTAssertEqual(pane.argv, [["send-keys", "-t", "%12", "BTab"]])
         // The whitelist is checked here too, not only where the body is read.
-        XCTAssertEqual(MobileReply.press("F1", target: "%12", io: pane.io).status, 400)
+        XCTAssertEqual(
+            MobileReply.press("F1", prompt: nil, target: "%12", io: pane.io, state: state(.idle)).status, 400)
+        XCTAssertEqual(
+            MobileReply.press("Enter", prompt: nil, target: "%12", io: pane.io, state: nil).status, 404)
         XCTAssertEqual(pane.argv.count, 1)
         pane.failing = true
-        XCTAssertEqual(MobileReply.press("Enter", target: "%12", io: pane.io).status, 503)
+        XCTAssertEqual(
+            MobileReply.press("Enter", prompt: nil, target: "%12", io: pane.io, state: state(.idle)).status, 503)
+        // A pane that cannot be read takes no key: what it waits on is not known.
+        let blind = FakePane()
+        blind.screen = nil
+        XCTAssertEqual(
+            MobileReply.press("Enter", prompt: nil, target: "%12", io: blind.io, state: state(.idle)).status, 503)
+        XCTAssertEqual(blind.argv.count, 0)
+    }
+
+    func testAKeyIntoAWaitingPaneMustNameThePromptOnItNow() throws {
+        let pane = FakePane()
+        pane.screen = DemoPrompt.permission
+        let waiting = state(.waiting, since: 100)
+        let id = try XCTUnwrap(MobileReply.promptID(state: waiting, screen: DemoPrompt.permission))
+
+        // Enter with no prompt named, or with the id of a prompt that has gone.
+        for sent in [nil, "", "9f2c", MobileReply.promptID(state: waiting, screen: DemoPrompt.question)] {
+            for key in ["Enter", "1", "Escape", "Down"] {
+                let refused = MobileReply.press(key, prompt: sent, target: "%12", io: pane.io, state: waiting)
+                XCTAssertEqual(refused.status, 409, key)
+                XCTAssertEqual(body(refused), #"{"error":"stale"}"#, key)
+            }
+        }
+        XCTAssertEqual(pane.argv.count, 0)
+
+        // The key bar works like a terminal for the prompt the phone shows.
+        for key in ["Down", "Enter", "2", "Escape"] {
+            XCTAssertEqual(
+                MobileReply.press(key, prompt: id, target: "%12", io: pane.io, state: waiting).status, 200, key)
+        }
+        XCTAssertEqual(pane.argv.map(\.last), ["Down", "Enter", "2", "Escape"])
+
+        // The status says idle (a remote host's old scan), the screen shows a
+        // prompt: the screen counts.
+        let stale = FakePane()
+        stale.screen = DemoPrompt.permission
+        XCTAssertEqual(
+            MobileReply.press("Enter", prompt: nil, target: "%12", io: stale.io, state: state(.idle, remote: true))
+                .status, 409)
+        XCTAssertEqual(stale.argv.count, 0)
+    }
+
+    func testAWaitingPaneWithNoReadableChoicesStillHasAnIdForKeys() throws {
+        let pane = FakePane()
+        pane.screen = DemoPrompt.yesNo
+        let waiting = state(.waiting, since: 100)
+        let shown = MobileReply.promptBody(state: waiting, screen: DemoPrompt.yesNo)
+        XCTAssertTrue(shown["prompt"] is NSNull)
+        let id = try XCTUnwrap(shown["id"] as? String)
+        XCTAssertEqual(
+            MobileReply.press("Enter", prompt: nil, target: "%12", io: pane.io, state: waiting).status, 409)
+        XCTAssertEqual(
+            MobileReply.press("Enter", prompt: id, target: "%12", io: pane.io, state: waiting).status, 200)
+        // The screen moved on under the same status: the id is another one.
+        pane.screen = DemoPrompt.yesNo.replacingOccurrences(of: "build", with: "dist")
+        XCTAssertEqual(
+            MobileReply.press("Enter", prompt: id, target: "%12", io: pane.io, state: waiting).status, 409)
+        XCTAssertEqual(pane.argv.count, 1)
+        // A pane that waits on nothing has no id, and a key needs none.
+        XCTAssertTrue(MobileReply.promptBody(state: state(.idle), screen: DemoPrompt.idle)["id"] is NSNull)
     }
 
     // MARK: text
@@ -237,7 +387,7 @@ final class MobileReplyTests: XCTestCase {
         var pauses: [TimeInterval] = []
         let text = "first line\nsecond; $(rm -rf /) `x` && done"
         let response = MobileReply.send(
-            text, target: "%12", io: pane.io, status: { .idle }, pause: { pauses.append($0) })
+            text, target: "%12", io: pane.io, state: { self.state(.idle) }, pause: { pauses.append($0) })
         XCTAssertEqual(response.status, 200)
         XCTAssertTrue(FakePane.sendArgv(pane.argv, target: "%12"), "\(pane.argv)")
         // The text goes in over stdin: it is in no argv.
@@ -248,8 +398,8 @@ final class MobileReplyTests: XCTestCase {
 
     func testEachPasteUsesABufferOfItsOwn() {
         let pane = FakePane()
-        _ = MobileReply.send("one", target: "%12", io: pane.io, status: { .idle }, pause: { _ in })
-        _ = MobileReply.send("two", target: "%12", io: pane.io, status: { .idle }, pause: { _ in })
+        _ = MobileReply.send("one", target: "%12", io: pane.io, state: { self.state(.idle) }, pause: { _ in })
+        _ = MobileReply.send("two", target: "%12", io: pane.io, state: { self.state(.idle) }, pause: { _ in })
         XCTAssertNotEqual(pane.argv[1][2], pane.argv[5][2])
         // The default buffer of the Mac's own pastes is left alone.
         XCTAssertEqual(
@@ -261,77 +411,157 @@ final class MobileReplyTests: XCTestCase {
         for (status, code) in [(AttentionStatus.busy, "busy"), (.waiting, "waiting")] {
             let pane = FakePane()
             let response = MobileReply.send(
-                "go on", target: "%12", io: pane.io, status: { status }, pause: { _ in })
+                "go on", target: "%12", io: pane.io, state: { self.state(status) }, pause: { _ in })
             XCTAssertEqual(response.status, 409)
-            XCTAssertTrue(String(decoding: response.body, as: UTF8.self).contains(#""error":"\#(code)""#))
+            XCTAssertTrue(body(response).contains(#""error":"\#(code)""#))
             XCTAssertEqual(pane.argv.count, 0, code)
         }
         // A thread that left the tree: nothing to type into.
         let pane = FakePane()
         XCTAssertEqual(
-            MobileReply.send("go on", target: "%12", io: pane.io, status: { nil }, pause: { _ in }).status,
-            404)
+            MobileReply.send("go on", target: "%12", io: pane.io, state: { nil }, pause: { _ in }).status, 404)
         XCTAssertEqual(pane.argv.count, 0)
     }
 
-    func testAPromptThatComesUpAfterThePasteGetsNoEnter() {
+    func testTextRefusedAfterThePasteIsTakenOutOfTheInputBox() {
         for late in [AttentionStatus.waiting, .busy] {
             let pane = FakePane()
             pane.status = .idle
             pane.statusAfterPaste = late
             let response = MobileReply.send(
-                "go on", target: "%12", io: pane.io, status: { pane.status }, pause: { _ in })
+                "go on\nthen push", target: "%12", io: pane.io,
+                state: { pane.status.map { self.state($0) } }, pause: { _ in })
             XCTAssertEqual(response.status, 409)
-            XCTAssertEqual(pane.argv.map(\.first), ["copy-mode", "load-buffer", "paste-buffer"])
+            // Its own code: the phone must know the text was in the pane.
+            XCTAssertEqual(
+                body(response).contains(#""error":"not_sent""#), true, body(response))
+            XCTAssertTrue(body(response).contains(#""reason":"\#(late.rawValue)""#))
+            XCTAssertTrue(body(response).contains(#""cleared":true"#))
+            // One Ctrl-U per line, and no Enter.
+            XCTAssertEqual(pane.argv.map(\.first), ["copy-mode", "load-buffer", "paste-buffer", "send-keys"])
+            XCTAssertEqual(pane.argv.last, ["send-keys", "-t", "%12", "C-u", "C-u"])
             XCTAssertFalse(pane.argv.contains { $0.contains("Enter") })
         }
-        // The thread went away between the paste and the Enter.
+        // The thread went away between the paste and the Enter: no pane to clear.
         let pane = FakePane()
         var asked = 0
         let gone = MobileReply.send(
             "go on", target: "%12", io: pane.io,
-            status: { asked += 1; return asked == 1 ? .idle : nil }, pause: { _ in })
+            state: { asked += 1; return asked == 1 ? self.state(.idle) : nil }, pause: { _ in })
         XCTAssertEqual(gone.status, 404)
-        XCTAssertFalse(pane.argv.contains { $0.contains("Enter") })
+        XCTAssertEqual(pane.argv.map(\.first), ["copy-mode", "load-buffer", "paste-buffer"])
     }
 
-    func testAPaneWithNoStatusIsReadForAPromptInstead() {
-        // A shell: no hooks, nothing on screen that asks.
-        let shell = FakePane()
-        shell.screen = "$ make test\nok\n$ "
+    func testAPromptOnTheScreenBeforeTheEnterWinsOverAnIdleStatus() {
+        // The status never changes: only the screen shows the prompt that
+        // came up after the paste. A remote pane's status is like this.
+        for remote in [false, true] {
+            let pane = FakePane()
+            pane.screenAfterPaste = DemoPrompt.permission
+            let response = MobileReply.send(
+                "go on", target: "%12", io: pane.io, state: { self.state(.idle, remote: remote) },
+                pause: { _ in })
+            XCTAssertEqual(response.status, 409, "remote \(remote)")
+            XCTAssertTrue(body(response).contains(#""reason":"waiting""#))
+            XCTAssertFalse(pane.argv.contains { $0.contains("Enter") })
+        }
+        // And before the paste: nothing is typed at all.
+        let pane = FakePane()
+        pane.screen = DemoPrompt.permission
+        let early = MobileReply.send(
+            "go on", target: "%12", io: pane.io, state: { self.state(.idle, remote: true) }, pause: { _ in })
+        XCTAssertEqual(early.status, 409)
+        XCTAssertEqual(body(early), #"{"error":"waiting","message":"Thread is waiting on a prompt"}"#)
+        XCTAssertEqual(pane.argv.count, 0)
+        // A pane that cannot be read gets no text.
+        let blind = FakePane()
+        blind.screen = nil
         XCTAssertEqual(
-            MobileReply.send("ls", target: "%13", io: shell.io, status: { .unknown }, pause: { _ in }).status,
-            200)
+            MobileReply.send("go on", target: "%12", io: blind.io, state: { self.state(.idle) }, pause: { _ in })
+                .status, 503)
+        XCTAssertEqual(blind.argv.count, 0)
+    }
 
-        // An agent without hooks that sits on a prompt.
-        let asking = FakePane()
-        asking.screen = DemoPrompt.permission
-        let response = MobileReply.send(
-            "go on", target: "%12", io: asking.io, status: { .unknown }, pause: { _ in })
-        XCTAssertEqual(response.status, 409)
-        XCTAssertEqual(asking.argv.count, 0)
+    func testAPaneWhoseStatusIsNotKnownFirstHandMustShowAnInputBox() {
+        // No hooks, or another host: only an agent's input box takes text.
+        for unverified in [state(.unknown), state(.idle, remote: true), state(.unknown, remote: true)] {
+            for screen in [
+                "$ make test\nok\n$ ", "", DemoPrompt.yesNo, "Overwrite config.json? [y/N] ",
+                "Press Enter to continue", "Password:",
+            ] {
+                let pane = FakePane()
+                pane.screen = screen
+                let response = MobileReply.send(
+                    "y", target: "%12", io: pane.io, state: { unverified }, pause: { _ in })
+                XCTAssertEqual(response.status, 409, screen)
+                XCTAssertEqual(
+                    body(response), #"{"error":"no_input","message":"Thread shows no input box"}"#, screen)
+                XCTAssertEqual(pane.argv.count, 0, screen)
+            }
+            // With the box on screen, the text goes in.
+            let pane = FakePane()
+            pane.screenAfterPaste = DemoPrompt.input("go on")
+            XCTAssertEqual(
+                MobileReply.send("go on", target: "%12", io: pane.io, state: { unverified }, pause: { _ in })
+                    .status, 200)
+        }
+        // A status this Mac's hooks reported is trusted to mean idle.
+        let pane = FakePane()
+        pane.screen = "$ "
+        XCTAssertEqual(
+            MobileReply.send("go on", target: "%12", io: pane.io, state: { self.state(.idle) }, pause: { _ in })
+                .status, 200)
+    }
 
-        // Our own numbered list in the input box is not a prompt.
+    func testOurOwnNumberedListInTheInputBoxIsNotAPrompt() {
         let list = "1. rename the flag\n2. update the docs"
-        let echo = FakePane()
-        XCTAssertNil(MobileReply.refusal(
-            status: .unknown, screen: { "❯ 1. rename the flag\n  2. update the docs" }, pasted: list))
-        XCTAssertNotNil(MobileReply.refusal(
-            status: .unknown, screen: { DemoPrompt.permission }, pasted: list))
-        XCTAssertEqual(echo.argv.count, 0)
-        // A known status is trusted: the screen is not even read.
-        XCTAssertNil(MobileReply.refusal(status: .idle, screen: { XCTFail("read"); return nil }))
+        let pane = FakePane()
+        pane.screenAfterPaste = DemoPrompt.input(list)
+        XCTAssertEqual(
+            MobileReply.send(list, target: "%12", io: pane.io, state: { self.state(.unknown) }, pause: { _ in })
+                .status, 200)
+        XCTAssertTrue(FakePane.sendArgv(pane.argv, target: "%12"))
+    }
+
+    func testTextThatOnlyMentionsAChoiceIsNotAnEchoOfThePrompt() throws {
+        // The text holds the words of every choice. A substring test would
+        // call the prompt an echo of it and press Enter on "1. Yes".
+        let yesNo = """
+            ────────────────────
+            ❯ 1. Yes
+              2. No
+            ────────────────────
+            """
+        for text in ["Yes or No?", "1. Yes or 2. No", "No\nYes", "1. Yes", "2. No\n1. Yes", "x 1. Yes\n2. No"] {
+            XCTAssertNotNil(MobileScreen(yesNo, pasted: text).prompt, text)
+            XCTAssertFalse(MobileScreen(yesNo, pasted: text).inputBox, text)
+            let pane = FakePane()
+            pane.screenAfterPaste = yesNo
+            let response = MobileReply.send(
+                text, target: "%12", io: pane.io, state: { self.state(.idle) }, pause: { _ in })
+            XCTAssertEqual(response.status, 409, text)
+            XCTAssertFalse(pane.argv.contains { $0.contains("Enter") }, text)
+        }
+        // Whole lines, in order, next to each other: that is the text itself.
+        XCTAssertNil(MobileScreen(yesNo, pasted: "pick one:\n1. Yes\n2. No").prompt)
+        // The same lines outside an input box are a prompt whatever was pasted.
+        XCTAssertNotNil(MobileScreen(DemoPrompt.question, pasted: "1. Redis\n2. In memory\n3. Type something.").prompt)
+        let prompt = try XCTUnwrap(MobileScreen(yesNo).prompt)
+        XCTAssertTrue(MobileScreen.isEcho(prompt, of: " 1. Yes \n2. No"))
+        XCTAssertFalse(MobileScreen.isEcho(prompt, of: "1. Yes\n\n2. No"))
+        XCTAssertFalse(MobileScreen.isEcho(prompt, of: ""))
     }
 
     func testAFailedPasteIsAnErrorAndSendsNoEnter() {
         let pane = FakePane()
         pane.failing = true
-        let response = MobileReply.send("go on", target: "%12", io: pane.io, status: { .idle }, pause: { _ in })
+        let response = MobileReply.send(
+            "go on", target: "%12", io: pane.io, state: { self.state(.idle) }, pause: { _ in })
         XCTAssertEqual(response.status, 503)
         XCTAssertEqual(pane.argv.count, 0)
     }
 
-    // MARK: status
+    // MARK: state
 
     func testTheHookRowIsNewerThanTheTree() {
         let now = 1_759_500_000
@@ -341,28 +571,35 @@ final class MobileReplyTests: XCTestCase {
                 sessionId: session, agent: "claude", state: state, reason: "", pane: pane,
                 cwd: "/Users/me/acme-app", since: now - age, updatedAt: now - age)
         }
+        func status(_ thread: MobileThread, _ rows: [AgentStateRow]) -> AttentionStatus {
+            MobileReply.state(thread: thread, rows: rows, now: now).status
+        }
         // The tree still says idle; the hook reported a prompt a second ago.
-        XCTAssertEqual(MobileReply.status(thread: thread(status: .idle), rows: [row(.waiting)], now: now), .waiting)
-        XCTAssertEqual(MobileReply.status(thread: thread(status: .idle), rows: [row(.busy)], now: now), .busy)
+        XCTAssertEqual(
+            MobileReply.state(thread: thread(status: .idle), rows: [row(.waiting)], now: now),
+            MobilePaneState(status: .waiting, since: now - 1))
+        XCTAssertEqual(status(thread(status: .idle), [row(.busy)]), .busy)
         // No row, another pane's row, or another session's row in this pane: the tree's.
-        XCTAssertEqual(MobileReply.status(thread: thread(status: .busy), rows: [], now: now), .busy)
-        XCTAssertEqual(
-            MobileReply.status(thread: thread(status: .idle), rows: [row(.waiting, pane: "%13")], now: now), .idle)
-        XCTAssertEqual(
-            MobileReply.status(thread: thread(status: .idle), rows: [row(.waiting, session: "old")], now: now),
-            .idle)
+        XCTAssertEqual(status(thread(status: .busy), []), .busy)
+        XCTAssertEqual(status(thread(status: .idle), [row(.waiting, pane: "%13")]), .idle)
+        XCTAssertEqual(status(thread(status: .idle), [row(.waiting, session: "old")]), .idle)
         // A busy row the scan has long disagreed with is a missed Stop.
-        XCTAssertEqual(
-            MobileReply.status(thread: thread(status: .idle), rows: [row(.busy, age: 86_400)], now: now), .idle)
-        // The hooks write this Mac's own state: never a remote pane's.
+        XCTAssertEqual(status(thread(status: .idle), [row(.busy, age: 86_400)]), .idle)
+        // The hooks write this Mac's own state: never a remote pane's, whose
+        // status is marked as one that may be old.
         let remote = thread(status: .idle, host: Host(name: "devbox", sshAlias: "devbox"))
-        XCTAssertEqual(MobileReply.status(thread: remote, rows: [row(.waiting)], now: now), .idle)
+        XCTAssertEqual(
+            MobileReply.state(thread: remote, rows: [row(.waiting)], now: now),
+            MobilePaneState(status: .idle, since: nil, remote: true))
+        XCTAssertTrue(MobileReply.state(thread: remote, rows: [], now: now).unverified)
+        XCTAssertTrue(state(.unknown).unverified)
+        XCTAssertFalse(state(.idle).unverified)
     }
 
     // MARK: prompts
 
     func testReadsAPermissionPromptFromTheScreen() throws {
-        let prompt = try XCTUnwrap(MobilePrompt.parse(screen: DemoPrompt.permission))
+        let prompt = try XCTUnwrap(MobileScreen(DemoPrompt.permission).prompt)
         XCTAssertEqual(prompt.kind, .permission)
         XCTAssertEqual(prompt.title, "Bash command")
         XCTAssertEqual(
@@ -373,12 +610,15 @@ final class MobileReplyTests: XCTestCase {
             .init(n: 2, label: "Yes, and don't ask again for kubectl commands"),
             .init(n: 3, label: "No, and tell Claude what to do differently"),
         ])
+        XCTAssertFalse(prompt.truncated)
+        XCTAssertFalse(MobileScreen(DemoPrompt.permission).inputBox)
         XCTAssertEqual(prompt.json["id"] as? String, prompt.id)
+        XCTAssertEqual(prompt.json["truncated"] as? Bool, false)
         XCTAssertEqual((prompt.json["options"] as? [[String: Any]])?.count, 3)
     }
 
     func testReadsAQuestionWhoseOptionsCarryDescriptions() throws {
-        let prompt = try XCTUnwrap(MobilePrompt.parse(screen: DemoPrompt.question))
+        let prompt = try XCTUnwrap(MobileScreen(DemoPrompt.question).prompt)
         XCTAssertEqual(prompt.kind, .question)
         XCTAssertEqual(prompt.question, "Which store should the cache use?")
         XCTAssertEqual(prompt.options.map(\.label), ["Redis", "In memory", "Type something."])
@@ -389,10 +629,10 @@ final class MobileReplyTests: XCTestCase {
         let moved = DemoPrompt.permission
             .replacingOccurrences(of: "❯ 1. Yes ", with: "  1. Yes ")
             .replacingOccurrences(of: "  3. No,", with: "❯ 3. No,")
-        let prompt = try XCTUnwrap(MobilePrompt.parse(screen: moved))
+        let prompt = try XCTUnwrap(MobileScreen(moved).prompt)
         XCTAssertEqual(prompt.options.map(\.n), [1, 2, 3])
         // The same prompt, wherever the cursor is.
-        XCTAssertEqual(prompt.id, MobilePrompt.parse(screen: DemoPrompt.permission)?.id)
+        XCTAssertEqual(prompt.id, MobileScreen(DemoPrompt.permission).prompt?.id)
     }
 
     func testAScreenWithoutALivePromptHasNone() {
@@ -406,59 +646,115 @@ final class MobileReplyTests: XCTestCase {
             "❯ 1. Only\n",
             // The input box with one numbered line.
             "❯ 1. fix the login bug",
+            // An answered prompt in the scrollback, above the input box.
+            DemoPrompt.permission + "\n" + DemoPrompt.idle,
         ] {
-            XCTAssertNil(MobilePrompt.parse(screen: screen), screen)
+            XCTAssertNil(MobileScreen(screen).prompt, screen)
         }
+        XCTAssertTrue(MobileScreen(DemoPrompt.idle).inputBox)
+        XCTAssertTrue(MobileScreen(DemoPrompt.permission + "\n" + DemoPrompt.idle).inputBox)
+        XCTAssertTrue(MobileScreen("╭──────╮\n│ > hello │\n╰──────╯").inputBox)
+        for screen in ["$ ", "> not in a box", "────\nplain text\n────", DemoPrompt.yesNo] {
+            XCTAssertFalse(MobileScreen(screen).inputBox, screen)
+        }
+        // A list someone typed into the box on the Mac is not ours: it counts
+        // as a prompt, and nothing is typed over it.
+        let typed = MobileScreen(DemoPrompt.input("1. one\n2. two"))
+        XCTAssertNotNil(typed.prompt)
+        XCTAssertFalse(typed.inputBox)
+    }
+
+    func testALongCommandIsMarkedAsCutAndKeepsItsStart() throws {
+        let long = (1...40).map { "  step-\($0) --flag value --namespace staging --timeout 120s \\" }.joined(separator: "\n")
+        let boxed = """
+            ╭──────────────╮
+            Bash command
+            \(long)
+            Do you want to proceed?
+            ❯ 1. Yes
+              2. No
+            ╰──────────────╯
+            """
+        let prompt = try XCTUnwrap(MobileScreen(boxed).prompt)
+        XCTAssertTrue(prompt.truncated)
+        XCTAssertEqual(prompt.title, "Bash command")
+        XCTAssertTrue(prompt.detail.hasPrefix("step-1 --flag"))
+        XCTAssertEqual(prompt.detail.count, MobileScreen.maxDetailLength)
+        XCTAssertEqual(prompt.json["truncated"] as? Bool, true)
+
+        // The top of the box scrolled off the screen: what is here is the end
+        // of the command, so it is not shown as a title.
+        let headless = (1...80).map { "line \($0)" }.joined(separator: "\n")
+            + "\nDo you want to proceed?\n❯ 1. Yes\n  2. No"
+        let cut = try XCTUnwrap(MobileScreen(headless).prompt)
+        XCTAssertTrue(cut.truncated)
+        XCTAssertEqual(cut.title, "")
+        XCTAssertEqual(cut.question, "Do you want to proceed?")
     }
 
     func testAnotherPromptHasAnotherId() throws {
-        let first = try XCTUnwrap(MobilePrompt.parse(screen: DemoPrompt.permission))
-        let second = try XCTUnwrap(MobilePrompt.parse(
+        let waiting = state(.waiting, since: 100)
+        let first = try XCTUnwrap(MobileReply.prompt(state: waiting, screen: DemoPrompt.permission))
+        let second = try XCTUnwrap(MobileReply.prompt(
+            state: waiting,
             screen: DemoPrompt.permission.replacingOccurrences(of: "deploy/web", with: "deploy/api")))
         XCTAssertNotEqual(first.id, second.id)
-        XCTAssertNotEqual(first.id, MobilePrompt.parse(screen: DemoPrompt.question)?.id)
+        XCTAssertNotEqual(first.id, MobileReply.prompt(state: waiting, screen: DemoPrompt.question)?.id)
+        // The same words asked again later are another prompt.
+        let again = try XCTUnwrap(
+            MobileReply.prompt(state: state(.waiting, since: 160), screen: DemoPrompt.permission))
+        XCTAssertNotEqual(first.id, again.id)
+        XCTAssertEqual(
+            first.id, MobileReply.prompt(state: waiting, screen: DemoPrompt.permission)?.id)
     }
 
-    func testOnlyAWaitingPaneShowsAPrompt() {
-        let pane = FakePane()
-        pane.screen = DemoPrompt.permission
-        XCTAssertNotNil(MobileReply.prompt(status: .waiting, io: pane.io))
-        XCTAssertNotNil(MobileReply.prompt(status: .unknown, io: pane.io))
-        // An old prompt still in the scrollback of a pane that moved on.
-        XCTAssertNil(MobileReply.prompt(status: .idle, io: pane.io))
-        XCTAssertNil(MobileReply.prompt(status: .busy, io: pane.io))
-        XCTAssertNil(MobileReply.prompt(status: nil, io: pane.io))
+    func testThePromptIsWhatTheScreenShowsWhateverTheStatusSays() {
+        for status in [AttentionStatus.waiting, .unknown, .idle, .busy] {
+            XCTAssertNotNil(MobileReply.prompt(state: state(status), screen: DemoPrompt.permission))
+        }
+        XCTAssertNil(MobileReply.prompt(state: nil, screen: DemoPrompt.permission))
+        XCTAssertNil(MobileReply.prompt(state: state(.waiting), screen: nil))
+        // An old prompt above the input box of a pane that moved on is none.
+        XCTAssertNil(MobileReply.prompt(
+            state: state(.idle), screen: DemoPrompt.permission + "\n" + DemoPrompt.idle))
     }
 
     func testAnAnswerIsTheDigitOfAChoiceOnThePaneNow() throws {
         let pane = FakePane()
         pane.screen = DemoPrompt.permission
-        let id = try XCTUnwrap(MobilePrompt.parse(screen: DemoPrompt.permission)).id
+        let waiting = state(.waiting, since: 100)
+        let id = try XCTUnwrap(MobileReply.prompt(state: waiting, screen: DemoPrompt.permission)).id
         XCTAssertEqual(
-            MobileReply.answer(prompt: id, option: 2, target: "%12", io: pane.io, status: .waiting).status,
-            200)
+            MobileReply.answer(prompt: id, option: 2, target: "%12", io: pane.io, state: waiting).status, 200)
         XCTAssertEqual(pane.argv, [["send-keys", "-t", "%12", "2"]])
 
         // A choice the prompt does not have.
         for option in [0, 4, 9, -1, 12] {
             XCTAssertEqual(
-                MobileReply.answer(prompt: id, option: option, target: "%12", io: pane.io, status: .waiting)
+                MobileReply.answer(prompt: id, option: option, target: "%12", io: pane.io, state: waiting)
                     .status, 400)
         }
         // Another prompt took its place: the tap answers nothing.
         pane.screen = DemoPrompt.question
-        let stale = MobileReply.answer(prompt: id, option: 1, target: "%12", io: pane.io, status: .waiting)
+        let stale = MobileReply.answer(prompt: id, option: 1, target: "%12", io: pane.io, state: waiting)
         XCTAssertEqual(stale.status, 409)
-        XCTAssertEqual(String(decoding: stale.body, as: UTF8.self), #"{"error":"stale"}"#)
-        // The pane moved on, or cannot be read.
+        XCTAssertEqual(body(stale), #"{"error":"stale"}"#)
+        // The same words, asked again after the first was answered.
         pane.screen = DemoPrompt.permission
         XCTAssertEqual(
-            MobileReply.answer(prompt: id, option: 1, target: "%12", io: pane.io, status: .busy).status, 409)
+            MobileReply.answer(
+                prompt: id, option: 1, target: "%12", io: pane.io, state: state(.waiting, since: 160)).status,
+            409)
+        // The pane moved on, or cannot be read.
+        pane.screen = DemoPrompt.idle
+        XCTAssertEqual(
+            MobileReply.answer(prompt: id, option: 1, target: "%12", io: pane.io, state: state(.busy)).status,
+            409)
         pane.screen = nil
         XCTAssertEqual(
-            MobileReply.answer(prompt: id, option: 1, target: "%12", io: pane.io, status: .waiting).status, 409)
+            MobileReply.answer(prompt: id, option: 1, target: "%12", io: pane.io, state: waiting).status, 409)
         XCTAssertEqual(
-            MobileReply.answer(prompt: id, option: 1, target: "%12", io: pane.io, status: nil).status, 404)
+            MobileReply.answer(prompt: id, option: 1, target: "%12", io: pane.io, state: nil).status, 404)
         XCTAssertEqual(pane.argv.count, 1)
     }
 
@@ -495,12 +791,25 @@ final class MobileReplyTests: XCTestCase {
         for (raw, expected) in cases {
             XCTAssertEqual(MobileReply.fileName(raw), expected, raw)
         }
-        let long = String(repeating: "a", count: 300) + ".png"
-        let name = MobileReply.fileName(long) ?? ""
-        XCTAssertEqual(name.count, MobileReply.maxFileNameLength)
-        XCTAssertTrue(name.hasSuffix(".png"))
         XCTAssertEqual(MobileReply.numbered("photo.png", 2), "photo-2.png")
         XCTAssertEqual(MobileReply.numbered("notes", 3), "notes-3")
+    }
+
+    func testAFileNameIsCutByBytesNotCharacters() {
+        let long = MobileReply.fileName(String(repeating: "a", count: 300) + ".png") ?? ""
+        XCTAssertEqual(long.utf8.count, MobileReply.maxFileNameBytes)
+        XCTAssertTrue(long.hasSuffix(".png"))
+        // 200 characters of three bytes each fit a character cap and not a disk.
+        let wide = MobileReply.fileName(String(repeating: "界", count: 200) + ".png") ?? ""
+        XCTAssertLessThanOrEqual(wide.utf8.count, MobileReply.maxFileNameBytes)
+        XCTAssertTrue(wide.hasSuffix(".png"))
+        XCTAssertTrue(wide.hasPrefix("界"))
+        // Cut between characters, never inside one.
+        XCTAssertFalse(wide.unicodeScalars.contains("\u{FFFD}"))
+        // With the number a taken name gets, still within 255 bytes.
+        XCTAssertLessThanOrEqual(MobileReply.numbered(wide, 99).utf8.count, 255)
+        let noExtension = MobileReply.fileName(String(repeating: "é", count: 300)) ?? ""
+        XCTAssertLessThanOrEqual(noExtension.utf8.count, MobileReply.maxFileNameBytes)
     }
 
     func testAnUploadLandsInTheThreadsDirectoryAndItsPathIsPasted() {
@@ -508,13 +817,12 @@ final class MobileReplyTests: XCTestCase {
         let data = Data("demo".utf8)
         let response = MobileReply.upload(
             data, name: "../../etc/photo 1.png", thread: thread(), io: pane.io, limit: 1024,
-            status: { .idle })
+            state: { self.state(.idle) })
         XCTAssertEqual(response.status, 200)
         XCTAssertEqual(
-            String(decoding: response.body, as: UTF8.self),
-            #"{"ok":true,"pasted":true,"path":"\/Users\/me\/acme-app\/photo-1.png"}"#)
-        XCTAssertEqual(pane.copies.map(\.path), ["/Users/me/acme-app/photo-1.png"])
-        XCTAssertEqual(pane.copies.first?.data, data)
+            body(response), #"{"ok":true,"pasted":true,"path":"\/Users\/me\/acme-app\/photo-1.png"}"#)
+        XCTAssertEqual(pane.saves.map(\.path), ["/Users/me/acme-app/photo-1.png"])
+        XCTAssertEqual(pane.saves.first?.data, data)
         // The path is pasted, bracketed, and not submitted.
         XCTAssertEqual(pane.argv.map(\.first), ["copy-mode", "load-buffer", "paste-buffer"])
         XCTAssertEqual(pane.calls[1].stdin, "/Users/me/acme-app/photo-1.png ")
@@ -522,14 +830,132 @@ final class MobileReplyTests: XCTestCase {
         XCTAssertFalse(pane.argv.contains { $0.contains("Enter") })
     }
 
+    func testAPathWithMoreThanPlainCharactersIsPastedQuoted() {
+        XCTAssertEqual(MobileReply.pasted(path: "/Users/me/acme-app/a_b-1.png"), "/Users/me/acme-app/a_b-1.png")
+        XCTAssertEqual(MobileReply.pasted(path: "/Users/me/my app/a.png"), "'/Users/me/my app/a.png'")
+        XCTAssertEqual(MobileReply.pasted(path: "/Users/me/it's/a.png"), #"'/Users/me/it'\''s/a.png'"#)
+        XCTAssertEqual(MobileReply.pasted(path: "/Users/me/$(x)/a.png"), "'/Users/me/$(x)/a.png'")
+        let pane = FakePane()
+        _ = MobileReply.upload(
+            Data("x".utf8), name: "a.png", thread: thread(cwd: "/Users/me/my app"), io: pane.io,
+            limit: 1024, state: { self.state(.idle) })
+        XCTAssertEqual(pane.calls[1].stdin, "'/Users/me/my app/a.png' ")
+    }
+
     func testAnUploadNeverOverwritesAFile() {
         let pane = FakePane()
         pane.existing = ["/Users/me/acme-app/package.json", "/Users/me/acme-app/package-2.json"]
         let response = MobileReply.upload(
             Data("{}".utf8), name: "package.json", thread: thread(), io: pane.io, limit: 1024,
-            status: { .idle })
+            state: { self.state(.idle) })
         XCTAssertEqual(response.status, 200)
-        XCTAssertEqual(pane.copies.map(\.path), ["/Users/me/acme-app/package-3.json"])
+        XCTAssertEqual(pane.saves.map(\.path), ["/Users/me/acme-app/package-3.json"])
+
+        // A save that fails is an error: it is never read as "the name is free".
+        let down = FakePane()
+        down.failing = true
+        let failed = MobileReply.upload(
+            Data("{}".utf8), name: "package.json", thread: thread(), io: down.io, limit: 1024,
+            state: { self.state(.idle) })
+        XCTAssertEqual(failed.status, 503)
+        XCTAssertEqual(down.saves.count, 0)
+    }
+
+    func testAnExclusiveCreateWritesThroughNoLinkAndOverNoFile() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mobile-upload-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        func path(_ name: String) -> String { root.appendingPathComponent(name).path }
+        let data = Data("demo".utf8)
+
+        XCTAssertEqual(FileTransfer.writeExclusive(data, to: path("new.txt")), .saved)
+        XCTAssertEqual(FileManager.default.contents(atPath: path("new.txt")), data)
+
+        // A file with that name is left as it is.
+        try Data("keep".utf8).write(to: URL(fileURLWithPath: path("taken.txt")))
+        XCTAssertEqual(FileTransfer.writeExclusive(data, to: path("taken.txt")), .exists)
+        XCTAssertEqual(FileManager.default.contents(atPath: path("taken.txt")), Data("keep".utf8))
+
+        // A link to a file that does not exist yet: a plain create would
+        // follow it and make the target.
+        let target = path("outside.txt")
+        try FileManager.default.createSymbolicLink(atPath: path("dangling"), withDestinationPath: target)
+        XCTAssertEqual(FileTransfer.writeExclusive(data, to: path("dangling")), .exists)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: target))
+
+        // A link to a file that exists: the file is not written.
+        try FileManager.default.createSymbolicLink(atPath: path("link"), withDestinationPath: path("taken.txt"))
+        XCTAssertEqual(FileTransfer.writeExclusive(data, to: path("link")), .exists)
+        XCTAssertEqual(FileManager.default.contents(atPath: path("taken.txt")), Data("keep".utf8))
+
+        // No such folder is a failure, not a free name.
+        XCTAssertEqual(FileTransfer.writeExclusive(data, to: path("missing/a.txt")), .failed)
+
+        // The upload steps past the link to the next name.
+        let pane = FakePane()
+        var io = pane.io
+        io.save = FileTransfer.writeExclusive
+        let response = MobileReply.upload(
+            data, name: "dangling", thread: thread(cwd: root.path), io: io, limit: 1024,
+            state: { self.state(.idle) })
+        XCTAssertEqual(response.status, 200)
+        XCTAssertEqual(FileManager.default.contents(atPath: path("dangling-2")), data)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: target))
+    }
+
+    func testTheRemoteCreateIsExclusiveAndAFailedSshIsNotAFreeName() throws {
+        let (ssh, args) = FileTransfer.exclusiveWriteArgv(alias: "devbox", path: "/home/me/acme app/a'b.png")
+        XCTAssertEqual(ssh, Ssh.sshPath)
+        XCTAssertEqual(Array(args.dropLast()), Ssh.opts(host: "devbox"))
+        let command = try XCTUnwrap(args.last)
+        XCTAssertTrue(command.hasPrefix("sh -c '"))
+        // `set -C` makes `>` an exclusive create.
+        XCTAssertTrue(command.contains("set -C; : > \"$p\""))
+        // The path is one quoted word; it is never spliced into the script bare.
+        XCTAssertFalse(command.contains("acme app/a'b.png"))
+
+        XCTAssertEqual(FileTransfer.saved(remoteOutput: "saved\n"), .saved)
+        XCTAssertEqual(FileTransfer.saved(remoteOutput: "exists\n"), .exists)
+        // ssh could not connect: no output. That is a failure, not "no file".
+        XCTAssertEqual(FileTransfer.saved(remoteOutput: nil), .failed)
+        XCTAssertEqual(FileTransfer.saved(remoteOutput: ""), .failed)
+        XCTAssertEqual(FileTransfer.saved(remoteOutput: "failed"), .failed)
+    }
+
+    func testTheRemoteCreateScriptRefusesATakenNameAndADanglingLink() throws {
+        // The script itself, run by this Mac's `sh` on a scratch folder.
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mobile-remote-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        func run(_ name: String) throws -> FileTransfer.Saved {
+            let path = root.appendingPathComponent(name).path
+            let command = try XCTUnwrap(FileTransfer.exclusiveWriteArgv(alias: "devbox", path: path).args.last)
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            process.arguments = ["-c", command]
+            let input = Pipe(), output = Pipe()
+            process.standardInput = input
+            process.standardOutput = output
+            try process.run()
+            input.fileHandleForWriting.write(Data("demo".utf8))
+            try input.fileHandleForWriting.close()
+            process.waitUntilExit()
+            return FileTransfer.saved(remoteOutput: String(
+                decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self))
+        }
+        XCTAssertEqual(try run("it's new.txt"), .saved)
+        XCTAssertEqual(
+            FileManager.default.contents(atPath: root.appendingPathComponent("it's new.txt").path),
+            Data("demo".utf8))
+        XCTAssertEqual(try run("it's new.txt"), .exists)
+        let target = root.appendingPathComponent("outside.txt").path
+        try FileManager.default.createSymbolicLink(
+            atPath: root.appendingPathComponent("dangling").path, withDestinationPath: target)
+        XCTAssertEqual(try run("dangling"), .exists)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: target))
+        XCTAssertEqual(try run("missing/a.txt"), .failed)
     }
 
     func testAnUploadIsRefusedBeforeAnythingIsWritten() {
@@ -548,16 +974,25 @@ final class MobileReplyTests: XCTestCase {
         for (data, name, status, cwd, expected) in cases {
             let pane = FakePane()
             let response = MobileReply.upload(
-                data, name: name, thread: thread(cwd: cwd), io: pane.io, limit: 1024, status: { status })
+                data, name: name, thread: thread(cwd: cwd), io: pane.io, limit: 1024,
+                state: { status.map { self.state($0) } })
             XCTAssertEqual(response.status, expected, "\(name) \(String(describing: status)) \(cwd)")
-            XCTAssertEqual(pane.copies.count, 0)
+            XCTAssertEqual(pane.saves.count, 0)
             XCTAssertEqual(pane.argv.count, 0)
         }
+        // A prompt on the screen of a pane whose status says idle.
+        let asking = FakePane()
+        asking.screen = DemoPrompt.permission
+        XCTAssertEqual(
+            MobileReply.upload(
+                Data("x".utf8), name: "a.png", thread: thread(), io: asking.io, limit: 1024,
+                state: { self.state(.idle, remote: true) }).status, 409)
+        XCTAssertEqual(asking.saves.count, 0)
         // Settings cannot raise the limit past what the server holds in memory.
         XCTAssertEqual(
             MobileReply.upload(
                 Data(count: MobileReply.maxUploadBytes + 1), name: "a.bin", thread: thread(),
-                io: FakePane().io, limit: .max, status: { .idle }).status, 413)
+                io: FakePane().io, limit: .max, state: { self.state(.idle) }).status, 413)
     }
 
     func testAPromptThatComesUpDuringAnUploadGetsNoPaste() {
@@ -565,10 +1000,10 @@ final class MobileReplyTests: XCTestCase {
         var asked = 0
         let response = MobileReply.upload(
             Data("x".utf8), name: "a.png", thread: thread(), io: pane.io, limit: 1024,
-            status: { asked += 1; return asked == 1 ? .idle : .waiting })
+            state: { asked += 1; return self.state(asked == 1 ? .idle : .waiting) })
         XCTAssertEqual(response.status, 200)
-        XCTAssertTrue(String(decoding: response.body, as: UTF8.self).contains(#""pasted":false"#))
-        XCTAssertEqual(pane.copies.count, 1)
+        XCTAssertTrue(body(response).contains(#""pasted":false"#))
+        XCTAssertEqual(pane.saves.count, 1)
         XCTAssertEqual(pane.argv.count, 0)
     }
 
