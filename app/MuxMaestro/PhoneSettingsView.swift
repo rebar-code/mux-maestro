@@ -86,7 +86,7 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
             ("Port", NSGridCell.emptyContentView, port),
             ("Default grouping", NSGridCell.emptyContentView, grouping),
             ("Keep Mac awake", NSGridCell.emptyContentView, keepAwake),
-            ("Manager", NSGridCell.emptyContentView, manager),
+            ("Run manager agent", NSGridCell.emptyContentView, manager),
         ]
         for (title, middle, control) in rows {
             let name = NSTextField(labelWithString: title)

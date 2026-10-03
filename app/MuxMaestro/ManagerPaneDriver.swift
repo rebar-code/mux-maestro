@@ -619,6 +619,32 @@ final class ManagerPaneDriver {
         }
     }
 
+    static let waitingMessage = "Manager is waiting on a prompt"
+    static let busyMessage = "Manager is busy"
+    static let notReadyMessage = "Manager is not ready"
+
+    /// The pane's status now, read apart from any turn: safe on any queue.
+    /// nil when the pane has no session yet or its state is not known.
+    func paneStatus() -> ManagerTurnStatus? {
+        guard let resolved = ManagerTranscript.session(
+            forTmuxSession: config.tmuxSession, sessionsDir: sessionsDir) else { return nil }
+        if let statusOverride, let status = statusOverride(resolved.id) { return status }
+        return ManagerTranscript.status(sessionFile: resolved.file).0
+    }
+
+    /// Why text must not go into a pane in `status`; nil when it may. The pane
+    /// on a prompt always refuses. With `requireIdle`, so does a busy pane and
+    /// one whose state is not known: either may be on a prompt by the time the
+    /// Enter lands.
+    static func refusal(status: ManagerTurnStatus?, requireIdle: Bool) -> String? {
+        switch status {
+        case .waiting: return waitingMessage
+        case .idle: return nil
+        case .busy: return requireIdle ? busyMessage : nil
+        case nil: return requireIdle ? notReadyMessage : nil
+        }
+    }
+
     /// The pane's most recent substantive reply, for "catch me up".
     func lastReply() -> String {
         guard let id = currentSessionId(),
@@ -629,9 +655,11 @@ final class ManagerPaneDriver {
 
     /// Send one prompt. `onDelta` streams reply text as it lands; `completion`
     /// fires exactly once with the outcome. A second call while a turn runs
-    /// completes immediately with `.refused`.
+    /// completes immediately with `.refused`. `requireIdle` is for a sender
+    /// that cannot see the pane (the phone): the turn starts only from idle.
     func send(
         _ prompt: String,
+        requireIdle: Bool = false,
         onDelta: @escaping (String) -> Void,
         completion: @escaping (ManagerTurnOutcome) -> Void
     ) {
@@ -652,8 +680,8 @@ final class ManagerPaneDriver {
             self.sessionFile = resolved?.file
             // Typing into a pane that is sitting on a permission prompt answers
             // the prompt with the prompt text. Never do that.
-            guard self.currentStatus() != .waiting else {
-                self.report(.refused("Manager is waiting on a prompt"), to: completion)
+            if let reason = Self.refusal(status: self.currentStatus(), requireIdle: requireIdle) {
+                self.report(.refused(reason), to: completion)
                 return
             }
             guard self.tmux(["display-message", "-pt", self.config.tmuxSession, "#{pane_id}"]) else {
@@ -691,8 +719,12 @@ final class ManagerPaneDriver {
                 guard self.generation == generation, self.running else { return }
                 // A prompt that came up since the paste would take the Enter as
                 // its answer. Checked again here, as late as it can be.
-                guard self.currentStatus() != .waiting else {
-                    self.finish(.refused("Manager is waiting on a prompt"))
+                if let reason = Self.refusal(status: self.currentStatus(), requireIdle: requireIdle) {
+                    // The text is in the input box already. Take it out, or
+                    // the next Enter in the pane would send it.
+                    let lines = text.split(separator: "\n", omittingEmptySubsequences: false).count
+                    self.tmux(TmuxCommands.clearInput(target: self.config.tmuxSession, lines: lines))
+                    self.finish(.refused(reason))
                     return
                 }
                 guard self.tmux(["send-keys", "-t", self.config.tmuxSession, "Enter"]) else {

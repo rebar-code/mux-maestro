@@ -377,6 +377,8 @@ function managerApi(req, res, path, body) {
 	if (manager.turn) return send(res, 409, { error: 'busy', message: 'A turn is running' });
 	if (manager.status === 'waiting')
 		return send(res, 409, { error: 'waiting', message: 'Manager is waiting on a prompt' });
+	if (manager.status === 'unknown')
+		return send(res, 503, { error: 'not_ready', message: 'Manager is not ready' });
 	if (manager.status === 'busy')
 		return send(res, 409, { error: 'busy', message: 'Manager is busy' });
 	res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' });

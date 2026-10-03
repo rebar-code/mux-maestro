@@ -84,7 +84,7 @@ export interface Config {
 	grouping: 'recent' | 'host' | 'directory';
 }
 
-export type ManagerStatus = 'off' | 'idle' | 'busy' | 'waiting';
+export type ManagerStatus = 'off' | 'unknown' | 'idle' | 'busy' | 'waiting';
 
 /** A card on the manager home: an agent that waits, or a review item. */
 export interface ManagerItem {
