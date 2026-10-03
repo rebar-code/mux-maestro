@@ -484,10 +484,15 @@ enum TmuxModel {
         ppids: [Int: Int] = [:],
         agentStates: [String: AgentStateRow] = [:],
         cacheClocks: [String: CacheClock] = [:],
+        fallbackTTL: Int? = nil,
         lastPrompts: [String: LastPrompt] = [:],
         lastWrites: [String: Int] = [:],
         now: Int = Int(Date().timeIntervalSince1970)
     ) -> [TmuxSession] {
+        // A Claude pane with no TTL of its own takes the one this user's other
+        // threads show, here or (`fallbackTTL`) on the host that has transcripts.
+        let claudeTTL = AgentState.observedTTL(cacheClocks.values) ?? fallbackTTL
+            ?? AgentState.dozeSeconds
         // Codex ids join by process ancestry, not pane id, so resolve them to pane
         // ids once against the whole tree before walking it.
         var paneCodexSessionIds: [String: String] = [:]
@@ -542,7 +547,8 @@ enum TmuxModel {
                             attention: p.attention,
                             cache: p.claudeSessionId.flatMap { cacheClocks[$0] },
                             statusSince: p.agentState?.since ?? paneStatusSince[pane.id],
-                            now: now)
+                            now: now,
+                            fallbackTTL: p.codexSessionId == nil ? claudeTTL : AgentState.dozeSeconds)
                         p.lastPrompt = [p.claudeSessionId, p.codexSessionId]
                             .compactMap { $0.flatMap { lastPrompts[$0] } }.first
                         p.lastActivityAt = [p.claudeSessionId, p.codexSessionId]
