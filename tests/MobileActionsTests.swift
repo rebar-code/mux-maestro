@@ -7,6 +7,9 @@ final class FakeTmux {
     private var _calls: [(host: String, args: [String])] = []
     private var _output = ""
     private var _failing = false
+    private var _failure = ""
+    private var _missing = false
+    private var _gate: DispatchSemaphore?
 
     private func locked<T>(_ body: () -> T) -> T {
         lock.lock()
@@ -21,19 +24,37 @@ final class FakeTmux {
         get { locked { _output } }
         set { locked { _output = newValue } }
     }
+    /// Every call exits non-zero.
     var failing: Bool {
         get { locked { _failing } }
         set { locked { _failing = newValue } }
+    }
+    /// What a failing call prints.
+    var failure: String {
+        get { locked { _failure } }
+        set { locked { _failure = newValue } }
+    }
+    /// The host has no tmux to call.
+    var missing: Bool {
+        get { locked { _missing } }
+        set { locked { _missing = newValue } }
+    }
+    /// A call waits here until it is signalled.
+    var gate: DispatchSemaphore? {
+        get { locked { _gate } }
+        set { locked { _gate = newValue } }
     }
 
     var source: (Host) -> MobileTmux? {
         { [self] host in
             { [self] args in
-                locked {
-                    guard !_failing else { return nil }
+                let (answer, gate): ((ok: Bool, output: String)?, DispatchSemaphore?) = locked {
+                    guard !_missing else { return (nil, nil) }
                     _calls.append((host.name, args))
-                    return _output
+                    return (_failing ? (false, _failure) : (true, _output), _gate)
                 }
+                gate?.wait()
+                return answer
             }
         }
     }
@@ -57,7 +78,7 @@ final class MobileActionsTests: XCTestCase {
             MobileHostInput(
                 host: .local, colorHex: "#3291ff", reachability: .reachable, stats: nil,
                 sessions: [
-                    TmuxSession(name: "acme-app", attached: true, windows: [
+                    TmuxSession(name: "acme-app", attached: true, id: "$1", windows: [
                         TmuxWindow(index: 1, name: "checkout-fix", active: true, panes: [
                             pane("%12", "/Users/me/acme-app"), pane("%14", "/Users/me/acme-app"),
                         ]),
@@ -65,12 +86,12 @@ final class MobileActionsTests: XCTestCase {
                             pane("%13", "/Users/me/acme-app/web", agent: false),
                         ]),
                     ]),
-                    TmuxSession(name: "billing", attached: false, windows: [
+                    TmuxSession(name: "billing", attached: false, id: "$2", windows: [
                         TmuxWindow(index: 1, name: "proration", active: true, panes: [
                             pane("%20", "/Users/me/billing"),
                         ]),
                     ]),
-                    TmuxSession(name: ManagerHome.sessionName, attached: false, windows: [
+                    TmuxSession(name: ManagerHome.sessionName, attached: false, id: "$3", windows: [
                         TmuxWindow(index: 1, name: "manager", active: true, panes: [
                             pane("%30", "/Users/me/manager"),
                         ]),
@@ -79,7 +100,7 @@ final class MobileActionsTests: XCTestCase {
             MobileHostInput(
                 host: devbox, colorHex: "#f5a623", reachability: .reachable, stats: nil,
                 sessions: [
-                    TmuxSession(name: "infra", attached: false, windows: [
+                    TmuxSession(name: "infra", attached: false, id: "$0", windows: [
                         TmuxWindow(index: 1, name: "deploy-fix", active: true, panes: [
                             pane("%3", "/home/me/infra"),
                         ]),
@@ -90,7 +111,7 @@ final class MobileActionsTests: XCTestCase {
 
     private func run(_ action: MobileAction, _ json: String) -> (status: Int, body: [String: Any]) {
         let response = MobileActions.perform(
-            action, body: Data(json.utf8), snapshot: snapshot(), tmux: tmux.source)
+            action, body: Data(json.utf8), snapshot: snapshot(), home: "/Users/me", tmux: tmux.source)
         let body = (try? JSONSerialization.jsonObject(with: response.body)) as? [String: Any]
         return (response.status, body ?? [:])
     }
@@ -168,19 +189,23 @@ final class MobileActionsTests: XCTestCase {
         XCTAssertEqual(run(.zoomPane, #"{"thread":"localhost:14"}"#).status, 200)
         XCTAssertEqual(run(.killPane, #"{"thread":"localhost:14","confirm":true}"#).status, 200)
         XCTAssertEqual(run(.killWindow, #"{"thread":"devbox:3","confirm":true}"#).status, 200)
-        XCTAssertEqual(run(.killSession, #"{"host":"localhost","session":"billing","confirm":true}"#).status, 200)
+        XCTAssertEqual(run(.killSession, #"{"thread":"localhost:20","confirm":true}"#).status, 200)
 
         let format = "#{window_index}\t#{pane_id}"
         XCTAssertEqual(tmux.argv, [
-            ["new-window", "-a", "-t", "=acme-app:", "-P", "-F", format, "-c", "/Users/me/acme-app"],
-            ["new-window", "-a", "-t", "=acme-app:", "-P", "-F", format, "-c", "/Users/me/acme-app/web"],
-            ["rename-session", "-t", "=infra", "infra 2"],
+            ["new-window", "-a", "-t", "$1:", "-P", "-F", format, "-c", "/Users/me/acme-app"],
+            ["new-window", "-a", "-t", "$1:", "-P", "-F", format, "-c", "/Users/me/acme-app/web"],
+            ["rename-session", "-t", "$0", "infra 2"],
             ["rename-window", "-t", "%12", "🌱 checkout"],
             ["resize-pane", "-Z", "-t", "%14"],
             ["kill-pane", "-t", "%14"],
             ["kill-window", "-t", "%3"],
-            ["kill-session", "-t", "=billing"],
+            ["kill-session", "-t", "$2"],
         ])
+        // No session name is in any command: a session is its id.
+        for word in tmux.argv.joined() {
+            XCTAssertFalse(word.contains("billing") || word.contains("acme-app:") || word.contains("infra:"), word)
+        }
         XCTAssertEqual(tmux.calls.map(\.host), [
             "localhost", "localhost", "devbox", "localhost", "localhost", "localhost", "devbox", "localhost",
         ])
@@ -206,9 +231,11 @@ final class MobileActionsTests: XCTestCase {
             "mux-manager-2")
         XCTAssertEqual(tmux.argv, [
             ["new-session", "-d", "-s", "billing-2", "-c", "/Users/me/billing"],
-            ["new-session", "-d", "-s", "session"],
+            // No directory is the home directory: `~` for the remote shell
+            // to expand, this Mac's own path here.
+            ["new-session", "-d", "-s", "session", "-c", "~"],
             ["new-session", "-d", "-s", "api", "-c", "/home/me/infra"],
-            ["new-session", "-d", "-s", "mux-manager-2"],
+            ["new-session", "-d", "-s", "mux-manager-2", "-c", "/Users/me"],
         ])
 
         let before = tmux.argv.count
@@ -222,7 +249,7 @@ final class MobileActionsTests: XCTestCase {
         XCTAssertEqual(
             run(.newSession, #"{"host":"devbox","command":"rm -rf /","shell":"sh -c id"}"#).status, 200)
         XCTAssertEqual(tmux.argv.count, before + 1)
-        XCTAssertEqual(tmux.argv.last, ["new-session", "-d", "-s", "session"])
+        XCTAssertEqual(tmux.argv.last, ["new-session", "-d", "-s", "session", "-c", "~"])
     }
 
     // MARK: refusals
@@ -243,11 +270,12 @@ final class MobileActionsTests: XCTestCase {
             #"{"host":"devbox","session":"acme-app"}"#, #"{"host":"localhost","session":"acme-app:1"}"#,
             #"{"host":"localhost","session":"acme"}"#,
         ] {
-            for action in [MobileAction.newWindow, .renameSession, .killSession] {
+            for action in [MobileAction.newWindow, .renameSession] {
                 let full = body.dropLast() + #","name":"ok","confirm":true}"#
                 XCTAssertEqual(code(action, String(full)), "404 not_found", "\(action) \(body)")
             }
         }
+        XCTAssertEqual(code(.killSession, #"{"thread":"localhost:99","confirm":true}"#), "404 not_found")
         XCTAssertEqual(code(.newSession, #"{"host":"buildbox"}"#), "404 not_found")
         XCTAssertEqual(tmux.argv.count, 0)
     }
@@ -259,6 +287,10 @@ final class MobileActionsTests: XCTestCase {
             }
         }
         XCTAssertEqual(code(.renameSession, #"{"host":"localhost","name":"x"}"#), "400 bad_request")
+        // A session is killed by one of its threads, never by its name.
+        XCTAssertEqual(
+            code(.killSession, #"{"host":"localhost","session":"billing","confirm":true}"#),
+            "400 bad_request")
         XCTAssertEqual(tmux.argv.count, 0)
     }
 
@@ -305,7 +337,7 @@ final class MobileActionsTests: XCTestCase {
     func testAKillWithoutTheConfirmFieldIsRefused() {
         let targets: [(MobileAction, String)] = [
             (.killPane, #""thread":"localhost:14""#), (.killWindow, #""thread":"localhost:12""#),
-            (.killSession, #""host":"localhost","session":"billing""#),
+            (.killSession, #""thread":"localhost:20""#),
         ]
         for (action, target) in targets {
             XCTAssertEqual(code(action, "{\(target)}"), "400 confirm_required", "\(action)")
@@ -321,7 +353,7 @@ final class MobileActionsTests: XCTestCase {
     func testTheManagersOwnSessionTakesNoAction() {
         let session = #""host":"localhost","session":"mux-manager""#
         let thread = #""thread":"localhost:30""#
-        XCTAssertEqual(code(.killSession, "{\(session),\"confirm\":true}"), "403 protected")
+        XCTAssertEqual(code(.killSession, "{\(thread),\"confirm\":true}"), "403 protected")
         XCTAssertEqual(code(.killWindow, "{\(thread),\"confirm\":true}"), "403 protected")
         XCTAssertEqual(code(.killPane, "{\(thread),\"confirm\":true}"), "403 protected")
         XCTAssertEqual(code(.renameSession, "{\(session),\"name\":\"mine\"}"), "403 protected")
@@ -336,22 +368,236 @@ final class MobileActionsTests: XCTestCase {
         // A session of that name on another host is not the manager's.
         let remote = MobileSnapshot.build([MobileHostInput(
             host: devbox, colorHex: "#f5a623", reachability: .reachable, stats: nil,
-            sessions: [TmuxSession(name: ManagerHome.sessionName, attached: false, windows: [
+            sessions: [TmuxSession(name: ManagerHome.sessionName, attached: false, id: "$4", windows: [
                 TmuxWindow(index: 1, name: "w", active: true, panes: [pane("%5", "/home/me")]),
             ])])])
         let response = MobileActions.perform(
-            .killSession, body: Data(#"{"host":"devbox","session":"mux-manager","confirm":true}"#.utf8),
+            .killSession, body: Data(#"{"thread":"devbox:5","confirm":true}"#.utf8),
             snapshot: remote, tmux: tmux.source)
         XCTAssertEqual(response.status, 200)
     }
 
-    func testAFailedTmuxCallIsA503() {
-        tmux.failing = true
+    func testAHostWithoutTmuxIsA503AndATmuxErrorIsA409() {
+        tmux.missing = true
         XCTAssertEqual(code(.zoomPane, #"{"thread":"localhost:12"}"#), "503 unavailable")
         let none = MobileActions.perform(
             .zoomPane, body: Data(#"{"thread":"localhost:12"}"#.utf8), snapshot: snapshot(),
             tmux: { _ in nil })
         XCTAssertEqual(none.status, 503)
+
+        tmux.missing = false
+        tmux.failing = true
+        tmux.failure = "duplicate session: api"
+        XCTAssertEqual(code(.zoomPane, #"{"thread":"localhost:12"}"#), "409 failed")
+        XCTAssertEqual(code(.killPane, #"{"thread":"localhost:12","confirm":true}"#), "409 failed")
+        XCTAssertEqual(code(.newSession, #"{"host":"devbox"}"#), "409 failed")
+    }
+
+    func testAKillOfATargetThatIsAlreadyGoneIsDone() {
+        tmux.failing = true
+        for gone in ["can't find pane: %12", "can't find session: $2", "no server running on /tmp/tmux"] {
+            tmux.failure = gone
+            for (action, target) in [
+                (MobileAction.killPane, "localhost:12"), (.killWindow, "localhost:12"),
+                (.killSession, "localhost:20"),
+            ] {
+                let result = run(action, #"{"thread":"\#(target)","confirm":true}"#)
+                XCTAssertEqual(result.status, 200, "\(action) \(gone)")
+                XCTAssertEqual(result.body["gone"] as? Bool, true, "\(action) \(gone)")
+            }
+            // Anything else has nothing left to act on.
+            XCTAssertEqual(code(.zoomPane, #"{"thread":"localhost:12"}"#), "404 not_found", gone)
+            XCTAssertEqual(
+                code(.renameWindow, #"{"thread":"localhost:12","name":"cart"}"#), "404 not_found", gone)
+            XCTAssertEqual(code(.newWindow, #"{"thread":"localhost:12"}"#), "404 not_found", gone)
+        }
+    }
+
+    // MARK: what reaches tmux is the tree's own
+
+    private func tree(
+        _ sessions: [(name: String, pane: String, path: String)], host: Host = .local, ids: [String]? = nil
+    ) -> MobileSnapshot {
+        MobileSnapshot.build([MobileHostInput(
+            host: host, colorHex: "#3291ff", reachability: .reachable, stats: nil,
+            sessions: sessions.enumerated().map { index, session in
+                // The id is the pane's number with a `$`, unless the test gives one.
+                TmuxSession(name: session.name, attached: false, id: ids?[index] ?? "$\(session.pane.dropFirst())", windows: [
+                    TmuxWindow(index: 1, name: "w", active: true, panes: [pane(session.pane, session.path)]),
+                ])
+            })])
+    }
+
+    private func status(_ action: MobileAction, _ fields: [String: Any], in snapshot: MobileSnapshot) -> String {
+        let body = try! JSONSerialization.data(withJSONObject: fields)
+        let response = MobileActions.perform(
+            action, body: body, snapshot: snapshot, home: "/Users/me", tmux: tmux.source)
+        let error = ((try? JSONSerialization.jsonObject(with: response.body)) as? [String: Any])?["error"]
+        return "\(response.status) \(error as? String ?? "ok")"
+    }
+
+    func testASessionWhoseNameEndsInASemicolonTakesNoAction() {
+        // tmux reads an argument that ends in `;` as the end of a command:
+        // `rename-session -t =x; kill-server` would be two commands.
+        let snapshot = tree([("x;", "%7", "/Users/me/x"), ("keep", "%8", "/Users/me/keep")])
+        let named: [String: Any] = ["host": "localhost", "session": "x;", "name": "kill-server"]
+        XCTAssertEqual(status(.renameSession, named, in: snapshot), "404 not_found")
+        XCTAssertEqual(status(.newWindow, named, in: snapshot), "404 not_found")
+        let byThread: [String: Any] = ["thread": "localhost:7", "name": "kill-server", "confirm": true]
+        XCTAssertEqual(status(.renameSession, byThread, in: snapshot), "404 not_found")
+        XCTAssertEqual(status(.newWindow, byThread, in: snapshot), "404 not_found")
+        XCTAssertEqual(status(.killSession, byThread, in: snapshot), "404 not_found")
+        XCTAssertEqual(tmux.argv.count, 0)
+
+        // Nothing built for any target ends in `;`, whatever the phone sent.
+        for action in MobileAction.allCases {
+            for name in ["ok", "kill-server", "x;", ";"] {
+                _ = status(action, [
+                    "host": "localhost", "session": "keep", "thread": "localhost:8",
+                    "name": name, "confirm": true,
+                ], in: snapshot)
+            }
+        }
+        XCTAssertFalse(tmux.argv.isEmpty)
+        for argv in tmux.argv {
+            XCTAssertFalse(argv.contains { $0.hasSuffix(";") }, "\(argv)")
+        }
+    }
+
+    func testASessionOfAGroupIsTargetedByItsOwnId() {
+        // `a` and `a-view` are one group: they share pane %0, and the tree
+        // shows only `a`. A pane id would let tmux pick either session.
+        let snapshot = tree([("a", "%0", "/Users/me/a")], ids: ["$5"])
+        XCTAssertEqual(status(.killSession, ["thread": "localhost:0", "confirm": true], in: snapshot), "200 ok")
+        XCTAssertEqual(
+            status(.renameSession, ["host": "localhost", "session": "a", "name": "b"], in: snapshot), "200 ok")
+        XCTAssertEqual(status(.newWindow, ["thread": "localhost:0"], in: snapshot), "200 ok")
+        XCTAssertEqual(tmux.argv[0], ["kill-session", "-t", "$5"])
+        XCTAssertEqual(tmux.argv[1], ["rename-session", "-t", "$5", "b"])
+        XCTAssertEqual(Array(tmux.argv[2].prefix(4)), ["new-window", "-a", "-t", "$5:"])
+        for argv in tmux.argv { XCTAssertFalse(argv.contains("%0"), "\(argv)") }
+
+        // A tree without the id (an older reading of it), or with one that is
+        // not `$` and digits, takes no session action. A window is still its pane.
+        for id in ["", "a", "$", "$5;", "$5 ; kill-server", "=a", "%0"] {
+            let odd = tree([("a", "%0", "/Users/me/a")], ids: [id])
+            let before = tmux.argv.count
+            XCTAssertEqual(status(.killSession, ["thread": "localhost:0", "confirm": true], in: odd), "409 failed", id)
+            XCTAssertEqual(
+                status(.renameSession, ["thread": "localhost:0", "name": "b"], in: odd), "409 failed", id)
+            XCTAssertEqual(status(.newWindow, ["thread": "localhost:0"], in: odd), "409 failed", id)
+            XCTAssertEqual(tmux.argv.count, before, id)
+            XCTAssertEqual(status(.zoomPane, ["thread": "localhost:0"], in: odd), "200 ok", id)
+        }
+    }
+
+    func testADirectoryGoesToTmuxInTheTreesOwnBytes() {
+        let composed = "/Users/me/caf\u{E9}", decomposed = "/Users/me/cafe\u{301}"
+        XCTAssertEqual(composed, decomposed)
+        XCTAssertNotEqual(Array(composed.utf8), Array(decomposed.utf8))
+        let snapshot = tree([("cafe", "%7", composed)])
+        XCTAssertEqual(status(.newSession, ["host": "localhost", "dir": decomposed], in: snapshot), "200 ok")
+        let sent = try! XCTUnwrap(tmux.argv.last?.last)
+        XCTAssertEqual(Array(sent.utf8), Array(composed.utf8))
+    }
+
+    func testASemicolonIsFoundByItsByte() {
+        // U+0600 joins the `;` after it into one character: the string no
+        // longer "ends with ;" for Swift, and its last byte is still `;`.
+        let joined = "x\u{0600};"
+        XCTAssertFalse(joined.hasSuffix(";"))
+        XCTAssertTrue(MobileActions.endsInSemicolon(joined))
+        XCTAssertTrue(MobileActions.endsInSemicolon("x;"))
+        // A mark after the `;` makes another byte the last one.
+        XCTAssertFalse(MobileActions.endsInSemicolon("x;\u{301}"))
+        XCTAssertFalse(MobileActions.endsInSemicolon(""))
+
+        let snapshot = tree([(joined, "%7", "/Users/me/x"), ("ok", "%8", "/Users/me/d\u{0600};")])
+        XCTAssertEqual(status(.killSession, ["thread": "localhost:7", "confirm": true], in: snapshot), "404 not_found")
+        XCTAssertEqual(status(.newWindow, ["thread": "localhost:7"], in: snapshot), "404 not_found")
+        XCTAssertEqual(tmux.argv.count, 0)
+        XCTAssertEqual(MobileActions.dirs(host: "localhost", snapshot: snapshot), ["/Users/me/x"])
+        XCTAssertNil(MobileActions.name(joined))
+    }
+
+    func testTheTreesOwnNameIsUsedWhenThePhoneSendsAnEqualOne() {
+        // The same name in two encodings: equal as strings, different bytes.
+        let composed = "caf\u{E9}", decomposed = "cafe\u{301}"
+        XCTAssertEqual(composed, decomposed)
+        XCTAssertNotEqual(Array(composed.utf8), Array(decomposed.utf8))
+        let snapshot = tree([(composed, "%7", "/Users/me/cafe"), ("keep", "%8", "/Users/me/keep")])
+
+        XCTAssertEqual(
+            status(.newWindow, ["host": "localhost", "session": decomposed], in: snapshot), "200 ok")
+        XCTAssertEqual(
+            status(.renameSession, ["host": "localhost", "session": decomposed, "name": "bar"], in: snapshot),
+            "200 ok")
+        // The target is the tree's id: no name at all.
+        XCTAssertEqual(tmux.argv.count, 2)
+        XCTAssertEqual(tmux.argv[0][3], "$7:")
+        XCTAssertEqual(tmux.argv[1], ["rename-session", "-t", "$7", "bar"])
+        // A name that equals a taken one is taken, in either encoding.
+        XCTAssertEqual(
+            status(.renameSession, ["host": "localhost", "session": "keep", "name": decomposed], in: snapshot),
+            "409 exists")
+        XCTAssertEqual(tmux.argv.count, 2)
+    }
+
+    func testANameIsCappedInBytesAndTakesNoOtherSpace() {
+        // 64 characters, each many bytes long.
+        let family = "👨‍👩‍👧‍👦"
+        XCTAssertEqual(String(repeating: family, count: 64).count, 64)
+        XCTAssertNil(MobileActions.name(String(repeating: family, count: 64)))
+        XCTAssertNil(MobileActions.name(String(repeating: "é", count: 65)))
+        XCTAssertNotNil(MobileActions.name(String(repeating: "é", count: 64)))
+        XCTAssertNil(MobileActions.name(String(repeating: "日", count: 43)))
+        XCTAssertNotNil(MobileActions.name(String(repeating: "日", count: 42)))
+        XCTAssertEqual(String(repeating: "日", count: 42).utf8.count, 126)
+        XCTAssertLessThanOrEqual(MobileActions.maxNameBytes, 128)
+        for space in ["a\u{A0}b", "a\u{3000}b", "a\u{2003}b", "a\u{202F}b", "a\u{1680}b"] {
+            XCTAssertNil(MobileActions.name(space), space.debugDescription)
+        }
+        XCTAssertNotNil(MobileActions.name("a b"))
+    }
+
+    func testADirectoryThatTmuxWouldExpandOrSplitIsNotUsed() {
+        let snapshot = tree([
+            ("fmt", "%7", "/Users/me/#{session_name}"), ("hash", "%8", "/Users/me/c#"),
+            ("semi", "%9", "/Users/me/x;"), ("plain", "%10", "/Users/me/plain"),
+        ])
+        XCTAssertEqual(MobileActions.dirs(host: "localhost", snapshot: snapshot), ["/Users/me/plain"])
+        for dir in ["/Users/me/#{session_name}", "/Users/me/c#", "/Users/me/x;"] {
+            XCTAssertEqual(
+                status(.newSession, ["host": "localhost", "dir": dir], in: snapshot), "400 bad_dir", dir)
+        }
+        XCTAssertEqual(tmux.argv.count, 0)
+        // A new window in such a directory starts without `-c`.
+        XCTAssertEqual(status(.newWindow, ["thread": "localhost:7"], in: snapshot), "200 ok")
+        XCTAssertEqual(tmux.argv, [["new-window", "-a", "-t", "$7:", "-P", "-F", "#{window_index}\t#{pane_id}"]])
+        // A home directory that cannot be an argument is left out too.
+        let odd = MobileActions.perform(
+            .newSession, body: Data(#"{"host":"localhost"}"#.utf8), snapshot: snapshot,
+            home: "/Users/#{x}", tmux: tmux.source)
+        XCTAssertEqual(odd.status, 200)
+        XCTAssertEqual(tmux.argv.last, ["new-session", "-d", "-s", "session"])
+    }
+
+    func testARemoteHostsActionsRunOnThatHostByPaneId() {
+        let snapshot = tree([("infra", "%3", "/home/me/infra")], host: devbox)
+        tmux.output = "2\t%9\n"
+        XCTAssertEqual(status(.newWindow, ["host": "devbox", "session": "infra"], in: snapshot), "200 ok")
+        XCTAssertEqual(status(.renameWindow, ["thread": "devbox:3", "name": "deploy"], in: snapshot), "200 ok")
+        XCTAssertEqual(status(.killSession, ["thread": "devbox:3", "confirm": true], in: snapshot), "200 ok")
+        XCTAssertEqual(status(.newSession, ["host": "devbox"], in: snapshot), "200 ok")
+        XCTAssertEqual(tmux.calls.map(\.host), ["devbox", "devbox", "devbox", "devbox"])
+        XCTAssertEqual(tmux.argv, [
+            ["new-window", "-a", "-t", "$3:", "-P", "-F", "#{window_index}\t#{pane_id}", "-c", "/home/me/infra"],
+            ["rename-window", "-t", "%3", "deploy"],
+            ["kill-session", "-t", "$3"],
+            ["new-session", "-d", "-s", "session", "-c", "~"],
+        ])
+        // A thread of another host with the same pane number is not this one.
+        XCTAssertEqual(status(.killPane, ["thread": "localhost:3", "confirm": true], in: snapshot), "404 not_found")
     }
 
     // MARK: find
@@ -427,5 +673,11 @@ final class MobileActionsTests: XCTestCase {
             "capture-pane", "-p", "-S", "-\(PaneSearch.captureLines)", "-t", "%12",
         ]])
         XCTAssertEqual(MobileFind.search(thread: thread(), query: "tax", tmux: nil).status, 503)
+        // A pane that went since the tree was read is a 404.
+        tmux.failing = true
+        tmux.failure = "can't find pane: %12"
+        XCTAssertEqual(MobileFind.search(thread: thread(), query: "tax", tmux: tmux.source(.local)).status, 404)
+        tmux.failure = "ssh: connect to host devbox port 22: Operation timed out"
+        XCTAssertEqual(MobileFind.search(thread: thread(), query: "tax", tmux: tmux.source(.local)).status, 503)
     }
 }

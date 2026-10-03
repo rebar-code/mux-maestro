@@ -22,7 +22,7 @@
 		<button
 			class="scrim"
 			class:anim={!ui.dragging}
-			class:shown={ui.drawer > 0}
+			class:shown={ui.drawer > 0 && !ui.dragging}
 			style:opacity={ui.drawer}
 			aria-label="Close sidebar"
 			tabindex={ui.drawerOpen ? 0 : -1}

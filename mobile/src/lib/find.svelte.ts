@@ -1,11 +1,14 @@
 import { tick } from 'svelte';
-import { fetchFind } from './api';
+import { ApiError, fetchFind } from './api';
 import { chatHits, countLabel, step, terminalHits, type Hit } from './find';
 import { live } from './live.svelte';
 import type { Mode } from './thread.svelte';
 import type { ChatMessage, FindResult } from './types';
 
 const DEBOUNCE_MS = 250;
+/** The Mac runs few finds at once: a refused one is asked again, this often. */
+const BUSY_RETRY_MS = 300;
+const BUSY_TRIES = 6;
 export const QUERY_MAX = 200;
 
 /**
@@ -94,7 +97,7 @@ export class Find {
 		this.asking = null;
 	}
 
-	private async search(): Promise<void> {
+	private async search(tries = BUSY_TRIES): Promise<void> {
 		const query = this.query.trim();
 		if (!query) {
 			this.result = null;
@@ -111,6 +114,10 @@ export class Find {
 			await this.reveal();
 		} catch (error) {
 			if (asking.signal.aborted) return;
+			if (error instanceof ApiError && error.code === 'busy' && tries > 1) {
+				this.timer = setTimeout(() => void this.search(tries - 1), BUSY_RETRY_MS);
+				return;
+			}
 			this.result = null;
 			live.fail(error);
 		}

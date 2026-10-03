@@ -592,7 +592,7 @@ final class MobileVoiceServerTests: XCTestCase {
         server = MobileServer(
             staticRoot: nil,
             sources: MobileServer.Sources(
-                screen: { _ in nil },
+                screen: { _, _ in nil },
                 transcript: { [unowned self] _ in (threadTranscript.path, false) },
                 pane: { [pane] _ in pane.io }),
             manager: MobileServer.Manager(
@@ -930,8 +930,8 @@ final class MobileVoiceServerTests: XCTestCase {
         XCTAssertEqual(end?.data["outcome"] as? String, "refused")
         XCTAssertEqual(end?.data["message"] as? String, "Thread is waiting on a prompt")
         XCTAssertFalse(pane.argv.contains { $0.contains("Enter") })
-        // What was heard is taken out of the input box again.
-        XCTAssertEqual(pane.argv.last, ["send-keys", "-t", "%12", "C-u"])
+        // A prompt is in front: no key goes to it, not even one that clears.
+        XCTAssertEqual(pane.argv.map(\.first), ["copy-mode", "load-buffer", "paste-buffer"])
     }
 
     func testReplayReadsAThreadsLastReplyAgain() throws {

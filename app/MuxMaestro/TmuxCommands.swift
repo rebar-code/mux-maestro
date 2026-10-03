@@ -106,6 +106,14 @@ enum TmuxCommands {
         ["kill-session", "-t", "=\(name)"]
     }
 
+    /// Kill a session by its id (`$3`). tmux never gives an id to another
+    /// session, so a kill that arrives late cannot reach a newer session that
+    /// took the same name, and a session in a group is told from the others
+    /// of its group, which a pane id cannot do: they share their panes.
+    static func killSession(id: String) -> [String] {
+        ["kill-session", "-t", id]
+    }
+
     /// Whether a destructive command that exited non-zero actually reached its goal:
     /// tmux prints "can't find session/window/pane: <t>" when the target is already
     /// gone, or "no server running…" when the whole server is down — both mean the

@@ -11,8 +11,9 @@ final class MobileServer {
     /// The two reads that go past the snapshot. Both are called off the server
     /// queue and may block.
     struct Sources {
-        /// The pane's visible text.
-        var screen: (MobileThread) -> String?
+        /// The pane's last `lines` lines of scrollback and its screen, with
+        /// colour escapes.
+        var screen: (MobileThread, _ lines: Int) -> String?
         /// The thread's transcript file, and whether it is a Codex rollout.
         var transcript: (MobileThread) -> (path: String, codex: Bool)?
         /// The thread's pane, to type into. nil where nothing can be typed
@@ -85,6 +86,10 @@ final class MobileServer {
         /// A turn stream with nothing to say gets a comment line this often,
         /// so the phone can tell a quiet turn from a dead connection.
         var turnPing: TimeInterval = 15
+        /// Finds that may run at once. Each one captures a pane's scrollback,
+        /// and every phone comes in through the same proxy, so the bound is
+        /// on the server and not on one caller.
+        var maxFinds = 2
     }
 
     enum StartError: Error, Equatable {
@@ -151,6 +156,12 @@ final class MobileServer {
     /// Threads with a write on its way to their pane. One at a time per
     /// thread: a paste and its Enter are not interleaved with another's.
     private var writing = Set<String>()
+    /// Finds that are capturing a pane now.
+    private var finds = 0
+    /// Per thread: a counter that goes into a prompt's id, and the words of
+    /// the prompt last seen on its pane. See `sequence(of:)`.
+    private var promptSequence: [String: Int] = [:]
+    private var promptSeen: [String: String] = [:]
     /// The last `manager` event's state, without the reply text: a reply
     /// grows by `manager-delta` events, not by sending the board again.
     private var managerKey = MobileManager.liveJSON(
@@ -267,6 +278,15 @@ final class MobileServer {
     func update(_ snapshot: MobileSnapshot) {
         queue.async {
             guard self.listener != nil else { return }
+            // A pane that starts or stops waiting ends the prompt that was
+            // on it: the next one seen there is a new prompt.
+            for thread in snapshot.threads
+            where (thread.status == .waiting) != (self.snapshot.thread(id: thread.id)?.status == .waiting) {
+                self.promptSeen[thread.id] = nil
+            }
+            let live = Set(snapshot.threads.map(\.id))
+            self.promptSequence = self.promptSequence.filter { live.contains($0.key) }
+            self.promptSeen = self.promptSeen.filter { live.contains($0.key) }
             self.snapshot = snapshot
             // Tracked with the switch off too, so turning it on sends nothing old.
             let events = self.pushTracker.events(in: snapshot)
@@ -540,15 +560,26 @@ final class MobileServer {
                 else { return .error(404, "not_found") }
                 return .json(page.json)
             }
-        case .screen(let id):
+        case .screen(let id, let lines):
             guard let thread = snapshot.thread(id: id) else {
                 return send(.error(404, "not_found"), to: client, head: head)
             }
             reply(to: client) { [sources] in
-                guard let text = sources.screen(thread) else { return .error(503, "unavailable") }
+                guard let text = sources.screen(thread, lines) else { return .error(503, "unavailable") }
                 // A pane is mostly empty rows below its prompt; the phone needs none of them.
                 let end = text.lastIndex { !$0.isNewline && !$0.isWhitespace }
-                return .json(["text": end.map { String(text[...$0]) } ?? ""])
+                var response = MobileResponse.json([
+                    "text": end.map { String(text[...$0]) } ?? "",
+                    "lines": lines, "max": MobileAPI.screenLinesMax,
+                ])
+                // A scrollback is long and mostly unchanged between polls: a
+                // phone that already holds this body gets 304 and no body.
+                let etag = MobileAPI.etag(response.body)
+                if MobileAPI.isFresh(request, etag: etag) {
+                    response = MobileResponse(status: 304, headers: ["Cache-Control": "no-store"])
+                }
+                response.headers["ETag"] = etag
+                return response
             }
         case .manager:
             guard let manager else {
@@ -619,7 +650,8 @@ final class MobileServer {
         case .prompt(let id):
             guard let (_, io) = pane(id, client: client) else { return }
             reply(to: client) { [weak self] in
-                .json(MobileReply.promptBody(state: self?.state(of: id, io: io), screen: io.screen()))
+                .json(MobileReply.promptBody(
+                    state: self?.state(of: id, io: io), screen: io.screen(), io: io))
             }
         case .answer(let id):
             guard let answer = MobileReply.answer(in: request.body) else {
@@ -648,7 +680,8 @@ final class MobileServer {
             let snapshot = snapshot
             reply(to: client) { [sources] in
                 let response = MobileActions.perform(
-                    action, body: request.body, snapshot: snapshot, tmux: sources.tmux)
+                    action, body: request.body, snapshot: snapshot, home: sources.home,
+                    tmux: sources.tmux)
                 if response.status == 200 { sources.changed() }
                 return response
             }
@@ -664,8 +697,20 @@ final class MobileServer {
             guard let thread = snapshot.thread(id: id) else {
                 return send(.error(404, "not_found"), to: client, head: head)
             }
-            reply(to: client) { [sources] in
-                MobileFind.search(thread: thread, query: query, tmux: sources.tmux(thread.host))
+            guard finds < limits.maxFinds else {
+                return send(.error(409, "busy", message: MobileFind.busy), to: client, head: head)
+            }
+            finds += 1
+            work.async { [weak self, weak client, sources] in
+                let response = MobileFind.search(
+                    thread: thread, query: query, tmux: sources.tmux(thread.host))
+                self?.queue.async {
+                    guard let self else { return }
+                    // Counted down whether or not the phone still listens.
+                    self.finds -= 1
+                    guard let client, self.clients[ObjectIdentifier(client)] != nil else { return }
+                    self.send(response, to: client, head: false)
+                }
             }
         case .artifacts(let id):
             guard let thread = snapshot.thread(id: id) else {
@@ -762,11 +807,30 @@ final class MobileServer {
             send(.error(404, "not_found"), to: client, head: false)
             return nil
         }
-        guard let io = sources.pane(thread) else {
+        guard var io = sources.pane(thread) else {
             send(.error(503, "unavailable", message: MobileReply.unreachable), to: client, head: false)
             return nil
         }
+        io.sequence = sequence(of: id)
         return (thread, io)
+    }
+
+    /// The prompt counter of thread `id`, as `MobilePaneIO.sequence`. It
+    /// goes up each time the words on the pane become a prompt they were not
+    /// a moment ago: a new prompt, or the same one asked again after the pane
+    /// stopped waiting, showed no prompt, or was answered. Blocks on the
+    /// server queue, so it is never called from it.
+    private func sequence(of id: String) -> (String?) -> Int {
+        { [weak self] key in
+            guard let self else { return 0 }
+            return self.queue.sync {
+                if let key, self.promptSeen[id] != key {
+                    self.promptSequence[id, default: 0] += 1
+                }
+                self.promptSeen[id] = key
+                return self.promptSequence[id] ?? 0
+            }
+        }
     }
 
     /// The state of thread `id` now: its row in the latest tree, then the

@@ -51,7 +51,7 @@ test('the first tab switches between chat and terminal', async ({ page }) => {
 
 	await tab.click();
 	await expect(tab).toHaveText(/Terminal\s*⇄/);
-	await expect(page.locator('pre.screen')).toContainText('pnpm exec playwright test');
+	await expect(page.locator('.screen')).toContainText('pnpm exec playwright test');
 	await expect(page.locator('.u')).toHaveCount(0);
 
 	await tab.click();
@@ -63,10 +63,10 @@ test('a remote thread has the terminal only, with no switch', async ({ page }) =
 	await fresh(page, threadPath(REMOTE));
 	const tab = page.locator('[data-tab="main"]');
 	await expect(tab).toHaveText('Terminal');
-	await expect(page.locator('pre.screen')).toBeVisible();
+	await expect(page.locator('.screen')).toBeVisible();
 	await tab.click();
 	await expect(tab).toHaveText('Terminal');
-	await expect(page.locator('pre.screen')).toBeVisible();
+	await expect(page.locator('.screen')).toBeVisible();
 });
 
 test('a right swipe on the first page opens the drawer', async ({ page }) => {
@@ -95,7 +95,7 @@ test('terminal: the wide text scrolls sideways first; the drawer opens from its 
 	page
 }) => {
 	await fresh(page, threadPath(REMOTE));
-	const pre = page.locator('pre.screen');
+	const pre = page.locator('.screen');
 	await expect(pre).toBeVisible();
 	const left = (): Promise<number> => pre.evaluate((el) => el.scrollLeft);
 	expect(await pre.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);

@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { killed, menuItems, menuTitle, refusalText, validName, type MenuTarget } from './actions';
+import {
+	actionTarget,
+	killed,
+	menuItems,
+	menuTitle,
+	refusalText,
+	validName,
+	type MenuTarget
+} from './actions';
 import type { Thread } from './types';
 
 const thread = (id: string, over: Partial<Thread> = {}): Thread => ({
@@ -34,7 +42,12 @@ describe('menuItems', () => {
 		expect(labels(row, false)).toEqual(['New Window', 'Rename Window…', 'Zoom Pane']);
 		const split: MenuTarget = { kind: 'thread', thread: thread('localhost:1', { panes: 2 }) };
 		expect(labels(split, true)).toContain('Kill Pane');
-		const session: MenuTarget = { kind: 'session', host: 'devbox', session: 'infra' };
+		const session: MenuTarget = {
+			kind: 'session',
+			host: 'devbox',
+			session: 'infra',
+			thread: 'devbox:5'
+		};
 		expect(labels(session, true)).toEqual(['New Window', 'Rename…', 'Kill Session']);
 		expect(labels(session, false)).toEqual(['New Window', 'Rename…']);
 		expect(labels({ kind: 'host', host: 'devbox' }, true)).toEqual(['New Session…']);
@@ -44,7 +57,19 @@ describe('menuItems', () => {
 		expect(menuTitle({ kind: 'thread', thread: thread('localhost:1') })).toBe(
 			'acme-app · checkout-fix'
 		);
-		expect(menuTitle({ kind: 'session', host: 'devbox', session: 'infra' })).toBe('infra');
+		expect(
+			menuTitle({ kind: 'session', host: 'devbox', session: 'infra', thread: 'devbox:5' })
+		).toBe('infra');
+	});
+
+	it('names a session to the Mac by one of its threads', () => {
+		expect(
+			actionTarget({ kind: 'session', host: 'devbox', session: 'infra', thread: 'devbox:5' })
+		).toEqual({ thread: 'devbox:5' });
+		expect(actionTarget({ kind: 'thread', thread: thread('localhost:1') })).toEqual({
+			thread: 'localhost:1'
+		});
+		expect(actionTarget({ kind: 'host', host: 'devbox' })).toBeNull();
 	});
 });
 
@@ -63,7 +88,12 @@ describe('killed', () => {
 			'localhost:1',
 			'localhost:2'
 		]);
-		const session: MenuTarget = { kind: 'session', host: 'localhost', session: 'acme-app' };
+		const session: MenuTarget = {
+			kind: 'session',
+			host: 'localhost',
+			session: 'acme-app',
+			thread: 'localhost:1'
+		};
 		expect(killed(session, 'kill-session', threads)).toHaveLength(3);
 	});
 });
