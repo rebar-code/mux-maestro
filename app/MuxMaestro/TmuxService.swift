@@ -1894,6 +1894,14 @@ final class TmuxService {
             })
     }
 
+    /// The command that runs a tmux control client on this host for the
+    /// phone's live terminal. It goes through the transport, so over ssh each
+    /// tmux word is quoted for the remote shell like every other tmux call.
+    func phoneTerminal(_ target: MobileTerminal.Target) -> MobileTerminalBridge.Launch? {
+        transport.command(forTmux: MobileTerminal.attachArgv(target))
+            .map { MobileTerminalBridge.Launch(path: $0.path, args: $0.args) }
+    }
+
     /// One tmux call on this host, for the phone's session actions and find:
     /// whether it exited 0, and its output with its errors, so a target that
     /// is already gone can be told from a host that did not answer. nil when

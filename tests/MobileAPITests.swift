@@ -198,10 +198,16 @@ final class MobileAPITests: XCTestCase {
         XCTAssertEqual(
             MobileAPI.route(request("/api/threads/localhost%3A1/text", method: "POST"), config: config),
             .api(.text(id: "localhost:1")))
-        // A feature whose routes are not built yet: the router answers, not the gate.
+        // Another switch on: its route is reached, and a path under it that
+        // is no route is the router's to refuse, not the gate's.
         XCTAssertEqual(
             MobileAPI.route(
                 request("/api/terminal/localhost%3A1"),
+                config: MobileConfig(capabilities: [.liveTerminal])),
+            .api(.terminal(id: "localhost:1")))
+        XCTAssertEqual(
+            MobileAPI.route(
+                request("/api/terminal/localhost%3A1/resize"),
                 config: MobileConfig(capabilities: [.liveTerminal])),
             .notFound)
         XCTAssertEqual(

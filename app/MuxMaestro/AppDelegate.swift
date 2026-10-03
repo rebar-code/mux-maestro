@@ -109,6 +109,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 DispatchQueue.main.sync {
                     self?.sidebarVC?.runningSet(paneID: thread.pane, host: thread.host)
                 }
+            },
+            terminal: { [registry] thread, target in
+                registry.service(for: thread.host).phoneTerminal(target)
             }),
         manager: MobileServer.Manager(
             pane: { [weak self] in

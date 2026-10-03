@@ -44,6 +44,7 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
     private let artifacts = NSSwitch()
     private let localServers = NSSwitch()
     private let notifications = NSSwitch()
+    private let liveTerminal = NSSwitch()
     /// How many phones are subscribed.
     private let pushCount = NSTextField(labelWithString: "")
     private let pushEvents = NSPopUpButton()
@@ -89,7 +90,7 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
         status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         for control in [
             toggle, keepAwake, manager, voice, replies, keyBar, upload, sessionActions, kill, find,
-            artifacts, localServers, notifications,
+            artifacts, localServers, notifications, liveTerminal,
         ] {
             control.controlSize = .small
             control.target = self
@@ -141,6 +142,7 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
         mappings.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         mappings.setAccessibilityLabel("Open local servers")
         notifications.action = #selector(notificationsToggled)
+        liveTerminal.action = #selector(liveTerminalToggled)
         for label in [pushCount, pushTestStatus] {
             label.font = .systemFont(ofSize: 12)
             label.textColor = theme.muted
@@ -202,6 +204,7 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
             ("Notification text", NSGridCell.emptyContentView, pushText),
             ("Push contact", NSGridCell.emptyContentView, pushSubject),
             ("Test notification", pushTestStatus, pushTest),
+            ("Live terminal", NSGridCell.emptyContentView, liveTerminal),
         ]
         for (title, middle, control) in rows {
             let name = NSTextField(labelWithString: title)
@@ -293,6 +296,7 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
         artifacts.state = Settings.phoneCapability(.artifacts) ? .on : .off
         localServers.state = Settings.phoneCapability(.localServers) ? .on : .off
         notifications.state = Settings.phoneCapability(.notifications) ? .on : .off
+        liveTerminal.state = Settings.phoneCapability(.liveTerminal) ? .on : .off
         let push = Settings.phonePush()
         pushEvents.selectItem(at: Self.pushEventChoices.firstIndex {
             $0.waiting == push.waiting && $0.done == push.done
@@ -391,6 +395,24 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
 
     @objc private func notificationsToggled() {
         onCapability?(.notifications, notifications.state == .on)
+    }
+
+    /// The live terminal is a keyboard on the pane, with none of the checks
+    /// the other switches apply, so turning it on asks first.
+    @objc private func liveTerminalToggled() {
+        if liveTerminal.state == .on {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = MobileTerminal.confirmTitle
+            alert.informativeText = MobileTerminal.confirmText
+            alert.addButton(withTitle: "Cancel")
+            alert.addButton(withTitle: "Turn On")
+            guard alert.runModal() == .alertSecondButtonReturn else {
+                liveTerminal.state = .off
+                return
+            }
+        }
+        onCapability?(.liveTerminal, liveTerminal.state == .on)
     }
 
     /// A pick, or a committed contact. A contact that is not a `mailto:`

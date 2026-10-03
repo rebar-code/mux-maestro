@@ -485,8 +485,9 @@ final class MobileServerTests: XCTestCase {
         XCTAssertEqual(get("/api/manager").status, 403)
 
         server.configure(MobileConfig(capabilities: [.liveTerminal], grouping: .host))
-        // On, but its route arrives in a later PR: past the gate, not found.
-        XCTAssertEqual(get("/api/terminal/localhost%3A12").status, 404)
+        // On: past the gate. The route is a WebSocket, so a plain request
+        // is told to upgrade and is given nothing.
+        XCTAssertEqual(get("/api/terminal/localhost%3A12").status, 426)
         XCTAssertEqual(get("/api/manager").status, 403)
         XCTAssertTrue(get("/api/config").body.contains(#""liveTerminal":true"#))
     }

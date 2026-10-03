@@ -34,7 +34,7 @@ guard let socket = value("--socket"), let port = value("--port").flatMap(Int.ini
 else {
     print("usage: mobile-dev-server --socket <tmux -L name> --port <n> [--remote-socket <name>]"
         + " [--static <dir>] [--chat <pane>=<transcript.jsonl>] [--login <login>] [--host <name>]"
-        + " [--token <pairing token>]")
+        + " [--token <pairing token>] [--live]")
     exit(2)
 }
 let identity = MobileIdentity(
@@ -62,6 +62,9 @@ let server = MobileServer(
         },
         transcript: { thread in
             chat.count == 2 && thread.pane == chat[0] ? (chat[1], false) : nil
+        },
+        terminal: { thread, target in
+            (thread.host.isLocal ? local : remote)?.phoneTerminal(target)
         }))
 
 func snapshot(stats: HostStats?) -> MobileSnapshot {
@@ -87,7 +90,9 @@ func snapshot(stats: HostStats?) -> MobileSnapshot {
     return MobileSnapshot.build(inputs)
 }
 
-server.configure(MobileConfig())
+// `--live` turns the live terminal on, as its switch in Settings does.
+server.configure(MobileConfig(
+    capabilities: CommandLine.arguments.contains("--live") ? [.liveTerminal] : []))
 let token = value("--token") ?? "demo-token"
 server.start(port: port, identity: identity, token: token) { result in
     switch result {
