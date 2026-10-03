@@ -509,6 +509,75 @@ final class AgentStateTests: XCTestCase {
         XCTAssertEqual(AgentState.rollup([.dozing, .awake]), .awake)
     }
 
+    func testAnUnknownTTLTakesTheFallbackTTL() {
+        func unknown(_ idle: Int) -> IdleStage {
+            AgentState.idleStage(
+                attention: .idle, cache: CacheClock(lastReplyAt: 100_000 - idle, ttlSeconds: nil),
+                statusSince: nil, now: 100_000, fallbackTTL: 300)
+        }
+        XCTAssertEqual(unknown(299), .awake)
+        XCTAssertEqual(unknown(300), .dozing)
+    }
+
+    func testWithoutATranscriptTheStatusTimeDozesAtTheFallbackTTL() {
+        func fallback(_ idle: Int) -> IdleStage {
+            AgentState.idleStage(
+                attention: .idle, cache: nil, statusSince: 100_000 - idle, now: 100_000,
+                fallbackTTL: 300)
+        }
+        XCTAssertEqual(fallback(299), .awake)
+        XCTAssertEqual(fallback(300), .dozing)
+    }
+
+    func testTheObservedTTLIsTheNewestKnownOne() {
+        XCTAssertNil(AgentState.observedTTL([]))
+        XCTAssertNil(AgentState.observedTTL([CacheClock(lastReplyAt: 50, ttlSeconds: nil)]))
+        XCTAssertEqual(
+            AgentState.observedTTL([
+                CacheClock(lastReplyAt: 10, ttlSeconds: 3600),
+                CacheClock(lastReplyAt: 30, ttlSeconds: 300),
+                CacheClock(lastReplyAt: 50, ttlSeconds: nil),
+            ]), 300)
+    }
+
+    func testSortedFallsBackToTheTTLItsOtherClaudeSessionsUse() {
+        let session = TmuxSession(name: "work", attached: false, windows: [
+            TmuxWindow(index: 1, name: "w", active: true, panes: [
+                TmuxPane(id: "%1", index: 0, command: "claude", title: "", active: true),
+                TmuxPane(id: "%2", index: 1, command: "claude", title: "", active: false),
+                TmuxPane(id: "%3", index: 2, command: "claude", title: "", active: false),
+                TmuxPane(id: "%4", index: 3, command: "codex", title: "", active: false, pid: 10),
+            ]),
+        ])
+        let sixMinutesAgo = 100_000 - 6 * 60
+        let sorted = TmuxModel.sorted(
+            sessions: [session], statuses: [:],
+            paneStatuses: ["%1": .idle, "%2": .idle, "%3": .idle, "%4": .idle],
+            paneSessionIds: ["%1": "s1", "%2": "s2"],
+            paneStatusSince: ["%3": sixMinutesAgo, "%4": sixMinutesAgo],
+            codexByPid: [11: "c1"], ppids: [11: 10],
+            cacheClocks: [
+                "s1": CacheClock(lastReplyAt: 100_000 - 60, ttlSeconds: 300),
+                "s2": CacheClock(lastReplyAt: sixMinutesAgo, ttlSeconds: nil),
+            ],
+            now: 100_000)
+        XCTAssertEqual(
+            sorted[0].windows[0].panes.map(\.idleStage), [.awake, .dozing, .dozing, .awake],
+            "a 5-minute user's unknown-TTL and transcript-less panes doze at 5 minutes; Codex keeps the hour")
+    }
+
+    func testSortedTakesAFallbackTTLObservedElsewhere() {
+        let session = TmuxSession(name: "work", attached: false, windows: [
+            TmuxWindow(index: 1, name: "w", active: true, panes: [
+                TmuxPane(id: "%1", index: 0, command: "claude", title: "", active: true),
+            ]),
+        ])
+        let sorted = TmuxModel.sorted(
+            sessions: [session], statuses: [:], paneStatuses: ["%1": .idle],
+            paneStatusSince: ["%1": 100_000 - 6 * 60], fallbackTTL: 300, now: 100_000)
+        XCTAssertEqual(sorted[0].windows[0].panes[0].idleStage, .dozing)
+    }
+
     func testSortedUsesTheClaudeSessionsCacheClock() {
         let session = TmuxSession(name: "work", attached: false, windows: [
             TmuxWindow(index: 1, name: "w", active: true, panes: [

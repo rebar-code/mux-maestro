@@ -56,7 +56,7 @@ enum AgentState {
     static let toastRecentSeconds = 60
 
     /// An agent idle this long dozes: 💤 on its pane's row, and on its window's
-    /// row and tmux name. Also the cache TTL assumed when a transcript shows none.
+    /// row and tmux name. Also the cache TTL assumed when no transcript shows one.
     static let dozeSeconds = 3600
 
     /// A Claude thread whose prompt cache expires within this long yawns: 🥱.
@@ -65,23 +65,30 @@ enum AgentState {
     /// Where an agent pane sits on the way to losing its prompt cache.
     ///
     /// With a readable transcript (`cache`), the clock is the cache's: idle since
-    /// the last reply, against the TTL of the last cache write (1h when unknown).
-    /// 🥱 covers the TTL's last `yawnSeconds`, so a 5-minute cache never yawns;
-    /// 💤 starts at the TTL. Without one (Codex, remote hosts), 💤 after
-    /// `dozeSeconds` in the idle status, and no 🥱. Only idle agents count —
+    /// the last reply, against the TTL of the last cache write (`fallbackTTL`
+    /// when unknown). 🥱 covers the TTL's last `yawnSeconds`, so a 5-minute cache
+    /// never yawns; 💤 starts at the TTL. Without one (Codex, remote hosts), 💤
+    /// after `fallbackTTL` in the idle status, and no 🥱. Only idle agents count —
     /// `waiting` needs the human, it is not idle.
     static func idleStage(
-        attention: AttentionStatus, cache: CacheClock?, statusSince: Int?, now: Int
+        attention: AttentionStatus, cache: CacheClock?, statusSince: Int?, now: Int,
+        fallbackTTL: Int = dozeSeconds
     ) -> IdleStage {
         guard attention == .idle else { return .awake }
         if let cache {
-            let ttl = cache.ttlSeconds ?? dozeSeconds
+            let ttl = cache.ttlSeconds ?? fallbackTTL
             let idle = now - cache.lastReplyAt
             if idle >= ttl { return .dozing }
             return ttl > yawnSeconds && idle >= ttl - yawnSeconds ? .yawning : .awake
         }
         guard let statusSince else { return .awake }
-        return now - statusSince >= dozeSeconds ? .dozing : .awake
+        return now - statusSince >= fallbackTTL ? .dozing : .awake
+    }
+
+    /// The cache TTL this user's Claude threads run on: that of the most recent
+    /// reply whose transcript shows a cache write. nil when none shows one.
+    static func observedTTL(_ clocks: some Sequence<CacheClock>) -> Int? {
+        clocks.filter { $0.ttlSeconds != nil }.max { $0.lastReplyAt < $1.lastReplyAt }?.ttlSeconds
     }
 
     /// A window's stage from its agent panes' stages: 💤 when all doze, 🥱 when
@@ -149,6 +156,25 @@ enum IdleStage: Equatable {
     }
 
     static let allTags = ["🥱", "💤"]
+}
+
+/// The last `AgentState.observedTTL` from this Mac's transcripts, shared so the
+/// hosts with no readable transcript doze on the same TTL. Safe from any queue.
+final class ObservedCacheTTL {
+    static let shared = ObservedCacheTTL()
+    private let lock = NSLock()
+    private var seconds: Int?
+
+    var value: Int? {
+        lock.lock(); defer { lock.unlock() }
+        return seconds
+    }
+
+    func record(_ ttl: Int?) {
+        guard let ttl else { return }
+        lock.lock(); defer { lock.unlock() }
+        seconds = ttl
+    }
 }
 
 /// What the tail of a Claude Code transcript says about the thread's prompt cache.

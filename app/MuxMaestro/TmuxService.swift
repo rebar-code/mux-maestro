@@ -923,6 +923,7 @@ final class TmuxService {
             (self.agentStates?() ?? []).map { ($0.sessionId, $0) },
             uniquingKeysWith: { first, _ in first })
         let tails = transcripts?(status.sessionCwds, status.codexRollouts) ?? TranscriptTails()
+        ObservedCacheTTL.shared.record(AgentState.observedTTL(tails.clocks.values))
         let result = TmuxModel.sorted(
             sessions: sessions, statuses: status.statuses,
             activity: status.activity,
@@ -933,6 +934,7 @@ final class TmuxService {
             ppids: status.ppids,
             agentStates: agentStates,
             cacheClocks: tails.clocks,
+            fallbackTTL: ObservedCacheTTL.shared.value,
             lastPrompts: tails.prompts,
             lastWrites: tails.lastWrites)
         // The app explicitly clears the snapshot when its close actions remove the
