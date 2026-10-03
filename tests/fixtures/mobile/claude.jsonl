@@ -1,0 +1,8 @@
+{"type":"user","cwd":"/Users/me/code/acme-app","sessionId":"c1","timestamp":"2026-10-02T10:00:00.000Z","message":{"role":"user","content":"fix the failing checkout test and open a PR"}}
+{"type":"assistant","cwd":"/Users/me/code/acme-app","sessionId":"c1","timestamp":"2026-10-02T10:00:05.000Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"look at the spec"},{"type":"text","text":"The test fails because the tax line renders after the total is read."},{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"tests/checkout.spec.ts"}}]}}
+{"type":"user","cwd":"/Users/me/code/acme-app","sessionId":"c1","timestamp":"2026-10-02T10:00:06.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"test('checkout', ...)"}]}}
+{"type":"user","isMeta":true,"timestamp":"2026-10-02T10:00:07.000Z","message":{"role":"user","content":"Caveat: a harness note"}}
+{"type":"user","timestamp":"2026-10-02T10:00:08.000Z","message":{"role":"user","content":"<system-reminder>injected</system-reminder>"}}
+{"type":"assistant","isSidechain":true,"timestamp":"2026-10-02T10:00:09.000Z","message":{"role":"assistant","content":[{"type":"text","text":"a subagent talking"}]}}
+{"type":"assistant","cwd":"/Users/me/code/acme-app","sessionId":"c1","timestamp":"2026-10-02T10:01:00.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"pnpm exec playwright test tests/checkout.spec.ts\necho done","description":"Run the spec"}}]}}
+{"type":"assistant","cwd":"/Users/me/code/acme-app","sessionId":"c1","timestamp":"2026-10-02T10:02:00.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Edited. The page is up on the dev server."}]}}

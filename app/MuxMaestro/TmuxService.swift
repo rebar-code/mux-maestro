@@ -732,7 +732,7 @@ final class TmuxService {
             runner: runner,
             statusProvider: CachedStatusProvider(SessionsPyStatusProvider(runner: runner)),
             agentStates: AgentStateReader().rows,
-            transcripts: TranscriptTailReader().read(sessionCwds:codexRollouts:),
+            transcripts: TranscriptTailReader.shared.read(sessionCwds:codexRollouts:),
             slowRunner: ProcessCommandRunner(timeout: Self.slowCommandTimeout))
     }
 
