@@ -114,8 +114,8 @@ final class MobileVoiceTests: XCTestCase {
     func testRoutesTheVoiceAPIAndRefusesItWhileTheSwitchIsOff() {
         let on = MobileConfig(capabilities: [.voice])
         for (path, route) in [
-            ("/api/voice", MobileRoute.voice), ("/api/voice/replay", .voiceReplay),
-            ("/api/voice/warm", .voiceWarm),
+            ("/api/voice", MobileRoute.api(.voice)), ("/api/voice/replay", .api(.voiceReplay)),
+            ("/api/voice/warm", .api(.voiceWarm)),
         ] {
             let post = MobileRequest(method: "POST", path: path)
             XCTAssertEqual(MobileAPI.route(post, config: on), route)
@@ -126,6 +126,22 @@ final class MobileVoiceTests: XCTestCase {
                 MobileAPI.route(post, config: MobileConfig(capabilities: [.manager])), .disabled(.voice))
         }
         XCTAssertEqual(MobileAPI.route(MobileRequest(method: "POST", path: "/api/voice/other"), config: on), .notFound)
+        // Each voice route names the Voice capability and is a write.
+        for endpoint in [MobileEndpoint.voice, .voiceReplay, .voiceWarm] {
+            XCTAssertEqual(endpoint.capability, .voice)
+            XCTAssertEqual(endpoint.method, "POST")
+        }
+    }
+
+    func testWhatWasHeardIsHeldToTheRulesOfTypedText() {
+        XCTAssertEqual(MobileVoice.text(heard: "what needs me"), .value("what needs me"))
+        XCTAssertEqual(MobileVoice.text(heard: "line one\nline two"), .value("line one\nline two"))
+        // A control character is a key press in a terminal, not text.
+        XCTAssertEqual(MobileVoice.text(heard: "stop\u{1B}[A"), .invalid)
+        XCTAssertEqual(MobileVoice.text(heard: "go\u{03}"), .invalid)
+        XCTAssertEqual(MobileVoice.text(heard: "enter\rnow"), .invalid)
+        XCTAssertEqual(
+            MobileVoice.text(heard: String(repeating: "a", count: MobileManager.maxTextBytes + 1)), .tooLong)
     }
 
     func testOnlyAVoiceTakeMayCarryMoreThanTheUsualBody() {
@@ -343,6 +359,22 @@ final class MobileVoiceTests: XCTestCase {
         XCTAssertEqual(events.all.last?.data["message"] as? String, "Could not speak the reply")
     }
 
+    func testWordsThatAreNotTextNeverReachTheTarget() async {
+        let speech = FakeSpeech()
+        speech.transcript = "approve it\u{1B}[B\r"
+        var (events, sent) = await turn(speech: speech, speaker: true, deltas: [], outcome: .done(reply: ""))
+        XCTAssertEqual(sent, [])
+        XCTAssertEqual(events.names, ["end"])
+        XCTAssertEqual(events.all.last?.data["outcome"] as? String, "failed")
+        XCTAssertEqual(events.all.last?.data["message"] as? String, "Could not use what was heard")
+
+        speech.transcript = String(repeating: "word ", count: 2000)
+        (events, sent) = await turn(speech: speech, speaker: true, deltas: [], outcome: .done(reply: ""))
+        XCTAssertEqual(sent, [])
+        XCTAssertEqual(events.all.last?.data["message"] as? String, "Too much to send in one turn")
+        XCTAssertEqual(speech.synthCalls, 0)
+    }
+
     func testARefusedTurnSaysWhyAndReadsNothingBack() async {
         let speech = FakeSpeech()
         let (events, _) = await turn(
@@ -431,7 +463,7 @@ final class MobileVoiceServerTests: XCTestCase {
             voice: MobileServer.Voice(
                 speech: speech, warm: { [unowned self] speaker in locked { warmed.append(speaker) } }))
         let started = expectation(description: "listening")
-        server.start(port: 0, identity: identity) { result in
+        server.start(port: 0, identity: identity, token: Self.token) { result in
             if case .success(let bound) = result { self.port = bound }
             started.fulfill()
         }
@@ -445,12 +477,17 @@ final class MobileVoiceServerTests: XCTestCase {
     }
 
     private static let take = MobileVoice.wav(samples: tone(seconds: 1), sampleRate: 16_000)
+    private static let token = "demo-token"
+    private static let appHeaders = [
+        "Origin": "https://devmac.example.ts.net:7433", "X-MuxMaestro": "1",
+        "X-MuxMaestro-Token": token,
+    ]
 
     /// A POST as the app sends it. `headers` replaces the app's own, to be a
     /// page from somewhere else. Reads until the reply is whole.
     private func post(
         _ path: String, body: Data = Data(),
-        headers: [String: String] = ["Origin": "https://devmac.example.ts.net:7433", "X-MuxMaestro": "1"],
+        headers: [String: String] = appHeaders,
         contentLength: Int? = nil
     ) -> (status: Int, body: String) {
         var raw = "POST \(path) HTTP/1.1\r\nHost: devmac.example.ts.net:7433\r\n"
@@ -542,11 +579,31 @@ final class MobileVoiceServerTests: XCTestCase {
     }
 
     func testATakeFromAnotherOriginIsRefusedAndTranscribesNothing() {
-        XCTAssertEqual(post("/api/voice?target=manager&speaker=1", body: Self.take, headers: [:]).status, 403)
         XCTAssertEqual(
             post("/api/voice?target=manager&speaker=1", body: Self.take,
-                 headers: ["Origin": "https://elsewhere.example", "X-MuxMaestro": "1"]).status, 403)
+                 headers: ["X-MuxMaestro-Token": Self.token]).status, 403)
+        XCTAssertEqual(
+            post("/api/voice?target=manager&speaker=1", body: Self.take,
+                 headers: ["Origin": "https://elsewhere.example", "X-MuxMaestro": "1",
+                           "X-MuxMaestro-Token": Self.token]).status, 403)
         XCTAssertEqual(speech.transcribed, [])
+    }
+
+    func testEveryVoiceRouteAnswers401WithoutThePairingToken() {
+        var unpaired = Self.appHeaders
+        unpaired["X-MuxMaestro-Token"] = nil
+        var wrong = Self.appHeaders
+        wrong["X-MuxMaestro-Token"] = "another-token"
+        for path in ["/api/voice?target=manager&speaker=1", "/api/voice/replay?target=manager", "/api/voice/warm"] {
+            for headers in [unpaired, wrong] {
+                let refused = post(path, body: Self.take, headers: headers)
+                XCTAssertEqual(refused.status, 401, path)
+                XCTAssertEqual(refused.body, #"{"error":"unpaired"}"#, path)
+            }
+        }
+        XCTAssertEqual(speech.transcribed, [])
+        XCTAssertEqual(locked { sent }, [])
+        XCTAssertEqual(locked { warmed }, [])
     }
 
     func testOversizedAndOverlongAudioIsRefused() {
@@ -576,7 +633,13 @@ final class MobileVoiceServerTests: XCTestCase {
         XCTAssertEqual(busy.status, 409)
         XCTAssertEqual(busy.body, #"{"error":"busy","message":"A turn is running"}"#)
 
+        // The pane is busy with something no one here started.
         server.managerTurnEnded()
+        locked { status = .busy }
+        let pane = post("/api/voice?target=manager&speaker=1", body: Self.take)
+        XCTAssertEqual(pane.status, 409)
+        XCTAssertEqual(pane.body, #"{"error":"busy","message":"Manager is busy"}"#)
+
         locked { status = .off }
         XCTAssertEqual(post("/api/voice?target=manager&speaker=1", body: Self.take).status, 503)
         // A refused take costs nothing: the engine was never asked.

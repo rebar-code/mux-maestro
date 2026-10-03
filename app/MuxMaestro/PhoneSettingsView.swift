@@ -13,6 +13,8 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
     /// A feature's switch was flipped.
     var onCapability: ((MobileCapability, Bool) -> Void)?
     var onVoice: ((MobileVoiceDefaults) -> Void)?
+    /// "New Pairing Code" was confirmed.
+    var onRotate: (() -> Void)?
     /// The view's height changed; the window refits.
     var onResize: (() -> Void)?
 
@@ -26,11 +28,15 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
     private let voiceMode = NSPopUpButton()
     private let voiceSpeaker = NSPopUpButton()
     private let url = NSTextField(labelWithString: "")
-    private let copy = NSButton(title: "Copy", target: nil, action: nil)
+    private let copy = NSButton(title: "Copy Pairing Link", target: nil, action: nil)
+    private let rotate = NSButton(title: "New Pairing Code…", target: nil, action: nil)
+    private let buttonRow = NSStackView()
+    /// The link with the pairing token: what the QR code and Copy hold.
+    private var pairing = ""
     private let qr = NSImageView()
     private let urlRow = NSStackView()
 
-    private static let qrSize: CGFloat = 168
+    private static let qrSize: CGFloat = 200
     private static let groupings: [(MobileGrouping, String)] = [
         (.recent, "Most Recent"), (.host, "Host"), (.directory, "Directory"),
     ]
@@ -126,19 +132,25 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
         copy.controlSize = .small
         copy.target = self
         copy.action = #selector(copyURL)
-        urlRow.setViews([url, copy], in: .leading)
-        urlRow.spacing = 8
+        rotate.bezelStyle = .rounded
+        rotate.controlSize = .small
+        rotate.target = self
+        rotate.action = #selector(rotateClicked)
+        urlRow.setViews([url], in: .leading)
+        buttonRow.setViews([copy, rotate], in: .leading)
+        buttonRow.spacing = 8
 
         qr.imageScaling = .scaleNone
-        qr.setAccessibilityLabel("QR code for the phone URL")
+        qr.setAccessibilityLabel("QR code that pairs a phone")
         qr.translatesAutoresizingMaskIntoConstraints = false
 
-        let stack = NSStackView(views: [header, grid, urlRow, qr])
+        let stack = NSStackView(views: [header, grid, urlRow, qr, buttonRow])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 8
         stack.setCustomSpacing(12, after: grid)
         stack.setCustomSpacing(12, after: urlRow)
+        stack.setCustomSpacing(12, after: qr)
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
         NSLayoutConstraint.activate([
@@ -182,11 +194,12 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
             status.stringValue = "Starting…"
             status.textColor = theme.muted
             toggle.state = .on
-        case .on(let address):
+        case .on(let address, let pairingLink):
             status.stringValue = "On"
             status.textColor = theme.green
             toggle.state = .on
             link = address
+            pairing = pairingLink
         case .failed(let reason):
             status.stringValue = reason
             status.textColor = theme.red
@@ -194,11 +207,11 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
         }
         status.toolTip = status.stringValue
         url.stringValue = link ?? ""
-        qr.image = link.flatMap { Self.qrImage($0, side: Self.qrSize) }
+        if link == nil { pairing = "" }
+        qr.image = link == nil ? nil : Self.qrImage(pairing, side: Self.qrSize)
         let hidden = link == nil
-        guard urlRow.isHidden != hidden || qr.isHidden != hidden else { return }
-        urlRow.isHidden = hidden
-        qr.isHidden = hidden
+        guard urlRow.isHidden != hidden else { return }
+        for view in [urlRow, qr, buttonRow] as [NSView] { view.isHidden = hidden }
         onResize?()
     }
 
@@ -247,9 +260,20 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
     }
 
     @objc private func copyURL() {
-        guard !url.stringValue.isEmpty else { return }
+        guard !pairing.isEmpty else { return }
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(url.stringValue, forType: .string)
+        NSPasteboard.general.setString(pairing, forType: .string)
+    }
+
+    /// A new code signs every paired phone out, so it asks first.
+    @objc private func rotateClicked() {
+        let alert = NSAlert()
+        alert.messageText = "Make a new pairing code?"
+        alert.informativeText = "Every paired phone is signed out and must scan the new QR code."
+        alert.addButton(withTitle: "New Pairing Code")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        onRotate?()
     }
 
     /// `text` as a QR code with a white quiet zone, so a phone camera reads it

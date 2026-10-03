@@ -1,5 +1,14 @@
 import { expect, test, type Page } from '@playwright/test';
-import { drag, drawer, expectDrawerClosed, expectDrawerOpen, fresh } from './helpers';
+import {
+	drag,
+	drawer,
+	expectDrawerClosed,
+	expectDrawerOpen,
+	fresh,
+	threadPath,
+	TOKEN,
+	TOKEN_HEADER
+} from './helpers';
 
 const said = (page: Page) => page.locator('[data-said]');
 const box = (page: Page) => page.getByRole('textbox', { name: 'Ask the manager' });
@@ -151,7 +160,7 @@ test('a right swipe on the home still opens the sidebar, over a review card too'
 });
 
 test('the Manager row in the sidebar opens the home', async ({ page }) => {
-	await fresh(page, '/t/localhost%3A1');
+	await fresh(page, threadPath('localhost:1'));
 	await page.getByRole('button', { name: 'Menu' }).click();
 	await drawer(page).getByText('Manager').click();
 	await expect(page).toHaveURL(/\/$/);
@@ -170,7 +179,12 @@ test('with the Manager switch off the home and its row are hidden', async ({ pag
 	await expect(page.locator('[data-voicebar]')).toHaveCount(0);
 	// The threads that wait are still listed: they come from the thread list.
 	await expect(page.locator('.sect').first()).toHaveText('Needs you · 2');
-	expect(await page.evaluate(async () => (await fetch('/api/manager')).status)).toBe(403);
+	expect(
+		await page.evaluate(
+			async (headers) => (await fetch('/api/manager', { headers })).status,
+			TOKEN_HEADER
+		)
+	).toBe(403);
 	await page.getByRole('button', { name: 'Menu' }).click();
 	await expect(drawer(page).getByText('Manager')).toHaveCount(0);
 
@@ -190,7 +204,9 @@ test('with the Voice switch off its controls are hidden and typing still works',
 	await expect(page.locator('[data-primary]')).toHaveCount(0);
 });
 
-test('a write from another origin, or without the header, is refused', async ({ page }) => {
+test('a write from another origin, without the header, or without the token is refused', async ({
+	page
+}) => {
 	await fresh(page);
 	const status = (headers: Record<string, string>): Promise<number> =>
 		page.evaluate(async (headers) => {
@@ -201,13 +217,25 @@ test('a write from another origin, or without the header, is refused', async ({ 
 			});
 			return response.status;
 		}, headers);
-	expect(await status({ 'content-type': 'application/json' })).toBe(403);
+	// Paired, but not the app's own write: no custom header.
+	expect(await status({ 'content-type': 'application/json', ...TOKEN_HEADER })).toBe(403);
 	const foreign = await page.request.post('/api/manager/text', {
-		headers: { 'x-muxmaestro': '1', origin: 'https://evil.example.com' },
+		headers: { 'x-muxmaestro': '1', origin: 'https://evil.example.com', ...TOKEN_HEADER },
 		data: { text: 'what needs me?' }
 	});
 	expect(foreign.status()).toBe(403);
+	// The app's own write, from a phone that is not paired.
+	expect(await status({ 'content-type': 'application/json', 'x-muxmaestro': '1' })).toBe(401);
 	await expect(said(page).locator('.u')).toHaveCount(0);
+});
+
+test('the app sends the pairing token with a manager turn', async ({ page }) => {
+	await fresh(page);
+	await box(page).fill('what needs me?');
+	const sent = page.waitForRequest((request) => request.url().endsWith('/api/manager/text'));
+	await box(page).press('Enter');
+	expect((await sent).headers()['x-muxmaestro-token']).toBe(TOKEN);
+	await expect(said(page).locator('.m').last()).toContainText('2 threads need you');
 });
 
 test('the home fits a phone: no sideways scroll, the box above the home indicator', async ({
@@ -219,4 +247,81 @@ test('the home fits a phone: no sideways scroll, the box above the home indicato
 	const input = await box(page).boundingBox();
 	expect(input?.height).toBeGreaterThanOrEqual(44);
 	expect((input?.y ?? 0) + (input?.height ?? 0)).toBeLessThanOrEqual(844);
+});
+
+test('the manager status is drawn while a message cannot go to it', async ({ page }) => {
+	await fresh(page);
+	await page.request.post('/__fixture/manager-status?value=waiting');
+	await page.reload();
+	const status = page.locator('[data-status]');
+	await expect(status).toHaveText('Manager is waiting on a prompt');
+	await expect(status).toHaveAttribute('data-status', 'waiting');
+
+	await page.request.post('/__fixture/manager-status?value=busy');
+	await page.reload();
+	await expect(status).toHaveText('Manager is busy');
+	await box(page).fill('what needs me?');
+	await box(page).press('Enter');
+	await expect(page.getByRole('alert')).toHaveText('Manager is busy');
+	await expect(box(page)).toHaveValue('what needs me?');
+
+	await page.request.post('/__fixture/manager-status?value=idle');
+	await page.reload();
+	await expect(box(page)).toBeVisible();
+	await expect(status).toHaveCount(0);
+});
+
+test('the updates are listed, and one with a thread opens it', async ({ page }) => {
+	await fresh(page);
+	const updates = page.locator('[data-update]');
+	await expect(updates).toHaveCount(2);
+	await expect(updates.first()).toContainText('docs-site · search');
+	await expect(updates.first()).toContainText('Search box wired to the new index');
+	await expect(updates.nth(1)).toContainText('Nightly build is green');
+	await updates.first().click();
+	await expect(page).toHaveURL(/\/t\/localhost(:|%3A)3$/);
+});
+
+test('Enter does not send a second turn while one runs', async ({ page }) => {
+	await fresh(page);
+	let turns = 0;
+	page.on('request', (request) => {
+		if (request.url().endsWith('/api/manager/text')) turns += 1;
+	});
+	const reply = 'Still checking. '.repeat(20).trim();
+	await page.request.post(
+		`/__fixture/mac-turn?text=${encodeURIComponent('how are the builds?')}&reply=${encodeURIComponent(reply)}`
+	);
+	await expect(said(page).locator('.u')).toHaveText('how are the builds?');
+	await box(page).fill('and after that?');
+	await box(page).press('Enter');
+	await box(page).press('Enter');
+	await expect(said(page).locator('.m').last()).toHaveText(reply);
+	expect(turns).toBe(0);
+	await expect(box(page)).toHaveValue('and after that?');
+
+	// The turn is over: now Enter sends.
+	await expect(page.getByRole('button', { name: '↑ Send' })).toBeEnabled();
+	await box(page).press('Enter');
+	await expect(said(page).locator('.u')).toHaveText('and after that?');
+	expect(turns).toBe(1);
+});
+
+test('a message over the size limit says so and is given back', async ({ page }) => {
+	await fresh(page);
+	const long = 'a'.repeat(8193);
+	await box(page).fill(long);
+	await box(page).press('Enter');
+	await expect(page.getByRole('alert')).toHaveText('The message is too long');
+	await expect(box(page)).toHaveValue(long);
+});
+
+test('dismissing a review item that does not exist is a 404', async ({ page }) => {
+	await fresh(page);
+	const gone = await page.request.post('/api/manager/dismiss', {
+		headers: { 'x-muxmaestro': '1', origin: new URL(page.url()).origin, ...TOKEN_HEADER },
+		data: { key: 'no-such-item' }
+	});
+	expect(gone.status()).toBe(404);
+	await expect(review(page)).toHaveCount(1);
 });

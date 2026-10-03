@@ -31,7 +31,7 @@ struct MobileResponse: Equatable {
     var body = Data()
 
     static let reasons = [
-        200: "OK", 400: "Bad Request", 403: "Forbidden", 404: "Not Found",
+        200: "OK", 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found",
         405: "Method Not Allowed", 409: "Conflict", 413: "Payload Too Large",
         431: "Request Header Fields Too Large", 500: "Internal Server Error",
         503: "Service Unavailable",
@@ -160,7 +160,9 @@ enum MobileHTTP {
 
 // MARK: - Routing and auth
 
-enum MobileRoute: Equatable {
+/// One API route. `capability` switches over every case with no default, so a
+/// route added here does not compile until it names the feature it belongs to.
+enum MobileEndpoint: Equatable {
     case config
     case threads
     case hosts
@@ -179,6 +181,27 @@ enum MobileRoute: Equatable {
     case voiceReplay
     /// A take has started: load the models while the human talks.
     case voiceWarm
+
+    var capability: MobileCapability {
+        switch self {
+        case .config, .threads, .hosts, .events, .chat, .screen: return .access
+        case .manager, .managerText, .managerDismiss: return .manager
+        case .voice, .voiceReplay, .voiceWarm: return .voice
+        }
+    }
+
+    /// The one method the endpoint answers. A write is a POST, so it also has
+    /// to pass the write checks in `MobileAPI.authorize`.
+    var method: String {
+        switch self {
+        case .config, .threads, .hosts, .events, .chat, .screen, .manager: return "GET"
+        case .managerText, .managerDismiss, .voice, .voiceReplay, .voiceWarm: return "POST"
+        }
+    }
+}
+
+enum MobileRoute: Equatable {
+    case api(MobileEndpoint)
     /// A file of the static bundle, as a path relative to its root.
     case asset(String)
     case methodNotAllowed
@@ -192,6 +215,9 @@ enum MobileRoute: Equatable {
 /// A PR that adds a feature adds its Settings row and its routes; the case and
 /// the path rule are already here, so the feature is refused until then.
 enum MobileCapability: String, CaseIterable {
+    /// The master switch: the thread list and the read-only thread view. It is
+    /// on whenever the server runs.
+    case access
     case manager
     case voice
     case replies
@@ -218,7 +244,9 @@ struct MobileConfig: Equatable {
     var grouping = MobileGrouping.recent
     var voice = MobileVoiceDefaults()
 
-    func allows(_ capability: MobileCapability) -> Bool { capabilities.contains(capability) }
+    func allows(_ capability: MobileCapability) -> Bool {
+        capability == .access || capabilities.contains(capability)
+    }
 
     /// The `/api/config` body.
     func json() -> Data {
@@ -284,31 +312,47 @@ enum MobileAPI {
         if let capability = capability(forSegments: segments), !config.allows(capability) {
             return .disabled(capability)
         }
-        let route: MobileRoute
-        var method = "GET"
+        let endpoint: MobileEndpoint
         switch segments.count {
-        case 2 where segments[1] == "config": route = .config
-        case 2 where segments[1] == "threads": route = .threads
-        case 2 where segments[1] == "hosts": route = .hosts
-        case 2 where segments[1] == "events": route = .events
-        case 2 where segments[1] == "manager": route = .manager
-        case 3 where segments[1] == "manager" && segments[2] == "text":
-            (route, method) = (.managerText, "POST")
-        case 3 where segments[1] == "manager" && segments[2] == "dismiss":
-            (route, method) = (.managerDismiss, "POST")
-        case 2 where segments[1] == "voice":
-            (route, method) = (.voice, "POST")
-        case 3 where segments[1] == "voice" && segments[2] == "replay":
-            (route, method) = (.voiceReplay, "POST")
-        case 3 where segments[1] == "voice" && segments[2] == "warm":
-            (route, method) = (.voiceWarm, "POST")
+        case 2 where segments[1] == "config": endpoint = .config
+        case 2 where segments[1] == "threads": endpoint = .threads
+        case 2 where segments[1] == "hosts": endpoint = .hosts
+        case 2 where segments[1] == "events": endpoint = .events
+        case 2 where segments[1] == "manager": endpoint = .manager
+        case 3 where segments[1] == "manager" && segments[2] == "text": endpoint = .managerText
+        case 3 where segments[1] == "manager" && segments[2] == "dismiss": endpoint = .managerDismiss
+        case 2 where segments[1] == "voice": endpoint = .voice
+        case 3 where segments[1] == "voice" && segments[2] == "replay": endpoint = .voiceReplay
+        case 3 where segments[1] == "voice" && segments[2] == "warm": endpoint = .voiceWarm
         case 4 where segments[1] == "threads" && segments[3] == "chat":
-            route = .chat(id: segments[2], after: request.query["after"].flatMap(UInt64.init))
+            endpoint = .chat(id: segments[2], after: request.query["after"].flatMap(UInt64.init))
         case 4 where segments[1] == "threads" && segments[3] == "screen":
-            route = .screen(id: segments[2])
+            endpoint = .screen(id: segments[2])
         default: return .notFound
         }
-        return request.method == method ? route : .methodNotAllowed
+        guard config.allows(endpoint.capability) else { return .disabled(endpoint.capability) }
+        return request.method == endpoint.method ? .api(endpoint) : .methodNotAllowed
+    }
+
+    /// The header that carries the pairing token.
+    static let tokenHeader = "x-muxmaestro-token"
+
+    /// Whether `request` is for the API, which needs the pairing token. The
+    /// static bundle does not: the phone must load it to read the token.
+    static func needsToken(_ request: MobileRequest) -> Bool {
+        request.segments.first == "api"
+    }
+
+    /// Whether `request` carries the pairing token. The Tailscale login and the
+    /// host name are public values that any process on this Mac could send to
+    /// the loopback port; the token is the secret only a paired phone holds.
+    /// Compared in constant time. No token set means nothing is paired.
+    static func hasToken(_ request: MobileRequest, token: String?) -> Bool {
+        guard let token, !token.isEmpty, let sent = request.header(tokenHeader) else { return false }
+        let a = Array(sent.utf8), b = Array(token.utf8)
+        var difference = UInt8(a.count == b.count ? 0 : 1)
+        for index in b.indices { difference |= b[index] ^ (index < a.count ? a[index] : 0) }
+        return difference == 0
     }
 
     /// Every request must come through `tailscale serve` from this Mac's own
@@ -331,11 +375,20 @@ enum MobileAPI {
         else { return .denied("host") }
         guard request.method != "GET", request.method != "HEAD" else { return .allowed }
         guard request.header(writeHeader) != nil else { return .denied("write header") }
+        // The origin is this Mac's name on the port the request came to: another
+        // `tailscale serve` mapping on the same name is another origin.
         guard let origin = request.header("origin"),
               let url = URL(string: origin), url.scheme == "https",
-              (url.host ?? "").caseInsensitiveCompare(identity.dnsName) == .orderedSame
+              (url.host ?? "").caseInsensitiveCompare(identity.dnsName) == .orderedSame,
+              (url.port ?? 443) == hostPort(host)
         else { return .denied("origin") }
         return .allowed
+    }
+
+    /// The port of a `host[:port]` header; 443 when it names none, as HTTPS does.
+    static func hostPort(_ header: String) -> Int? {
+        let parts = header.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+        return parts.count == 2 ? Int(parts[1]) : 443
     }
 
     /// `host[:port]` without the port. Tailnet names are never IPv6 literals.
@@ -778,6 +831,35 @@ enum MobileTailnet {
             return (root["TCP"] as? [String: Any])?["\(port)"] != nil
         }
         return handlers.contains { $0["Proxy"] as? String != mine }
+    }
+
+    /// Whether `tailscale serve` still publishes `port` to our own listener: a
+    /// mapping left behind by a crash or a forced quit.
+    static func servesOurs(serveStatusJSON json: String, port: Int) -> Bool {
+        guard let root = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any]
+        else { return false }
+        let mine = "http://127.0.0.1:\(port)"
+        for (name, value) in root["Web"] as? [String: Any] ?? [:] where name.hasSuffix(":\(port)") {
+            let entries = (value as? [String: Any])?["Handlers"] as? [String: Any] ?? [:]
+            let proxies = entries.values.compactMap { ($0 as? [String: Any])?["Proxy"] as? String }
+            if !proxies.isEmpty, proxies.allSatisfy({ $0 == mine }) { return true }
+        }
+        return false
+    }
+
+    /// A new pairing token: 32 random bytes, safe in a URL fragment and a header.
+    static func newToken() -> String {
+        var generator = SystemRandomNumberGenerator()
+        let bytes = (0..<32).map { _ in UInt8.random(in: .min ... .max, using: &generator) }
+        return Data(bytes).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    /// The link the QR code holds. The token rides in the fragment, which a
+    /// browser never sends to a server or a proxy.
+    static func pairingURL(identity: MobileIdentity, port: Int, token: String) -> String {
+        url(identity: identity, port: port) + "#pair=" + token
     }
 
     static func url(identity: MobileIdentity, port: Int) -> String {

@@ -29,7 +29,22 @@ private final class FakeTailscale: CommandRunner {
     }
 }
 
+/// The Keychain's stand-in: one token in memory.
+private final class MemoryTokens: PhoneTokenStore {
+    var token: String?
+    var refuses = false
+
+    func load() -> String? { token }
+
+    func save(_ token: String) -> Bool {
+        guard !refuses else { return false }
+        self.token = token
+        return true
+    }
+}
+
 final class PhoneLinkTests: XCTestCase {
+    private var tokens: MemoryTokens!
     private var tailscale: FakeTailscale!
     private var server: MobileServer!
     private var states: [PhoneLink.State] = []
@@ -37,6 +52,7 @@ final class PhoneLinkTests: XCTestCase {
 
     override func setUp() {
         tailscale = FakeTailscale()
+        tokens = MemoryTokens()
         server = MobileServer(staticRoot: nil, sources: MobileServer.Sources(
             screen: { _ in nil }, transcript: { _ in nil }))
         states = []
@@ -52,7 +68,7 @@ final class PhoneLinkTests: XCTestCase {
     ) -> PhoneLink {
         let link = PhoneLink(
             server: server, runner: tailscale, tailscalePath: { tailscalePath },
-            port: { port }, keepAwake: { keepAwake }, notify: { $0() })
+            port: { port }, keepAwake: { keepAwake }, tokens: tokens, notify: { $0() })
         link.onChange = { [weak self] state in
             guard let self else { return }
             self.lock.lock()
@@ -73,9 +89,13 @@ final class PhoneLinkTests: XCTestCase {
         XCTAssertEqual(link.state, .off)
         link.turnOn()
         settle(link)
-        guard case .on(let url) = link.state else { return XCTFail("\(link.state)") }
+        guard case .on(let url, let pairing) = link.state else { return XCTFail("\(link.state)") }
         let port = try XCTUnwrap(URL(string: url)?.port)
         XCTAssertEqual(url, "https://devmac.example.ts.net:\(port)/")
+        // The first start makes the pairing token and stores it.
+        let token = try XCTUnwrap(tokens.token)
+        XCTAssertEqual(token.count, 43)
+        XCTAssertEqual(pairing, url + "#pair=" + token)
         XCTAssertEqual(tailscale.calls, [
             ["status", "--json"],
             ["serve", "status", "--json"],
@@ -88,6 +108,51 @@ final class PhoneLinkTests: XCTestCase {
         XCTAssertEqual(tailscale.calls.last, ["serve", "--https=\(port)", "off"])
         XCTAssertEqual(states.first, .starting)
         XCTAssertEqual(states.last, .off)
+    }
+
+    func testTheStoredTokenIsReusedAndRotationReplacesIt() {
+        tokens.token = "stored-token"
+        let link = link()
+        link.turnOn()
+        settle(link)
+        guard case .on(let url, let pairing) = link.state else { return XCTFail("\(link.state)") }
+        XCTAssertEqual(pairing, url + "#pair=stored-token")
+
+        link.rotateToken()
+        let deadline = Date().addingTimeInterval(5)
+        while tokens.token == "stored-token", Date() < deadline { usleep(10_000) }
+        let fresh = tokens.token ?? ""
+        XCTAssertNotEqual(fresh, "stored-token")
+        while link.state == .on(url: url, pairing: pairing), Date() < deadline { usleep(10_000) }
+        XCTAssertEqual(link.state, .on(url: url, pairing: url + "#pair=" + fresh))
+        link.shutdown()
+    }
+
+    func testNoStoredTokenMeansNothingIsPublished() {
+        tokens.refuses = true
+        let link = link()
+        link.turnOn()
+        settle(link)
+        XCTAssertEqual(link.state, .failed("Keychain refused the pairing token"))
+        XCTAssertFalse(tailscale.calls.contains { $0.contains("--bg") })
+    }
+
+    func testALeftoverMappingOfOursIsRemovedAndAnotherProjectsIsNot() {
+        tailscale.serving = """
+            {"Web":{"devmac.example.ts.net:7433":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:7433"}}}}}
+            """
+        let ours = link(port: 7433)
+        ours.removeLeftoverMapping()
+        ours.shutdown()  // drains the link's queue
+        XCTAssertEqual(tailscale.calls, [["serve", "status", "--json"], ["serve", "--https=7433", "off"]])
+
+        tailscale.serving = """
+            {"Web":{"devmac.example.ts.net:7433":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:3000"}}}}}
+            """
+        let theirs = link(port: 7433)
+        theirs.removeLeftoverMapping()
+        theirs.shutdown()
+        XCTAssertEqual(tailscale.calls.filter { $0.last == "off" }.count, 1)
     }
 
     func testNoTailscaleOrNoLoginFailsBeforeAnythingListens() {

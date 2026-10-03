@@ -672,7 +672,7 @@ final class ManagerPaneDriver {
 
             // Paste rather than `send-keys -l`: the text goes in over stdin, so a
             // multi-line prompt with metacharacters is safe by construction.
-            let paste = TmuxCommands.pastePath(session: self.config.tmuxSession)
+            let paste = TmuxCommands.pastePrompt(session: self.config.tmuxSession)
             guard self.tmux(paste.load, stdin: Data(text.utf8)), self.tmux(paste.paste) else {
                 self.report(.unreachable("Could not paste into the manager pane"), to: completion)
                 return
@@ -689,6 +689,12 @@ final class ManagerPaneDriver {
             let generation = self.generation
             self.queue.asyncAfter(deadline: .now() + Self.enterDelay) {
                 guard self.generation == generation, self.running else { return }
+                // A prompt that came up since the paste would take the Enter as
+                // its answer. Checked again here, as late as it can be.
+                guard self.currentStatus() != .waiting else {
+                    self.finish(.refused("Manager is waiting on a prompt"))
+                    return
+                }
                 guard self.tmux(["send-keys", "-t", self.config.tmuxSession, "Enter"]) else {
                     self.finish(.unreachable("Could not send Enter to the manager pane"))
                     return

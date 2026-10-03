@@ -447,6 +447,19 @@ final class TmuxCommandsTests: XCTestCase {
             ["paste-buffer", "-p", "-d", "-b", "b", "-t", "%7"])
     }
 
+    func testPromptPasteIsBracketedAndKeepsNewlines() {
+        let paste = TmuxCommands.pastePrompt(session: "mux-manager")
+        XCTAssertEqual(paste.load, ["load-buffer", "-b", "sidekick", "-"])
+        // -p: one bracketed paste, so no byte is a key press. -r: a newline
+        // stays a newline and is not turned into Enter.
+        XCTAssertEqual(
+            paste.paste, ["paste-buffer", "-p", "-r", "-d", "-b", "sidekick", "-t", "mux-manager"])
+        // A dropped file's path is pasted as before.
+        XCTAssertEqual(
+            TmuxCommands.pastePath(session: "web").paste,
+            ["paste-buffer", "-d", "-b", "sidekick", "-t", "web"])
+    }
+
     func testAgentStartedOnceThePaneLeavesItsShell() {
         XCTAssertFalse(AgentHandoff.agentStarted(command: "zsh", shell: "zsh"))
         XCTAssertFalse(AgentHandoff.agentStarted(command: "", shell: "zsh"))

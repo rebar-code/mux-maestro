@@ -1,5 +1,5 @@
-import { failure } from '../api';
-import { takeEvents } from '../manager';
+import { postAudio } from '../api';
+import { frameParser } from '../sse';
 import type { VoiceEnd } from '../types';
 
 export interface VoiceHandlers {
@@ -18,33 +18,14 @@ function decode(base64: string): ArrayBuffer {
 	return bytes.buffer;
 }
 
-async function write(
-	path: string,
-	body: ArrayBuffer | null,
-	signal?: AbortSignal
-): Promise<Response> {
-	const response = await fetch(path, {
-		method: 'POST',
-		cache: 'no-store',
-		headers: { 'x-muxmaestro': '1', ...(body ? { 'content-type': 'audio/wav' } : {}) },
-		body,
-		signal
-	});
-	if (!response.ok) throw await failure(response);
-	return response;
-}
-
 /** Read a voice stream to its `end` event. */
 async function follow(response: Response, handlers: VoiceHandlers): Promise<VoiceEnd> {
-	const reader = response.body?.getReader();
-	const decoder = new TextDecoder();
-	let buffer = '';
+	const reader = response.body?.pipeThrough(new TextDecoderStream()).getReader();
+	const parse = frameParser();
 	while (reader) {
 		const { done, value } = await reader.read();
 		if (done) break;
-		const taken = takeEvents(buffer + decoder.decode(value, { stream: true }));
-		buffer = taken.rest;
-		for (const { event, data } of taken.events) {
+		for (const { event, data } of parse(value)) {
 			if (event === 'end') return JSON.parse(data) as VoiceEnd;
 			const body = JSON.parse(data) as { text?: string; wav?: string };
 			if (event === 'transcript') handlers.onTranscript(body.text ?? '');
@@ -69,7 +50,7 @@ export async function sendVoice(
 	handlers: VoiceHandlers,
 	signal?: AbortSignal
 ): Promise<VoiceEnd> {
-	return follow(await write(`/api/voice?${query(target, speaker)}`, wav, signal), handlers);
+	return follow(await postAudio(`/api/voice?${query(target, speaker)}`, wav, signal), handlers);
 }
 
 /** Have the target's last reply read again. */
@@ -78,13 +59,16 @@ export async function replayVoice(
 	handlers: VoiceHandlers,
 	signal?: AbortSignal
 ): Promise<VoiceEnd> {
-	return follow(await write(`/api/voice/replay?${query(target, true)}`, null, signal), handlers);
+	return follow(
+		await postAudio(`/api/voice/replay?${query(target, true)}`, null, signal),
+		handlers
+	);
 }
 
 /** A take has started: the Mac loads its models while the human talks. */
 export async function warmVoice(speaker: boolean): Promise<void> {
 	try {
-		await write(`/api/voice/warm?speaker=${speaker ? 1 : 0}`, null);
+		await postAudio(`/api/voice/warm?speaker=${speaker ? 1 : 0}`, null);
 	} catch {
 		// Only the head start is lost; the take itself says what is wrong.
 	}

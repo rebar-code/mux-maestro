@@ -33,7 +33,8 @@ guard let socket = value("--socket"), let port = value("--port").flatMap(Int.ini
           .first(where: FileManager.default.isExecutableFile(atPath:))
 else {
     print("usage: mobile-dev-server --socket <tmux -L name> --port <n> [--remote-socket <name>]"
-        + " [--static <dir>] [--chat <pane>=<transcript.jsonl>] [--login <login>] [--host <name>]")
+        + " [--static <dir>] [--chat <pane>=<transcript.jsonl>] [--login <login>] [--host <name>]"
+        + " [--token <pairing token>]")
     exit(2)
 }
 let identity = MobileIdentity(
@@ -87,10 +88,12 @@ func snapshot(stats: HostStats?) -> MobileSnapshot {
 }
 
 server.configure(MobileConfig())
-server.start(port: port, identity: identity) { result in
+let token = value("--token") ?? "demo-token"
+server.start(port: port, identity: identity, token: token) { result in
     switch result {
     case .success(let bound):
-        print("listening on http://127.0.0.1:\(bound) as \(identity.login) @ \(identity.dnsName)")
+        print("listening on http://127.0.0.1:\(bound) as \(identity.login) @ \(identity.dnsName)"
+            + ", token \(token)")
         fflush(stdout)
     case .failure(let error):
         print("could not listen: \(error)")

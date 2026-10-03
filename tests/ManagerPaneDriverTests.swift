@@ -356,11 +356,47 @@ final class ManagerPaneDriverTests: XCTestCase {
             // prompt would sit unsent in the input box.
             ["copy-mode", "-q", "-t", "mux-manager"],
             ["load-buffer", "-b", "sidekick", "-"],
-            ["paste-buffer", "-d", "-b", "sidekick", "-t", "mux-manager"],
+            ["paste-buffer", "-p", "-r", "-d", "-b", "sidekick", "-t", "mux-manager"],
             ["send-keys", "-t", "mux-manager", "Enter"],
         ])
         XCTAssertEqual(runner.stdinText(), "what is up", "the prompt goes in over stdin, not argv")
         XCTAssertEqual(runner.paths(), Array(repeating: "/usr/bin/tmux", count: 5))
+    }
+
+    /// A permission prompt that comes up between the paste and the Enter would
+    /// take the Enter as its answer.
+    func testSendDoesNotPressEnterWhenAPromptAppearsAfterThePaste() throws {
+        let dir = try makeClaudeDir()
+        try seedSession(in: dir, sessionId: "wanted")
+        let runner = FakeRunner()
+        let status = StatusBox(.busy)
+        // The pane reaches a prompt as soon as the text is pasted.
+        runner.onRun = { args in
+            if args.first == "paste-buffer" { status.value = .waiting }
+        }
+        let driver = ManagerPaneDriver(
+            config: config(claudeDir: dir), runner: runner,
+            statusOverride: { _ in status.value }, queue: DispatchQueue(label: "test.pane"))
+
+        let done = expectation(description: "refused")
+        driver.send("approve it", onDelta: { _ in XCTFail("no reply expected") }) { outcome in
+            XCTAssertEqual(outcome, .refused("Manager is waiting on a prompt"))
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 5)
+        XCTAssertFalse(
+            runner.recorded().contains(["send-keys", "-t", "mux-manager", "Enter"]),
+            "Enter must not reach a pane that is now on a prompt")
+        XCTAssertEqual(runner.recorded().last?.first, "paste-buffer")
+
+        // The driver is free again: the refused turn is not left running.
+        status.value = .waiting
+        let again = expectation(description: "refused again")
+        driver.send("hello", onDelta: { _ in }) { outcome in
+            XCTAssertEqual(outcome, .refused("Manager is waiting on a prompt"))
+            again.fulfill()
+        }
+        wait(for: [again], timeout: 5)
     }
 
     func testSendRefusesASecondTurnWhileOneIsRunning() throws {
@@ -509,6 +545,9 @@ private final class StatusBox {
 /// is what a dead tmux session looks like.
 private final class FakeRunner: CommandRunner {
     var failing = false
+    /// Called with each argv as it runs, for a test that changes the pane's
+    /// state at one step.
+    var onRun: (([String]) -> Void)?
 
     private let lock = NSLock()
     private var calls: [(path: String, args: [String], stdin: Data?)] = []
@@ -518,6 +557,7 @@ private final class FakeRunner: CommandRunner {
         calls.append((path, args, stdin))
         let failing = self.failing
         lock.unlock()
+        onRun?(args)
         return failing ? nil : ""
     }
 

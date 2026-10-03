@@ -4,9 +4,12 @@
 //   PORT=5199 node e2e/fixture-server.mjs
 //
 // Test hooks (POST): /__fixture/reset, /__fixture/wait?id=, /__fixture/say?id=&text=,
-// /__fixture/grouping?value=, /__fixture/deny?on=1, /__fixture/capability?name=&on=,
-// /__fixture/manager-status?value=, /__fixture/mac-turn?text=&reply=,
-// /__fixture/voice?mode=&speaker=&heard=&delay=, /__fixture/voice-takes
+// /__fixture/grouping?value=, /__fixture/deny?on=1, /__fixture/rotate?value=, /__fixture/drop,
+// /__fixture/capability?name=&on=, /__fixture/manager-status?value=,
+// /__fixture/mac-turn?text=&reply=, /__fixture/voice?mode=&speaker=&heard=&delay=,
+// /__fixture/voice-takes
+//
+// Every /api/ request needs the header `X-MuxMaestro-Token: demo-token`.
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { extname, join, normalize, resolve } from 'node:path';
@@ -122,13 +125,15 @@ const CHATS = {
 // Why each waiting thread waits, as the manager's "Needs you" list says it.
 const REASONS = { 'localhost:1': 'Permission · Bash', 'devbox:2': 'Question' };
 
-let started, threads, chats, grouping, deny, capabilities, manager, voice;
+const DEMO_TOKEN = 'demo-token';
+let started, threads, chats, grouping, deny, token, capabilities, manager, voice;
 const streams = new Set();
 
 function reset() {
 	started = Math.floor(Date.now() / 1000);
 	grouping = 'recent';
 	deny = false;
+	token = DEMO_TOKEN;
 	capabilities = { manager: true, voice: false };
 	// The Mac's voice defaults, what the next take is heard as, how long the
 	// Mac "thinks" before it has the transcript, and every take it was sent.
@@ -141,6 +146,24 @@ function reset() {
 				n: 0,
 				role: 'assistant',
 				text: 'Two threads need you. Four are running. Nothing has failed in the last hour.'
+			}
+		],
+		updates: [
+			{
+				kind: 'done',
+				text: 'Search box wired to the new index',
+				at: started - 240,
+				host: 'localhost',
+				session: 'docs-site',
+				thread: 'localhost:3'
+			},
+			{
+				kind: 'notification',
+				text: 'Nightly build is green',
+				at: started - 1500,
+				host: '',
+				session: '',
+				thread: null
 			}
 		],
 		review: [
@@ -242,6 +265,7 @@ const hostsBody = () => ({
 const threadsBody = () => ({ threads });
 const configBody = () => ({
 	capabilities: {
+		access: true,
 		manager: capabilities.manager,
 		voice: capabilities.voice,
 		replies: false,
@@ -270,7 +294,7 @@ const managerLive = () => ({
 			thread: t.id
 		})),
 	review: manager.review,
-	updates: [],
+	updates: manager.updates,
 	turn: manager.turn
 });
 const managerBody = () => ({
@@ -310,7 +334,8 @@ function runTurn(prompt, reply, onDelta = () => {}, onEnd = () => {}) {
 		}
 		manager.turn = { prompt, reply: manager.turn.reply + word };
 		onDelta(word);
-		push('manager', managerLive());
+		// The reply grows by a small event; the board is not sent again.
+		push('manager-delta', { text: word });
 		setTimeout(step, 40);
 	};
 	setTimeout(step, 150);
@@ -341,16 +366,24 @@ function managerApi(req, res, path, body) {
 	}
 	if (path === '/api/manager/dismiss') {
 		if (typeof json.key !== 'string') return send(res, 400, { error: 'bad_request' });
+		if (!manager.review.some((item) => item.key === json.key))
+			return send(res, 404, { error: 'not_found' });
 		manager.review = manager.review.filter((item) => item.key !== json.key);
 		push('manager', managerLive());
 		return send(res, 200, { ok: true });
 	}
 	if (path !== '/api/manager/text') return send(res, 404, { error: 'not_found' });
 	const text = typeof json.text === 'string' ? json.text.trim() : '';
-	if (!text) return send(res, 400, { error: 'bad_request' });
+	// The Mac pastes the text into a terminal: no control characters but newline and tab.
+	// eslint-disable-next-line no-control-regex
+	if (!text || /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/.test(text))
+		return send(res, 400, { error: 'bad_request' });
+	if (Buffer.byteLength(text) > 8192) return send(res, 413, { error: 'too_large' });
 	if (manager.turn) return send(res, 409, { error: 'busy', message: 'A turn is running' });
 	if (manager.status === 'waiting')
 		return send(res, 409, { error: 'waiting', message: 'Manager is waiting on a prompt' });
+	if (manager.status === 'busy')
+		return send(res, 409, { error: 'busy', message: 'Manager is busy' });
 	res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' });
 	const event = (name, data) => res.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
 	const reply = managerReply();
@@ -506,6 +539,7 @@ const push = (event, body) => {
 };
 
 function api(req, res, url, body) {
+	if (req.headers['x-muxmaestro-token'] !== token) return send(res, 401, { error: 'unpaired' });
 	if (deny) return send(res, 403, { error: 'forbidden' });
 	if (req.method !== 'GET' && !sameOriginWrite(req)) return send(res, 403, { error: 'forbidden' });
 	const path = url.pathname;
@@ -543,6 +577,11 @@ function api(req, res, url, body) {
 	});
 }
 
+function dropStreams() {
+	for (const res of streams) res.end();
+	streams.clear();
+}
+
 function hook(res, url) {
 	const id = url.searchParams.get('id');
 	const thread = threads.find((t) => t.id === id);
@@ -569,6 +608,13 @@ function hook(res, url) {
 			grouping = url.searchParams.get('value') ?? 'recent';
 			push('config', configBody());
 			break;
+		case '/__fixture/rotate':
+			token = url.searchParams.get('value') ?? 'rotated-token';
+			dropStreams();
+			return send(res, 200, { ok: true });
+		case '/__fixture/drop':
+			dropStreams();
+			return send(res, 200, { ok: true });
 		case '/__fixture/deny':
 			deny = url.searchParams.get('on') === '1';
 			break;

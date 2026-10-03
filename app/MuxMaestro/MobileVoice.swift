@@ -69,6 +69,18 @@ enum MobileVoice {
     static let managerOnly = "Voice goes to the manager only"
     static let nothingToReplay = "Nothing to replay"
     static let speechFailed = "Could not speak the reply"
+    static let notText = "Could not use what was heard"
+    static let tooMuchText = "Too much to send in one turn"
+
+    /// What was heard, held to the rules typed text is held to: the same check,
+    /// `MobileManager.text`, on the same request body. Speech has no way
+    /// around the filter and the size cap that guard the manager's pane.
+    static func text(heard: String) -> MobileManager.Field {
+        guard let body = try? JSONSerialization.data(withJSONObject: ["text": heard]) else {
+            return .invalid
+        }
+        return MobileManager.text(in: body)
+    }
 
     enum Take: Equatable {
         case samples([Float])
@@ -319,15 +331,21 @@ final class MobileVoiceTurn {
     }
 
     private func turn(samples: [Float], send: @escaping Send) async {
-        let text: String
+        let heard: String
         do {
-            text = try await speech.transcribe(samples).trimmingCharacters(in: .whitespacesAndNewlines)
+            heard = try await speech.transcribe(samples).trimmingCharacters(in: .whitespacesAndNewlines)
         } catch {
             return finish(MobileVoice.end("failed", message: error.localizedDescription))
         }
         guard !isCancelled else { return }
-        guard !text.isEmpty else {
+        guard !heard.isEmpty else {
             return finish(MobileVoice.end("empty", message: MobileVoice.heardNothing))
+        }
+        let text: String
+        switch MobileVoice.text(heard: heard) {
+        case .value(let value): text = value
+        case .tooLong: return finish(MobileVoice.end("failed", message: MobileVoice.tooMuchText))
+        case .invalid: return finish(MobileVoice.end("failed", message: MobileVoice.notText))
         }
         emit("transcript", ["text": text], false)
 

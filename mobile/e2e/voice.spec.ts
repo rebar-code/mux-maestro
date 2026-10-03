@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import { reset } from './helpers';
+import { forget, pairingLink, reset } from './helpers';
 
 interface Take {
 	riff: boolean;
@@ -82,9 +82,8 @@ async function open(page: Page, hooks: string[] = []): Promise<void> {
 	await reset(page);
 	await page.request.post('/__fixture/capability?name=voice&on=1');
 	for (const hook of hooks) await page.request.post(hook);
-	await page.goto('/');
-	await page.evaluate(() => localStorage.clear());
-	await page.goto('/');
+	await forget(page);
+	await page.goto(pairingLink());
 	await expect(primary(page)).toHaveText('🎙 Talk');
 }
 
@@ -112,6 +111,7 @@ test('Manual: tap to start, tap to send, and a pause never cuts the take', async
 	expect(request.method()).toBe('POST');
 	expect(request.headers()['content-type']).toBe('audio/wav');
 	expect(request.headers()['x-muxmaestro']).toBe('1');
+	expect(request.headers()['x-muxmaestro-token']).toBe('demo-token');
 	expect(new URL(request.url()).search).toBe('?target=manager&speaker=1');
 
 	await expect(primary(page)).toHaveText('■ Stop');

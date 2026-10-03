@@ -85,17 +85,17 @@ final class MobileAPITests: XCTestCase {
     // MARK: router
 
     func testRoutesTheReadAPI() {
-        XCTAssertEqual(MobileAPI.route(request("/api/config")), .config)
-        XCTAssertEqual(MobileAPI.route(request("/api/threads")), .threads)
-        XCTAssertEqual(MobileAPI.route(request("/api/hosts")), .hosts)
-        XCTAssertEqual(MobileAPI.route(request("/api/events")), .events)
+        XCTAssertEqual(MobileAPI.route(request("/api/config")), .api(.config))
+        XCTAssertEqual(MobileAPI.route(request("/api/threads")), .api(.threads))
+        XCTAssertEqual(MobileAPI.route(request("/api/hosts")), .api(.hosts))
+        XCTAssertEqual(MobileAPI.route(request("/api/events")), .api(.events))
         XCTAssertEqual(
             MobileAPI.route(request("/api/threads/localhost%3A12/chat?after=42")),
-            .chat(id: "localhost:12", after: 42))
+            .api(.chat(id: "localhost:12", after: 42)))
         XCTAssertEqual(
-            MobileAPI.route(request("/api/threads/devbox%3A3/chat")), .chat(id: "devbox:3", after: nil))
+            MobileAPI.route(request("/api/threads/devbox%3A3/chat")), .api(.chat(id: "devbox:3", after: nil)))
         XCTAssertEqual(
-            MobileAPI.route(request("/api/threads/devbox%3A3/screen")), .screen(id: "devbox:3"))
+            MobileAPI.route(request("/api/threads/devbox%3A3/screen")), .api(.screen(id: "devbox:3")))
         XCTAssertEqual(MobileAPI.route(request("/api/nope")), .notFound)
         XCTAssertEqual(MobileAPI.route(request("/api/threads/a/b/c")), .notFound)
         XCTAssertEqual(MobileAPI.route(request("/api/threads", method: "POST")), .methodNotAllowed)
@@ -169,11 +169,55 @@ final class MobileAPITests: XCTestCase {
             MobileAPI.route(request("/api/tmux/kill", method: "POST"), config: actions), .disabled(.kill))
     }
 
-    func testTheReadAPINeedsNoCapability() {
+    func testEveryBuiltRouteBelongsToTheMasterCapability() {
         for path in ["/api/config", "/api/threads", "/api/hosts", "/api/events",
                      "/api/threads/localhost%3A1/chat", "/api/threads/localhost%3A1/screen"] {
-            XCTAssertNil(MobileAPI.capability(forSegments: request(path).segments), path)
+            guard case .api(let endpoint) = MobileAPI.route(request(path)) else {
+                XCTFail(path)
+                continue
+            }
+            XCTAssertEqual(endpoint.capability, .access, path)
         }
+        // The master capability is on whenever the server answers at all.
+        XCTAssertTrue(MobileConfig().allows(.access))
+    }
+
+    // MARK: pairing token
+
+    func testOnlyTheAPINeedsThePairingToken() {
+        XCTAssertTrue(MobileAPI.needsToken(request("/api/threads")))
+        XCTAssertTrue(MobileAPI.needsToken(request("/api/manager")))
+        XCTAssertFalse(MobileAPI.needsToken(request("/")))
+        XCTAssertFalse(MobileAPI.needsToken(request("/_app/immutable/a.js")))
+        XCTAssertFalse(MobileAPI.needsToken(request("/t/localhost%3A1")))
+    }
+
+    func testThePairingTokenMustMatchExactly() {
+        let good = request("/api/threads", headers: ["X-MuxMaestro-Token": "s3cret-token"])
+        XCTAssertTrue(MobileAPI.hasToken(good, token: "s3cret-token"))
+        XCTAssertFalse(MobileAPI.hasToken(good, token: "s3cret-token2"))
+        XCTAssertFalse(MobileAPI.hasToken(good, token: "s3cret-toke"))
+        XCTAssertFalse(MobileAPI.hasToken(good, token: "S3cret-token"))
+        // Nothing is paired until a token exists.
+        XCTAssertFalse(MobileAPI.hasToken(good, token: nil))
+        XCTAssertFalse(MobileAPI.hasToken(good, token: ""))
+        XCTAssertFalse(MobileAPI.hasToken(request("/api/threads"), token: "s3cret-token"))
+        XCTAssertFalse(MobileAPI.hasToken(
+            request("/api/threads", headers: ["X-MuxMaestro-Token": ""]), token: "s3cret-token"))
+    }
+
+    func testNewTokensAreLongDistinctAndURLSafe() {
+        let tokens = (0..<50).map { _ in MobileTailnet.newToken() }
+        XCTAssertEqual(Set(tokens).count, 50)
+        let allowed = CharacterSet(charactersIn:
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
+        for token in tokens {
+            XCTAssertEqual(token.count, 43)
+            XCTAssertTrue(token.unicodeScalars.allSatisfy(allowed.contains))
+        }
+        XCTAssertEqual(
+            MobileTailnet.pairingURL(identity: identity, port: 7433, token: "abc"),
+            "https://devmac.example.ts.net:7433/#pair=abc")
     }
 
     func testConfigJSONListsEveryCapability() throws {
@@ -182,7 +226,7 @@ final class MobileAPITests: XCTestCase {
             JSONSerialization.jsonObject(with: config.json()) as? [String: Any])
         let capabilities = try XCTUnwrap(object["capabilities"] as? [String: Bool])
         XCTAssertEqual(Set(capabilities.keys), Set(MobileCapability.allCases.map(\.rawValue)))
-        XCTAssertEqual(capabilities.filter(\.value).map(\.key), ["voice"])
+        XCTAssertEqual(capabilities.filter(\.value).map(\.key).sorted(), ["access", "voice"])
         XCTAssertEqual(object["grouping"] as? String, "host")
         XCTAssertFalse(MobileConfig().allows(.manager))
     }
@@ -240,7 +284,29 @@ final class MobileAPITests: XCTestCase {
         XCTAssertEqual(
             MobileAPI.authorize(request("/api/x", method: "POST", headers: headers), identity: identity),
             .denied("origin"))
+        // The right name on another port is another `tailscale serve` mapping.
+        headers["Origin"] = "https://devmac.example.ts.net:5173"
+        XCTAssertEqual(
+            MobileAPI.authorize(request("/api/x", method: "POST", headers: headers), identity: identity),
+            .denied("origin"))
+        headers["Origin"] = "https://devmac.example.ts.net"
+        XCTAssertEqual(
+            MobileAPI.authorize(request("/api/x", method: "POST", headers: headers), identity: identity),
+            .denied("origin"))
         headers["Origin"] = "https://devmac.example.ts.net:7433"
+        XCTAssertEqual(
+            MobileAPI.authorize(request("/api/x", method: "POST", headers: headers), identity: identity),
+            .allowed)
+        // Port 443 is the one an origin and a Host header both leave out.
+        headers["Host"] = "devmac.example.ts.net"
+        XCTAssertEqual(
+            MobileAPI.authorize(request("/api/x", method: "POST", headers: headers), identity: identity),
+            .denied("origin"))
+        headers["Origin"] = "https://devmac.example.ts.net"
+        XCTAssertEqual(
+            MobileAPI.authorize(request("/api/x", method: "POST", headers: headers), identity: identity),
+            .allowed)
+        headers["Origin"] = "https://devmac.example.ts.net:443"
         XCTAssertEqual(
             MobileAPI.authorize(request("/api/x", method: "POST", headers: headers), identity: identity),
             .allowed)
@@ -467,5 +533,12 @@ final class MobileAPITests: XCTestCase {
         XCTAssertTrue(MobileTailnet.portTaken(serveStatusJSON: serving, port: 9000))
         XCTAssertFalse(MobileTailnet.portTaken(serveStatusJSON: serving, port: 7434))
         XCTAssertFalse(MobileTailnet.portTaken(serveStatusJSON: "{}", port: 7433))
+
+        // Only a mapping to our own listener counts as a leftover of ours.
+        XCTAssertTrue(MobileTailnet.servesOurs(serveStatusJSON: serving, port: 7433))
+        XCTAssertFalse(MobileTailnet.servesOurs(serveStatusJSON: serving, port: 443))
+        XCTAssertFalse(MobileTailnet.servesOurs(serveStatusJSON: serving, port: 9000))
+        XCTAssertFalse(MobileTailnet.servesOurs(serveStatusJSON: serving, port: 7434))
+        XCTAssertFalse(MobileTailnet.servesOurs(serveStatusJSON: "{}", port: 7433))
     }
 }

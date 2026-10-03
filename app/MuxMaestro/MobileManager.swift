@@ -63,6 +63,7 @@ enum MobileManager {
     static let chatLimit = 20
 
     static let busyMessage = "A turn is running"
+    static let paneBusyMessage = "Manager is busy"
     static let waitingMessage = "Manager is waiting on a prompt"
     static let offMessage = "Manager is not running"
 
@@ -107,6 +108,11 @@ enum MobileManager {
         ]
     }
 
+    /// Whether a board holds a review item with `key`: what dismiss may name.
+    static func hasReview(_ key: String, in board: MobileManagerBoard) -> Bool {
+        board.items.contains { $0.kind == .review && $0.key == key }
+    }
+
     static func liveJSON(
         board: MobileManagerBoard, snapshot: MobileSnapshot, turn: MobileManagerTurn?
     ) -> Data {
@@ -130,15 +136,51 @@ enum MobileManager {
         return out
     }
 
-    /// The `text` of a turn request, or nil when the body is not `{"text": "…"}`
-    /// with something in it.
-    static func text(in body: Data) -> String? {
-        string("text", in: body)
+    /// The most text one turn takes, in UTF-8 bytes, and the longest review key.
+    static let maxTextBytes = 8192
+    static let maxKeyBytes = 256
+
+    /// What a request body held.
+    enum Field: Equatable {
+        case value(String)
+        /// Not `{"<name>": "…"}`, nothing in it, or a character that is not text.
+        case invalid
+        case tooLong
+
+        /// The response for a body that cannot be used; nil for a value.
+        var refusal: MobileResponse? {
+            switch self {
+            case .value: return nil
+            case .invalid: return .error(400, "bad_request")
+            case .tooLong: return .error(413, "too_large")
+            }
+        }
+    }
+
+    /// The `text` of a turn request. It is pasted into a terminal, so it must
+    /// be text only: a control character there is a key press (Escape starts a
+    /// key sequence, U+0003 is Ctrl-C, a carriage return is Enter). Newline
+    /// and tab are the two that are text.
+    static func text(in body: Data) -> Field {
+        guard let text = string("text", in: body) else { return .invalid }
+        guard text.utf8.count <= maxTextBytes else { return .tooLong }
+        return text.unicodeScalars.allSatisfy(isText) ? .value(text) : .invalid
+    }
+
+    /// C0 controls except newline and tab, DEL, and the C1 controls are keys
+    /// to a terminal, not text.
+    static func isText(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x0A, 0x09: return true
+        case 0x00...0x1F, 0x7F...0x9F: return false
+        default: return true
+        }
     }
 
     /// The `key` of a dismiss request.
-    static func key(in body: Data) -> String? {
-        string("key", in: body)
+    static func key(in body: Data) -> Field {
+        guard let key = string("key", in: body) else { return .invalid }
+        return key.utf8.count <= maxKeyBytes ? .value(key) : .tooLong
     }
 
     private static func string(_ name: String, in body: Data) -> String? {
@@ -150,12 +192,14 @@ enum MobileManager {
     }
 
     /// Why a turn cannot start now, as the response the phone shows; nil when
-    /// it can. `ManagerPaneDriver` refuses for the same reasons; asking here
-    /// first means the phone gets an error and not a stream that ends at once.
+    /// it can. The phone sends only into an idle pane. A busy pane may reach a
+    /// permission prompt between the paste and the Enter, and the Enter would
+    /// answer it; a waiting pane is already on one.
     static func refusal(status: MobileManagerStatus, turnRunning: Bool) -> MobileResponse? {
         if status == .off { return .error(503, "unavailable", message: offMessage) }
         if turnRunning { return .error(409, "busy", message: busyMessage) }
         if status == .waiting { return .error(409, "waiting", message: waitingMessage) }
+        if status == .busy { return .error(409, "busy", message: paneBusyMessage) }
         return nil
     }
 

@@ -306,7 +306,7 @@ class Voice {
 			else if (end.outcome !== 'done') this.note = end.message;
 		} catch (error) {
 			if (!mine()) return;
-			if (error instanceof ApiError && error.forbidden) live.forbidden = true;
+			live.fail(error);
 			const message =
 				error instanceof ApiError && error.detail ? error.detail : 'The Mac did not answer';
 			if (this.sink) sink.fail(message);

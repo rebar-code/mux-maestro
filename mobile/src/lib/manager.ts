@@ -49,25 +49,3 @@ export function needsYouCards(threads: Thread[], items: ManagerItem[]): NeedsYou
 			why: items.find((item) => item.thread === thread.id)?.detail || null
 		}));
 }
-
-export interface StreamEvent {
-	event: string;
-	data: string;
-}
-
-/** The whole events at the front of an event-stream buffer, and what is left. */
-export function takeEvents(buffer: string): { events: StreamEvent[]; rest: string } {
-	const blocks = buffer.split('\n\n');
-	const rest = blocks.pop() ?? '';
-	const events: StreamEvent[] = [];
-	for (const block of blocks) {
-		let event = 'message';
-		const data: string[] = [];
-		for (const line of block.split('\n')) {
-			if (line.startsWith('event:')) event = line.slice(6).trim();
-			else if (line.startsWith('data:')) data.push(line.slice(5).replace(/^ /, ''));
-		}
-		if (data.length) events.push({ event, data: data.join('\n') });
-	}
-	return { events, rest };
-}

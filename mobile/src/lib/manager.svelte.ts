@@ -9,12 +9,21 @@ import type {
 	ManagerLive,
 	ManagerStatus,
 	ManagerTurn,
+	ManagerUpdate,
 	TurnEnd,
 	VoiceEnd
 } from './types';
 import type { VoiceSink } from './voice.svelte';
 
 const KEY = 'mm.manager';
+/** How often the home asks again: the pane's status has no event. */
+const POLL_MS = 10_000;
+
+const STATUS_NOTES: Partial<Record<ManagerStatus, string>> = {
+	off: 'Manager is not running',
+	waiting: 'Manager is waiting on a prompt',
+	busy: 'Manager is busy'
+};
 
 interface Cached {
 	review: ManagerItem[];
@@ -42,6 +51,7 @@ class Manager {
 	review = $state.raw<ManagerItem[] | null>(this.start?.review ?? null);
 	needsYou = $state.raw<ManagerItem[]>(this.start?.needsYou ?? []);
 	chat = $state.raw<ChatMessage[]>(this.start?.chat ?? []);
+	updates = $state.raw<ManagerUpdate[]>([]);
 	status = $state<ManagerStatus>('idle');
 	turn = $state.raw<ManagerTurn | null>(null);
 	/** What the last turn left to say: why it was refused, or that it waits. */
@@ -53,6 +63,10 @@ class Manager {
 
 	readonly lines: HomeLine[] = $derived(homeLines(this.chat, this.turn));
 	readonly busy: boolean = $derived(this.turn !== null);
+	/** What the pane is doing, when a message cannot go to it now. */
+	readonly statusNote: string | null = $derived(
+		this.turn === null ? (STATUS_NOTES[this.status] ?? null) : null
+	);
 
 	/** Review items dismissed here that the Mac has not dropped yet. */
 	private dismissed = new Set<string>();
@@ -75,6 +89,7 @@ class Manager {
 		}
 		this.review = body.review.filter((item) => item.key === null || !this.dismissed.has(item.key));
 		this.needsYou = body.needsYou;
+		this.updates = body.updates;
 	}
 
 	/** The `manager` event. */
@@ -90,6 +105,12 @@ class Manager {
 		this.save();
 	}
 
+	/** The `manager-delta` event: more of the reply of a turn started elsewhere. */
+	append(text: string): void {
+		if (this.sending || !this.turn) return;
+		this.turn = { prompt: this.turn.prompt, reply: this.turn.reply + text };
+	}
+
 	load = async (): Promise<void> => {
 		if (this.loading) return;
 		this.loading = true;
@@ -101,16 +122,20 @@ class Manager {
 			if (!this.sending) this.turn = home.turn;
 			this.save();
 		} catch (error) {
-			if (error instanceof ApiError && error.forbidden) live.forbidden = true;
+			live.fail(error);
 			if (this.review === null) this.review = [];
 		} finally {
 			this.loading = false;
 		}
 	};
 
-	/** Attachment for the manager home: load it when it is shown. */
-	watch = (): void => {
+	/** Attachment for the manager home: load it when it is shown, then keep it current. */
+	watch = (): (() => void) => {
 		untrack(() => void this.load());
+		const timer = setInterval(() => {
+			if (document.visibilityState === 'visible' && !this.busy) void this.load();
+		}, POLL_MS);
+		return () => clearInterval(timer);
 	};
 
 	private begin(text: string): void {
@@ -119,8 +144,9 @@ class Manager {
 		this.turn = { prompt: text, reply: '' };
 	}
 
-	private append = (delta: string): void => {
-		if (this.turn) this.turn = { ...this.turn, reply: this.turn.reply + delta };
+	/** More of the reply of this phone's own turn. */
+	private grow = (delta: string): void => {
+		if (this.turn) this.turn = { prompt: this.turn.prompt, reply: this.turn.reply + delta };
 	};
 
 	/**
@@ -154,24 +180,22 @@ class Manager {
 
 	send = async (): Promise<void> => {
 		const text = this.draft.trim();
-		if (!text || this.sending) return;
+		// A turn is running, here or on the Mac: Enter must not send a second one.
+		if (!text || this.sending || this.busy) return;
 		this.draft = '';
 		this.begin(text);
 		try {
-			this.finish(await sendManagerText(text, this.append));
+			this.finish(await sendManagerText(text, this.grow));
 		} catch (error) {
-			if (error instanceof ApiError && error.forbidden) live.forbidden = true;
-			this.finish(
-				null,
-				error instanceof ApiError && error.detail ? error.detail : 'The Mac did not answer'
-			);
+			live.fail(error);
+			this.finish(null, refusalText(error));
 		}
 	};
 
 	/** A turn this phone spoke: drawn and kept like one it typed. */
 	readonly voice: VoiceSink = {
 		begin: (prompt) => this.begin(prompt),
-		delta: this.append,
+		delta: this.grow,
 		end: (end) => this.finish(end),
 		fail: (message) => this.finish(null, message),
 		// The Mac still runs the turn: its events draw the rest.
@@ -193,6 +217,15 @@ class Manager {
 			void this.load();
 		}
 	};
+}
+
+/** The sentence for a turn the Mac did not take. */
+function refusalText(error: unknown): string {
+	if (!(error instanceof ApiError)) return 'The Mac did not answer';
+	if (error.detail) return error.detail;
+	if (error.status === 413) return 'The message is too long';
+	if (error.status === 400) return 'The message has characters that cannot be sent';
+	return 'The Mac did not answer';
 }
 
 export const manager = new Manager();
