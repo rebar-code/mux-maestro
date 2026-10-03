@@ -8,7 +8,7 @@ import type {
 	FindResult,
 	Host,
 	ManagerHome,
-	Prompt,
+	PromptState,
 	Thread,
 	TmuxAction,
 	TurnEnd
@@ -63,7 +63,11 @@ export class ApiError extends Error {
 		/** The `error` word in the response body, if it had one. */
 		readonly code: string | null,
 		/** The sentence the server sent for the human, if it sent one. */
-		readonly detail: string | null = null
+		readonly detail: string | null = null,
+		/** Why a `not_sent` text was not submitted. */
+		readonly reason: string | null = null,
+		/** A `not_sent` text was taken out of the pane's input box again. */
+		readonly cleared: boolean | null = null
 	) {
 		super(detail ?? `HTTP ${status}${code ? ` ${code}` : ''}`);
 	}
@@ -84,11 +88,13 @@ export class ApiError extends Error {
 
 async function failure(response: Response): Promise<ApiError> {
 	try {
-		const body = (await response.json()) as { error?: unknown; message?: unknown };
+		const body = (await response.json()) as Record<string, unknown>;
 		return new ApiError(
 			response.status,
 			typeof body.error === 'string' ? body.error : null,
-			typeof body.message === 'string' ? body.message : null
+			typeof body.message === 'string' ? body.message : null,
+			typeof body.reason === 'string' ? body.reason : null,
+			typeof body.cleared === 'boolean' ? body.cleared : null
 		);
 	} catch {
 		return new ApiError(response.status, null);
@@ -198,14 +204,20 @@ export async function sendText(id: string, text: string): Promise<void> {
 	await post(`${threadPath(id)}/text`, { text });
 }
 
-/** Press one key in the thread's pane. `key` is a name from `reply.ts`. */
-export async function sendKey(id: string, key: string): Promise<void> {
-	await post(`${threadPath(id)}/key`, { key });
+/**
+ * Press one key in the thread's pane. `key` is a name from `reply.ts`.
+ * `prompt` names the prompt the phone shows: a pane that waits on another one
+ * answers 409 `stale` and takes no key.
+ */
+export async function sendKey(id: string, key: string, prompt: string | null): Promise<void> {
+	await post(`${threadPath(id)}/key`, { key, ...(prompt ? { prompt } : {}) });
 }
 
-/** What the thread's pane asks now, or `null`. */
-export async function fetchPrompt(id: string): Promise<Prompt | null> {
-	return (await get<{ prompt: Prompt | null }>(`${threadPath(id)}/prompt`)).prompt;
+/** What the thread's pane asks now. */
+export async function fetchPrompt(id: string): Promise<PromptState> {
+	const body = await get<Partial<PromptState>>(`${threadPath(id)}/prompt`);
+	const prompt = body.prompt ?? null;
+	return { prompt, id: body.id ?? prompt?.id ?? null };
 }
 
 /** Pick option `option` of the prompt `prompt`. A prompt that changed answers 409 `stale`. */
@@ -217,8 +229,11 @@ export async function fetchCommands(id: string): Promise<Command[]> {
 	return (await get<{ commands: Command[] }>(`${threadPath(id)}/commands`)).commands;
 }
 
-/** Put `file` in the thread's directory. Resolves to the path it got on the Mac. */
-export async function uploadFile(id: string, file: File): Promise<string> {
+/**
+ * Put `file` in the thread's directory. `pasted` is false when the file was
+ * saved but the pane could not take its path.
+ */
+export async function uploadFile(id: string, file: File): Promise<{ pasted: boolean }> {
 	const response = await request(
 		`${threadPath(id)}/upload?name=${encodeURIComponent(file.name)}`,
 		'application/json',
@@ -226,7 +241,7 @@ export async function uploadFile(id: string, file: File): Promise<string> {
 		undefined,
 		{ bytes: file, type: 'application/octet-stream' }
 	);
-	return ((await response.json()) as { path: string }).path;
+	return { pasted: ((await response.json()) as { pasted?: boolean }).pasted !== false };
 }
 
 /** What a session action answers: the new window's thread, or the new session's name. */

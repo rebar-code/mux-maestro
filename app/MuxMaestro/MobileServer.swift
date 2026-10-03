@@ -376,22 +376,35 @@ final class MobileServer {
     /// Answer the request at the front of the buffer, then the next one.
     private func drain(_ client: Client) {
         // A take's megabytes are held only for a caller that is already let in.
+        var refusal = "bad_request"
         let parsed = MobileHTTP.parse(client.buffer) { [identity, token, config] request in
-            if MobileAPI.authorize(request, identity: identity) != .allowed { return 403 }
-            guard MobileAPI.hasToken(request, token: token) else { return 401 }
-            // An upload past the limit in Settings is refused before it is read.
-            if case .api(.upload) = MobileAPI.route(request, config: config),
-               (request.header("content-length").flatMap(Int.init) ?? 0) > config.uploadLimit {
-                return 413
+            if MobileAPI.authorize(request, identity: identity) != .allowed {
+                refusal = "forbidden"
+                return 403
             }
-            return nil
+            guard MobileAPI.hasToken(request, token: token) else {
+                refusal = "unpaired"
+                return 401
+            }
+            switch MobileAPI.route(request, config: config) {
+            case .disabled:
+                // A feature that is off holds no megabytes either.
+                refusal = "disabled"
+                return 403
+            case .api(.upload)
+            where (request.header("content-length").flatMap(Int.init) ?? 0) > config.uploadLimit:
+                // An upload past the limit in Settings is refused before it is read.
+                refusal = "too_large"
+                return 413
+            default:
+                return nil
+            }
         }
         switch parsed {
         case .incomplete:
             receive(client)
         case .invalid(let status):
-            let code = [401: "unpaired", 403: "forbidden", 413: "too_large"][status] ?? "bad_request"
-            send(.error(status, code), to: client, head: false, close: true)
+            send(.error(status, refusal), to: client, head: false, close: true)
         case .request(let request, let consumed):
             client.lastActive = Date()
             client.buffer.removeFirst(consumed)
@@ -553,29 +566,32 @@ final class MobileServer {
             guard case .value(let text) = field else {
                 return send(field.refusal ?? .error(400, "bad_request"), to: client, head: head)
             }
-            write(to: id, client: client) { thread, io, status in
-                MobileReply.send(text, target: thread.pane, io: io, status: status)
+            write(to: id, client: client) { thread, io, state in
+                MobileReply.send(text, target: thread.pane, io: io, state: state)
             }
         case .key(let id):
-            guard let key = MobileReply.key(in: request.body) else {
+            guard let press = MobileReply.key(in: request.body) else {
                 return send(.error(400, "bad_key"), to: client, head: head)
             }
-            guard let (thread, io) = pane(id, client: client) else { return }
-            reply(to: client) { MobileReply.press(key, target: thread.pane, io: io) }
+            // Under the thread's lock, like every write: a key is not pressed
+            // between another write's paste and its Enter.
+            write(to: id, client: client) { thread, io, state in
+                MobileReply.press(
+                    press.key, prompt: press.prompt, target: thread.pane, io: io, state: state())
+            }
         case .prompt(let id):
             guard let (_, io) = pane(id, client: client) else { return }
             reply(to: client) { [weak self] in
-                let prompt = MobileReply.prompt(status: self?.status(of: id, io: io), io: io)
-                return .json(["prompt": prompt.map { $0.json as Any } ?? NSNull()])
+                .json(MobileReply.promptBody(state: self?.state(of: id, io: io), screen: io.screen()))
             }
         case .answer(let id):
             guard let answer = MobileReply.answer(in: request.body) else {
                 return send(.error(400, "bad_request"), to: client, head: head)
             }
-            write(to: id, client: client) { thread, io, status in
+            write(to: id, client: client) { thread, io, state in
                 MobileReply.answer(
                     prompt: answer.prompt, option: answer.option, target: thread.pane, io: io,
-                    status: status())
+                    state: state())
             }
         case .commands(let id):
             guard let thread = snapshot.thread(id: id) else {
@@ -586,9 +602,9 @@ final class MobileServer {
             }
         case .upload(let id, let name):
             let limit = config.uploadLimit
-            write(to: id, client: client) { thread, io, status in
+            write(to: id, client: client) { thread, io, state in
                 MobileReply.upload(
-                    request.body, name: name, thread: thread, io: io, limit: limit, status: status)
+                    request.body, name: name, thread: thread, io: io, limit: limit, state: state)
             }
         case .tmux(let action):
             // Checked against the tree as it is now; tmux runs off the queue.
@@ -633,25 +649,30 @@ final class MobileServer {
         return (thread, io)
     }
 
-    /// The status of thread `id` now: its row in the latest tree, then the
+    /// The state of thread `id` now: its row in the latest tree, then the
     /// pane's own newer state. nil once the thread has gone. Blocks on the
     /// server queue, so it is never called from it.
-    private func status(of id: String, io: MobilePaneIO) -> AttentionStatus? {
-        queue.sync { snapshot.thread(id: id) }.map(io.status)
+    private func state(of id: String, io: MobilePaneIO) -> MobilePaneState? {
+        queue.sync { snapshot.thread(id: id) }.map { thread in
+            var state = io.state(thread)
+            // Whatever the source says: a status from another host is a scan's.
+            if !thread.host.isLocal { state.remote = true }
+            return state
+        }
     }
 
     /// Run one write to a thread's pane off the server queue. `body` gets the
     /// thread, its pane and the status to ask again before it commits.
     private func write(
         to id: String, client: Client,
-        _ body: @escaping (MobileThread, MobilePaneIO, @escaping () -> AttentionStatus?) -> MobileResponse
+        _ body: @escaping (MobileThread, MobilePaneIO, @escaping () -> MobilePaneState?) -> MobileResponse
     ) {
         guard let (thread, io) = pane(id, client: client) else { return }
         guard writing.insert(id).inserted else {
             return send(.error(409, "busy", message: MobileReply.sending), to: client, head: false)
         }
         work.async { [weak self, weak client] in
-            let response = body(thread, io) { self?.status(of: id, io: io) }
+            let response = body(thread, io) { self?.state(of: id, io: io) }
             self?.queue.async {
                 guard let self else { return }
                 self.writing.remove(id)
@@ -671,15 +692,15 @@ final class MobileServer {
         queue.async { [self] in
             guard writing.insert(id).inserted else { return completion(.refused(MobileReply.sending)) }
             work.async { [self] in
-                let status = { [weak self] in self?.status(of: id, io: io) }
+                let state = { [weak self] in self?.state(of: id, io: io) }
                 let file = follow && thread.hasChat ? sources.transcript(thread) : nil
                 let turn = file.map { file in
                     MobileThreadTurn(
                         read: { MobileChat.read(path: file.path, codex: file.codex, after: $0) },
-                        status: status)
+                        status: { state()?.status })
                 }
                 turn?.mark()
-                let response = MobileReply.send(text, target: thread.pane, io: io, status: status)
+                let response = MobileReply.send(text, target: thread.pane, io: io, state: state)
                 queue.async { self.writing.remove(id) }
                 guard response.status == 200 else {
                     return completion(.refused(MobileVoice.message(of: response)))
@@ -887,7 +908,7 @@ final class MobileServer {
         work.async { [weak self, weak client] in
             let ready = voice.speech.modelsReady
             let take = ready ? MobileVoice.take(wav: request.body) : .samples([])
-            let refusal = MobileReply.refusal(status: self?.status(of: id, io: io), screen: io.screen)
+            let refusal = MobileReply.refusal(state: self?.state(of: id, io: io), screen: io.screen)
             self?.queue.async {
                 guard let self else { return }
                 self.voiceStarting = false

@@ -57,7 +57,14 @@
 	const voiceOn = $derived(repliesOn && can('voice'));
 	const docked = $derived(!closed && (repliesOn || keysOn));
 	const next = $derived(repliesOn ? nextWaiting(live.threads ?? [], id) : null);
-	const card = $derived(repliesOn && thread?.status === 'waiting' ? reply.prompt : null);
+	// The pane can ask while its status says nothing of it: the prompt decides.
+	const card = $derived(repliesOn ? reply.prompt : null);
+
+	/** The card shows only part of the pane's text: the terminal has it all. */
+	function showTerminal(): void {
+		terminal = true;
+		ui.goTo(0);
+	}
 	const spoken = $derived(liveLines(feed.messages ?? [], reply.turn));
 
 	function send(): void {
@@ -183,7 +190,12 @@
 								{/if}
 							{/if}
 							{#if card}
-								<PromptCard prompt={card} answering={reply.answering} onanswer={reply.answer} />
+								<PromptCard
+									prompt={card}
+									answering={reply.answering}
+									onanswer={reply.answer}
+									onterminal={showTerminal}
+								/>
 							{/if}
 						</div>
 					</div>
@@ -225,7 +237,7 @@
 </div>
 
 {#if docked}
-	<div class="dock" data-dock {@attach overKeyboard} {@attach repliesOn && reply.watch}>
+	<div class="dock" data-dock {@attach overKeyboard} {@attach reply.watch}>
 		{#if next}<NextBar thread={next} />{/if}
 		{#if repliesOn && reply.matches.length}
 			<SlashList commands={reply.matches} onpick={reply.pick} />

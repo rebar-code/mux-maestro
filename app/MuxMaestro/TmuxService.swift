@@ -1869,24 +1869,19 @@ final class TmuxService {
     /// argv the server built (`MobileReply`); nothing here goes through a shell
     /// on this Mac.
     func phonePane(
-        target: String, status: @escaping (MobileThread) -> AttentionStatus
+        target: String, state: @escaping (MobileThread) -> MobilePaneState
     ) -> MobilePaneIO {
         MobilePaneIO(
             tmux: { [self] args, stdin in tmux(args, stdin: stdin) },
             screen: { [self] in capturePane(target: target) },
-            status: status,
-            copy: { [self] localPath, path in
-                let (cp, args) = FileTransfer.copyArgv(host: host, localPath: localPath, remotePath: path)
-                // An upload to a remote host can take longer than a tmux call.
-                return slow.run(cp, args) != nil
-            },
-            exists: { [self] path in
+            state: state,
+            save: { [self] data, path in
                 guard let alias = host.sshAlias else {
-                    return FileManager.default.fileExists(atPath: path)
+                    return FileTransfer.writeExclusive(data, to: path)
                 }
-                // `test` prints nothing: the runner's nil is "no such file".
-                return runner.run(
-                    Ssh.sshPath, Ssh.opts(host: alias) + ["test -e " + Ssh.shellQuote(path)]) != nil
+                // An upload to a remote host can take longer than a tmux call.
+                let (ssh, args) = FileTransfer.exclusiveWriteArgv(alias: alias, path: path)
+                return FileTransfer.saved(remoteOutput: slow.run(ssh, args, stdin: data))
             })
     }
 

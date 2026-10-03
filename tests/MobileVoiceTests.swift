@@ -930,6 +930,8 @@ final class MobileVoiceServerTests: XCTestCase {
         XCTAssertEqual(end?.data["outcome"] as? String, "refused")
         XCTAssertEqual(end?.data["message"] as? String, "Thread is waiting on a prompt")
         XCTAssertFalse(pane.argv.contains { $0.contains("Enter") })
+        // What was heard is taken out of the input box again.
+        XCTAssertEqual(pane.argv.last, ["send-keys", "-t", "%12", "C-u"])
     }
 
     func testReplayReadsAThreadsLastReplyAgain() throws {

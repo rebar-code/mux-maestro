@@ -770,9 +770,13 @@ final class MobileServerTests: XCTestCase {
         server.configure(MobileConfig(capabilities: [.keyBar, .upload, .manager, .voice]))
         XCTAssertEqual(post(Self.thread + "/text", json: #"{"text":"run the tests"}"#).status, 403)
         XCTAssertEqual(post(Self.thread + "/answer", json: #"{"prompt":"9f2c","option":1}"#).status, 403)
+        XCTAssertEqual(get(Self.thread + "/commands").status, 403)
+        // The key bar may read the prompt: a key into a waiting pane names it.
+        XCTAssertEqual(get(Self.thread + "/prompt").status, 200)
+        server.configure(MobileConfig(capabilities: [.upload, .manager, .voice]))
         XCTAssertEqual(get(Self.thread + "/prompt").status, 403)
         XCTAssertEqual(pane.argv.count, 0)
-        XCTAssertEqual(pane.copies.count, 0)
+        XCTAssertEqual(pane.saves.count, 0)
     }
 
     func testAReplyWriteWithoutThePairingTokenIsRefusedAndTypesNothing() {
@@ -787,7 +791,7 @@ final class MobileServerTests: XCTestCase {
         XCTAssertEqual(get(Self.thread + "/prompt", token: nil).status, 401)
         XCTAssertEqual(get(Self.thread + "/commands", token: nil).status, 401)
         XCTAssertEqual(pane.argv.count, 0)
-        XCTAssertEqual(pane.copies.count, 0)
+        XCTAssertEqual(pane.saves.count, 0)
     }
 
     func testAReplyWriteFromAnotherOriginIsRefusedAndTypesNothing() {
@@ -808,7 +812,7 @@ final class MobileServerTests: XCTestCase {
             }
         }
         XCTAssertEqual(pane.argv.count, 0)
-        XCTAssertEqual(pane.copies.count, 0)
+        XCTAssertEqual(pane.saves.count, 0)
     }
 
     func testATextIsPastedIntoItsThreadsPaneAndSubmitted() {
@@ -858,7 +862,39 @@ final class MobileServerTests: XCTestCase {
         pane.statusAfterPaste = .waiting
         let refused = post(Self.thread + "/text", json: #"{"text":"go on"}"#)
         XCTAssertEqual(refused.status, 409)
-        XCTAssertEqual(pane.argv.map(\.first), ["copy-mode", "load-buffer", "paste-buffer"])
+        // Its own code, and the text is taken out of the input box again.
+        XCTAssertEqual(
+            refused.body,
+            #"{"cleared":true,"error":"not_sent","message":"Thread is waiting on a prompt","reason":"waiting"}"#)
+        XCTAssertEqual(pane.argv.map(\.first), ["copy-mode", "load-buffer", "paste-buffer", "send-keys"])
+        XCTAssertEqual(pane.argv.last, ["send-keys", "-t", "%12", "C-u"])
+    }
+
+    func testAPromptOnTheScreenRefusesTextWhateverTheStatusSays() {
+        repliesOn()
+        // The status stays idle throughout; only the screen shows the prompt.
+        pane.screenAfterPaste = DemoPrompt.permission
+        let late = post(Self.thread + "/text", json: #"{"text":"go on"}"#)
+        XCTAssertEqual(late.status, 409)
+        XCTAssertTrue(late.body.contains(#""error":"not_sent""#), late.body)
+        XCTAssertFalse(pane.argv.contains { $0.contains("Enter") })
+        // Still on the screen: the next text is refused before any paste.
+        let before = pane.argv.count
+        let early = post(Self.thread + "/text", json: #"{"text":"go on"}"#)
+        XCTAssertEqual(early.status, 409)
+        XCTAssertEqual(early.body, #"{"error":"waiting","message":"Thread is waiting on a prompt"}"#)
+        XCTAssertEqual(pane.argv.count, before)
+    }
+
+    func testAShellPaneWithNoStatusTakesNoFreeText() {
+        repliesOn()
+        // The shell window: no hooks, so no status, and no input box on screen.
+        pane.status = nil
+        pane.screen = "$ make test\nok\n$ "
+        let refused = post("/api/threads/localhost%3A13/text", json: #"{"text":"ls"}"#)
+        XCTAssertEqual(refused.status, 409)
+        XCTAssertEqual(refused.body, #"{"error":"no_input","message":"Thread shows no input box"}"#)
+        XCTAssertEqual(pane.argv.count, 0)
     }
 
     func testAStaleThreadIdIsA404AndTypesNothing() {
@@ -873,7 +909,7 @@ final class MobileServerTests: XCTestCase {
             XCTAssertEqual(get(base + "/commands").status, 404, id)
         }
         XCTAssertEqual(pane.argv.count, 0)
-        XCTAssertEqual(pane.copies.count, 0)
+        XCTAssertEqual(pane.saves.count, 0)
     }
 
     func testAKeyOffTheWhitelistIsRefusedAndAWhitelistedOneIsPressed() {
@@ -885,15 +921,69 @@ final class MobileServerTests: XCTestCase {
         }
         XCTAssertEqual(pane.argv.count, 0)
 
-        // A pane on a prompt, or at work, still takes a key: Escape backs out.
-        for (status, key) in [(AttentionStatus.waiting, "Escape"), (.busy, "C-c"), (.idle, "BTab"), (.idle, "3")] {
+        // A pane at work still takes a key: Ctrl-C stops it.
+        for (status, key) in [(AttentionStatus.busy, "C-c"), (.idle, "BTab"), (.idle, "3")] {
             pane.status = status
             XCTAssertEqual(post(Self.thread + "/key", json: #"{"key":"\#(key)"}"#).status, 200, key)
         }
         XCTAssertEqual(pane.argv, [
-            ["send-keys", "-t", "%12", "Escape"], ["send-keys", "-t", "%12", "C-c"],
-            ["send-keys", "-t", "%12", "BTab"], ["send-keys", "-t", "%12", "3"],
+            ["send-keys", "-t", "%12", "C-c"], ["send-keys", "-t", "%12", "BTab"],
+            ["send-keys", "-t", "%12", "3"],
         ])
+    }
+
+    func testAKeyIntoAWaitingPaneNeedsTheIdOfThePromptOnItNow() throws {
+        repliesOn()
+        pane.status = .waiting
+        pane.screen = DemoPrompt.permission
+        func shownID() throws -> String {
+            try XCTUnwrap(
+                (JSONSerialization.jsonObject(with: Data(get(Self.thread + "/prompt").body.utf8))
+                    as? [String: Any])?["id"] as? String)
+        }
+        let id = try shownID()
+
+        // Enter with no prompt named, or one that is not on the pane.
+        for body in [#"{"key":"Enter"}"#, #"{"key":"Enter","prompt":"9f2c"}"#, #"{"key":"1","prompt":""}"#] {
+            let refused = post(Self.thread + "/key", json: body)
+            XCTAssertEqual(refused.status, 409, body)
+            XCTAssertEqual(refused.body, #"{"error":"stale"}"#, body)
+        }
+        XCTAssertEqual(pane.argv.count, 0)
+        // With the id of the prompt on the pane, the key bar works as a terminal.
+        XCTAssertEqual(post(Self.thread + "/key", json: #"{"key":"Enter","prompt":"\#(id)"}"#).status, 200)
+        XCTAssertEqual(pane.argv, [["send-keys", "-t", "%12", "Enter"]])
+
+        // The prompt changed after the phone drew its card: the old id is stale.
+        pane.screen = DemoPrompt.question
+        XCTAssertEqual(post(Self.thread + "/key", json: #"{"key":"Enter","prompt":"\#(id)"}"#).status, 409)
+        // The same words asked again are another prompt too.
+        pane.screen = DemoPrompt.permission
+        pane.since = 1_759_500_060
+        XCTAssertNotEqual(try shownID(), id)
+        XCTAssertEqual(post(Self.thread + "/key", json: #"{"key":"Enter","prompt":"\#(id)"}"#).status, 409)
+        XCTAssertEqual(pane.argv.count, 1)
+    }
+
+    func testAKeyWaitsItsTurnBehindAnotherWriteToTheSameThread() {
+        repliesOn()
+        // A text is between its paste and its Enter.
+        let gate = DispatchSemaphore(value: 0)
+        let pasted = expectation(description: "pasted")
+        pane.onPaste = { pasted.fulfill(); gate.wait() }
+        let sent = expectation(description: "sent")
+        DispatchQueue.global().async {
+            _ = self.post(Self.thread + "/text", json: #"{"text":"go on"}"#)
+            sent.fulfill()
+        }
+        wait(for: [pasted], timeout: 5)
+        let key = post(Self.thread + "/key", json: #"{"key":"Enter"}"#)
+        XCTAssertEqual(key.status, 409)
+        XCTAssertEqual(key.body, #"{"error":"busy","message":"A reply is being sent"}"#)
+        gate.signal()
+        wait(for: [sent], timeout: 5)
+        // Only the text's own Enter was pressed.
+        XCTAssertEqual(pane.argv.filter { $0.contains("Enter") }.count, 1)
     }
 
     func testAWaitingThreadShowsItsPromptAndTakesATappedAnswer() throws {
@@ -922,9 +1012,10 @@ final class MobileServerTests: XCTestCase {
         let stale = post(Self.thread + "/answer", json: #"{"prompt":"\#(id)","option":1}"#)
         XCTAssertEqual(stale.status, 409)
         XCTAssertEqual(stale.body, #"{"error":"stale"}"#)
-        // A pane that is not waiting shows no prompt.
-        pane.status = .busy
-        XCTAssertEqual(get(Self.thread + "/prompt").body, #"{"prompt":null}"#)
+        // A pane that shows its input box again has no prompt.
+        pane.status = .idle
+        pane.screen = DemoPrompt.permission + "\n" + DemoPrompt.idle
+        XCTAssertEqual(get(Self.thread + "/prompt").body, #"{"id":null,"prompt":null}"#)
         XCTAssertEqual(pane.argv.count, 1)
     }
 
@@ -933,8 +1024,8 @@ final class MobileServerTests: XCTestCase {
         let saved = post(Self.thread + "/upload?name=..%2F..%2F.ssh%2Fauthorized_keys", json: "demo key")
         XCTAssertEqual(saved.status, 200)
         XCTAssertEqual(saved.body, #"{"ok":true,"pasted":true,"path":"\/Users\/me\/acme-app\/authorized_keys"}"#)
-        XCTAssertEqual(pane.copies.map(\.path), ["/Users/me/acme-app/authorized_keys"])
-        XCTAssertEqual(pane.copies.first?.data, Data("demo key".utf8))
+        XCTAssertEqual(pane.saves.map(\.path), ["/Users/me/acme-app/authorized_keys"])
+        XCTAssertEqual(pane.saves.first?.data, Data("demo key".utf8))
         XCTAssertEqual(pane.calls[1].stdin, "/Users/me/acme-app/authorized_keys ")
         XCTAssertFalse(pane.argv.contains { $0.contains("Enter") })
     }
@@ -951,7 +1042,7 @@ final class MobileServerTests: XCTestCase {
         XCTAssertEqual(post(Self.thread + "/upload?name=a.txt", json: "demo").status, 409)
         pane.status = .waiting
         XCTAssertEqual(post(Self.thread + "/upload?name=a.txt", json: "demo").status, 409)
-        XCTAssertEqual(pane.copies.count, 0)
+        XCTAssertEqual(pane.saves.count, 0)
         XCTAssertEqual(pane.argv.count, 0)
 
         // Past the limit in Settings, a large upload is refused on its headers:
@@ -963,7 +1054,15 @@ final class MobileServerTests: XCTestCase {
         let refused = exchange(early, until: whole)
         XCTAssertTrue(refused.hasPrefix("HTTP/1.1 413"), refused)
         XCTAssertTrue(refused.hasSuffix(#"{"error":"too_large"}"#), refused)
-        XCTAssertEqual(pane.copies.count, 0)
+        XCTAssertEqual(pane.saves.count, 0)
+
+        // A switch that is off holds no megabytes either: refused on the headers.
+        server.configure(MobileConfig(capabilities: [.replies]))
+        let off = exchange(
+            early.replacingOccurrences(of: "6000000", with: "20000000"), until: whole)
+        XCTAssertTrue(off.hasPrefix("HTTP/1.1 403"), off)
+        XCTAssertTrue(off.hasSuffix(#"{"error":"disabled"}"#), off)
+        server.configure(MobileConfig(capabilities: [.upload], uploadLimit: 5_242_880))
 
         // Past what any setting allows, the request is refused as it is read.
         let raw = "POST \(Self.thread)/upload?name=a.bin HTTP/1.1\r\nHost: devmac.example.ts.net:7433\r\n"

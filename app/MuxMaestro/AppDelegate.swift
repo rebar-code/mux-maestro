@@ -89,7 +89,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             pane: { [registry, agentStates = AgentStateReader()] thread in
                 registry.service(for: thread.host).phonePane(target: thread.pane) { latest in
                     // The hooks' own rows, read now: newer than the tree.
-                    MobileReply.status(
+                    MobileReply.state(
                         thread: latest, rows: agentStates.rows(),
                         now: Int(Date().timeIntervalSince1970))
                 }

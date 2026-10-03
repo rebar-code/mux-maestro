@@ -13,21 +13,23 @@
 </script>
 
 <div class="findbar" role="search">
-	<input
-		type="search"
-		enterkeyhint="search"
-		autocomplete="off"
-		autocapitalize="off"
-		autocorrect="off"
-		spellcheck="false"
-		maxlength={QUERY_MAX}
-		placeholder="Find in session"
-		aria-label="Find in session"
-		bind:value={find.query}
-		oninput={find.typed}
-		{onkeydown}
-		{@attach (node) => node.focus()}
-	/>
+	<label class="field">
+		<input
+			type="search"
+			enterkeyhint="search"
+			autocomplete="off"
+			autocapitalize="off"
+			autocorrect="off"
+			spellcheck="false"
+			maxlength={QUERY_MAX}
+			placeholder="Find in session"
+			aria-label="Find in session"
+			bind:value={find.query}
+			oninput={find.typed}
+			{onkeydown}
+			{@attach (node) => node.focus()}
+		/>
+	</label>
 	<span class="count" aria-live="polite" data-find-count>{find.label}</span>
 	<button class="tb" aria-label="Previous match" disabled={find.count === 0} onclick={find.previous}
 		>↑</button
@@ -50,10 +52,19 @@
 		background: var(--surface);
 	}
 
+	/* The box keeps its look; a tap anywhere in the bar's height reaches it. */
+	.field {
+		flex: 1;
+		min-width: 0;
+		display: flex;
+		align-items: center;
+		min-height: var(--hit);
+	}
+
 	input {
 		flex: 1;
 		min-width: 0;
-		height: 32px;
+		height: 34px;
 		background: var(--bg);
 		border: 1px solid var(--border);
 		border-radius: 8px;

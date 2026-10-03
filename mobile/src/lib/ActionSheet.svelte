@@ -295,7 +295,7 @@
 
 	input {
 		margin: 0 12px 12px;
-		height: 44px;
+		height: 46px;
 		background: var(--bg);
 		border: 1px solid var(--border);
 		border-radius: 10px;
