@@ -206,6 +206,14 @@ test('a push shows a notification, and a tap on it opens that thread', async ({
 	await page.goto(pairingLink());
 	await page.evaluate(() => navigator.serviceWorker.ready);
 	const worker = context.serviceWorkers()[0] ?? (await context.waitForEvent('serviceworker'));
+	// A worker that is still installing cannot show a notification.
+	await expect
+		.poll(() =>
+			worker.evaluate(
+				() => (self as unknown as ServiceWorkerGlobalScope).registration.active?.state
+			)
+		)
+		.toBe('activated');
 
 	const shown = (): Promise<{ title: string; body: string; tag: string }[]> =>
 		worker.evaluate(async () => {
