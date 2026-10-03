@@ -5,11 +5,12 @@
 	import { gestures, ui } from '$lib/gestures.svelte';
 	import { connect, live } from '$lib/live.svelte';
 	import Pair from '$lib/Pair.svelte';
+	import { notifications } from '$lib/push.svelte';
 
 	const { children } = $props();
 </script>
 
-<div class="app" {@attach gestures} {@attach connect}>
+<div class="app" {@attach gestures} {@attach connect} {@attach notifications}>
 	{#if live.unpaired}
 		<Pair />
 	{:else if live.forbidden}

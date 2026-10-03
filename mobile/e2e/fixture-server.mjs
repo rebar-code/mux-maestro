@@ -12,7 +12,9 @@
 // /__fixture/prompt also takes truncated=1, bare=1 (an id with no choices), quiet=1,
 // /__fixture/not-sent?cleared=&reason=, /__fixture/no-input?id=&on=, /__fixture/pasted?on=,
 // /__fixture/serve-fails?code=, /__fixture/mappings (what the phone asked to publish),
-// /__fixture/tailnet?name= (publish under that name, for screenshots)
+// /__fixture/tailnet?name= (publish under that name, for screenshots),
+// /__fixture/push (the subscriptions and the thread each phone says it shows),
+// /__fixture/push-limit?on=1 (refuse the next subscription: the Mac holds its most)
 //
 // Every /api/ request needs the header `X-MuxMaestro-Token: demo-token`.
 import { createHash } from 'node:crypto';
@@ -495,6 +497,8 @@ let prompts, replies, uploadMax, promptSeq, notSent, noInput, pasted, keyLocks;
 let makeThread;
 // The ports published on the tailnet, and how the next publish is refused.
 let mappings, serveFails, tailnet;
+// The phones subscribed to push, the thread each shows, and a full list.
+let pushSubs, pushFocus, pushLimit;
 const streams = new Set();
 
 function reset() {
@@ -512,8 +516,12 @@ function reset() {
 		kill: false,
 		find: false,
 		artifacts: false,
-		localServers: false
+		localServers: false,
+		notifications: false
 	};
+	pushSubs = [];
+	pushFocus = {};
+	pushLimit = false;
 	mappings = [];
 	serveFails = null;
 	prompts = {};
@@ -677,7 +685,7 @@ const configBody = () => ({
 		artifacts: capabilities.artifacts,
 		localServers: capabilities.localServers,
 		stopServers: false,
-		notifications: false,
+		notifications: capabilities.notifications,
 		liveTerminal: false
 	},
 	grouping,
@@ -1283,6 +1291,58 @@ const push = (event, body) => {
 	for (const res of streams) res.write(`event: ${event}\ndata: ${JSON.stringify(body)}\n\n`);
 };
 
+// A P-256 public key (the sender key of the RFC 8291 example), as the Mac's.
+const PUSH_KEY =
+	'BP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27mlmlMoZIIgDll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A8';
+const PUSH_HOSTS = [
+	'web.push.apple.com',
+	'fcm.googleapis.com',
+	'updates.push.services.mozilla.com'
+];
+
+/** The Mac's push routes: the key, and what a phone subscribes and shows. */
+function pushApi(req, res, path, body) {
+	if (!capabilities.notifications) return send(res, 403, { error: 'disabled' });
+	if (path === '/api/push/key')
+		return req.method === 'GET'
+			? send(res, 200, { key: PUSH_KEY })
+			: send(res, 405, { error: 'method' });
+	if (req.method !== 'POST') return send(res, 405, { error: 'method' });
+	let sent;
+	try {
+		sent = JSON.parse(body);
+	} catch {
+		return send(res, 400, { error: 'bad_request' });
+	}
+	const endpoint = typeof sent.endpoint === 'string' ? sent.endpoint : '';
+	const held = pushSubs.some((sub) => sub.endpoint === endpoint);
+	if (path === '/api/push/subscribe') {
+		let host = '';
+		try {
+			const url = new URL(endpoint);
+			if (url.protocol === 'https:' && !url.username && !url.port) host = url.hostname;
+		} catch {
+			// Refused below.
+		}
+		if (!PUSH_HOSTS.includes(host) || !sent.keys?.p256dh || !sent.keys?.auth)
+			return send(res, 400, { error: 'bad_subscription' });
+		if (!held && pushLimit) return send(res, 409, { error: 'limit' });
+		if (!held) pushSubs.push({ endpoint, keys: sent.keys });
+		return send(res, 200, { ok: true });
+	}
+	if (path === '/api/push/unsubscribe') {
+		pushSubs = pushSubs.filter((sub) => sub.endpoint !== endpoint);
+		delete pushFocus[endpoint];
+		return send(res, 200, { ok: true });
+	}
+	if (path === '/api/push/focus') {
+		if (!held) return send(res, 404, { error: 'not_found' });
+		pushFocus[endpoint] = sent.thread ?? null;
+		return send(res, 200, { ok: true });
+	}
+	return send(res, 404, { error: 'not_found' });
+}
+
 function api(req, res, url, body) {
 	if (req.headers['x-muxmaestro-token'] !== token) return send(res, 401, { error: 'unpaired' });
 	if (deny) return send(res, 403, { error: 'forbidden' });
@@ -1293,6 +1353,7 @@ function api(req, res, url, body) {
 	if (path === '/api/config') return send(res, 200, configBody());
 	if (path.startsWith('/api/manager')) return managerApi(req, res, path, String(body));
 	if (path.startsWith('/api/voice')) return voiceApi(req, res, url, body);
+	if (path.startsWith('/api/push/')) return pushApi(req, res, path, String(body));
 	if (path === '/api/events') {
 		res.writeHead(200, {
 			'content-type': 'text/event-stream',
@@ -1451,6 +1512,11 @@ function hook(res, url) {
 			break;
 		case '/__fixture/tailnet':
 			tailnet = url.searchParams.get('name');
+			break;
+		case '/__fixture/push':
+			return send(res, 200, { subscriptions: pushSubs, focus: pushFocus });
+		case '/__fixture/push-limit':
+			pushLimit = url.searchParams.get('on') === '1';
 			break;
 		case '/__fixture/mappings':
 			return send(res, 200, { mappings });
