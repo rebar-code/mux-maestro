@@ -351,6 +351,17 @@ final class TerminalSurfaceView: NSView {
         ghostty_surface_set_focus(surface, value)
     }
 
+    /// Send the client a focus event pair and end on the real focus state. tmux
+    /// sizes a window to the client that last sent it input (`window-size
+    /// latest`), and a window selected from outside the client sends none — so a
+    /// window last used on a smaller device stays that size. A focus event counts
+    /// as input and reaches no program in the pane that didn't ask for it.
+    func pulseFocus() {
+        guard let surface else { return }
+        ghostty_surface_set_focus(surface, !focused)
+        ghostty_surface_set_focus(surface, focused)
+    }
+
     // MARK: Keyboard input
 
     override func keyDown(with event: NSEvent) {
