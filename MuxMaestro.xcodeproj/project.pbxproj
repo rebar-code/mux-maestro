@@ -51,12 +51,15 @@
 		A00D2011 /* MobileActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00D2001 /* MobileActions.swift */; };
 		A00D3011 /* MobileArtifacts.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00D3001 /* MobileArtifacts.swift */; };
 		A00D4011 /* MobileServing.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00D4001 /* MobileServing.swift */; };
+		A00E1011 /* MobilePush.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00E1001 /* MobilePush.swift */; };
 		A00D2021 /* MobileActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00D2001 /* MobileActions.swift */; };
 		A00D3021 /* MobileArtifacts.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00D3001 /* MobileArtifacts.swift */; };
 		A00D4021 /* MobileServing.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00D4001 /* MobileServing.swift */; };
+		A00E1021 /* MobilePush.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00E1001 /* MobilePush.swift */; };
 		A00D2022 /* MobileActionsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00D2002 /* MobileActionsTests.swift */; };
 		A00D3022 /* MobileArtifactsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00D3002 /* MobileArtifactsTests.swift */; };
 		A00D4022 /* MobileServingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00D4002 /* MobileServingTests.swift */; };
+		A00E1022 /* MobilePushTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00E1002 /* MobilePushTests.swift */; };
 		A00B1013 /* PhoneLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00B1003 /* PhoneLink.swift */; };
 		A00B1023 /* PhoneLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00B1003 /* PhoneLink.swift */; };
 		A00B1014 /* PhoneSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00B1004 /* PhoneSettingsView.swift */; };
@@ -277,9 +280,11 @@
 		A00D2001 /* MobileActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileActions.swift; sourceTree = "<group>"; };
 		A00D3001 /* MobileArtifacts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileArtifacts.swift; sourceTree = "<group>"; };
 		A00D4001 /* MobileServing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileServing.swift; sourceTree = "<group>"; };
+		A00E1001 /* MobilePush.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobilePush.swift; sourceTree = "<group>"; };
 		A00D2002 /* MobileActionsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileActionsTests.swift; sourceTree = "<group>"; };
 		A00D3002 /* MobileArtifactsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileArtifactsTests.swift; sourceTree = "<group>"; };
 		A00D4002 /* MobileServingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileServingTests.swift; sourceTree = "<group>"; };
+		A00E1002 /* MobilePushTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobilePushTests.swift; sourceTree = "<group>"; };
 		A00B1003 /* PhoneLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneLink.swift; sourceTree = "<group>"; };
 		A00B1004 /* PhoneSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneSettingsView.swift; sourceTree = "<group>"; };
 		A00B1005 /* MobileAPITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileAPITests.swift; sourceTree = "<group>"; };
@@ -467,6 +472,7 @@
 				A00D2001 /* MobileActions.swift */,
 				A00D3001 /* MobileArtifacts.swift */,
 				A00D4001 /* MobileServing.swift */,
+				A00E1001 /* MobilePush.swift */,
 				A00B1003 /* PhoneLink.swift */,
 				A00B1004 /* PhoneSettingsView.swift */,
 				A0000015 /* DetailViewController.swift */,
@@ -580,6 +586,7 @@
 				A00D2002 /* MobileActionsTests.swift */,
 				A00D3002 /* MobileArtifactsTests.swift */,
 				A00D4002 /* MobileServingTests.swift */,
+				A00E1002 /* MobilePushTests.swift */,
 				A00B1007 /* PhoneLinkTests.swift */,
 				C4B1E0A4 /* HostAddressTests.swift */,
 				A0000F02 /* CloseWindowPromptTests.swift */,
@@ -757,6 +764,7 @@
 				A00D2011 /* MobileActions.swift in Sources */,
 				A00D3011 /* MobileArtifacts.swift in Sources */,
 				A00D4011 /* MobileServing.swift in Sources */,
+				A00E1011 /* MobilePush.swift in Sources */,
 				A00B1013 /* PhoneLink.swift in Sources */,
 				A00B1014 /* PhoneSettingsView.swift in Sources */,
 				A00F6011 /* ManagerPaneDriver.swift in Sources */,
@@ -862,9 +870,11 @@
 				A00D2021 /* MobileActions.swift in Sources */,
 				A00D3021 /* MobileArtifacts.swift in Sources */,
 				A00D4021 /* MobileServing.swift in Sources */,
+				A00E1021 /* MobilePush.swift in Sources */,
 				A00D2022 /* MobileActionsTests.swift in Sources */,
 				A00D3022 /* MobileArtifactsTests.swift in Sources */,
 				A00D4022 /* MobileServingTests.swift in Sources */,
+				A00E1022 /* MobilePushTests.swift in Sources */,
 				A00B1023 /* PhoneLink.swift in Sources */,
 				A00B1025 /* MobileAPITests.swift in Sources */,
 				A00B1026 /* MobileServerTests.swift in Sources */,

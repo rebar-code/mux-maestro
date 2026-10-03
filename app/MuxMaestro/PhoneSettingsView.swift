@@ -14,6 +14,9 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
     var onCapability: ((MobileCapability, Bool) -> Void)?
     var onVoice: ((MobileVoiceDefaults) -> Void)?
     var onUploadLimit: ((Int) -> Void)?
+    var onPush: ((MobilePushOptions) -> Void)?
+    /// "Send Test Notification" was clicked.
+    var onTestPush: (() -> Void)?
     /// "New Pairing Code" was confirmed.
     var onRotate: (() -> Void)?
     /// The view's height changed; the window refits.
@@ -40,6 +43,15 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
     private let find = NSSwitch()
     private let artifacts = NSSwitch()
     private let localServers = NSSwitch()
+    private let notifications = NSSwitch()
+    /// How many phones are subscribed.
+    private let pushCount = NSTextField(labelWithString: "")
+    private let pushEvents = NSPopUpButton()
+    private let pushText = NSPopUpButton()
+    /// The VAPID contact: a `mailto:` address or an `https:` URL.
+    private let pushSubject = NSTextField(string: "")
+    private let pushTest = NSButton(title: "Send Test Notification", target: nil, action: nil)
+    private let pushTestStatus = NSTextField(labelWithString: "")
     /// The ports of the dev servers published on the tailnet now.
     private let mappings = NSTextField(labelWithString: "")
     private let url = NSTextField(labelWithString: "")
@@ -58,6 +70,10 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
     private static let voiceModes: [(MobileVoiceMode, String)] = [(.manual, "Manual"), (.auto, "Auto")]
     private static let voiceSpeakers: [(Bool, String)] = [(true, "Two-way"), (false, "Input only")]
     private static let uploadLimits = MobileReply.uploadLimits.map { ($0, "\($0 / 1_048_576) MB") }
+    private static let pushEventChoices: [(waiting: Bool, done: Bool, title: String)] = [
+        (true, true, "Needs you and finished"), (true, false, "Needs you"), (false, true, "Finished"),
+    ]
+    private static let pushTextChoices: [(Bool, String)] = [(false, "Generic"), (true, "Session and prompt")]
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -73,7 +89,7 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
         status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         for control in [
             toggle, keepAwake, manager, voice, replies, keyBar, upload, sessionActions, kill, find,
-            artifacts, localServers,
+            artifacts, localServers, notifications,
         ] {
             control.controlSize = .small
             control.target = self
@@ -124,6 +140,35 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
         mappings.lineBreakMode = .byTruncatingTail
         mappings.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         mappings.setAccessibilityLabel("Open local servers")
+        notifications.action = #selector(notificationsToggled)
+        for label in [pushCount, pushTestStatus] {
+            label.font = .systemFont(ofSize: 12)
+            label.textColor = theme.muted
+            label.lineBreakMode = .byTruncatingTail
+            label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        }
+        pushCount.setAccessibilityLabel("Subscribed phones")
+        pushTestStatus.setAccessibilityLabel("Test notification result")
+        for (popup, titles) in [
+            (pushEvents, Self.pushEventChoices.map(\.title)), (pushText, Self.pushTextChoices.map(\.1)),
+        ] {
+            popup.controlSize = .small
+            popup.font = .systemFont(ofSize: 12)
+            popup.addItems(withTitles: titles)
+            popup.target = self
+            popup.action = #selector(pushPicked)
+        }
+        pushSubject.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        pushSubject.controlSize = .small
+        pushSubject.delegate = self
+        pushSubject.target = self
+        pushSubject.action = #selector(pushPicked)
+        pushSubject.lineBreakMode = .byTruncatingTail
+        pushSubject.widthAnchor.constraint(equalToConstant: 220).isActive = true
+        pushTest.bezelStyle = .rounded
+        pushTest.controlSize = .small
+        pushTest.target = self
+        pushTest.action = #selector(pushTestClicked)
         uploadLimit.controlSize = .small
         uploadLimit.font = .systemFont(ofSize: 12)
         uploadLimit.addItems(withTitles: Self.uploadLimits.map(\.1))
@@ -152,6 +197,11 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
             ("Find", NSGridCell.emptyContentView, find),
             ("Artifacts", NSGridCell.emptyContentView, artifacts),
             ("Local servers", mappings, localServers),
+            ("Notifications", pushCount, notifications),
+            ("Notify on", NSGridCell.emptyContentView, pushEvents),
+            ("Notification text", NSGridCell.emptyContentView, pushText),
+            ("Push contact", NSGridCell.emptyContentView, pushSubject),
+            ("Test notification", pushTestStatus, pushTest),
         ]
         for (title, middle, control) in rows {
             let name = NSTextField(labelWithString: title)
@@ -164,7 +214,7 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
         grid.column(at: 2).xPlacement = .trailing
         grid.row(at: 0).rowAlignment = .none
         grid.row(at: 0).yPlacement = .center
-        for row in [3, 4, 5, 8, 9, 10, 12, 13, 14, 15, 16] {
+        for row in [3, 4, 5, 8, 9, 10, 12, 13, 14, 15, 16, 17] {
             grid.row(at: row).rowAlignment = .none
             grid.row(at: row).yPlacement = .center
         }
@@ -242,6 +292,13 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
         find.state = Settings.phoneCapability(.find) ? .on : .off
         artifacts.state = Settings.phoneCapability(.artifacts) ? .on : .off
         localServers.state = Settings.phoneCapability(.localServers) ? .on : .off
+        notifications.state = Settings.phoneCapability(.notifications) ? .on : .off
+        let push = Settings.phonePush()
+        pushEvents.selectItem(at: Self.pushEventChoices.firstIndex {
+            $0.waiting == push.waiting && $0.done == push.done
+        } ?? 0)
+        pushText.selectItem(at: Self.pushTextChoices.firstIndex { $0.0 == push.detail } ?? 0)
+        pushSubject.stringValue = push.subject
         let limit = Settings.phoneUploadLimit()
         uploadLimit.selectItem(at: Self.uploadLimits.firstIndex { $0.0 == limit } ?? 0)
     }
@@ -332,6 +389,44 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
         onCapability?(.localServers, localServers.state == .on)
     }
 
+    @objc private func notificationsToggled() {
+        onCapability?(.notifications, notifications.state == .on)
+    }
+
+    /// A pick, or a committed contact. A contact that is not a `mailto:`
+    /// address or an `https:` URL is put back as it was.
+    @objc private func pushPicked() {
+        let events = pushEvents.indexOfSelectedItem, text = pushText.indexOfSelectedItem
+        guard Self.pushEventChoices.indices.contains(events), Self.pushTextChoices.indices.contains(text)
+        else { return }
+        let stored = Settings.phonePush()
+        let subject = MobilePush.subject(pushSubject.stringValue) ?? stored.subject
+        pushSubject.stringValue = subject
+        let options = MobilePushOptions(
+            waiting: Self.pushEventChoices[events].waiting, done: Self.pushEventChoices[events].done,
+            detail: Self.pushTextChoices[text].0, subject: subject)
+        if options != stored { onPush?(options) }
+    }
+
+    @objc private func pushTestClicked() {
+        pushTestStatus.stringValue = "Sending…"
+        onTestPush?()
+    }
+
+    func renderPushCount(_ count: Int) {
+        pushCount.stringValue = count == 0 ? "" : count == 1 ? "1 phone" : "\(count) phones"
+    }
+
+    func renderPushTest(_ result: MobilePushCenter.TestResult) {
+        switch result {
+        case .noPhone: pushTestStatus.stringValue = "No phone"
+        case .unavailable: pushTestStatus.stringValue = "Failed"
+        case .sent(let accepted, let total):
+            pushTestStatus.stringValue = accepted == total
+                ? "Sent" : accepted == 0 ? "Failed" : "Sent to \(accepted) of \(total)"
+        }
+    }
+
     /// Show the dev-server ports that are published on the tailnet now.
     func renderMappings(_ ports: [Int]) {
         mappings.stringValue = ports.sorted().map { ":\($0)" }.joined(separator: " ")
@@ -368,7 +463,7 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
     }
 
     func controlTextDidEndEditing(_ notification: Notification) {
-        portCommitted()
+        if notification.object as? NSTextField === pushSubject { pushPicked() } else { portCommitted() }
     }
 
     @objc private func copyURL() {

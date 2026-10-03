@@ -140,7 +140,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     ?? .unavailable("Phone access is off")
             },
             close: { [weak self] port in self?.phoneLink.closeMapping(port: port) ?? false },
-            list: { [weak self] in self?.phoneLink.mappings ?? [] }))
+            list: { [weak self] in self?.phoneLink.mappings ?? [] }),
+        push: pushCenter)
+    /// The phones that asked for notifications, and the sending.
+    private lazy var pushCenter: MobilePushCenter = {
+        let center = MobilePushCenter()
+        center.configure(Settings.phonePush())
+        center.onCount = { [weak self] count in
+            DispatchQueue.main.async { self?.setupWindowController?.phone.renderPushCount(count) }
+        }
+        return center
+    }()
     private lazy var phoneLink: PhoneLink = {
         let link = PhoneLink(server: mobileServer)
         link.onChange = { [weak self] state in
@@ -1013,6 +1023,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 Settings.setPhoneUploadLimit(bytes)
                 self?.mobileServer.configure(Settings.phoneConfig())
             }
+            setup.phone.onPush = { [weak self] options in
+                Settings.setPhonePush(options)
+                self?.pushCenter.configure(options)
+            }
+            setup.phone.onTestPush = { [weak self] in
+                self?.pushCenter.sendTest { result in
+                    DispatchQueue.main.async { self?.setupWindowController?.phone.renderPushTest(result) }
+                }
+            }
             setup.phone.onRotate = { [weak self] in self?.phoneLink.rotateToken() }
             setup.phone.onKeepAwake = { [weak self] on in
                 Settings.setPhoneKeepAwake(on)
@@ -1021,6 +1040,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             setup.phone.render(phoneLink.state)
             setup.phone.renderMappings(phoneLink.mappings.map(\.port))
             setupWindowController = setup
+            // The count is in the Keychain: only a Mac that uses notifications reads it.
+            if Settings.phoneCapability(.notifications) { pushCenter.reportCount() }
         }
         setupWindowController?.show()
     }
