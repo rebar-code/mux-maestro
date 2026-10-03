@@ -207,3 +207,83 @@ final class TmuxWindowAgentPaneTests: XCTestCase {
         XCTAssertNil(window([]).agentPane)
     }
 }
+
+final class ArtifactWebTests: XCTestCase {
+    private static let fixtures = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().appendingPathComponent("fixtures/artifacts")
+
+    private func mentions(_ name: String) throws -> ArtifactMentions {
+        let text = try String(contentsOf: Self.fixtures.appendingPathComponent(name), encoding: .utf8)
+        var m = ArtifactMentions()
+        text.split(separator: "\n").forEach { m.ingest(line: $0) }
+        return m
+    }
+
+    private func date(_ iso: String) -> Date { ArtifactScanner.parseTimestamp(iso)! }
+
+    /// Only the agent's own text counts: not tool input, not tool results, not
+    /// the user's prompt.
+    func testClaudeURLsComeFromAssistantTextOnly() throws {
+        XCTAssertEqual(try mentions("claude.jsonl").urls.keys.sorted(),
+                       ["http://localhost:5173/checkout", "https://svelte.dev/docs/kit/load"])
+    }
+
+    func testCodexURLsComeFromAssistantMessages() throws {
+        XCTAssertEqual(try mentions("codex.jsonl").urls.keys.sorted(),
+                       ["http://127.0.0.1:4173", "https://github.com/acme/site/pull/12"])
+    }
+
+    func testURLsStopAtMarkdownAndTrailingPunctuation() {
+        XCTAssertEqual(
+            ArtifactScanner.urls(in: "see [docs](https://a.com/x), <https://b.com/y>, `http://localhost:3000/`. "
+                + "and https://c.com/q?a=1&b=2! not https://*.wild.com/x"),
+            ["https://a.com/x", "https://b.com/y", "http://localhost:3000/", "https://c.com/q?a=1&b=2"])
+    }
+
+    func testLocalHosts() {
+        for host in ["localhost", "127.0.0.1", "0.0.0.0", "[::1]", "mac.local", "app.localhost"] {
+            XCTAssertTrue(ArtifactScanner.isLocalHost(host), host)
+        }
+        for host in ["example.com", "localhost.example.com", "10.0.0.5"] {
+            XCTAssertFalse(ArtifactScanner.isLocalHost(host), host)
+        }
+    }
+
+    private var urls: [String: Date] {
+        ["http://localhost:5173/checkout": date("2026-10-02T10:01:00Z"),
+         "http://localhost:3000/": date("2026-10-02T10:02:00Z"),
+         "https://svelte.dev/docs/kit/load": date("2026-10-02T10:03:00Z"),
+         "https://github.com/acme/site/pull/12": date("2026-10-02T10:04:00Z")]
+    }
+
+    /// A running server on a port the agent named merges into one live row
+    /// that opens the page the agent named. A named port with nothing on it is
+    /// dead. A running server the agent never named still lists, live.
+    func testServersMergeRunningWithMentionedPorts() {
+        let web = ArtifactScanner.web(
+            urls: urls,
+            running: [ArtifactRunningServer(port: 5173, url: "https://localhost:5173/"),
+                      ArtifactRunningServer(port: 8080, url: "http://localhost:8080/")],
+            runningKnown: true)
+        XCTAssertEqual(web.servers.map(\.url),
+                       ["http://localhost:5173/checkout", "http://localhost:8080/", "http://localhost:3000/"])
+        XCTAssertEqual(web.servers.map(\.live), [true, true, false])
+        XCTAssertEqual(web.links.map(\.url),
+                       ["https://github.com/acme/site/pull/12", "https://svelte.dev/docs/kit/load"])
+        XCTAssertEqual(web.links.first?.host, "github.com")
+        XCTAssertEqual(web.links.first?.path, "/acme/site/pull/12")
+    }
+
+    /// Unknown Running state never reads as dead.
+    func testUnknownRunningStateIsNotDead() {
+        let web = ArtifactScanner.web(urls: urls, running: [], runningKnown: false)
+        XCTAssertEqual(web.servers.map(\.live), [nil, nil])
+    }
+
+    func testRepeatedLinksDedupeToTheNewestMention() {
+        var m = ArtifactMentions()
+        m.ingest(line: #"{"type":"assistant","timestamp":"2026-10-02T10:00:00Z","message":{"content":[{"type":"text","text":"https://a.com/x"}]}}"#)
+        m.ingest(line: #"{"type":"assistant","timestamp":"2026-10-02T11:00:00Z","message":{"content":[{"type":"text","text":"again https://a.com/x"}]}}"#)
+        XCTAssertEqual(m.urls, ["https://a.com/x": date("2026-10-02T11:00:00Z")])
+    }
+}

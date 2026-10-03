@@ -2345,30 +2345,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if shown { refreshArtifacts() }
     }
 
-    /// Re-list what the selected pane's agent made. Runs on every selection
-    /// change and every poll while the panel is on screen. The transcript read
-    /// happens off-main and parses only lines appended since the last read; the
-    /// panel ignores a render that matches what it already shows.
+    /// Re-list what the selected pane's agent made, plus the servers it runs
+    /// and the links it gave. Runs on every selection change and every poll
+    /// while the panel is on screen. The transcript read happens off-main and
+    /// parses only lines appended since the last read; the panel ignores a
+    /// render that matches what it already shows.
     func refreshArtifacts() {
         guard let vc = artifactsVC, detailVC?.isShown(.artifacts) == true else { return }
         guard let (pane, host) = sidebarVC?.selectedAgentPane else { vc.render(.noSelection); return }
         guard host.isLocal else { vc.render(.remote); return }
+        let runningSet = sidebarVC?.runningSet(forPane: pane, host: host) ?? .unknown
+        let running = runningSet.resources.compactMap { r -> ArtifactRunningServer? in
+            guard case .server(let port) = r.kind else { return nil }
+            return ArtifactRunningServer(port: port, url: r.url)
+        }
         let claude = pane.claudeSessionId, codex = pane.codexSessionId
-        guard claude != nil || codex != nil else { vc.render(.noThread); return }
+        guard claude != nil || codex != nil else {
+            // No thread to read, but what the pane runs is still worth listing.
+            let web = ArtifactScanner.web(urls: [:], running: running, runningKnown: runningSet.known)
+            vc.render(web.servers.isEmpty ? .noThread : .list(ArtifactsContent(servers: web.servers)))
+            return
+        }
         let reader = artifactReader
         artifactQueue.async { [weak self] in
             let fm = FileManager.default
-            let artifacts = reader.transcript(claudeSessionId: claude, codexSessionId: codex)
+            let content = reader.transcript(claudeSessionId: claude, codexSessionId: codex)
                 .flatMap { reader.mentions(transcript: $0) }
-                .map { mentions in
-                    ArtifactScanner.resolve(
-                        mentions, fileExists: { fm.fileExists(atPath: $0) },
-                        mtime: { (try? fm.attributesOfItem(atPath: $0))?[.modificationDate] as? Date })
+                .map { mentions -> ArtifactsContent in
+                    let web = ArtifactScanner.web(
+                        urls: mentions.urls, running: running, runningKnown: runningSet.known)
+                    return ArtifactsContent(
+                        artifacts: ArtifactScanner.resolve(
+                            mentions, fileExists: { fm.fileExists(atPath: $0) },
+                            mtime: { (try? fm.attributesOfItem(atPath: $0))?[.modificationDate] as? Date }),
+                        servers: web.servers, links: web.links)
                 }
             DispatchQueue.main.async {
                 guard let self, let now = self.sidebarVC?.selectedAgentPane,
                       now.pane.id == pane.id, now.host == host else { return }
-                vc.render(artifacts.map { .list($0) } ?? .noThread)
+                vc.render(content.map { .list($0) } ?? .noThread)
             }
         }
     }
@@ -5181,6 +5196,13 @@ extension AppDelegate: ArtifactsPaneDelegate {
         } else {
             NSWorkspace.shared.open(URL(fileURLWithPath: artifact.path))
         }
+    }
+
+    /// Servers and links open in the real browser, for the reason given on
+    /// `runningPaneDidRequestOpen`: it has the session cookies.
+    func artifactsPaneDidOpenURL(_ url: String) {
+        guard let u = URL(string: url) else { return }
+        NSWorkspace.shared.open(u)
     }
 }
 

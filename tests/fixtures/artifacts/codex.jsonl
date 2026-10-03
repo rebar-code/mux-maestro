@@ -6,4 +6,4 @@
 {"timestamp":"2026-10-02T09:02:00.000Z","type":"response_item","payload":{"type":"function_call","name":"apply_patch","arguments":"{\"input\":\"*** Begin Patch\\n*** Update File: src/a.ts\\n*** Move to: src/b.ts\\n@@\\n-x\\n+y\\n*** End Patch\"}"}}
 {"timestamp":"2026-10-02T09:03:00.000Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"command\":[\"bash\",\"-lc\",\"npx playwright screenshot http://localhost:5173 shots/home.png\"]}"}}
 {"timestamp":"2026-10-02T09:03:01.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","content":[{"type":"Text","text":"dup /work/site/shots/dup.png"}]}}}
-{"timestamp":"2026-10-02T09:04:00.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Done. Screenshot at shots/home.png."}]}}
+{"timestamp":"2026-10-02T09:04:00.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Done. Screenshot at shots/home.png. Preview at http://127.0.0.1:4173 and PR https://github.com/acme/site/pull/12."}]}}

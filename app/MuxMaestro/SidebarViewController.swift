@@ -3880,6 +3880,12 @@ final class SidebarViewController: NSViewController {
             urls: urls)
     }
 
+    /// What `pane` alone has running, for the Artifacts panel's Servers.
+    func runningSet(forPane pane: TmuxPane, host: Host) -> RunningSet {
+        let scans = attributedScans
+        return Running.resources(pane: runningPane(pane, host: host, scans: scans), scans: scans)
+    }
+
     /// What the rail shows for the current selection.
     ///
     /// A pane is a flat list of its own. A window is that window, named. A
