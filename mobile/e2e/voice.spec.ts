@@ -297,6 +297,55 @@ test('a muted mic takes nothing, and a refused take says why', async ({ page }) 
 	await expect(status(page)).toHaveText('Heard nothing');
 });
 
+test('the mic is given back when it is not needed', async ({ page }) => {
+	const live = (): Promise<number> => page.evaluate(() => window.__mic.live());
+	await open(page, ['/__fixture/voice?delay=1500']);
+	expect(await live()).toBe(0);
+
+	// Manual: held for the take only.
+	await primary(page).click();
+	await expect(primary(page)).toHaveText('↑ Submit');
+	expect(await live()).toBe(1);
+	await say(page, 600);
+	await primary(page).click();
+	await expect(primary(page)).toHaveText('■ Stop');
+	expect(await live()).toBe(0);
+	await expect(status(page)).toHaveText('Start talking', { timeout: 10000 });
+	expect(await live()).toBe(0);
+
+	// A take that is stopped, not sent, gives it back too.
+	await primary(page).click();
+	await expect(primary(page)).toHaveText('↑ Submit');
+	await bar(page, 'Microphone').click();
+	await expect(status(page)).toHaveText('Mic muted');
+	expect(await live()).toBe(0);
+	await bar(page, 'Microphone').click();
+
+	// Auto holds it while it listens; mute and Manual give it back.
+	await bar(page, 'Auto').click();
+	await expect(status(page)).toHaveText('Listening…');
+	expect(await live()).toBe(1);
+	await bar(page, 'Microphone').click();
+	expect(await live()).toBe(0);
+	await bar(page, 'Microphone').click();
+	await expect(status(page)).toHaveText('Listening…');
+	expect(await live()).toBe(1);
+	await bar(page, 'Manual').click();
+	expect(await live()).toBe(0);
+
+	// Leaving the page gives it back, whatever the mode.
+	await bar(page, 'Auto').click();
+	await expect(status(page)).toHaveText('Listening…');
+	expect(await live()).toBe(1);
+	await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
+	expect(await live()).toBe(0);
+	await expect(status(page)).toHaveText('Start talking');
+	// One tap brings it back.
+	await primary(page).click();
+	await expect(primary(page)).toHaveText('↑ Submit');
+	expect(await live()).toBe(1);
+});
+
 test('the first tap creates the audio the reply needs', async ({ page }) => {
 	await page.addInitScript(() => {
 		const made: string[] = [];

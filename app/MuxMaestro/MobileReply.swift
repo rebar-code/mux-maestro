@@ -176,13 +176,6 @@ enum MobileReply {
     /// a bracketed paste in before it reads the next key.
     static let enterDelay: TimeInterval = 0.3
 
-    /// The sentence of an error response, for a caller that reports it in
-    /// its own shape.
-    static func message(of response: MobileResponse) -> String {
-        let object = (try? JSONSerialization.jsonObject(with: response.body)) as? [String: Any]
-        return object?["message"] as? String ?? unreachable
-    }
-
     // MARK: Keys
 
     /// Every key the phone may press. Anything else is refused: a key name is

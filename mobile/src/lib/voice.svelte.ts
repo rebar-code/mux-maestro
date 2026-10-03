@@ -1,4 +1,3 @@
-import { untrack } from 'svelte';
 import { ApiError } from './api';
 import { live } from './live.svelte';
 import type { VoiceEnd, VoiceMode } from './types';
@@ -76,6 +75,7 @@ class Voice {
 
 	private context: AudioContext | null = null;
 	private stream: MediaStream | null = null;
+	private source: MediaStreamAudioSourceNode | null = null;
 	private processor: ScriptProcessorNode | null = null;
 	private player: Player | null = null;
 	private capture: Capture | null = null;
@@ -200,13 +200,46 @@ class Voice {
 		this.capture = new Capture(context.sampleRate, maxSeconds * 1000 - LIMIT_MARGIN_MS);
 		const processor = context.createScriptProcessor(4096, 1, 1);
 		processor.onaudioprocess = (event) => this.frame(event.inputBuffer.getChannelData(0));
-		context.createMediaStreamSource(stream).connect(processor);
+		this.source = context.createMediaStreamSource(stream);
+		this.source.connect(processor);
 		// It runs only while it leads to the output. It writes silence there.
 		processor.connect(context.destination);
 		this.processor = processor;
 		this.listening = context.state === 'running';
 		return true;
 	}
+
+	/** Give the mic back: the phone's recording indicator goes out. */
+	private closeMic(): void {
+		this.capture?.discard();
+		this.capture = null;
+		if (this.processor) this.processor.onaudioprocess = null;
+		this.processor?.disconnect();
+		this.source?.disconnect();
+		for (const track of this.stream?.getTracks() ?? []) track.stop();
+		this.processor = null;
+		this.source = null;
+		this.stream = null;
+		this.listening = false;
+	}
+
+	/**
+	 * The mic is held only while it is needed: for an open take, and in Auto
+	 * while it listens. Manual gives it back after each take; mute always does.
+	 */
+	private settleMic(): void {
+		if (this.mode !== 'auto' || this.micMuted) this.closeMic();
+	}
+
+	/** The page is going away or into the background: give everything back. */
+	release = (): void => {
+		this.halt();
+		this.closeMic();
+		this.rest();
+		void this.context?.close();
+		this.context = null;
+		this.player = null;
+	};
 
 	private frame(input: Float32Array): void {
 		const capture = this.capture;
@@ -268,6 +301,7 @@ class Voice {
 		this.sink = null;
 		this.player?.stop();
 		this.capture?.discard();
+		this.settleMic();
 		this.paused = false;
 		this.status = 'idle';
 	}
@@ -325,11 +359,13 @@ class Voice {
 		const sink = this.bound?.sink;
 		if (!capture || target === null || !sink) return;
 		const mode = this.mode;
+		const rate = capture.rate;
 		const samples = capture.end(mode);
+		this.settleMic();
 		if (!samples) return this.rest();
 		this.blip();
 		const speaker = this.speaker;
-		const wav = takeWav(samples, capture.rate);
+		const wav = takeWav(samples, rate);
 		void this.run(target, sink, false, (handlers, signal) =>
 			sendVoice(target, speaker, wav, handlers, signal)
 		);
@@ -400,6 +436,7 @@ class Voice {
 			this.capture?.discard();
 			this.rest();
 		}
+		this.settleMic();
 		if (mode !== 'auto' || this.micMuted) return;
 		this.bound = { target, sink };
 		await this.openMic();
@@ -415,7 +452,7 @@ class Voice {
 	toggleMic = async (target: VoiceTarget, sink: VoiceSink): Promise<void> => {
 		this.micMuted = !this.micMuted;
 		if (this.micMuted) {
-			this.capture?.discard();
+			this.closeMic();
 			if (this.status === 'recording') this.rest();
 		} else if (this.mode === 'auto') {
 			this.bound = { target, sink };
@@ -424,35 +461,27 @@ class Voice {
 	};
 
 	/**
-	 * Attachment for `target`'s bar. A bar that goes away takes its take with
-	 * it, so Auto never sends speech to a target that is not on screen. A bar
-	 * that appears while Auto already listens takes over the listening.
+	 * Attachment for a voice bar, the manager's or a thread's. The first tap
+	 * anywhere on the page unlocks the speaker. When the page is hidden or
+	 * left, or the bar goes away, the mic and the audio are given back, and
+	 * Auto forgets its target: speech never goes to a bar that is not on screen.
 	 */
-	bar(target: VoiceTarget, sink: VoiceSink): () => () => void {
-		return () => {
-			untrack(() => {
-				if (this.stream && this.mode === 'auto' && !this.micMuted && !this.inFlight)
-					this.bound = { target, sink };
-			});
-			return () => {
-				if (this.bound?.target !== target) return;
-				this.bound = null;
-				if (this.target === target && this.status === 'recording') {
-					this.capture?.discard();
-					this.rest();
-				}
-			};
-		};
-	}
-
-	/** Attachment: the first tap anywhere on the page unlocks the speaker. */
-	unlockOnTap = (): (() => void) => {
+	attach = (): (() => void) => {
 		const unlock = (): void => this.unlock();
+		const hidden = (): void => {
+			if (document.visibilityState === 'hidden') this.release();
+		};
 		document.addEventListener('click', unlock, { capture: true, once: true });
 		document.addEventListener('touchend', unlock, { capture: true, once: true });
+		document.addEventListener('visibilitychange', hidden);
+		window.addEventListener('pagehide', this.release);
 		return () => {
 			document.removeEventListener('click', unlock, { capture: true });
 			document.removeEventListener('touchend', unlock, { capture: true });
+			document.removeEventListener('visibilitychange', hidden);
+			window.removeEventListener('pagehide', this.release);
+			this.release();
+			this.bound = null;
 		};
 	};
 }

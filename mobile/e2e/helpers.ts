@@ -4,7 +4,7 @@ export const WIDTH = 390;
 
 declare global {
 	interface Window {
-		__mic: { opened: number; speak: (on: boolean) => void };
+		__mic: { opened: number; speak: (on: boolean) => void; live: () => number };
 		/** Reply clips that started to play. */
 		__clips: number;
 	}
@@ -17,11 +17,16 @@ declare global {
 export async function fakeMic(page: Page): Promise<void> {
 	await page.addInitScript(() => {
 		let gain: GainNode | null = null;
+		const streams: MediaStream[] = [];
 		window.__mic = {
 			opened: 0,
 			speak: (on) => {
 				if (gain) gain.gain.value = on ? 0.5 : 0;
-			}
+			},
+			// Streams the page still holds open: what lights the phone's mic indicator.
+			live: () =>
+				streams.filter((stream) => stream.getTracks().some((track) => track.readyState === 'live'))
+					.length
 		};
 		navigator.mediaDevices.getUserMedia = async () => {
 			window.__mic.opened += 1;
@@ -34,6 +39,7 @@ export async function fakeMic(page: Page): Promise<void> {
 			const out = context.createMediaStreamDestination();
 			tone.connect(gain).connect(out);
 			tone.start();
+			streams.push(out.stream);
 			return out.stream;
 		};
 		// A reply clip is longer than the cue that follows a take.

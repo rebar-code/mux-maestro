@@ -16,6 +16,10 @@ private final class FakeSpeech: VoiceSpeech {
     var transcript = "what needs me"
     var failTranscribe = false
     var failSynthesize = false
+    /// Runs while a take is being transcribed: what changes in that time.
+    var whileTranscribing: (() -> Void)?
+    /// When set, transcription does not finish until this is signalled.
+    var gate: DispatchSemaphore?
 
     /// The sample count of each take that was transcribed.
     var transcribed: [Int] { lock.lock(); defer { lock.unlock() }; return _transcribed }
@@ -30,6 +34,15 @@ private final class FakeSpeech: VoiceSpeech {
 
     func transcribe(_ samples: [Float]) async throws -> String {
         lock.lock(); _transcribed.append(samples.count); lock.unlock()
+        whileTranscribing?()
+        if let gate {
+            await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+                DispatchQueue.global().async {
+                    gate.wait()
+                    done.resume()
+                }
+            }
+        }
         if failTranscribe { throw Failed() }
         return transcript
     }
@@ -241,6 +254,34 @@ final class MobileVoiceTests: XCTestCase {
         XCTAssertEqual(seconds, [10, 10, 5])
     }
 
+    func testReplayReadsNoMoreThanItsLimit() {
+        var page = MobileChatPage()
+        page.messages = [MobileChatMessage(
+            n: 1, role: .assistant, text: String(repeating: "word ", count: 1500))]
+        XCTAssertEqual(MobileVoice.lastReply(in: page)?.count, MobileVoice.maxReplayCharacters)
+    }
+
+    func testAHeavyTakeIsCheckedOnItsHeadersBeforeItsBodyIsHeld() {
+        let head = Data("POST /api/voice HTTP/1.1\r\nContent-Length: 2000000\r\n\r\n".utf8)
+        // Refused with nothing of the body read.
+        XCTAssertEqual(MobileHTTP.parse(head) { _ in 401 }, .invalid(401))
+        XCTAssertEqual(MobileHTTP.parse(head) { _ in nil }, .incomplete)
+        // The check sees the request's headers and query.
+        var seen: MobileRequest?
+        _ = MobileHTTP.parse(Data(
+            "POST /api/voice?target=manager HTTP/1.1\r\nX-MuxMaestro-Token: t\r\nContent-Length: 2000000\r\n\r\n".utf8)) {
+            seen = $0
+            return nil
+        }
+        XCTAssertEqual(seen?.header("x-muxmaestro-token"), "t")
+        XCTAssertEqual(seen?.query["target"], "manager")
+        // A request of ordinary size is not asked about: its route checks it.
+        let small = Data("POST /api/voice HTTP/1.1\r\nContent-Length: 4\r\n\r\nRIFF".utf8)
+        guard case .request = MobileHTTP.parse(small, precheck: { _ in 401 }) else {
+            return XCTFail("a small request must parse")
+        }
+    }
+
     func testReplayReadsTheLastThingTheManagerSaid() {
         var page = MobileChatPage()
         XCTAssertNil(MobileVoice.lastReply(in: nil))
@@ -415,6 +456,108 @@ final class MobileVoiceTests: XCTestCase {
         XCTAssertEqual(speech.synthesized, ["Two threads need you."])
         XCTAssertEqual(events.names, ["audio", "end"])
         XCTAssertEqual(events.all.last?.data["reply"] as? String, "Two threads need you.")
+    }
+}
+
+// MARK: - Model loads
+
+final class SerialLoadsTests: XCTestCase {
+    /// A stand-in for the engine: what is loaded, and how the loads ran.
+    private actor Models {
+        var loaded: Set<String> = []
+        var running = 0
+        var overlapped = false
+        var loads: [Set<String>] = []
+        var failNext = false
+
+        func has(_ wanted: Set<String>) -> Bool { wanted.isSubset(of: loaded) }
+
+        func load(_ wanted: Set<String>) async throws {
+            running += 1
+            if running > 1 { overlapped = true }
+            loads.append(wanted)
+            try? await Task.sleep(nanoseconds: 20_000_000)
+            running -= 1
+            if failNext {
+                failNext = false
+                throw CancellationError()
+            }
+            loaded.formUnion(wanted)
+        }
+
+        func fail() { failNext = true }
+    }
+
+    private func ensure(_ loads: SerialLoads, _ models: Models, _ wanted: Set<String>) async throws {
+        try await loads.ensure(ready: { await models.has(wanted) }, load: { try await models.load(wanted) })
+    }
+
+    /// Finish within `seconds`, or fail: the bug this guards was a wait that
+    /// never ended.
+    private func finishes(_ seconds: Double = 5, _ body: @escaping () async throws -> Void) async {
+        let done = expectation(description: "finished")
+        let task = Task {
+            try? await body()
+            done.fulfill()
+        }
+        await fulfillment(of: [done], timeout: seconds)
+        task.cancel()
+    }
+
+    func testAWaiterThatNeedsADifferentModelLoadsItAfterTheRunningLoad() async {
+        let loads = SerialLoads(), models = Models()
+        // Replay loads the read-back model; a take a moment later needs the other one.
+        await finishes {
+            async let replay: Void = self.ensure(loads, models, ["kokoro"])
+            async let take: Void = self.ensure(loads, models, ["whisper"])
+            _ = try await (replay, take)
+        }
+        let loaded = await models.loaded, overlapped = await models.overlapped, count = await models.loads.count
+        XCTAssertEqual(loaded, ["kokoro", "whisper"])
+        XCTAssertFalse(overlapped)
+        XCTAssertEqual(count, 2)
+    }
+
+    func testManyMixedCallersAllFinishWithOneLoadAtATime() async {
+        let loads = SerialLoads(), models = Models()
+        let wanted: [Set<String>] = [["whisper"], ["kokoro"], ["whisper", "kokoro"], ["kokoro"], ["whisper"]]
+        await finishes {
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                for round in 0..<40 {
+                    group.addTask { try await self.ensure(loads, models, wanted[round % wanted.count]) }
+                }
+                try await group.waitForAll()
+            }
+        }
+        let loaded = await models.loaded, overlapped = await models.overlapped, count = await models.loads.count
+        XCTAssertEqual(loaded, ["kokoro", "whisper"])
+        XCTAssertFalse(overlapped)
+        // No caller loaded what was already there.
+        XCTAssertLessThanOrEqual(count, 3)
+    }
+
+    func testWhatIsAlreadyLoadedLoadsNothing() async throws {
+        let loads = SerialLoads(), models = Models()
+        try await ensure(loads, models, ["whisper"])
+        try await ensure(loads, models, ["whisper"])
+        let count = await models.loads.count
+        XCTAssertEqual(count, 1)
+    }
+
+    func testAFailedLoadFailsItsCallerAndAWaiterLoadsForItself() async {
+        let loads = SerialLoads(), models = Models()
+        await models.fail()
+        var firstFailed = false
+        await finishes {
+            async let first: Void = self.ensure(loads, models, ["whisper"])
+            try? await Task.sleep(nanoseconds: 5_000_000)
+            async let second: Void = self.ensure(loads, models, ["whisper"])
+            do { try await first } catch { firstFailed = true }
+            try await second
+        }
+        XCTAssertTrue(firstFailed)
+        let loaded = await models.loaded
+        XCTAssertEqual(loaded, ["whisper"])
     }
 }
 
@@ -658,6 +801,70 @@ final class MobileVoiceServerTests: XCTestCase {
         // A refused take costs nothing: the engine was never asked.
         XCTAssertEqual(speech.transcribed, [])
         XCTAssertEqual(locked { sent }, [])
+    }
+
+    func testATakeWithoutTheTokenIsRefusedOnItsHeadersAlone() {
+        // Two megabytes announced and none sent: the answer must not wait for them.
+        var unpaired = Self.appHeaders
+        unpaired["X-MuxMaestro-Token"] = nil
+        let started = Date()
+        let refused = post("/api/voice?target=manager&speaker=1", headers: unpaired, contentLength: 2_000_000)
+        XCTAssertEqual(refused.status, 401)
+        XCTAssertEqual(refused.body, #"{"error":"unpaired"}"#)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 2)
+        // The same for a page from another origin.
+        let foreign = post(
+            "/api/voice?target=manager&speaker=1",
+            headers: ["Origin": "https://elsewhere.example", "X-MuxMaestro": "1",
+                      "X-MuxMaestro-Token": Self.token],
+            contentLength: 2_000_000)
+        XCTAssertEqual(foreign.status, 403)
+        XCTAssertEqual(foreign.body, #"{"error":"forbidden"}"#)
+    }
+
+    func testASecondTakeWhileOneRunsIs409() {
+        let gate = DispatchSemaphore(value: 0)
+        speech.gate = gate
+        let first = expectation(description: "first take")
+        var firstStatus = 0
+        DispatchQueue.global().async {
+            firstStatus = self.post("/api/voice?target=manager&speaker=0", body: Self.take).status
+            first.fulfill()
+        }
+        // The first take is being transcribed.
+        let deadline = Date().addingTimeInterval(5)
+        while speech.transcribed.isEmpty, Date() < deadline { usleep(5000) }
+        XCTAssertEqual(speech.transcribed.count, 1)
+        let second = post("/api/voice?target=manager&speaker=0", body: Self.take)
+        XCTAssertEqual(second.status, 409)
+        XCTAssertEqual(second.body, #"{"error":"busy","message":"A voice turn is running"}"#)
+        XCTAssertEqual(post("/api/voice/replay?target=manager").status, 409)
+
+        gate.signal()
+        speech.gate = nil
+        wait(for: [first], timeout: 5)
+        XCTAssertEqual(firstStatus, 200)
+        // Only the first take was transcribed and sent.
+        XCTAssertEqual(speech.transcribed.count, 1)
+        XCTAssertEqual(locked { sent }, ["what needs me"])
+    }
+
+    func testAPaneThatStopsBeingIdleDuringTranscriptionGetsNothing() {
+        for (after, message) in [
+            (MobileManagerStatus.waiting, "Manager is waiting on a prompt"), (.busy, "Manager is busy"),
+        ] {
+            locked { status = .idle }
+            // Idle when the take arrives; not idle once the words are ready.
+            speech.whileTranscribing = { [unowned self] in locked { status = after } }
+            let turn = post("/api/voice?target=manager&speaker=1", body: Self.take)
+            XCTAssertEqual(turn.status, 200)
+            let all = events(turn.body)
+            XCTAssertEqual(all.map(\.name), ["transcript", "end"])
+            XCTAssertEqual(all.last?.data["outcome"] as? String, "refused")
+            XCTAssertEqual(all.last?.data["message"] as? String, message)
+        }
+        XCTAssertEqual(locked { sent }, [])
+        XCTAssertEqual(speech.synthesized, [])
     }
 
     private static let threadTake = "/api/voice?target=localhost%3A12&speaker=0"

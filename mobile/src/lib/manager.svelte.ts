@@ -21,6 +21,7 @@ const POLL_MS = 10_000;
 
 const STATUS_NOTES: Partial<Record<ManagerStatus, string>> = {
 	off: 'Manager is not running',
+	unknown: 'Manager is not ready',
 	waiting: 'Manager is waiting on a prompt',
 	busy: 'Manager is busy'
 };

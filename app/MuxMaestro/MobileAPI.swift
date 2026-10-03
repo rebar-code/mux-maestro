@@ -104,7 +104,12 @@ enum MobileHTTP {
     }
 
     /// Parse one request from the front of `buffer`.
-    static func parse(_ buffer: Data) -> Parsed {
+    ///
+    /// `precheck` sees a request that asks for more than `maxBodyBytes` (a
+    /// voice take) when its headers are in and before any of its body is
+    /// waited for. A status it returns ends the request there, so only a
+    /// caller that is allowed in gets the server to hold megabytes for it.
+    static func parse(_ buffer: Data, precheck: ((MobileRequest) -> Int?)? = nil) -> Parsed {
         let terminator = Data("\r\n\r\n".utf8)
         guard let end = buffer.range(of: terminator) else {
             return buffer.count > maxHeaderBytes ? .invalid(431) : .incomplete
@@ -139,14 +144,15 @@ enum MobileHTTP {
             guard n <= limit else { return .invalid(413) }
             length = n
         }
-        let bodyStart = headBytes + terminator.count
-        guard buffer.count >= bodyStart + length else { return .incomplete }
-
         let target = String(requestLine[1])
         let parts = target.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
         var request = MobileRequest(method: String(requestLine[0]), path: String(parts[0]))
         if parts.count == 2 { request.query = parseQuery(String(parts[1])) }
         request.headers = headers
+        if length > maxBodyBytes, let status = precheck?(request) { return .invalid(status) }
+
+        let bodyStart = headBytes + terminator.count
+        guard buffer.count >= bodyStart + length else { return .incomplete }
         let from = buffer.index(buffer.startIndex, offsetBy: bodyStart)
         request.body = Data(buffer[from..<buffer.index(from, offsetBy: length)])
         return .request(request, consumed: bodyStart + length)

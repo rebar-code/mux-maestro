@@ -520,8 +520,15 @@ final class MobileServerTests: XCTestCase {
         XCTAssertEqual(busy.body, #"{"error":"busy","message":"A turn is running"}"#)
         XCTAssertTrue(get("/api/manager").body.contains(#""status":"busy""#))
 
-        manager.status = .off
+        // The manager runs, but its pane's state is not known yet.
+        manager.status = .unknown
         server.managerTurnEnded()
+        let unknown = post("/api/manager/text", json: #"{"text":"what needs me?"}"#)
+        XCTAssertEqual(unknown.status, 503)
+        XCTAssertEqual(unknown.body, #"{"error":"not_ready","message":"Manager is not ready"}"#)
+        XCTAssertTrue(get("/api/manager").body.contains(#""status":"unknown""#))
+
+        manager.status = .off
         XCTAssertEqual(post("/api/manager/text", json: #"{"text":"what needs me?"}"#).status, 503)
         XCTAssertEqual(post("/api/manager/text", json: #"{"text":" "}"#).status, 400)
         XCTAssertEqual(manager.sent, [])
@@ -620,6 +627,29 @@ final class MobileServerTests: XCTestCase {
         XCTAssertEqual(manager.sent, ["what needs me?", "and the builds?"])
     }
 
+    func testAQuietTurnStreamIsPingedOnItsOwnTimer() {
+        var limits = MobileServer.Limits()
+        limits.turnPing = 0.1
+        restart(limits: limits)
+        managerOn()
+        let gate = DispatchSemaphore(value: 0)
+        manager.gate = gate
+        manager.script = ([], .done(reply: "ok"))
+        // No tree update arrives while the turn is quiet: the ping is the stream's own.
+        var released = false
+        let turn = post("/api/manager/text", json: #"{"text":"what needs me?"}"#) {
+            if !released, $0.components(separatedBy: ": ping\n\n").count >= 3 {
+                released = true
+                gate.signal()
+            }
+            return $0.contains("event: end")
+        }
+        if !released { gate.signal() }
+        XCTAssertEqual(turn.status, 200)
+        XCTAssertGreaterThanOrEqual(turn.body.components(separatedBy: ": ping\n\n").count, 3)
+        XCTAssertTrue(turn.body.contains(#""outcome":"done""#))
+    }
+
     func testAPhoneThatHangsUpMidTurnLeavesTheServerWorking() {
         managerOn()
         let gate = DispatchSemaphore(value: 0)
@@ -640,7 +670,10 @@ final class MobileServerTests: XCTestCase {
         let deadline = Date().addingTimeInterval(5)
         var next = (status: 0, head: "", body: "")
         repeat {
-            next = post("/api/manager/text", json: #"{"text":"again"}"#) { self.whole($0) || $0.contains("event: end") }
+            // A refusal is whole once its body is in; a stream only at its end event.
+            next = post("/api/manager/text", json: #"{"text":"again"}"#) {
+                $0.contains("event: end") || (!$0.hasPrefix("HTTP/1.1 200") && self.whole($0))
+            }
             if next.status != 200 { usleep(20_000) }
         } while next.status != 200 && Date() < deadline
         XCTAssertEqual(next.status, 200)
@@ -916,6 +949,17 @@ final class MobileServerTests: XCTestCase {
         XCTAssertEqual(post(Self.thread + "/upload?name=a.txt", json: "demo").status, 409)
         XCTAssertEqual(pane.copies.count, 0)
         XCTAssertEqual(pane.argv.count, 0)
+
+        // Past the limit in Settings, a large upload is refused on its headers:
+        // none of its body is waited for.
+        server.configure(MobileConfig(capabilities: [.upload], uploadLimit: 5_242_880))
+        let early = "POST \(Self.thread)/upload?name=a.bin HTTP/1.1\r\nHost: devmac.example.ts.net:7433\r\n"
+            + "Tailscale-User-Login: me@example.com\r\nOrigin: \(Self.origin)\r\nX-MuxMaestro: 1\r\n"
+            + "X-MuxMaestro-Token: demo-token\r\nContent-Length: 6000000\r\n\r\n"
+        let refused = exchange(early, until: whole)
+        XCTAssertTrue(refused.hasPrefix("HTTP/1.1 413"), refused)
+        XCTAssertTrue(refused.hasSuffix(#"{"error":"too_large"}"#), refused)
+        XCTAssertEqual(pane.copies.count, 0)
 
         // Past what any setting allows, the request is refused as it is read.
         let raw = "POST \(Self.thread)/upload?name=a.bin HTTP/1.1\r\nHost: devmac.example.ts.net:7433\r\n"

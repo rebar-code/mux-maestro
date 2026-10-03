@@ -62,6 +62,10 @@ enum MobileVoice {
     /// into clips, so no single event outgrows a stream's send buffer.
     static let maxClipSeconds: Double = 10
 
+    /// The most of a reply Replay reads again, in characters: about three
+    /// minutes of speech. A longer reply is read from its start.
+    static let maxReplayCharacters = 3000
+
     static let heardNothing = "Heard nothing"
     static let modelsNotReady = "Voice models not ready"
     static let unavailable = "Voice is not available"
@@ -241,7 +245,16 @@ enum MobileVoice {
     /// The last thing the manager said, for Replay: the newest assistant row of
     /// its transcript.
     static func lastReply(in chat: MobileChatPage?) -> String? {
-        chat?.messages.last { $0.role == .assistant }?.text
+        (chat?.messages.last { $0.role == .assistant }?.text).map { String($0.prefix(maxReplayCharacters)) }
+    }
+
+    static let modelsMissing = MobileResponse.error(503, "models", message: modelsNotReady)
+
+    /// The sentence of a refusal response, for a turn that is refused after
+    /// its stream has begun.
+    static func message(of refusal: MobileResponse) -> String {
+        let body = (try? JSONSerialization.jsonObject(with: refusal.body)) as? [String: Any]
+        return body?["message"] as? String ?? unavailable
     }
 }
 

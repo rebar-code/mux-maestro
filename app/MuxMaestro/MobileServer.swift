@@ -60,6 +60,9 @@ final class MobileServer {
         /// The same bound for a voice stream, which carries the reply's audio:
         /// a few minutes of speech, synthesized faster than it is sent.
         var voiceBacklog = 16_777_216
+        /// A turn stream with nothing to say gets a comment line this often,
+        /// so the phone can tell a quiet turn from a dead connection.
+        var turnPing: TimeInterval = 15
     }
 
     enum StartError: Error, Equatable {
@@ -367,11 +370,23 @@ final class MobileServer {
 
     /// Answer the request at the front of the buffer, then the next one.
     private func drain(_ client: Client) {
-        switch MobileHTTP.parse(client.buffer) {
+        // A take's megabytes are held only for a caller that is already let in.
+        let parsed = MobileHTTP.parse(client.buffer) { [identity, token, config] request in
+            if MobileAPI.authorize(request, identity: identity) != .allowed { return 403 }
+            guard MobileAPI.hasToken(request, token: token) else { return 401 }
+            // An upload past the limit in Settings is refused before it is read.
+            if case .api(.upload) = MobileAPI.route(request, config: config),
+               (request.header("content-length").flatMap(Int.init) ?? 0) > config.uploadLimit {
+                return 413
+            }
+            return nil
+        }
+        switch parsed {
         case .incomplete:
             receive(client)
         case .invalid(let status):
-            send(.error(status, "bad_request"), to: client, head: false, close: true)
+            let code = [401: "unpaired", 403: "forbidden", 413: "too_large"][status] ?? "bad_request"
+            send(.error(status, code), to: client, head: false, close: true)
         case .request(let request, let consumed):
             client.lastActive = Date()
             client.buffer.removeFirst(consumed)
@@ -636,7 +651,7 @@ final class MobileServer {
                 let response = MobileReply.send(text, target: thread.pane, io: io, status: status)
                 queue.async { self.writing.remove(id) }
                 guard response.status == 200 else {
-                    return completion(.refused(MobileReply.message(of: response)))
+                    return completion(.refused(MobileVoice.message(of: response)))
                 }
                 guard let turn else { return completion(.done(reply: "")) }
                 turn.follow(onDelta: onDelta, completion: completion)
@@ -696,6 +711,7 @@ final class MobileServer {
                 client.buffer.removeAll()
                 self.write(Self.streamHead, to: client)
                 self.receive(client)
+                self.pingTurn(client)
                 // The turn runs to its end even when the phone hangs up: only
                 // the writes stop.
                 let event = { [weak self, weak client] (name: String, object: [String: Any], last: Bool) in
@@ -715,11 +731,24 @@ final class MobileServer {
         }
     }
 
+    /// Keep a turn stream alive on a timer of its own: a turn can be quiet for
+    /// a long time, and the tree updates that ping the event stream may not come.
+    private func pingTurn(_ client: Client) {
+        queue.asyncAfter(deadline: .now() + limits.turnPing) { [weak self, weak client] in
+            guard let self, let client, self.clients[ObjectIdentifier(client)] != nil else { return }
+            if Date().timeIntervalSince(client.lastWrite) >= self.limits.turnPing * 0.9 {
+                self.write(Data(": ping\n\n".utf8), to: client)
+            }
+            self.pingTurn(client)
+        }
+    }
+
     // MARK: Voice
 
     /// Why a voice request cannot start, checked before it costs anything: a
-    /// target this server can reach, with its own switch on, an engine with
-    /// its models on disk, and no other voice turn running.
+    /// target this server can reach, with its own switch on, an engine, and
+    /// no other voice turn running. Whether the models are on disk is asked
+    /// off the server queue, by the caller.
     private func voiceRefusal(_ request: MobileRequest) -> MobileResponse? {
         guard let ask = MobileVoiceRequest(query: request.query) else {
             return .error(400, "bad_request")
@@ -741,9 +770,6 @@ final class MobileServer {
         guard let voice else {
             return .error(503, "unavailable", message: MobileVoice.unavailable)
         }
-        guard voice.speech.modelsReady else {
-            return .error(503, "models", message: MobileVoice.modelsNotReady)
-        }
         guard voiceTurn == nil, !voiceStarting else {
             return .error(409, "busy", message: MobileVoice.busy)
         }
@@ -759,6 +785,7 @@ final class MobileServer {
         client.buffer.removeAll()
         write(Self.streamHead, to: client)
         receive(client)
+        pingTurn(client)
         let turn = MobileVoiceTurn(speech: voice.speech, speaker: speaker) {
             [weak self, weak client] name, object, last in
             let json = Self.json(object)
@@ -791,12 +818,14 @@ final class MobileServer {
         guard let manager else { return }
         voiceStarting = true
         work.async { [weak self, weak client] in
-            let take = MobileVoice.take(wav: request.body)
+            let ready = voice.speech.modelsReady
+            let take = ready ? MobileVoice.take(wav: request.body) : .samples([])
             let status = manager.pane().status
             self?.queue.async {
                 guard let self else { return }
                 self.voiceStarting = false
                 guard let client, self.clients[ObjectIdentifier(client)] != nil else { return }
+                guard ready else { return self.send(MobileVoice.modelsMissing, to: client, head: false) }
                 // Asked before the models load: a refused take costs nothing.
                 if let refusal = MobileManager.refusal(
                     status: status, turnRunning: self.turn != nil || self.phoneTurns > 0) {
@@ -811,11 +840,7 @@ final class MobileServer {
                 // runs to its end even when the phone hangs up.
                 self.voiceStream(to: client, voice: voice, speaker: ask.speaker)
                     .start(samples: samples) { [weak self] text, onDelta, completion in
-                        self?.queue.async { self?.phoneTurns += 1 }
-                        manager.send(text, onDelta) { outcome in
-                            self?.queue.async { self?.phoneTurns -= 1 }
-                            completion(outcome)
-                        }
+                        self?.sendHeard(text, manager: manager, onDelta: onDelta, completion: completion)
                     }
             }
         }
@@ -829,12 +854,14 @@ final class MobileServer {
         guard let thread = snapshot.thread(id: id), let io = sources.pane(thread) else { return }
         voiceStarting = true
         work.async { [weak self, weak client] in
-            let take = MobileVoice.take(wav: request.body)
+            let ready = voice.speech.modelsReady
+            let take = ready ? MobileVoice.take(wav: request.body) : .samples([])
             let refusal = MobileReply.refusal(status: self?.status(of: id, io: io), screen: io.screen)
             self?.queue.async {
                 guard let self else { return }
                 self.voiceStarting = false
                 guard let client, self.clients[ObjectIdentifier(client)] != nil else { return }
+                guard ready else { return self.send(MobileVoice.modelsMissing, to: client, head: false) }
                 if let refusal { return self.send(refusal, to: client, head: false) }
                 guard case .samples(let samples) = take else {
                     if case .refused(let response) = take { self.send(response, to: client, head: false) }
@@ -847,6 +874,30 @@ final class MobileServer {
                             text, thread: thread, io: io, follow: speaker, onDelta: onDelta,
                             completion: completion)
                     }
+            }
+        }
+    }
+
+    /// Hand what was heard to the manager. Transcription took time, and the
+    /// pane may have started a turn or reached a prompt in it, so the pane is
+    /// asked again here, right before the send, and must be idle.
+    private func sendHeard(
+        _ text: String, manager: Manager, onDelta: @escaping (String) -> Void,
+        completion: @escaping (ManagerTurnOutcome) -> Void
+    ) {
+        work.async { [weak self] in
+            let status = manager.pane().status
+            guard let self else { return completion(.refused(MobileVoice.unavailable)) }
+            self.queue.async {
+                if let refusal = MobileManager.refusal(
+                    status: status, turnRunning: self.turn != nil || self.phoneTurns > 0) {
+                    return completion(.refused(MobileVoice.message(of: refusal)))
+                }
+                self.phoneTurns += 1
+                manager.send(text, onDelta) { [weak self] outcome in
+                    self?.queue.async { self?.phoneTurns -= 1 }
+                    completion(outcome)
+                }
             }
         }
     }
@@ -867,12 +918,14 @@ final class MobileServer {
         }
         voiceStarting = true
         work.async { [weak self, weak client] in
+            let ready = voice.speech.modelsReady
             let reply = MobileVoice.lastReply(in: transcript()
                 .flatMap { MobileChat.read(path: $0.path, codex: $0.codex, after: nil) })
             self?.queue.async {
                 guard let self else { return }
                 self.voiceStarting = false
                 guard let client, self.clients[ObjectIdentifier(client)] != nil else { return }
+                guard ready else { return self.send(MobileVoice.modelsMissing, to: client, head: false) }
                 guard let reply else {
                     return self.send(
                         .error(404, "nothing", message: MobileVoice.nothingToReplay),

@@ -55,8 +55,8 @@ actor VoiceEngine {
     private let player = SpeechPlayer()
     /// Bumped on every use; an idle timer releases only if nothing bumped it since.
     private var generation = 0
-    /// The load in flight, shared by every caller that needs the models.
-    private var loading: Task<Void, Error>?
+    /// One load at a time, shared by every caller that needs a model.
+    private let loads = SerialLoads()
 
     /// Which models a call needs. A take that is not read back never loads Kokoro.
     struct Models: OptionSet {
@@ -79,19 +79,12 @@ actor VoiceEngine {
     /// download. Callers that arrive while a load is running wait for it: the
     /// actor is re-entrant across the load's awaits, and a second load would
     /// hold a model twice. A waiter that needs more than that load brought
-    /// then loads the rest.
+    /// then loads the rest (`SerialLoads`).
     func loadIfNeeded(_ models: Models = .all) async throws {
         touch()
-        while !has(models) {
-            if let loading {
-                try await loading.value
-                continue
-            }
-            let task = Task { try await self.load(models) }
-            loading = task
-            defer { loading = nil }
-            try await task.value
-        }
+        guard !has(models) else { return }
+        try await loads.ensure(
+            ready: { await self.has(models) }, load: { try await self.load(models) })
     }
 
     private func load(_ models: Models) async throws {
@@ -163,7 +156,8 @@ actor VoiceEngine {
         let results = try await whisper.transcribe(audioArray: samples, decodeOptions: options)
         let text = results.map(\.text).joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        Diag.log("voice", "stt \(Self.ms(since: t0)) for \(String(format: "%.1f", Double(samples.count) / Self.sampleRate))s: \(text)")
+        // The length, not the words: what was said stays out of the log.
+        Diag.log("voice", "stt \(Self.ms(since: t0)) for \(String(format: "%.1f", Double(samples.count) / Self.sampleRate))s: \(text.count) chars")
         return text
     }
 
@@ -247,7 +241,7 @@ actor VoiceEngine {
         let result = try await kokoro.synthesizeDetailed(
             text: text, voice: VoiceModelStore.kokoroVoice, speed: VoiceModelStore.kokoroSpeed)
         let audio = SpeechAudio(samples: result.samples, sampleRate: Double(result.sampleRate))
-        Diag.log("voice", "tts \(Self.ms(since: t0)) for \(String(format: "%.1f", audio.seconds))s: \(text)")
+        Diag.log("voice", "tts \(Self.ms(since: t0)) for \(String(format: "%.1f", audio.seconds))s: \(text.count) chars")
         return audio
     }
 

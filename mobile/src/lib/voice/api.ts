@@ -1,5 +1,5 @@
 import { postAudio } from '../api';
-import { frameParser } from '../sse';
+import { frameParser, readOrStall, STALLED } from '../sse';
 import type { VoiceEnd } from '../types';
 
 export interface VoiceHandlers {
@@ -18,12 +18,20 @@ function decode(base64: string): ArrayBuffer {
 	return bytes.buffer;
 }
 
+/** The Mac pings a quiet stream every 15 s; three missed pings is a dead stream. */
+const STALL_MS = 45_000;
+
 /** Read a voice stream to its `end` event. */
 async function follow(response: Response, handlers: VoiceHandlers): Promise<VoiceEnd> {
 	const reader = response.body?.pipeThrough(new TextDecoderStream()).getReader();
 	const parse = frameParser();
 	while (reader) {
-		const { done, value } = await reader.read();
+		const chunk = await readOrStall(() => reader.read(), STALL_MS);
+		if (chunk === STALLED) {
+			void reader.cancel();
+			break;
+		}
+		const { done, value } = chunk;
 		if (done) break;
 		for (const { event, data } of parse(value)) {
 			if (event === 'end') return JSON.parse(data) as VoiceEnd;

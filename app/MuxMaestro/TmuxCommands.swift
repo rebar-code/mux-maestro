@@ -40,6 +40,12 @@ enum TmuxCommands {
         )
     }
 
+    /// Take back a prompt that was pasted and must not be sent: Ctrl-U deletes
+    /// an input line, once per line of the text. It presses no Enter.
+    static func clearInput(target: String, lines: Int) -> [String] {
+        ["send-keys", "-t", target] + Array(repeating: "C-u", count: min(max(lines, 1), 64))
+    }
+
     /// Create a detached session named `name` in directory `dir`. tmux requires
     /// the session name to be non-empty; callers should validate first. A nil/empty
     /// `dir` omits `-c` (same convention as `newWindow`/`splitWindow`) — the
