@@ -650,8 +650,7 @@ final class MobileServer {
         case .prompt(let id):
             guard let (_, io) = pane(id, client: client) else { return }
             reply(to: client) { [weak self] in
-                .json(MobileReply.promptBody(
-                    state: self?.state(of: id, io: io), screen: io.screen(), io: io))
+                .json(MobileReply.promptBody(state: self?.state(of: id, io: io), io: io))
             }
         case .answer(let id):
             guard let answer = MobileReply.answer(in: request.body) else {
@@ -1092,7 +1091,7 @@ final class MobileServer {
         work.async { [weak self, weak client] in
             let ready = voice.speech.modelsReady
             let take = ready ? MobileVoice.take(wav: request.body) : .samples([])
-            let refusal = MobileReply.refusal(state: self?.state(of: id, io: io), screen: io.screen)
+            let refusal = MobileReply.refusal(state: self?.state(of: id, io: io), io: io)
             self?.queue.async {
                 guard let self else { return }
                 self.voiceStarting = false

@@ -100,12 +100,56 @@ export function imageAddress(mime: string): { as: 'blob' | 'data'; type: string 
 /** The type a file is saved under: bytes, never something a browser would open as a page. */
 export const SAVED_TYPE = 'application/octet-stream';
 
+/** `blob` as bytes to save: its own type is dropped. */
+export function savedBlob(blob: Blob): Blob {
+	return new Blob([blob], { type: SAVED_TYPE });
+}
+
+async function dataAddress(blob: Blob, type: string): Promise<string> {
+	const bytes = new Uint8Array(await blob.arrayBuffer());
+	let binary = '';
+	for (let i = 0; i < bytes.length; i += 0x8000) {
+		binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+	}
+	return `data:${type};base64,${btoa(binary)}`;
+}
+
+/**
+ * The address an `<img>` shows `blob` from. `makeBlobUrl` is
+ * `URL.createObjectURL`; it only ever gets a blob that `imageAddress` allows,
+ * typed again with the allowed type. Throws for a type that is not an image.
+ */
+export async function imageUrl(blob: Blob, makeBlobUrl: (blob: Blob) => string): Promise<string> {
+	const address = imageAddress(blob.type);
+	if (!address) throw new Error('not an image');
+	if (address.as === 'data') return dataAddress(blob, address.type);
+	return makeBlobUrl(new Blob([blob], { type: address.type }));
+}
+
 const CSP =
 	"default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; form-action 'none'; base-uri 'none'";
 // A link in the page asks for a new window, and the sandbox allows none: a tap
 // loads nothing. The first `<base target>` in a page is the one that counts.
 const HEAD = `<meta http-equiv="Content-Security-Policy" content="${CSP}"><base target="_blank">`;
 const DOCTYPE = /^(?:\s|<!--[\s\S]*?-->)*<!doctype[^>]*>\s*/i;
+
+/**
+ * `html` with nothing in it that names a window. A link with `target="_self"`
+ * would load its page in the frame, where the app's policy refuses it and an
+ * error page takes the artifact's place. With no target of its own, a link
+ * takes the `<base target>` that `framedHtml` adds. The page is parsed here as
+ * a document that is never shown: nothing in it runs or loads.
+ */
+export function withoutTargets(html: string): string {
+	const page = new DOMParser().parseFromString(html, 'text/html');
+	for (const element of page.querySelectorAll('[target], [formtarget]')) {
+		element.removeAttribute('target');
+		element.removeAttribute('formtarget');
+	}
+	for (const element of page.querySelectorAll('base, meta[http-equiv="refresh" i]'))
+		element.remove();
+	return `${page.doctype ? '<!doctype html>' : ''}${page.documentElement.outerHTML}`;
+}
 
 /**
  * An HTML artifact as the frame's `srcdoc`. The frame is sandboxed with no

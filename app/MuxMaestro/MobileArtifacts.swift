@@ -112,23 +112,30 @@ enum MobileArtifacts {
 
     /// The one rule for what the phone may have, applied to a path whose links
     /// are resolved: it lies in the thread's own folder, or it is an image in
-    /// a temp folder, and nothing below that root is hidden. A transcript can
+    /// a temp folder, and nothing below that root is hidden. The home folder
+    /// and the folders above it are never a thread's own folder. A transcript can
     /// name any path on the Mac (an edit that was refused is still listed), so
     /// being listed is not enough.
     static func permitted(
-        _ real: String, cwd: String, image: Bool, tempRoots: [String] = tempRoots
+        _ real: String, cwd: String, image: Bool, tempRoots: [String] = tempRoots,
+        home: String = NSHomeDirectory()
     ) -> Bool {
         // Each root as it is named and as it resolves: a file that is gone
         // is judged by its name, one that is there by where it really is.
-        let named = [cwd] + (image ? tempRoots : [])
-        return (named + named.compactMap(resolved)).contains { root in
+        let folder = (cwd as NSString).standardizingPath
+        let own = [folder, resolved(folder)].compactMap { $0 }
+        // A thread started in the home folder, or above it, has no folder of
+        // its own: everything the user keeps would be inside it.
+        let homes = [(home as NSString).standardizingPath, resolved(home)].compactMap { $0 }
+        let tooWide = own.contains { root in homes.contains { $0 == root || $0.hasPrefix(root + "/") } }
+        let temp = image ? tempRoots + tempRoots.compactMap(resolved) : []
+        return ((tooWide ? [] : own) + temp).contains { root in
             below(real, root: root).map { !hidden($0) } ?? false
         }
     }
 
     private static func isImage(_ artifact: Artifact) -> Bool {
-        let kind = kind(of: artifact)
-        return kind == .image || kind == .pdf
+        kind(of: artifact) == .image
     }
 
     private static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "svg"]
@@ -185,13 +192,13 @@ enum MobileArtifacts {
     /// file that is gone is judged by the path it had.
     static func files(
         _ source: MobileArtifactSource?, cwd: String, size: (String) -> Int? = fileSize,
-        tempRoots: [String] = tempRoots
+        tempRoots: [String] = tempRoots, home: String = NSHomeDirectory()
     ) -> [MobileArtifactFile] {
         (source?.artifacts ?? []).filter { artifact in
             !isSecret(artifact.path) && permitted(
                 resolved(artifact.path) ?? (artifact.path as NSString).standardizingPath,
                 cwd: cwd, image: isImage(artifact),
-                tempRoots: tempRoots)
+                tempRoots: tempRoots, home: home)
         }.map {
             MobileArtifactFile(artifact: $0, size: $0.exists ? size($0.path) : nil)
         }
@@ -266,7 +273,7 @@ enum MobileArtifacts {
     ///   is refused, and one written in another letter case is still found.
     static func read(
         path: String, cwd: String, image: Bool, limit: Int = maxFileBytes,
-        tempRoots: [String] = tempRoots
+        tempRoots: [String] = tempRoots, home: String = NSHomeDirectory()
     ) -> FileRead {
         let fd = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
         guard fd >= 0 else { return .missing }
@@ -275,7 +282,7 @@ enum MobileArtifacts {
         guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG else { return .missing }
         guard info.st_size <= off_t(limit) else { return .tooLarge }
         guard let real = realPath(of: fd), !isSecret(real),
-              permitted(real, cwd: cwd, image: image, tempRoots: tempRoots)
+              permitted(real, cwd: cwd, image: image, tempRoots: tempRoots, home: home)
         else { return .missing }
         // One byte past the limit: a file that grew since `fstat` is still refused.
         let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: false)

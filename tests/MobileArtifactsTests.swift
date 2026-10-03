@@ -168,6 +168,46 @@ final class MobileArtifactsTests: XCTestCase {
         XCTAssertEqual(MobileArtifacts.files(([old], []), cwd: cwd.path), [])
     }
 
+    /// A thread started in the home folder would make everything under it
+    /// (`Documents`, `Library`) the thread's own. The home folder and the
+    /// folders above it are never a root.
+    func testTheHomeFolderAndTheFoldersAboveItAreNeverARoot() throws {
+        let fm = FileManager.default
+        let home = root.appendingPathComponent("home")
+        let cwd = home.appendingPathComponent("code/acme-app")
+        for folder in [cwd, home.appendingPathComponent("Documents"),
+                       home.appendingPathComponent("Library/Mail")] {
+            try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        }
+        let papers = artifact(try write("tax", to: home.appendingPathComponent("Documents/tax.md")))
+        let mail = artifact(try write("mail", to: home.appendingPathComponent("Library/Mail/inbox.txt")))
+        let loose = artifact(try write("note", to: home.appendingPathComponent("notes.txt")))
+        let plan = artifact(try write("# Plan", to: cwd.appendingPathComponent("PLAN.md")))
+        let source: MobileArtifactSource = ([papers, mail, loose, plan], [])
+
+        // The home folder itself, the folder above it, and the home folder
+        // written with a trailing slash or through a link to it.
+        let link = root.appendingPathComponent("home-link")
+        try fm.createSymbolicLink(at: link, withDestinationURL: home)
+        for folder in [home.path, root.path, home.path + "/", link.path] {
+            XCTAssertEqual(
+                MobileArtifacts.files(source, cwd: folder, tempRoots: [], home: home.path), [], folder)
+            for file in [papers, mail, loose, plan] {
+                XCTAssertEqual(
+                    MobileArtifacts.read(
+                        path: file.path, cwd: folder, image: false, tempRoots: [], home: home.path),
+                    .missing, "\(folder) \(file.path)")
+            }
+        }
+        // A project inside the home folder is a root as before.
+        XCTAssertEqual(
+            MobileArtifacts.files(source, cwd: cwd.path, tempRoots: [], home: home.path)
+                .map(\.artifact.name), ["PLAN.md"])
+        XCTAssertEqual(
+            MobileArtifacts.read(path: plan.path, cwd: cwd.path, image: false, tempRoots: [], home: home.path),
+            .data(Data("# Plan".utf8)))
+    }
+
     func testAScreenshotInATempFolderIsOfferedAndOtherTempFilesAreNot() throws {
         let temp = root.appendingPathComponent("tmp")
         try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
@@ -181,7 +221,12 @@ final class MobileArtifactsTests: XCTestCase {
 
         XCTAssertEqual(
             MobileArtifacts.files(source, cwd: project.path, tempRoots: roots).map(\.artifact.name),
-            ["shot.png", "report.pdf"])
+            ["shot.png"])
+        // A PDF is a document, not a screenshot: the temp folders do not serve it.
+        XCTAssertEqual(
+            MobileArtifacts.file(
+                id: MobileArtifacts.id(path: paper.path), thread: thread(cwd: project.path)) { _ in source }
+                .status, 404)
         XCTAssertEqual(
             MobileArtifacts.read(path: shot.path, cwd: project.path, image: true, tempRoots: roots),
             .data(Data("png".utf8)))

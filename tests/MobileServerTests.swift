@@ -2202,4 +2202,155 @@ final class MobileServerTests: XCTestCase {
         XCTAssertEqual(post(Self.thread + "/key", json: #"{"key":"Enter","prompt":"\#(card)"}"#).status, 200)
         XCTAssertEqual(pane.argv.map(\.last), ["Escape", "Down", "Up", "Enter"])
     }
+
+    // MARK: replies, third review
+
+    private func shownPrompt() throws -> [String: Any] {
+        try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(get(Self.thread + "/prompt").body.utf8)) as? [String: Any])
+    }
+
+    func testEnterAfterAnArrowNeedsTheIdOfTheRowThatIsSelectedNow() throws {
+        repliesOn()
+        pane.status = .waiting
+        pane.screen = DemoPrompt.permission
+        pane.cursor = .lastLine
+        let first = try shownPrompt()
+        let id = try XCTUnwrap(first["id"] as? String)
+        // The card is told which row Enter would take.
+        XCTAssertEqual((first["prompt"] as? [String: Any])?["selected"] as? Int, 1)
+
+        XCTAssertEqual(post(Self.thread + "/key", json: #"{"key":"Down","prompt":"\#(id)"}"#).status, 200)
+        // The cursor moved to "No": the card the phone holds still marks "Yes".
+        pane.screen = DemoPrompt.permissionOnThird
+        let stale = post(Self.thread + "/key", json: #"{"key":"Enter","prompt":"\#(id)"}"#)
+        XCTAssertEqual(stale.status, 409)
+        XCTAssertEqual(stale.body, #"{"error":"stale"}"#)
+        XCTAssertEqual(pane.argv.map(\.last), ["Down"])
+
+        let moved = try shownPrompt()
+        let movedID = try XCTUnwrap(moved["id"] as? String)
+        XCTAssertNotEqual(movedID, id)
+        XCTAssertEqual((moved["prompt"] as? [String: Any])?["selected"] as? Int, 3)
+        XCTAssertEqual(post(Self.thread + "/key", json: #"{"key":"Enter","prompt":"\#(movedID)"}"#).status, 200)
+        XCTAssertEqual(pane.argv.map(\.last), ["Down", "Enter"])
+    }
+
+    func testEnterIntoAPaneWithNoFirstHandStatusNeedsAnInputBoxOrAPromptId() {
+        repliesOn()
+        // The shell window: no hooks. It shows a question with no numbered
+        // choices, so there is no prompt id to hold a key to.
+        let shell = "/api/threads/localhost%3A13"
+        pane.status = nil
+        pane.cursor = .lastLine
+        for screen in [DemoPrompt.yesNo, "$ rm -i build\nremove build? [y/N] ", "Press Enter to continue"] {
+            pane.screen = screen
+            for key in ["Enter", "1"] {
+                let refused = post(shell + "/key", json: #"{"key":"\#(key)"}"#)
+                XCTAssertEqual(refused.status, 409, screen)
+                XCTAssertEqual(
+                    refused.body, #"{"error":"no_input","message":"Thread shows no input box"}"#, screen)
+            }
+        }
+        XCTAssertEqual(pane.argv.count, 0)
+        // Escape and the arrows answer nothing and stay.
+        XCTAssertEqual(post(shell + "/key", json: #"{"key":"Escape"}"#).status, 200)
+        // An agent's idle input box, with the cursor in it, takes Enter.
+        pane.screen = DemoPrompt.idle
+        pane.cursor = .inBox
+        XCTAssertEqual(post(shell + "/key", json: #"{"key":"Enter"}"#).status, 200)
+        XCTAssertEqual(pane.argv.map(\.last), ["Escape", "Enter"])
+    }
+
+    func testALookAlikeUnderTheBoxIsNotAFooter() {
+        repliesOn()
+        let box = "────────────\n❯ \n────────────\n"
+        // Indented like a footer, but each waits for a key. A terminal has
+        // its cursor on such a line, not in the box.
+        for below in [
+            "  Overwrite? [y/N] ", " Password:", " $ ", "  ❯ Yes, proceed\n    No, go back",
+            "\t? for shortcuts", "\u{A0}\u{A0}? for shortcuts", "\u{3000}? for shortcuts",
+            "  Continue?", "  name:",
+        ] {
+            for cursor in [FakePane.Cursor.lastLine, .inBox] {
+                pane.screen = box + below
+                pane.cursor = cursor
+                let refused = post(Self.thread + "/text", json: #"{"text":"y"}"#)
+                XCTAssertEqual(refused.status, 409, "\(below) \(cursor)")
+                XCTAssertEqual(
+                    refused.body, #"{"error":"no_input","message":"Thread shows no input box"}"#, below)
+            }
+        }
+        // A real footer, but the cursor is not in the box, or cannot be read.
+        for cursor in [FakePane.Cursor.lastLine, .unknown, .row(0)] {
+            pane.screen = box + "  ? for shortcuts"
+            pane.cursor = cursor
+            XCTAssertEqual(post(Self.thread + "/text", json: #"{"text":"y"}"#).status, 409, "\(cursor)")
+        }
+        XCTAssertEqual(pane.argv.count, 0)
+        // The agent's own footer, a status line of the human's own included,
+        // with the cursor in the box.
+        pane.screen = box + "  ➜ acme-app git:(main) 12% context\n  ⏵⏵ auto mode on (shift+tab to cycle)"
+        pane.cursor = .inBox
+        XCTAssertEqual(post(Self.thread + "/text", json: #"{"text":"go on"}"#).status, 200)
+    }
+
+    func testAPromptAboveABoxAndAnEchoAreJudgedByWhereTheCursorAndTheBoxAre() {
+        repliesOn()
+        // A prompt above a box that is last on screen. The cursor is not in
+        // that box, so nothing says the box is live and the prompt is old.
+        pane.screen = DemoPrompt.permission + "\n" + DemoPrompt.idle
+        pane.cursor = .row(9)
+        let above = post(Self.thread + "/text", json: #"{"text":"go on"}"#)
+        XCTAssertEqual(above.status, 409)
+        XCTAssertEqual(above.body, #"{"error":"waiting","message":"Thread is waiting on a prompt"}"#)
+        XCTAssertEqual(pane.argv.count, 0)
+
+        // The reply is exactly the option lines of a prompt that comes up
+        // between two rules after the paste.
+        let list = #"{"text":"1. Yes\n2. No"}"#
+        let menu = "\n\n\n\n\n\n────────\n❯ 1. Yes\n  2. No\n────────"
+        // A menu parks the cursor away from its rows.
+        pane.screen = DemoPrompt.idle
+        pane.cursor = .inBox
+        pane.screenAfterPaste = menu
+        pane.cursorAfterPaste = .row(0)
+        let parked = post(Self.thread + "/text", json: list)
+        XCTAssertEqual(parked.status, 409)
+        XCTAssertTrue(parked.body.contains(#""reason":"waiting""#), parked.body)
+        // Even with the cursor on it, it is not where the input box was.
+        pane.screen = DemoPrompt.idle
+        pane.cursor = .inBox
+        pane.screenAfterPaste = menu
+        pane.cursorAfterPaste = .inBox
+        let moved = post(Self.thread + "/text", json: list)
+        XCTAssertEqual(moved.status, 409)
+        XCTAssertFalse(pane.argv.contains { $0.contains("Enter") })
+
+        // The same text in the box that was there before the paste is ours.
+        pane.screen = DemoPrompt.idle
+        pane.cursor = .inBox
+        pane.screenAfterPaste = DemoPrompt.input("1. Yes\n2. No")
+        pane.cursorAfterPaste = .inBox
+        XCTAssertEqual(post(Self.thread + "/text", json: list).status, 200)
+    }
+
+    func testReadsCodexsOwnPromptAndTakesNoTextOverIt() throws {
+        repliesOn()
+        pane.status = nil
+        pane.screen = DemoPrompt.codexTrust
+        // Codex parks the cursor under its menu.
+        pane.cursor = .lastLine
+        let shell = "/api/threads/localhost%3A13"
+        let shown = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(get(shell + "/prompt").body.utf8)) as? [String: Any])
+        let prompt = try XCTUnwrap(shown["prompt"] as? [String: Any])
+        XCTAssertEqual(
+            (prompt["options"] as? [[String: Any]])?.compactMap { $0["label"] as? String },
+            ["Trust and continue", "Back to Agent Command Center"])
+        XCTAssertEqual(prompt["selected"] as? Int, 1)
+        XCTAssertEqual(post(shell + "/text", json: #"{"text":"go on"}"#).status, 409)
+        XCTAssertEqual(post(shell + "/key", json: #"{"key":"Enter"}"#).status, 409)
+        XCTAssertEqual(pane.argv.count, 0)
+    }
 }

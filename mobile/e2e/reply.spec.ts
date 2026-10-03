@@ -1056,6 +1056,8 @@ test('with the key bar alone the card is read-only, and the keys name it', async
 		/No, and tell Claude what to do differently\s*3/
 	]);
 	await expect(card(page).getByRole('button')).toHaveCount(0);
+	// The row Enter takes is marked here too.
+	await expect(card(page).locator('[aria-current="true"]')).toHaveText(/^❯\s*Yes\s*1$/);
 	await expect(card(page).locator('[data-option]').first()).not.toHaveCSS(
 		'background-color',
 		'rgb(50, 145, 255)'
@@ -1181,4 +1183,120 @@ test('the key bar scrolls sideways without moving the page or the drawer', async
 		textSize
 	);
 	expect(await page.locator('.screen').evaluate((el) => el.scrollLeft)).toBe(0);
+});
+
+const current = (page: Page): Locator => card(page).locator('[aria-current="true"]');
+
+test('the card marks the row Enter takes, and follows the arrows', async ({ page }) => {
+	await open(page, PERMISSION, ['replies', 'keyBar']);
+	const options = card(page).locator('[data-option]');
+	await expect(current(page)).toHaveCount(1);
+	await expect(current(page)).toHaveAttribute('data-option', '1');
+	await expect(current(page)).toHaveText(/^❯\s*Yes\s*1$/);
+	await expect(options.nth(0)).toHaveCSS('background-color', 'rgb(50, 145, 255)');
+	const first = await card(page).getAttribute('data-prompt');
+
+	await key(page, 'Down').tap();
+	// The mark moves, and the accent with it: row 1 no longer looks like what Enter takes.
+	await expect(current(page)).toHaveAttribute('data-option', '2');
+	await expect(current(page)).toHaveText(/^❯\s*Yes, and don’t ask again for pnpm exec\s*2$/);
+	await expect(current(page)).toHaveCSS('border-top-color', 'rgb(50, 145, 255)');
+	await expect(options.nth(0)).not.toHaveCSS('background-color', 'rgb(50, 145, 255)');
+	await expect(options.nth(0)).not.toContainText('❯');
+	const second = await card(page).getAttribute('data-prompt');
+	expect(second).not.toBe(first);
+
+	// Enter now names the card that is on screen: the new one.
+	await key(page, 'Enter').tap();
+	await expect
+		.poll(async () => (await received(page)).keys)
+		.toEqual([
+			{ thread: PERMISSION, key: 'Down', prompt: first },
+			{ thread: PERMISSION, key: 'Enter', prompt: second }
+		]);
+	await expect(note(page)).toHaveCount(0);
+
+	// Back up: the first row is the accent Yes again.
+	await key(page, 'Up').tap();
+	await expect(current(page)).toHaveAttribute('data-option', '1');
+	await expect(card(page)).toHaveAttribute('data-prompt', first ?? '');
+	await expect(options.nth(0)).toHaveCSS('background-color', 'rgb(50, 145, 255)');
+});
+
+test('Enter tapped before the card caught up names the old card, and is not sent again', async ({
+	page
+}) => {
+	await open(page, PERMISSION, ['replies', 'keyBar']);
+	await expect(current(page)).toHaveAttribute('data-option', '1');
+	const first = await card(page).getAttribute('data-prompt');
+	// The phone learns of the new row only after a while.
+	await page.request.post('/__fixture/prompt-delay?ms=700');
+	const posted: unknown[] = [];
+	const answers: number[] = [];
+	page.on('request', (request) => {
+		if (request.url().endsWith('/key')) posted.push(request.postDataJSON());
+	});
+	page.on('response', (response) => {
+		if (response.url().endsWith('/key')) answers.push(response.status());
+	});
+	// Down, and Enter right behind it: the human saw row 1 when Enter was tapped.
+	await keybar(page).evaluate((bar) => {
+		for (const label of ['Down', 'Enter'])
+			bar.querySelector<HTMLElement>(`[aria-label="${label}"]`)?.click();
+	});
+	await expect.poll(() => answers).toEqual([200, 409]);
+	expect(posted).toEqual([
+		{ key: 'Down', prompt: first },
+		{ key: 'Enter', prompt: first }
+	]);
+	// At this moment the card has not caught up: Enter went with what was on screen.
+	await expect(note(page)).toHaveText('Prompt changed');
+
+	// The card ends on the new selection, and nothing was sent a second time.
+	await expect(current(page)).toHaveAttribute('data-option', '2');
+	await expect(card(page)).not.toHaveAttribute('data-prompt', first ?? '');
+	await page.waitForTimeout(900);
+	expect(posted).toHaveLength(2);
+	expect((await received(page)).keys).toEqual([{ thread: PERMISSION, key: 'Down', prompt: first }]);
+
+	// Seen now: Enter takes row 2.
+	await page.request.post('/__fixture/prompt-delay?ms=0');
+	const second = await card(page).getAttribute('data-prompt');
+	await key(page, 'Enter').tap();
+	await expect
+		.poll(async () => (await received(page)).keys.at(-1))
+		.toEqual({ thread: PERMISSION, key: 'Enter', prompt: second });
+});
+
+test('the read-only card follows the arrows too', async ({ page }) => {
+	await open(page, PERMISSION, ['keyBar']);
+	await expect(card(page)).toHaveAttribute('data-readonly', '');
+	await expect(current(page)).toHaveAttribute('data-option', '1');
+	await key(page, 'Down').tap();
+	await key(page, 'Down').tap();
+	await expect(current(page)).toHaveAttribute('data-option', '3');
+	await expect(current(page)).toHaveText(/^❯\s*No, and tell Claude what to do differently\s*3$/);
+	await expect(card(page).locator('[aria-current="true"]')).toHaveCount(1);
+});
+
+test('Enter on a pane with no input box in sight is refused, and says why', async ({ page }) => {
+	await open(page, IDLE, ['keyBar'], [`/__fixture/no-input?id=${IDLE}`]);
+	let posts = 0;
+	page.on('request', (request) => {
+		if (request.url().endsWith('/key')) posts += 1;
+	});
+	await keybar(page).evaluate((bar) => {
+		for (const label of ['Enter', 'Down'])
+			bar.querySelector<HTMLElement>(`[aria-label="${label}"]`)?.click();
+	});
+	// With the key bar alone there is no composer: the bar says it.
+	await expect(page.locator('[data-note]')).toHaveText('Thread shows no input box');
+	await page.waitForTimeout(400);
+	expect(posts).toBe(1);
+	expect((await received(page)).keys).toEqual([]);
+	// Escape is still taken.
+	await key(page, 'Escape').tap();
+	await expect
+		.poll(async () => (await received(page)).keys)
+		.toEqual([{ thread: IDLE, key: 'Escape' }]);
 });

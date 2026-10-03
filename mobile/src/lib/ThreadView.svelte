@@ -353,6 +353,10 @@
 		{#if repliesOn && reply.matches.length}
 			<SlashList commands={reply.matches} onpick={reply.pick} />
 		{/if}
+		{#if !repliesOn && reply.note}
+			<!-- With no composer below, the bar's own refusals are said here. -->
+			<div class="knote" class:bad={reply.note.bad} role="alert" data-note>{reply.note.text}</div>
+		{/if}
 		{#if keysOn}<KeyBar {reply} composer={repliesOn} />{/if}
 		{#if voiceOn}<VoiceBar target={id} sink={reply.voice} />{/if}
 		{#if repliesOn}
@@ -477,6 +481,19 @@
 		display: flex;
 		flex-direction: column;
 		padding-bottom: var(--kb, 0px);
+	}
+
+	.knote {
+		padding: 0 max(18px, env(safe-area-inset-right)) 6px max(18px, env(safe-area-inset-left));
+		font-size: 12.5px;
+		color: var(--muted);
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.knote.bad {
+		color: var(--red);
 	}
 
 	.u {

@@ -26,6 +26,9 @@ struct MobilePaneState: Equatable {
     /// The status was read on another host: it comes from the last scan, not
     /// from this Mac's hooks, so it may be old.
     var remote = false
+
+    /// The status is not first-hand: missing (no hooks) or another host's.
+    var unverified: Bool { status == .unknown || remote }
 }
 
 /// What the server may do to one thread's pane. The app builds it from the
@@ -41,6 +44,10 @@ struct MobilePaneIO {
     /// Create `path` on the pane's host with `data`. It never overwrites and
     /// never follows a link.
     var save: (_ data: Data, _ path: String) -> FileTransfer.Saved
+    /// The row of the pane's screen the terminal cursor is on, from 0. An
+    /// agent keeps it in its input box; a shell or a question under a dead
+    /// agent's last frame has it. nil when it cannot be read.
+    var cursorRow: () -> Int? = { nil }
     /// The pane's prompt counter, given what the pane shows now (`key` names
     /// the prompt's words; nil for no prompt). The server raises it each time
     /// the pane starts waiting, each time the words change, and after each
@@ -65,6 +72,8 @@ struct MobilePrompt: Equatable {
     let detail: String
     let question: String
     let options: [Option]
+    /// The choice the cursor is on: what Enter takes.
+    var selected = 1
     /// The card does not hold all of what the pane shows above the choices.
     var truncated = false
     /// When the pane started waiting, and the pane's prompt counter. Both
@@ -77,17 +86,19 @@ struct MobilePrompt: Equatable {
         MobileReply.hash([title, detail, question] + options.map { "\($0.n).\($0.label)" })
     }
 
-    /// Names this prompt. An answer or a key carries it back, so a tap meant
-    /// for a prompt that is no longer on the pane does nothing. The counter
-    /// is in it: the same question asked twice is two prompts.
+    /// Names this prompt as the phone shows it. An answer or a key carries it
+    /// back, so a tap meant for a prompt that is no longer on the pane does
+    /// nothing. The counter is in it: the same question asked twice is two
+    /// prompts. So is the selected row: Enter takes that row, so an Enter
+    /// sent for a card that marks another row is refused.
     var id: String {
-        MobileReply.hash([key, since.map(String.init) ?? "", String(sequence)])
+        MobileReply.hash([key, since.map(String.init) ?? "", String(sequence), String(selected)])
     }
 
     var json: [String: Any] {
         [
             "id": id, "kind": kind.rawValue, "title": title, "detail": detail,
-            "question": question, "truncated": truncated,
+            "question": question, "truncated": truncated, "selected": selected,
             "options": options.map { ["n": $0.n, "label": $0.label] as [String: Any] },
         ]
     }
@@ -101,9 +112,18 @@ struct MobilePrompt: Equatable {
 struct MobileScreen: Equatable {
     /// The prompt the pane waits on. nil when it shows none.
     let prompt: MobilePrompt?
-    /// The pane shows an agent's input box as the last thing on screen, and
-    /// no prompt: it is verified as idle and ready for text.
+    /// The pane shows an agent's input box as the last thing on screen, the
+    /// terminal cursor is in it, and there is no prompt: it is verified as
+    /// idle and ready for text.
     let inputBox: Bool
+    /// Where that box is, to hold a later reading of the pane against.
+    let anchor: Anchor?
+
+    /// The rows of an input box's two rules.
+    struct Anchor: Equatable {
+        let top: Int
+        let bottom: Int
+    }
     /// The last lines with text, for naming a prompt that has no choices.
     let tail: [String]
 
@@ -134,7 +154,8 @@ struct MobileScreen: Equatable {
     /// The line starts with the cursor an input box or a list shows.
     private static func hasCursor(_ line: String) -> Bool {
         guard let first = line.first, cursors.contains(first) else { return false }
-        return line.count == 1 || line.dropFirst().first == " "
+        // Claude Code puts a no-break space after its mark.
+        return line.count == 1 || line.dropFirst().first?.isWhitespace == true
     }
 
     /// `❯ 1. Yes` → (1, "Yes", selected).
@@ -143,7 +164,7 @@ struct MobileScreen: Equatable {
         var selected = false
         if let first = rest.first, cursors.contains(first) {
             selected = true
-            rest = rest.dropFirst().drop { $0 == " " }
+            rest = rest.dropFirst().drop(while: \.isWhitespace)
         }
         guard let digit = rest.first, let n = digit.wholeNumberValue, (1...9).contains(n),
               digit.isASCII, rest.dropFirst().hasPrefix(". ")
@@ -153,44 +174,66 @@ struct MobileScreen: Equatable {
         return label.isEmpty ? nil : (n, label, selected)
     }
 
-    /// `pasted` is text of ours that may sit in the pane's input box: a
-    /// numbered list the human sent looks like a prompt there.
-    init(_ text: String, pasted: String = "") {
+    /// `cursorRow` is the row the terminal cursor is on. `pasted` is text of
+    /// ours that may sit in the pane's input box: a numbered list the human
+    /// sent looks like a prompt there. `after` is where the box was before
+    /// that text went in.
+    init(_ text: String, cursorRow: Int?, pasted: String = "", after: Anchor? = nil) {
         let raw = text.split(separator: "\n", omittingEmptySubsequences: false)
         let lines = raw.map(Self.content)
         tail = Array(lines.filter { !$0.isEmpty }.suffix(12))
-        let box = Self.inputBox(lines, raw: raw)
+        // A box is live only with the cursor in it. An agent keeps the cursor
+        // in its input box; whatever else may be in front (a shell, a
+        // question, a menu) has the cursor on its own line or parks it.
+        var box = Self.inputBox(lines, raw: raw)
+        if let found = box, cursorRow.map({ (found.top + 1..<found.bottom).contains($0) }) != true {
+            box = nil
+        }
         var found = Self.list(lines)
         if let list = found, let box {
-            if list.rows.upperBound < box.lowerBound {
+            if list.rows.upperBound < box.top {
                 // Above the live input box: an old prompt in the scrollback.
                 // A prompt that waits takes the box's place, so the two are
                 // never on screen together.
                 found = nil
-            } else if Self.isEcho(Array(lines[box]), of: pasted) {
+            } else if let after, after.top == box.top || after.bottom == box.bottom,
+                      Self.isEcho(Array(lines[(box.top + 1)..<box.bottom]), of: pasted) {
+                // Our own text, in the box that was there before the paste.
                 found = nil
             }
         }
         prompt = found?.prompt
         inputBox = box != nil && found == nil
+        anchor = inputBox ? box : nil
     }
 
-    /// The agent's live input box, as the rows inside it: two rules with the
-    /// cursor on the first row between them, and under them nothing but the
-    /// agent's own footer. A box with anything else below it is a dead
-    /// agent's last frame: a shell or a pager is in front now.
-    private static func inputBox(_ lines: [String], raw: [Substring]) -> ClosedRange<Int>? {
+    /// An agent's input box by its shape: the last two rules on screen with
+    /// the cursor mark on the first row between them, and under them nothing
+    /// but a footer. A box with anything else below it is a dead agent's last
+    /// frame: a shell or a pager is in front now.
+    private static func inputBox(_ lines: [String], raw: [Substring]) -> Anchor? {
         let rules = lines.indices.filter { isRule(lines[$0]) }
         guard rules.count >= 2 else { return nil }
         let (top, bottom) = (rules[rules.count - 2], rules[rules.count - 1])
         guard bottom - top >= 2, bottom - top <= maxBoxLines + 1, hasCursor(lines[top + 1])
         else { return nil }
-        // The footer is a few indented lines. A shell prompt, a question or a
-        // pager's last line starts at the left edge.
         let below = raw[(bottom + 1)...].filter { !$0.allSatisfy(\.isWhitespace) }
-        guard below.count <= maxFooterLines, below.allSatisfy({ $0.first?.isWhitespace == true })
-        else { return nil }
-        return (top + 1)...(bottom - 1)
+        guard below.count <= maxFooterLines, below.allSatisfy(isFooter) else { return nil }
+        return Anchor(top: top, bottom: bottom)
+    }
+
+    /// Whether a line under the box can be the agent's footer: hints, a mode
+    /// line, a status line. It is indented with plain spaces, and it is not
+    /// a line that waits for a key: no question, no field, no shell prompt,
+    /// no menu row.
+    private static func isFooter(_ line: Substring) -> Bool {
+        guard line.hasPrefix("  ") else { return false }
+        let text = line.drop { $0 == " " }
+        guard let first = text.first, !first.isWhitespace, !cursors.contains(first) else { return false }
+        let trimmed = text.trimmingCharacters(in: .whitespaces).lowercased()
+        guard let last = trimmed.last, !"?:$%#>".contains(last) else { return false }
+        return !["[y/n]", "(y/n)", "[yes/no]", "(yes/no)", "password", "passphrase"]
+            .contains { trimmed.contains($0) }
     }
 
     /// Whether the input box holds exactly `text`: every row of the box is a
@@ -266,7 +309,7 @@ struct MobileScreen: Equatable {
             || question.lowercased().contains("allow")
         let prompt = MobilePrompt(
             kind: permission ? .permission : .question, title: title, detail: detail,
-            question: question, options: found.map(\.option), truncated: truncated)
+            question: question, options: found.map(\.option), selected: picked.n, truncated: truncated)
         return (prompt, found[0].index...found[found.count - 1].index)
     }
 }
@@ -333,11 +376,17 @@ enum MobileReply {
     ) -> MobileResponse {
         guard keys.contains(key) else { return .error(400, "bad_key") }
         guard let state else { return .error(404, "not_found") }
-        guard let screen = io.screen() else { return .error(503, "unavailable", message: unreachable) }
-        let card = prompt(state: state, screen: screen, io: io)
-        if let current = card?.id ?? waitingID(state: state, screen: screen, io: io) {
+        guard let text = io.screen() else { return .error(503, "unavailable", message: unreachable) }
+        let seen = MobileScreen(text, cursorRow: io.cursorRow())
+        let card = prompt(state: state, seen: seen, io: io)
+        if let current = card?.id ?? waitingID(state: state, seen: seen, io: io) {
             guard current == sent else { return .error(409, "stale") }
             if answers(key), card == nil { return .error(409, "unseen", message: unseenMessage) }
+        } else if answers(key), state.unverified, !seen.inputBox {
+            // Nothing names what this pane waits on, and its status is not
+            // first-hand: it may sit on a prompt that could not be read. Only
+            // a verified input box takes an Enter or a digit then.
+            return .error(409, "no_input", message: noInputMessage)
         }
         let response = send(key: key, target: target, io: io)
         // The prompt is answered: the same words after this are a new prompt.
@@ -376,18 +425,27 @@ enum MobileReply {
     /// status is not enough on its own: it may be old (another host) or
     /// missing (no hooks), so the screen is always read too. Any prompt on it
     /// refuses the text, and so does a screen that cannot be verified as an
-    /// agent's idle input box. `pasted` is text of ours already in that box.
-    static func refusal(
-        state: MobilePaneState?, screen: () -> String?, pasted: String = ""
-    ) -> MobileResponse? {
-        guard let state else { return .error(404, "not_found") }
-        if state.status == .busy { return .error(409, "busy", message: busyMessage) }
-        if state.status == .waiting { return .error(409, "waiting", message: waitingMessage) }
-        guard let text = screen() else { return .error(503, "unavailable", message: unreachable) }
-        let seen = MobileScreen(text, pasted: pasted)
-        if seen.prompt != nil { return .error(409, "waiting", message: waitingMessage) }
-        if !seen.inputBox { return .error(409, "no_input", message: noInputMessage) }
-        return nil
+    /// agent's idle input box with the cursor in it.
+    static func refusal(state: MobilePaneState?, io: MobilePaneIO) -> MobileResponse? {
+        verify(state: state, io: io).refusal
+    }
+
+    /// The same check, and where the input box is when it passes. `pasted` is
+    /// text of ours already in that box, and `after` where the box was before
+    /// it went in.
+    static func verify(
+        state: MobilePaneState?, io: MobilePaneIO, pasted: String = "", after: MobileScreen.Anchor? = nil
+    ) -> (refusal: MobileResponse?, anchor: MobileScreen.Anchor?) {
+        guard let state else { return (.error(404, "not_found"), nil) }
+        if state.status == .busy { return (.error(409, "busy", message: busyMessage), nil) }
+        if state.status == .waiting { return (.error(409, "waiting", message: waitingMessage), nil) }
+        guard let text = io.screen() else {
+            return (.error(503, "unavailable", message: unreachable), nil)
+        }
+        let seen = MobileScreen(text, cursorRow: io.cursorRow(), pasted: pasted, after: after)
+        if seen.prompt != nil { return (.error(409, "waiting", message: waitingMessage), nil) }
+        if !seen.inputBox { return (.error(409, "no_input", message: noInputMessage), nil) }
+        return (nil, seen.anchor)
     }
 
     // MARK: Text
@@ -400,13 +458,14 @@ enum MobileReply {
         _ text: String, target: String, io: MobilePaneIO, state: () -> MobilePaneState?,
         pause: (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }
     ) -> MobileResponse {
-        if let refusal = refusal(state: state(), screen: io.screen) { return refusal }
+        let before = verify(state: state(), io: io)
+        if let refusal = before.refusal { return refusal }
         if let failure = paste(text, target: target, io: io) { return failure }
         pause(enterDelay)
         // A prompt that came up since the paste would take the Enter as its
         // answer.
-        if let refusal = refusal(state: state(), screen: io.screen, pasted: text) {
-            return notSent(refusal, text: text, target: target, io: io)
+        if let refusal = verify(state: state(), io: io, pasted: text, after: before.anchor).refusal {
+            return notSent(refusal, text: text, target: target, io: io, after: before.anchor)
         }
         guard io.tmux(TmuxCommands.submitPastedText(target: target), nil) != nil else {
             return .error(503, "unavailable", message: unreachable)
@@ -421,7 +480,8 @@ enum MobileReply {
     /// instead, so none are sent. `cleared` tells the phone what the pane
     /// holds now: false means the text may still be in the box.
     private static func notSent(
-        _ refusal: MobileResponse, text: String, target: String, io: MobilePaneIO
+        _ refusal: MobileResponse, text: String, target: String, io: MobilePaneIO,
+        after: MobileScreen.Anchor?
     ) -> MobileResponse {
         // A thread that has gone has no pane to clear.
         guard refusal.status != 404 else { return refusal }
@@ -429,7 +489,9 @@ enum MobileReply {
         let body = (try? JSONSerialization.jsonObject(with: refusal.body)) as? [String: Any]
         let waiting = body?["error"] as? String == "waiting"
         let boxInFront = !waiting
-            && (io.screen().map { MobileScreen($0, pasted: text).inputBox } ?? false)
+            && (io.screen().map {
+                MobileScreen($0, cursorRow: io.cursorRow(), pasted: text, after: after).inputBox
+            } ?? false)
         let cleared = boxInFront
             && io.tmux(TmuxCommands.clearInput(target: target, lines: lines), nil) != nil
         return .json([
@@ -454,32 +516,37 @@ enum MobileReply {
 
     /// The prompt on the pane now, with the time the pane started waiting
     /// and the pane's prompt counter.
-    static func prompt(state: MobilePaneState?, screen: String?, io: MobilePaneIO) -> MobilePrompt? {
-        guard let state, let screen else { return nil }
-        guard var prompt = MobileScreen(screen).prompt else { return nil }
+    static func prompt(state: MobilePaneState?, seen: MobileScreen?, io: MobilePaneIO) -> MobilePrompt? {
+        guard let state, var prompt = seen?.prompt else { return nil }
         prompt.since = state.since
         prompt.sequence = io.sequence(prompt.key)
         return prompt
     }
 
+    /// The pane's screen and cursor, read now.
+    static func look(_ io: MobilePaneIO) -> MobileScreen? {
+        io.screen().map { MobileScreen($0, cursorRow: io.cursorRow()) }
+    }
+
     /// What names the thing a waiting pane waits on when its choices cannot
     /// be read: a name made from what the screen shows. nil for a pane that
     /// is not waiting.
-    static func waitingID(state: MobilePaneState, screen: String, io: MobilePaneIO) -> String? {
+    static func waitingID(state: MobilePaneState, seen: MobileScreen, io: MobilePaneIO) -> String? {
         guard state.status == .waiting else {
             // Nothing is waiting: the next prompt is a new one.
             _ = io.sequence(nil)
             return nil
         }
-        let key = hash(MobileScreen(screen).tail)
+        let key = hash(seen.tail)
         return "w" + hash([key, state.since.map(String.init) ?? "", String(io.sequence(key))])
     }
 
     /// The `GET …/prompt` body: the card, and the id a key must carry.
-    static func promptBody(state: MobilePaneState?, screen: String?, io: MobilePaneIO) -> [String: Any] {
-        let prompt = prompt(state: state, screen: screen, io: io)
+    static func promptBody(state: MobilePaneState?, io: MobilePaneIO) -> [String: Any] {
+        let seen = look(io)
+        let prompt = prompt(state: state, seen: seen, io: io)
         var id = prompt?.id
-        if id == nil, let state, let screen { id = waitingID(state: state, screen: screen, io: io) }
+        if id == nil, let state, let seen { id = waitingID(state: state, seen: seen, io: io) }
         return ["prompt": prompt.map { $0.json as Any } ?? NSNull(), "id": id ?? NSNull()]
     }
 
@@ -501,7 +568,7 @@ enum MobileReply {
         prompt id: String, option: Int, target: String, io: MobilePaneIO, state: MobilePaneState?
     ) -> MobileResponse {
         guard state != nil else { return .error(404, "not_found") }
-        guard let prompt = prompt(state: state, screen: io.screen(), io: io), prompt.id == id else {
+        guard let prompt = prompt(state: state, seen: look(io), io: io), prompt.id == id else {
             return .error(409, "stale")
         }
         guard prompt.options.contains(where: { $0.n == option }) else {
@@ -590,7 +657,7 @@ enum MobileReply {
         guard thread.cwd.hasPrefix("/"), thread.cwd.unicodeScalars.allSatisfy(MobileManager.isText),
               !thread.cwd.contains("\n")
         else { return .error(503, "unavailable", message: unreachable) }
-        if let refusal = refusal(state: state(), screen: io.screen) { return refusal }
+        if let refusal = refusal(state: state(), io: io) { return refusal }
 
         // The create is exclusive, so a name that is taken (a file, or a link
         // to anywhere) is never written through: the next name is tried.
@@ -608,7 +675,7 @@ enum MobileReply {
         }
         // The file is in place. Its path is pasted only into a pane that can
         // still take text.
-        guard refusal(state: state(), screen: io.screen) == nil,
+        guard refusal(state: state(), io: io) == nil,
               paste(pasted(path: path) + " ", target: thread.pane, io: io) == nil
         else { return .json(["ok": true, "path": path, "pasted": false]) }
         return .json(["ok": true, "path": path, "pasted": true])
