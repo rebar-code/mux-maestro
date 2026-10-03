@@ -41,6 +41,9 @@ const key = (page: Page, name: string): Locator =>
 const slash = (page: Page): Locator => page.locator('[data-slash]');
 const card = (page: Page): Locator => page.locator('[data-prompt]');
 const nextBar = (page: Page): Locator => page.locator('[data-next]');
+/** The reply box while replies are switched off on the Mac. */
+const offBox = (page: Page): Locator =>
+	page.getByRole('textbox', { name: 'Off in MuxMaestro Settings' });
 
 async function received(page: Page): Promise<Replies> {
 	return (await (await page.request.post('/__fixture/replies')).json()) as Replies;
@@ -635,7 +638,8 @@ test('with the features off, the thread shows none of this', async ({ page }) =>
 	await open(page, PERMISSION, []);
 	await expect(page.locator('.u').first()).toBeVisible();
 	await page.waitForTimeout(400);
-	await expect(page.locator('[data-dock]')).toHaveCount(0);
+	// The reply box holds its place, switched off; nothing else of the bar shows.
+	await expect(offBox(page)).toBeDisabled();
 	await expect(box(page)).toHaveCount(0);
 	await expect(keybar(page)).toHaveCount(0);
 	await expect(card(page)).toHaveCount(0);
@@ -676,7 +680,8 @@ test('with the features off, the thread shows none of this', async ({ page }) =>
 	await expect(keybar(page)).toHaveCount(0);
 	await expect(box(page)).toBeVisible();
 	await page.request.post('/__fixture/capability?name=replies&on=0');
-	await expect(page.locator('[data-dock]')).toHaveCount(0);
+	await expect(offBox(page)).toBeDisabled();
+	await expect(box(page)).toHaveCount(0);
 	await expect(card(page)).toHaveCount(0);
 });
 
@@ -1418,4 +1423,95 @@ test('the fixture refuses a digit that is not on the card, and an answer past 9'
 	expect((await post('answer', { prompt: 'menu-3', option: 11 })).status()).toBe(400);
 	expect((await post('answer', { prompt: 'menu-3', option: 2 })).status()).toBe(400);
 	expect((await post('answer', { prompt: 'menu-3', option: 9 })).status()).toBe(200);
+});
+
+test('with replies off the reply box is there, switched off, and posts nothing', async ({
+	page
+}) => {
+	await open(page, IDLE, []);
+	const writes: string[] = [];
+	page.on('request', (request) => {
+		if (request.method() === 'POST' && request.url().includes('/api/')) writes.push(request.url());
+	});
+	const refusals: string[] = [];
+	page.on('response', (response) => {
+		if (response.status() === 403) refusals.push(response.url());
+	});
+	await expect(offBox(page)).toBeVisible();
+	await expect(offBox(page)).toBeDisabled();
+	await expect(offBox(page)).toHaveAttribute('placeholder', 'Off in MuxMaestro Settings');
+	await expect(offBox(page)).toHaveValue('');
+	const pill = page.locator('[data-compose]').getByRole('button');
+	await expect(pill).toHaveText(['↑ Send']);
+	await expect(pill).toBeDisabled();
+	// The label and nothing more: no attach, no slash list, no voice bar, no key bar, no card.
+	await expect(page.locator('[data-compose] > *')).toHaveCount(2);
+	await expect(keybar(page)).toHaveCount(0);
+	await expect(slash(page)).toHaveCount(0);
+	await expect(nextBar(page)).toHaveCount(0);
+	await expect(page.locator('[data-voicebar]')).toHaveCount(0);
+	await expect(page.locator('[data-note]')).toHaveCount(0);
+	// Readable, not a faded-out box.
+	await expect(offBox(page)).toHaveCSS('opacity', '1');
+	// It sits on the bottom edge, inside the screen.
+	const off = await page.locator('[data-compose]').boundingBox();
+	expect((off?.y ?? 0) + (off?.height ?? 0)).toBeLessThanOrEqual(844);
+	expect((off?.y ?? 0) + (off?.height ?? 0)).toBeGreaterThan(830);
+	await shot(page, 'composer-off');
+
+	// Taps do nothing: no focus, no keyboard, no request.
+	await offBox(page).tap({ force: true });
+	await pill.tap({ force: true });
+	await page.keyboard.type('hello');
+	await page.keyboard.press('Enter');
+	await page.waitForTimeout(300);
+	await expect(offBox(page)).not.toBeFocused();
+	await expect(offBox(page)).toHaveValue('');
+	expect(writes).toEqual([]);
+	// And the phone asked for nothing it is not allowed to have.
+	expect(refusals).toEqual([]);
+	expect((await received(page)).texts).toEqual([]);
+
+	// The Mac switches replies on: the same box, live, in the same place, with no reload.
+	const boxBefore = await offBox(page).boundingBox();
+	await page.evaluate(() => ((window as unknown as { __kept: boolean }).__kept = true));
+	await page.request.post('/__fixture/capability?name=replies&on=1');
+	await expect(box(page)).toBeEnabled();
+	await expect(offBox(page)).toHaveCount(0);
+	expect(await page.evaluate(() => (window as unknown as { __kept?: boolean }).__kept)).toBe(true);
+	const on = await page.locator('[data-compose]').boundingBox();
+	const boxAfter = await box(page).boundingBox();
+	expect(Math.abs((on?.y ?? 0) - (off?.y ?? 0))).toBeLessThanOrEqual(1);
+	expect(Math.abs((on?.height ?? 0) - (off?.height ?? 0))).toBeLessThanOrEqual(1);
+	expect(Math.abs((boxAfter?.y ?? 0) - (boxBefore?.y ?? 0))).toBeLessThanOrEqual(1);
+	expect(Math.abs((boxAfter?.width ?? 0) - (boxBefore?.width ?? 0))).toBeLessThanOrEqual(1);
+
+	await box(page).fill('ship it');
+	await sendButton(page).click();
+	await expect(page.locator('.u').last()).toHaveText('ship it');
+
+	// And off again, live.
+	await page.request.post('/__fixture/capability?name=replies&on=0');
+	await expect(offBox(page)).toBeDisabled();
+	await expect(offBox(page)).toHaveValue('');
+});
+
+test('the key bar sits above the switched-off reply box', async ({ page }) => {
+	await open(page, PERMISSION, ['keyBar']);
+	await expect(offBox(page)).toBeDisabled();
+	await expect(keybar(page)).toBeVisible();
+	const bar = await keybar(page).boundingBox();
+	const compose = await page.locator('[data-compose]').boundingBox();
+	expect((bar?.y ?? 0) + (bar?.height ?? 0)).toBeLessThanOrEqual(compose?.y ?? 0);
+	// The read-only card and the keys work as before.
+	await expect(card(page)).toHaveAttribute('data-readonly', '');
+	const shown = await card(page).getAttribute('data-prompt');
+	await key(page, 'Escape').tap();
+	await expect
+		.poll(async () => (await received(page)).keys)
+		.toEqual([{ thread: PERMISSION, key: 'Escape', prompt: shown }]);
+	// The key bar's own refusals are still said, once.
+	await page.request.post(`/__fixture/prompt?id=${PERMISSION}&pid=moved-1&quiet=1`);
+	await key(page, 'Enter').tap();
+	await expect(page.locator('[data-note]')).toHaveText(['Prompt changed']);
 });

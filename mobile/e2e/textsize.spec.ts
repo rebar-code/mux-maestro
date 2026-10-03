@@ -87,7 +87,8 @@ test('the text under the fingers stays under them, on both axes', async ({ page 
 	// This pane has a long scrollback: it scrolls down as well as sideways.
 	await fresh(page, threadPath('devbox:5'));
 	await expect(page.locator('.screen')).toBeVisible();
-	await page.locator('[data-view="terminal"]').evaluate((el) => (el.scrollTop = 600));
+	// Far enough down that the wide line is clear of the reply box at the bottom.
+	await page.locator('[data-view="terminal"]').evaluate((el) => (el.scrollTop = 690));
 	const pre = page.locator('.screen');
 	// A character far along the wide line, scrolled into the middle of the screen.
 	const where = (): Promise<{ x: number; y: number }> =>

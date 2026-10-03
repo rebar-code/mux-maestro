@@ -1112,6 +1112,17 @@ async function asset(res, url) {
 	}
 }
 
+// A test run that loses its server should be able to say why.
+process.on('uncaughtException', (error) => {
+	console.error('fixture server crashed:', error);
+	process.exit(1);
+});
+for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP'])
+	process.on(signal, () => {
+		console.error(`fixture server stopped by ${signal}`);
+		process.exit(0);
+	});
+
 createServer((req, res) => {
 	const url = new URL(req.url, `http://${req.headers.host}`);
 	if (url.pathname.startsWith('/api/')) {

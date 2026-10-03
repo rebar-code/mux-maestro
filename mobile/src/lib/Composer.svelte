@@ -18,6 +18,7 @@
 		sink,
 		voiceOn,
 		blocked = false,
+		off = false,
 		note = null,
 		onsend,
 		oninput,
@@ -33,6 +34,8 @@
 		voiceOn: boolean;
 		/** Nothing can be sent now. The box still takes text. */
 		blocked?: boolean;
+		/** The feature is switched off: the box holds its place and takes nothing. */
+		off?: boolean;
 		/** The status line: what the last send came to. */
 		note?: { text: string; bad: boolean } | null;
 		onsend: () => void;
@@ -49,11 +52,17 @@
 
 	function submit(event: SubmitEvent): void {
 		event.preventDefault();
-		if (canSend && !blocked) onsend();
+		if (canSend && !blocked && !off) onsend();
 	}
 </script>
 
-<form class="compose" class:bare={!voiceOn} onsubmit={submit} data-compose>
+<form
+	class="compose"
+	class:bare={!voiceOn}
+	onsubmit={submit}
+	data-compose
+	data-off={off ? '' : undefined}
+>
 	{#if note}
 		<div class="note" class:bad={note.bad} role={note.bad ? 'alert' : 'status'} data-note>
 			{note.text}
@@ -68,12 +77,15 @@
 		enterkeyhint="send"
 		autocomplete="off"
 		autocapitalize="sentences"
+		disabled={off}
 		{oninput}
 		{onbeforeinput}
 	/>
 	<!-- Typing is always there: with text in the box the button sends it. -->
-	{#if canSend || !voiceOn}
-		<button class="pill send grow" type="submit" disabled={!canSend || blocked}>↑ Send</button>
+	{#if canSend || !voiceOn || off}
+		<button class="pill send grow" type="submit" disabled={!canSend || blocked || off}
+			>↑ Send</button
+		>
 	{:else}
 		<TalkButton {target} {sink} />
 	{/if}
@@ -127,6 +139,18 @@
 		font: inherit;
 		font-size: 16px;
 		outline: none;
+	}
+
+	/* Off, not broken: the label stays readable. */
+	input:disabled {
+		opacity: 1;
+		color: var(--muted);
+		-webkit-text-fill-color: var(--muted);
+	}
+
+	input:disabled::placeholder {
+		color: var(--muted);
+		opacity: 1;
 	}
 
 	input:focus-visible {

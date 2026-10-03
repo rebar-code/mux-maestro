@@ -11,7 +11,7 @@
 	const keys = $derived(barKeys(composer));
 </script>
 
-<div class="kbar" class:solo={!composer} data-keybar>
+<div class="kbar" data-keybar>
 	<div class="keys" data-hscroll role="group" aria-label="Keys">
 		{#each keys as key (key.label)}
 			<button
@@ -46,11 +46,6 @@
 		border: 1px solid var(--border);
 		border-radius: 24px;
 		background: #141414;
-	}
-
-	/* Nothing below it: it keeps clear of the home indicator itself. */
-	.kbar.solo {
-		margin-bottom: calc(8px + var(--safe-bottom, env(safe-area-inset-bottom)));
 	}
 
 	.keys {

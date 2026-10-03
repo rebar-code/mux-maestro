@@ -45,7 +45,8 @@
 	const keysOn = $derived(can('keyBar'));
 	// A take goes to the thread as a reply, so voice needs that switch too.
 	const voiceOn = $derived(repliesOn && can('voice'));
-	const docked = $derived(!closed && (repliesOn || keysOn));
+	// The reply box is always there: switched off on the Mac, it says so and takes nothing.
+	const docked = $derived(!closed);
 	const next = $derived(repliesOn ? nextWaiting(live.threads ?? [], id) : null);
 	// The pane can ask while its status says nothing of it: the prompt decides.
 	// With the key bar alone the card is read-only: it shows what a key would answer.
@@ -247,7 +248,7 @@
 </div>
 
 {#if docked}
-	<div class="dock" data-dock {@attach overKeyboard} {@attach reply.watch}>
+	<div class="dock" data-dock {@attach overKeyboard} {@attach (repliesOn || keysOn) && reply.watch}>
 		{#if next}<NextBar thread={next} />{/if}
 		{#if repliesOn && reply.matches.length}
 			<SlashList commands={reply.matches} onpick={reply.pick} />
@@ -278,6 +279,17 @@
 					{/if}
 				{/snippet}
 			</Composer>
+		{:else}
+			<!-- Same box, same place: nothing moves when the Mac switches replies on. -->
+			<Composer
+				value=""
+				label="Off in MuxMaestro Settings"
+				target={id}
+				sink={reply.voice}
+				voiceOn={false}
+				off
+				onsend={() => {}}
+			/>
 		{/if}
 	</div>
 {/if}
