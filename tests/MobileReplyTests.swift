@@ -322,7 +322,7 @@ final class MobileReplyTests: XCTestCase {
             ("POST", "answer", .answer(id: "localhost:12"), .replies),
             ("GET", "commands", .commands(id: "localhost:12"), .replies),
             ("POST", "key", .key(id: "localhost:12"), .keyBar),
-            ("POST", "upload", .upload(id: "localhost:12", name: ""), .upload),
+            ("POST", "upload", .upload(id: "localhost:12", name: "", paste: true), .upload),
         ]
         for (method, name, endpoint, capability) in routes {
             let request = MobileRequest(method: method, path: "/api/threads/\(id)/\(name)")
@@ -369,7 +369,7 @@ final class MobileReplyTests: XCTestCase {
         request.query = ["name": "photo 1.png"]
         XCTAssertEqual(
             MobileAPI.route(request, config: MobileConfig(capabilities: [.upload])),
-            .api(.upload(id: "localhost:12", name: "photo 1.png")))
+            .api(.upload(id: "localhost:12", name: "photo 1.png", paste: true)))
 
         let upload = "/api/threads/localhost%3A12/upload"
         XCTAssertEqual(MobileHTTP.bodyLimit(method: "POST", path: upload), MobileReply.maxUploadBytes)
@@ -1275,6 +1275,28 @@ final class MobileReplyTests: XCTestCase {
             Data("x".utf8), name: "a.png", thread: thread(cwd: "/Users/me/my app"), io: pane.io,
             limit: 1024, state: { self.state(.idle) })
         XCTAssertEqual(pane.calls[1].stdin, "'/Users/me/my app/a.png' ")
+    }
+
+    func testAnUploadForTheReplyBoxTypesNothingAndNeedsNoIdlePane() {
+        for status in [AttentionStatus.busy, .waiting, .unknown, .idle] {
+            let pane = FakePane()
+            pane.screen = "$ "
+            let response = MobileReply.upload(
+                Data("x".utf8), name: "a.png", thread: thread(cwd: "/Users/me/my app"), io: pane.io,
+                limit: 1024, paste: false, state: { self.state(status) })
+            XCTAssertEqual(
+                body(response),
+                #"{"ok":true,"pasted":false,"path":"\/Users\/me\/my app\/a.png","text":"'\/Users\/me\/my app\/a.png'"}"#)
+            XCTAssertEqual(pane.saves.count, 1)
+            XCTAssertEqual(pane.argv.count, 0)
+        }
+        // A thread that has gone gets no file.
+        let pane = FakePane()
+        XCTAssertEqual(
+            MobileReply.upload(
+                Data("x".utf8), name: "a.png", thread: thread(), io: pane.io, limit: 1024, paste: false,
+                state: { nil }).status, 404)
+        XCTAssertEqual(pane.saves.count, 0)
     }
 
     func testAnUploadNeverOverwritesAFile() {

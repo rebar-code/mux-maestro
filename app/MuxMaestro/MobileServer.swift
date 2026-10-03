@@ -618,11 +618,12 @@ final class MobileServer {
             reply(to: client) { [sources] in
                 .json(["commands": MobileCommands.list(for: thread, home: sources.home).map(\.json)])
             }
-        case .upload(let id, let name):
+        case .upload(let id, let name, let paste):
             let limit = config.uploadLimit
             write(to: id, client: client) { thread, io, state in
                 MobileReply.upload(
-                    request.body, name: name, thread: thread, io: io, limit: limit, state: state)
+                    request.body, name: name, thread: thread, io: io, limit: limit, paste: paste,
+                    state: state)
             }
         }
     }

@@ -788,9 +788,14 @@ enum MobileReply {
     /// link is followed and nothing is submitted. The path is text like any
     /// other, so a pane that cannot take text is refused before anything is
     /// written.
+    ///
+    /// Without `paste` the file is saved and nothing is typed: the phone
+    /// puts the path into its own reply box, and it reaches the pane later
+    /// as part of a reply, under every rule a reply is held to. So the pane's
+    /// state does not matter here; `text` is the path as it should be typed.
     static func upload(
         _ data: Data, name raw: String, thread: MobileThread, io: MobilePaneIO, limit: Int,
-        state: () -> MobilePaneState?
+        paste typed: Bool = true, state: () -> MobilePaneState?
     ) -> MobileResponse {
         guard data.count <= min(limit, maxUploadBytes) else { return .error(413, "too_large") }
         guard !data.isEmpty, let name = fileName(raw) else { return .error(400, "bad_request") }
@@ -798,7 +803,11 @@ enum MobileReply {
         guard thread.cwd.hasPrefix("/"), thread.cwd.unicodeScalars.allSatisfy(MobileManager.isText),
               !thread.cwd.contains("\n")
         else { return .error(503, "unavailable", message: unreachable) }
-        if let refusal = refusal(state: state(), io: io) { return refusal }
+        if typed {
+            if let refusal = refusal(state: state(), io: io) { return refusal }
+        } else if state() == nil {
+            return .error(404, "not_found")
+        }
 
         // The create is exclusive, so a name that is taken (a file, or a link
         // to anywhere) is never written through: the next name is tried.
@@ -813,6 +822,9 @@ enum MobileReply {
                 path = FileTransfer.dropDestination(cwd: thread.cwd, fileName: numbered(name, n))
                 n += 1
             }
+        }
+        guard typed else {
+            return .json(["ok": true, "path": path, "pasted": false, "text": pasted(path: path)])
         }
         // The file is in place. Its path is pasted only into a pane that can
         // still take text.

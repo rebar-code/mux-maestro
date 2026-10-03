@@ -205,8 +205,9 @@ enum MobileEndpoint: Equatable {
     case answer(id: String)
     /// The thread's skills and commands, for the `/` list.
     case commands(id: String)
-    /// Save a file in the thread's working directory and paste its path.
-    case upload(id: String, name: String)
+    /// Save a file in the thread's working directory. With `paste` its path
+    /// is pasted into the pane; without, the phone puts it in its reply box.
+    case upload(id: String, name: String, paste: Bool)
 
     var capability: MobileCapability {
         switch self {
@@ -383,7 +384,8 @@ enum MobileAPI {
         case 4 where segments[1] == "threads" && segments[3] == "commands":
             endpoint = .commands(id: segments[2])
         case 4 where segments[1] == "threads" && segments[3] == "upload":
-            endpoint = .upload(id: segments[2], name: request.query["name"] ?? "")
+            endpoint = .upload(
+                id: segments[2], name: request.query["name"] ?? "", paste: request.query["paste"] != "0")
         default: return .notFound
         }
         guard config.allows(endpoint.capability) || promptForKeys else {

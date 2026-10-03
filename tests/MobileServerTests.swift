@@ -1605,4 +1605,43 @@ final class MobileServerTests: XCTestCase {
             XCTAssertEqual(post(Self.thread + "/text", json: #"{"text":"go on"}"#).status, 200, below)
         }
     }
+
+    // MARK: uploads for the reply box
+
+    func testAnUploadForTheReplyBoxIsSavedAndTypesNothing() {
+        repliesOn()
+        // The phone puts the path into its own reply box, so nothing goes to
+        // the pane: a pane at work or on a prompt can still be given a file.
+        for status in [AttentionStatus.idle, .busy, .waiting] {
+            pane.status = status
+            let saved = post(Self.thread + "/upload?name=shot.png&paste=0", json: "demo")
+            XCTAssertEqual(saved.status, 200, "\(status)")
+            XCTAssertTrue(saved.body.contains(#""pasted":false"#), saved.body)
+        }
+        XCTAssertEqual(pane.argv.count, 0)
+        // Never over a file that is there: each one gets its own name.
+        XCTAssertEqual(pane.saves.map(\.path), [
+            "/Users/me/acme-app/shot.png", "/Users/me/acme-app/shot-2.png", "/Users/me/acme-app/shot-3.png",
+        ])
+        // The path comes back as it should be typed: quoted when it needs it.
+        let first = post(Self.thread + "/upload?name=a.png&paste=0", json: "demo")
+        XCTAssertEqual(
+            first.body,
+            #"{"ok":true,"pasted":false,"path":"\/Users\/me\/acme-app\/a.png","text":"\/Users\/me\/acme-app\/a.png"}"#)
+
+        // Every other rule holds: the switch, the size cap, the name, the thread.
+        XCTAssertEqual(post(Self.thread + "/upload?name=..&paste=0", json: "demo").status, 400)
+        XCTAssertEqual(
+            post(Self.thread + "/upload?name=big.bin&paste=0", json: String(repeating: "a", count: 65)).status,
+            413)
+        XCTAssertEqual(post("/api/threads/localhost%3A99/upload?name=a.png&paste=0", json: "demo").status, 404)
+        XCTAssertEqual(
+            post(Self.thread + "/upload?name=a.png&paste=0", json: "demo", token: nil).status, 401)
+        server.configure(MobileConfig(capabilities: [.replies, .keyBar]))
+        XCTAssertEqual(post(Self.thread + "/upload?name=a.png&paste=0", json: "demo").status, 403)
+        // Without the flag an upload still pastes, and is still refused for a busy pane.
+        repliesOn()
+        pane.status = .busy
+        XCTAssertEqual(post(Self.thread + "/upload?name=b.png", json: "demo").status, 409)
+    }
 }
