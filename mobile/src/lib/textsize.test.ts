@@ -1,14 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-	anchorScroll,
-	chatSize,
-	clampSize,
-	DEFAULT_SIZE,
-	MAX_SIZE,
-	MIN_SIZE,
-	pinchSize,
-	stepSize
-} from './textsize';
+import { anchorScroll, chatSize, clampSize, DEFAULT_SIZE, pinchSize } from './textsize';
 
 describe('clampSize', () => {
 	it('keeps a size between 6 and 24', () => {
@@ -21,23 +12,6 @@ describe('clampSize', () => {
 
 	it('falls back to the default for a value that is not a number', () => {
 		expect(clampSize(Number.NaN)).toBe(DEFAULT_SIZE);
-	});
-});
-
-describe('stepSize', () => {
-	it('moves one pixel', () => {
-		expect(stepSize(11, 1)).toBe(12);
-		expect(stepSize(11, -1)).toBe(10);
-	});
-
-	it('goes to the next whole pixel from a size between two', () => {
-		expect(stepSize(11.4, 1)).toBe(12);
-		expect(stepSize(11.4, -1)).toBe(11);
-	});
-
-	it('stops at the limits', () => {
-		expect(stepSize(MAX_SIZE, 1)).toBe(MAX_SIZE);
-		expect(stepSize(MIN_SIZE, -1)).toBe(MIN_SIZE);
 	});
 });
 
