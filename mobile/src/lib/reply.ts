@@ -66,9 +66,24 @@ export const CTRL_MS = 5000;
 /** The key presses that wait their turn: a thread takes one write at a time. */
 export const KEY_QUEUE_MAX = 8;
 
-/** `queue` with `key` at its end. A full queue drops the key. */
-export function queueKey(queue: readonly string[], key: string): string[] {
-	return queue.length >= KEY_QUEUE_MAX ? [...queue] : [...queue, key];
+/** A key that waits its turn, with the prompt that was on screen when it was tapped. */
+export interface QueuedKey {
+	key: string;
+	/** The id of the card the human saw at the tap, or `null` with no card. */
+	prompt: string | null;
+}
+
+/**
+ * `queue` with `key` at its end. `prompt` is the card on screen now, at the
+ * tap: a key answers what the human saw, not what the pane shows by the time
+ * the key is sent. A full queue drops the key.
+ */
+export function queueKey(
+	queue: readonly QueuedKey[],
+	key: string,
+	prompt: string | null
+): QueuedKey[] {
+	return queue.length >= KEY_QUEUE_MAX ? [...queue] : [...queue, { key, prompt }];
 }
 
 /**

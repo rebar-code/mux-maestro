@@ -28,6 +28,8 @@
 		prompt ? prompt.title || (permission ? '' : 'Question') : 'Waiting on a prompt'
 	);
 	// The terminal has what the card does not: the rest of the text, or all of it.
+	// The row the pane's cursor is on: what Enter takes. The mark follows it.
+	const selected = $derived(prompt?.selected ?? null);
 	const more = $derived(prompt === null || prompt.truncated === true);
 </script>
 
@@ -49,7 +51,13 @@
 		<div class="opts">
 			{#each prompt?.options ?? [] as option, index (option.n)}
 				{#if readonly}
-					<div class="opt" data-option={option.n}>
+					<div
+						class="opt"
+						class:cur={option.n === selected}
+						aria-current={option.n === selected ? 'true' : undefined}
+						data-option={option.n}
+					>
+						<span class="mark" aria-hidden="true">{option.n === selected ? '❯' : ''}</span>
 						<span class="label">{option.label}</span>
 						<span class="k">{option.n}</span>
 					</div>
@@ -57,11 +65,15 @@
 					<button
 						type="button"
 						class="opt"
-						class:yes={permission && index === 0}
+						class:cur={option.n === selected}
+						class:yes={permission && index === 0 && option.n === selected}
+						aria-current={option.n === selected ? 'true' : undefined}
+						data-option={option.n}
 						disabled={answering !== null}
 						aria-busy={answering === option.n}
 						onclick={() => onanswer?.(option.n)}
 					>
+						{#if option.n === selected}<span class="mark" aria-hidden="true">❯</span>{/if}
 						<span class="label">{option.label}</span>
 						<span class="k" aria-hidden="true">{option.n}</span>
 					</button>
@@ -136,6 +148,30 @@
 		border: 0;
 		border-radius: 0;
 		color: #cfcfcf;
+	}
+
+	/* The pane's cursor is here: Enter takes this one. */
+	button.opt.cur {
+		border-color: var(--accent);
+		box-shadow: inset 0 0 0 1px var(--accent);
+	}
+
+	div.opt.cur {
+		color: var(--text);
+	}
+
+	.mark {
+		flex: none;
+		color: var(--accent);
+	}
+
+	/* The read-only rows keep one column for the mark, so the labels line up. */
+	div.opt .mark {
+		width: 1em;
+	}
+
+	.opt.yes .mark {
+		color: #fff;
 	}
 
 	.opt.yes {

@@ -107,6 +107,8 @@ export interface Prompt {
 	detail: string;
 	question: string;
 	options: PromptOption[];
+	/** The option the pane's cursor is on: what Enter takes. */
+	selected?: number;
 	/** The pane shows more of the detail than the Mac sent. */
 	truncated?: boolean;
 }

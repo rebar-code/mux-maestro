@@ -10,7 +10,8 @@
 // /__fixture/voice-takes, /__fixture/replies, /__fixture/prompt?id=&pid=&kind=,
 // /__fixture/upload-max?value=, /__fixture/status?id=&value=,
 // /__fixture/prompt also takes truncated=1, bare=1 (an id with no choices), quiet=1,
-// /__fixture/not-sent?cleared=&reason=, /__fixture/no-input?id=&on=, /__fixture/pasted?on=
+// /__fixture/not-sent?cleared=&reason=, /__fixture/no-input?id=&on=, /__fixture/pasted?on=,
+// /__fixture/prompt-delay?ms=
 // /__fixture/append?count= (adds lines to pane buildbox:8),
 // /__fixture/screen?default=&max= (the screen endpoint's default and cap)
 //
@@ -137,6 +138,7 @@ const PERMISSION = {
 	title: 'Bash command',
 	detail: 'pnpm exec playwright test tests/checkout.spec.ts',
 	question: 'Do you want to proceed?',
+	selected: 1,
 	options: [
 		{ n: 1, label: 'Yes' },
 		{ n: 2, label: 'Yes, and don’t ask again for pnpm exec' },
@@ -148,6 +150,7 @@ const QUESTION = {
 	title: '',
 	detail: '',
 	question: 'Which rule should a plan downgrade use?',
+	selected: 1,
 	options: [
 		{ n: 1, label: 'Credit the unused days' },
 		{ n: 2, label: 'No credit until renewal' },
@@ -182,7 +185,7 @@ const E = '\x1b';
 let started, threads, chats, grouping, deny, token, log, screenDefault, screenMax;
 let capabilities, manager, voice;
 // Per thread id: the prompt on the pane. And everything the phone wrote.
-let prompts, replies, uploadMax, promptSeq, notSent, noInput, pasted, keyLocks;
+let prompts, replies, uploadMax, promptSeq, notSent, noInput, pasted, keyLocks, promptDelay;
 const streams = new Set();
 
 function reset() {
@@ -198,6 +201,8 @@ function reset() {
 	noInput = new Set();
 	pasted = true;
 	keyLocks = new Set();
+	// How long `GET /prompt` takes, so a test can tap before the card catches up.
+	promptDelay = 0;
 	promptSeq = 0;
 	uploadMax = 10485760;
 	replies = { texts: [], keys: [], answers: [], uploads: [], left: [], commandFetches: 0 };
@@ -379,6 +384,7 @@ function promptBody(thread) {
 	const prompt = { ...asked };
 	delete prompt.bare;
 	delete prompt.full;
+	delete prompt.base;
 	return { prompt: asked.bare ? null : prompt, id: asked.id };
 }
 
@@ -439,7 +445,10 @@ function replyApi(req, res, url, thread, route, body) {
 	if (req.method !== (reads ? 'GET' : 'POST'))
 		return send(res, 405, { error: 'method_not_allowed' });
 	if (!thread) return send(res, 404, { error: 'not_found' });
-	if (route === 'prompt') return send(res, 200, promptBody(thread));
+	if (route === 'prompt') {
+		const answer = promptBody(thread);
+		return void setTimeout(() => send(res, 200, answer), promptDelay);
+	}
 	if (route === 'commands') {
 		replies.commandFetches += 1;
 		return send(res, 200, { commands: COMMANDS });
@@ -478,12 +487,23 @@ function replyApi(req, res, url, thread, route, body) {
 		const asked = promptOf(thread);
 		if (asked && asked.id !== json.prompt) return send(res, 409, { error: 'stale' });
 		// Nobody could read what Enter or a digit would pick.
-		if (asked?.bare && /^(Enter|[1-9])$/.test(json.key))
+		const picks = /^(Enter|[1-9])$/.test(json.key);
+		if (asked?.bare && picks)
 			return send(res, 409, { error: 'unseen', message: 'Open the terminal to answer' });
+		// No prompt and no input box in sight: the key would land nobody knows where.
+		if (!asked && picks && noInput.has(thread.id))
+			return send(res, 409, { error: 'no_input', message: 'Thread shows no input box' });
 		keyLocks.add(thread.id);
 		const locks = keyLocks;
 		return void setTimeout(() => {
 			locks.delete(thread.id);
+			// An arrow moves the pane's cursor, and the prompt's id names the row it is on.
+			const step = { Up: -1, Down: 1 }[json.key];
+			if (asked && !asked.bare && step) {
+				asked.base ??= asked.id;
+				asked.selected = Math.min(asked.options.length, Math.max(1, asked.selected + step));
+				asked.id = asked.selected === 1 ? asked.base : `${asked.base}-row${asked.selected}`;
+			}
 			replies.keys.push({
 				thread: thread.id,
 				key: json.key,
@@ -785,8 +805,10 @@ function screen(t) {
 				'│',
 				`│   ${asked.full ?? (asked.detail || asked.question)}`,
 				'│',
-				...asked.options.map((o, i) =>
-					i === 0 ? `│ ${E}[1;34m❯ ${o.n}. ${o.label}${E}[0m` : `│   ${o.n}. ${o.label}`
+				...asked.options.map((o) =>
+					o.n === asked.selected
+						? `│ ${E}[1;34m❯ ${o.n}. ${o.label}${E}[0m`
+						: `│   ${o.n}. ${o.label}`
 				),
 				`╰${box}╯`
 			]
@@ -961,6 +983,9 @@ function hook(res, url) {
 			if (!thread) return send(res, 404, { error: 'not_found' });
 			if (url.searchParams.get('on') === '0') noInput.delete(thread.id);
 			else noInput.add(thread.id);
+			return send(res, 200, { ok: true });
+		case '/__fixture/prompt-delay':
+			promptDelay = Number(url.searchParams.get('ms') ?? 0);
 			return send(res, 200, { ok: true });
 		case '/__fixture/pasted':
 			pasted = url.searchParams.get('on') !== '0';
