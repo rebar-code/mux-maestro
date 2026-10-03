@@ -354,11 +354,20 @@ enum MobileAPI {
         else { return .denied("host") }
         guard request.method != "GET", request.method != "HEAD" else { return .allowed }
         guard request.header(writeHeader) != nil else { return .denied("write header") }
+        // The origin is this Mac's name on the port the request came to: another
+        // `tailscale serve` mapping on the same name is another origin.
         guard let origin = request.header("origin"),
               let url = URL(string: origin), url.scheme == "https",
-              (url.host ?? "").caseInsensitiveCompare(identity.dnsName) == .orderedSame
+              (url.host ?? "").caseInsensitiveCompare(identity.dnsName) == .orderedSame,
+              (url.port ?? 443) == hostPort(host)
         else { return .denied("origin") }
         return .allowed
+    }
+
+    /// The port of a `host[:port]` header; 443 when it names none, as HTTPS does.
+    static func hostPort(_ header: String) -> Int? {
+        let parts = header.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+        return parts.count == 2 ? Int(parts[1]) : 443
     }
 
     /// `host[:port]` without the port. Tailnet names are never IPv6 literals.

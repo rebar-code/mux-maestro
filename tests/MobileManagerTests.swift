@@ -250,25 +250,92 @@ final class MobileManagerTests: XCTestCase {
 
     // MARK: a turn
 
+    private func body(_ name: String, _ value: String) -> Data {
+        (try? JSONSerialization.data(withJSONObject: [name: value])) ?? Data()
+    }
+
     func testReadsTheTextAndTheKeyOfARequest() {
-        XCTAssertEqual(MobileManager.text(in: Data(#"{"text":"  what needs me?\n"}"#.utf8)), "what needs me?")
-        XCTAssertNil(MobileManager.text(in: Data(#"{"text":"   "}"#.utf8)))
-        XCTAssertNil(MobileManager.text(in: Data(#"{"text":7}"#.utf8)))
-        XCTAssertNil(MobileManager.text(in: Data("what needs me?".utf8)))
-        XCTAssertNil(MobileManager.text(in: Data()))
-        XCTAssertEqual(MobileManager.key(in: Data(#"{"key":"billing:pr"}"#.utf8)), "billing:pr")
-        XCTAssertNil(MobileManager.key(in: Data(#"{"text":"billing:pr"}"#.utf8)))
+        XCTAssertEqual(
+            MobileManager.text(in: Data(#"{"text":"  what needs me?\n"}"#.utf8)), .value("what needs me?"))
+        XCTAssertEqual(MobileManager.text(in: Data(#"{"text":"   "}"#.utf8)), .invalid)
+        XCTAssertEqual(MobileManager.text(in: Data(#"{"text":7}"#.utf8)), .invalid)
+        XCTAssertEqual(MobileManager.text(in: Data("what needs me?".utf8)), .invalid)
+        XCTAssertEqual(MobileManager.text(in: Data()), .invalid)
+        XCTAssertEqual(MobileManager.key(in: Data(#"{"key":"billing:pr"}"#.utf8)), .value("billing:pr"))
+        XCTAssertEqual(MobileManager.key(in: Data(#"{"text":"billing:pr"}"#.utf8)), .invalid)
+        XCTAssertEqual(MobileManager.Field.invalid.refusal?.status, 400)
+        XCTAssertEqual(MobileManager.Field.tooLong.refusal?.status, 413)
+        XCTAssertNil(MobileManager.Field.value("x").refusal)
+    }
+
+    /// The text is pasted into a terminal: a control character there is a key.
+    func testATextWithAKeyPressInItIsRefused() {
+        let keys: [(String, String)] = [
+            ("Shift+Tab", "a\u{1B}[Zb"),
+            ("Escape", "stop\u{1B}"),
+            ("Ctrl-C", "a\u{03}b"),
+            ("Ctrl-D", "a\u{04}b"),
+            ("carriage return", "first\rsecond"),
+            ("CRLF", "first\r\nsecond"),
+            ("NUL", "a\u{00}b"),
+            ("backspace", "a\u{08}b"),
+            ("unit separator", "a\u{1F}b"),
+            ("DEL", "a\u{7F}b"),
+            ("C1 CSI", "a\u{9B}Zb"),
+            ("first C1", "a\u{80}b"),
+            ("last C1", "a\u{9F}b"),
+        ]
+        for (name, text) in keys {
+            XCTAssertEqual(MobileManager.text(in: body("text", text)), .invalid, name)
+        }
+        for scalar in (0x00...0x1F).compactMap(Unicode.Scalar.init) where scalar != "\n" && scalar != "\t" {
+            XCTAssertFalse(MobileManager.isText(scalar), "U+\(String(scalar.value, radix: 16))")
+        }
+        for scalar in (0x7F...0x9F).compactMap(Unicode.Scalar.init) {
+            XCTAssertFalse(MobileManager.isText(scalar), "U+\(String(scalar.value, radix: 16))")
+        }
+    }
+
+    func testNewlineTabAndOrdinaryTextAreKept() {
+        let text = "first line\n\tsecond: caf\u{E9} \u{2014} \u{1F44D} ~ \u{A0}end"
+        XCTAssertEqual(MobileManager.text(in: body("text", text)), .value(text))
+        XCTAssertTrue(MobileManager.isText(" "))
+        XCTAssertTrue(MobileManager.isText("~"))
+        XCTAssertTrue(MobileManager.isText("\u{A0}"))
+    }
+
+    func testTheTextAndTheKeyHaveASizeLimit() {
+        let most = String(repeating: "a", count: MobileManager.maxTextBytes)
+        XCTAssertEqual(MobileManager.text(in: body("text", most)), .value(most))
+        XCTAssertEqual(MobileManager.text(in: body("text", most + "a")), .tooLong)
+        // The limit is in bytes: a two-byte letter counts twice.
+        let wide = String(repeating: "\u{E9}", count: MobileManager.maxTextBytes / 2 + 1)
+        XCTAssertEqual(MobileManager.text(in: body("text", wide)), .tooLong)
+        let key = String(repeating: "k", count: MobileManager.maxKeyBytes)
+        XCTAssertEqual(MobileManager.key(in: body("key", key)), .value(key))
+        XCTAssertEqual(MobileManager.key(in: body("key", key + "k")), .tooLong)
+        XCTAssertEqual(MobileManager.maxTextBytes, 8192)
+        XCTAssertEqual(MobileManager.maxKeyBytes, 256)
+    }
+
+    func testOnlyAReviewItemOnTheBoardCanBeDismissed() {
+        XCTAssertTrue(MobileManager.hasReview("billing:pr", in: board()))
+        XCTAssertFalse(MobileManager.hasReview("nope", in: board()))
+        XCTAssertFalse(MobileManager.hasReview("billing:pr", in: MobileManagerBoard()))
     }
 
     private func error(_ response: MobileResponse?) -> [String: String]? {
         response.flatMap { try? JSONSerialization.jsonObject(with: $0.body) } as? [String: String]
     }
 
-    func testATurnIsRefusedWhileOneRunsOrThePaneWaitsOnAPrompt() {
+    func testATurnIsRefusedUnlessThePaneIsIdle() {
         XCTAssertNil(MobileManager.refusal(status: .idle, turnRunning: false))
-        // The pane is busy with something typed into its terminal: the text
-        // queues there, as it does from the Mac rail.
-        XCTAssertNil(MobileManager.refusal(status: .busy, turnRunning: false))
+        // The pane is busy with no turn the app tracks (a turn that timed out,
+        // or one typed into its terminal). It may reach a prompt before the
+        // Enter lands, so the phone does not send into it.
+        let paneBusy = MobileManager.refusal(status: .busy, turnRunning: false)
+        XCTAssertEqual(paneBusy?.status, 409)
+        XCTAssertEqual(error(paneBusy), ["error": "busy", "message": "Manager is busy"])
 
         let busy = MobileManager.refusal(status: .busy, turnRunning: true)
         XCTAssertEqual(busy?.status, 409)

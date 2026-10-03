@@ -8,10 +8,19 @@ import type {
 	ManagerItem,
 	ManagerLive,
 	ManagerStatus,
-	ManagerTurn
+	ManagerTurn,
+	ManagerUpdate
 } from './types';
 
 const KEY = 'mm.manager';
+/** How often the home asks again: the pane's status has no event. */
+const POLL_MS = 10_000;
+
+const STATUS_NOTES: Partial<Record<ManagerStatus, string>> = {
+	off: 'Manager is not running',
+	waiting: 'Manager is waiting on a prompt',
+	busy: 'Manager is busy'
+};
 
 interface Cached {
 	review: ManagerItem[];
@@ -39,6 +48,7 @@ class Manager {
 	review = $state.raw<ManagerItem[] | null>(this.start?.review ?? null);
 	needsYou = $state.raw<ManagerItem[]>(this.start?.needsYou ?? []);
 	chat = $state.raw<ChatMessage[]>(this.start?.chat ?? []);
+	updates = $state.raw<ManagerUpdate[]>([]);
 	status = $state<ManagerStatus>('idle');
 	turn = $state.raw<ManagerTurn | null>(null);
 	/** What the last turn left to say: why it was refused, or that it waits. */
@@ -50,6 +60,10 @@ class Manager {
 
 	readonly lines: HomeLine[] = $derived(homeLines(this.chat, this.turn));
 	readonly busy: boolean = $derived(this.turn !== null);
+	/** What the pane is doing, when a message cannot go to it now. */
+	readonly statusNote: string | null = $derived(
+		this.turn === null ? (STATUS_NOTES[this.status] ?? null) : null
+	);
 
 	/** Review items dismissed here that the Mac has not dropped yet. */
 	private dismissed = new Set<string>();
@@ -72,6 +86,7 @@ class Manager {
 		}
 		this.review = body.review.filter((item) => item.key === null || !this.dismissed.has(item.key));
 		this.needsYou = body.needsYou;
+		this.updates = body.updates;
 	}
 
 	/** The `manager` event. */
@@ -85,6 +100,12 @@ class Manager {
 			if (ended) void this.load();
 		}
 		this.save();
+	}
+
+	/** The `manager-delta` event: more of the reply of a turn started elsewhere. */
+	append(text: string): void {
+		if (this.sending || !this.turn) return;
+		this.turn = { prompt: this.turn.prompt, reply: this.turn.reply + text };
 	}
 
 	load = async (): Promise<void> => {
@@ -105,14 +126,19 @@ class Manager {
 		}
 	};
 
-	/** Attachment for the manager home: load it when it is shown. */
-	watch = (): void => {
+	/** Attachment for the manager home: load it when it is shown, then keep it current. */
+	watch = (): (() => void) => {
 		untrack(() => void this.load());
+		const timer = setInterval(() => {
+			if (document.visibilityState === 'visible' && !this.busy) void this.load();
+		}, POLL_MS);
+		return () => clearInterval(timer);
 	};
 
 	send = async (): Promise<void> => {
 		const text = this.draft.trim();
-		if (!text || this.sending) return;
+		// A turn is running, here or on the Mac: Enter must not send a second one.
+		if (!text || this.sending || this.busy) return;
 		this.sending = true;
 		this.draft = '';
 		this.note = null;
@@ -136,7 +162,7 @@ class Manager {
 			}
 		} catch (error) {
 			live.fail(error);
-			refused = error instanceof ApiError && error.detail ? error.detail : 'The Mac did not answer';
+			refused = refusalText(error);
 		}
 		this.turn = null;
 		this.sending = false;
@@ -159,6 +185,15 @@ class Manager {
 			void this.load();
 		}
 	};
+}
+
+/** The sentence for a turn the Mac did not take. */
+function refusalText(error: unknown): string {
+	if (!(error instanceof ApiError)) return 'The Mac did not answer';
+	if (error.detail) return error.detail;
+	if (error.status === 413) return 'The message is too long';
+	if (error.status === 400) return 'The message has characters that cannot be sent';
+	return 'The Mac did not answer';
 }
 
 export const manager = new Manager();

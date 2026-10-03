@@ -144,6 +144,24 @@ function reset() {
 				text: 'Two threads need you. Four are running. Nothing has failed in the last hour.'
 			}
 		],
+		updates: [
+			{
+				kind: 'done',
+				text: 'Search box wired to the new index',
+				at: started - 240,
+				host: 'localhost',
+				session: 'docs-site',
+				thread: 'localhost:3'
+			},
+			{
+				kind: 'notification',
+				text: 'Nightly build is green',
+				at: started - 1500,
+				host: '',
+				session: '',
+				thread: null
+			}
+		],
 		review: [
 			{
 				key: 'billing:invoices-pdf',
@@ -271,7 +289,7 @@ const managerLive = () => ({
 			thread: t.id
 		})),
 	review: manager.review,
-	updates: [],
+	updates: manager.updates,
 	turn: manager.turn
 });
 const managerBody = () => ({
@@ -311,7 +329,8 @@ function runTurn(prompt, reply, onDelta = () => {}, onEnd = () => {}) {
 		}
 		manager.turn = { prompt, reply: manager.turn.reply + word };
 		onDelta(word);
-		push('manager', managerLive());
+		// The reply grows by a small event; the board is not sent again.
+		push('manager-delta', { text: word });
 		setTimeout(step, 40);
 	};
 	setTimeout(step, 150);
@@ -342,16 +361,24 @@ function managerApi(req, res, path, body) {
 	}
 	if (path === '/api/manager/dismiss') {
 		if (typeof json.key !== 'string') return send(res, 400, { error: 'bad_request' });
+		if (!manager.review.some((item) => item.key === json.key))
+			return send(res, 404, { error: 'not_found' });
 		manager.review = manager.review.filter((item) => item.key !== json.key);
 		push('manager', managerLive());
 		return send(res, 200, { ok: true });
 	}
 	if (path !== '/api/manager/text') return send(res, 404, { error: 'not_found' });
 	const text = typeof json.text === 'string' ? json.text.trim() : '';
-	if (!text) return send(res, 400, { error: 'bad_request' });
+	// The Mac pastes the text into a terminal: no control characters but newline and tab.
+	// eslint-disable-next-line no-control-regex
+	if (!text || /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/.test(text))
+		return send(res, 400, { error: 'bad_request' });
+	if (Buffer.byteLength(text) > 8192) return send(res, 413, { error: 'too_large' });
 	if (manager.turn) return send(res, 409, { error: 'busy', message: 'A turn is running' });
 	if (manager.status === 'waiting')
 		return send(res, 409, { error: 'waiting', message: 'Manager is waiting on a prompt' });
+	if (manager.status === 'busy')
+		return send(res, 409, { error: 'busy', message: 'Manager is busy' });
 	res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' });
 	const event = (name, data) => res.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
 	const reply = managerReply();

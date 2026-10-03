@@ -284,7 +284,29 @@ final class MobileAPITests: XCTestCase {
         XCTAssertEqual(
             MobileAPI.authorize(request("/api/x", method: "POST", headers: headers), identity: identity),
             .denied("origin"))
+        // The right name on another port is another `tailscale serve` mapping.
+        headers["Origin"] = "https://devmac.example.ts.net:5173"
+        XCTAssertEqual(
+            MobileAPI.authorize(request("/api/x", method: "POST", headers: headers), identity: identity),
+            .denied("origin"))
+        headers["Origin"] = "https://devmac.example.ts.net"
+        XCTAssertEqual(
+            MobileAPI.authorize(request("/api/x", method: "POST", headers: headers), identity: identity),
+            .denied("origin"))
         headers["Origin"] = "https://devmac.example.ts.net:7433"
+        XCTAssertEqual(
+            MobileAPI.authorize(request("/api/x", method: "POST", headers: headers), identity: identity),
+            .allowed)
+        // Port 443 is the one an origin and a Host header both leave out.
+        headers["Host"] = "devmac.example.ts.net"
+        XCTAssertEqual(
+            MobileAPI.authorize(request("/api/x", method: "POST", headers: headers), identity: identity),
+            .denied("origin"))
+        headers["Origin"] = "https://devmac.example.ts.net"
+        XCTAssertEqual(
+            MobileAPI.authorize(request("/api/x", method: "POST", headers: headers), identity: identity),
+            .allowed)
+        headers["Origin"] = "https://devmac.example.ts.net:443"
         XCTAssertEqual(
             MobileAPI.authorize(request("/api/x", method: "POST", headers: headers), identity: identity),
             .allowed)

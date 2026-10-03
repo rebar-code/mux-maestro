@@ -9,6 +9,8 @@
 	import PullIndicator from '$lib/PullIndicator.svelte';
 
 	const PULL = 'home';
+	/** How many of the manager's updates the home lists. */
+	const UPDATES = 5;
 
 	const tally = $derived(live.threads ? counts(live.threads) : null);
 	const managerOn = $derived(can('manager'));
@@ -69,6 +71,10 @@
 			{/each}
 			{#if manager.note}
 				<div class="note" role="alert">{manager.note}</div>
+			{:else if manager.statusNote}
+				<div class="note quiet" role="status" data-status={manager.status}>
+					{manager.statusNote}
+				</div>
 			{/if}
 		</div>
 	{/if}
@@ -112,6 +118,25 @@
 					onclick={() => manager.dismiss(key)}>✓</button
 				>
 			</div>
+		{/each}
+	{/if}
+	{#if managerOn && manager.updates.length}
+		<div class="sect">Updates</div>
+		{#each manager.updates.slice(0, UPDATES) as update, index (index)}
+			{@const thread = update.thread ? live.byId(update.thread) : undefined}
+			<svelte:element
+				this={thread ? 'a' : 'div'}
+				class="upd"
+				class:grow={thread !== undefined}
+				href={thread ? resolve('/t/[id]', { id: thread.id }) : undefined}
+				data-update
+			>
+				<span class="what">
+					{#if thread}<b>{thread.session} · {thread.name}</b>{/if}
+					{update.text}
+				</span>
+				<span class="when">{age(update.at, live.now)}</span>
+			</svelte:element>
 		{/each}
 	{/if}
 	<div class="end"></div>
@@ -246,6 +271,43 @@
 		border: 1px solid #5a2320;
 		border-radius: 8px;
 		padding: 4px 10px;
+	}
+
+	.note.quiet {
+		color: var(--muted);
+		background: var(--surface);
+		border-color: var(--border);
+	}
+
+	.upd {
+		position: relative;
+		display: flex;
+		align-items: baseline;
+		gap: 10px;
+		margin: 0 14px;
+		padding: 7px 2px;
+		border-bottom: 1px solid #22222e;
+		font-size: 13px;
+		color: var(--muted);
+	}
+
+	.what {
+		flex: 1;
+		min-width: 0;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.what b {
+		color: var(--text);
+		font-weight: 600;
+		margin-right: 4px;
+	}
+
+	.when {
+		flex: none;
+		font-size: 12px;
 	}
 
 	.item {

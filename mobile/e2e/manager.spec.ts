@@ -247,3 +247,80 @@ test('the home fits a phone: no sideways scroll, the box above the home indicato
 	expect(input?.height).toBeGreaterThanOrEqual(44);
 	expect((input?.y ?? 0) + (input?.height ?? 0)).toBeLessThanOrEqual(844);
 });
+
+test('the manager status is drawn while a message cannot go to it', async ({ page }) => {
+	await fresh(page);
+	await page.request.post('/__fixture/manager-status?value=waiting');
+	await page.reload();
+	const status = page.locator('[data-status]');
+	await expect(status).toHaveText('Manager is waiting on a prompt');
+	await expect(status).toHaveAttribute('data-status', 'waiting');
+
+	await page.request.post('/__fixture/manager-status?value=busy');
+	await page.reload();
+	await expect(status).toHaveText('Manager is busy');
+	await box(page).fill('what needs me?');
+	await box(page).press('Enter');
+	await expect(page.getByRole('alert')).toHaveText('Manager is busy');
+	await expect(box(page)).toHaveValue('what needs me?');
+
+	await page.request.post('/__fixture/manager-status?value=idle');
+	await page.reload();
+	await expect(box(page)).toBeVisible();
+	await expect(status).toHaveCount(0);
+});
+
+test('the updates are listed, and one with a thread opens it', async ({ page }) => {
+	await fresh(page);
+	const updates = page.locator('[data-update]');
+	await expect(updates).toHaveCount(2);
+	await expect(updates.first()).toContainText('docs-site · search');
+	await expect(updates.first()).toContainText('Search box wired to the new index');
+	await expect(updates.nth(1)).toContainText('Nightly build is green');
+	await updates.first().click();
+	await expect(page).toHaveURL(/\/t\/localhost(:|%3A)3$/);
+});
+
+test('Enter does not send a second turn while one runs', async ({ page }) => {
+	await fresh(page);
+	let turns = 0;
+	page.on('request', (request) => {
+		if (request.url().endsWith('/api/manager/text')) turns += 1;
+	});
+	const reply = 'Still checking. '.repeat(20).trim();
+	await page.request.post(
+		`/__fixture/mac-turn?text=${encodeURIComponent('how are the builds?')}&reply=${encodeURIComponent(reply)}`
+	);
+	await expect(said(page).locator('.u')).toHaveText('how are the builds?');
+	await box(page).fill('and after that?');
+	await box(page).press('Enter');
+	await box(page).press('Enter');
+	await expect(said(page).locator('.m').last()).toHaveText(reply);
+	expect(turns).toBe(0);
+	await expect(box(page)).toHaveValue('and after that?');
+
+	// The turn is over: now Enter sends.
+	await expect(page.getByRole('button', { name: '↑ Send' })).toBeEnabled();
+	await box(page).press('Enter');
+	await expect(said(page).locator('.u')).toHaveText('and after that?');
+	expect(turns).toBe(1);
+});
+
+test('a message over the size limit says so and is given back', async ({ page }) => {
+	await fresh(page);
+	const long = 'a'.repeat(8193);
+	await box(page).fill(long);
+	await box(page).press('Enter');
+	await expect(page.getByRole('alert')).toHaveText('The message is too long');
+	await expect(box(page)).toHaveValue(long);
+});
+
+test('dismissing a review item that does not exist is a 404', async ({ page }) => {
+	await fresh(page);
+	const gone = await page.request.post('/api/manager/dismiss', {
+		headers: { 'x-muxmaestro': '1', origin: new URL(page.url()).origin, ...TOKEN_HEADER },
+		data: { key: 'no-such-item' }
+	});
+	expect(gone.status()).toBe(404);
+	await expect(review(page)).toHaveCount(1);
+});

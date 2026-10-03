@@ -91,8 +91,13 @@ final class MobileServer {
     private var clients: [ObjectIdentifier: Client] = [:]
     private var board = MobileManagerBoard()
     private var turn: MobileManagerTurn?
-    private var managerBody = MobileManager.liveJSON(
+    /// The last `manager` event's state, without the reply text: a reply
+    /// grows by `manager-delta` events, not by sending the board again.
+    private var managerKey = MobileManager.liveJSON(
         board: MobileManagerBoard(), snapshot: MobileSnapshot(), turn: nil)
+    /// Turns this server started that have not ended. The app tells the server
+    /// about a running turn too, but only once the turn is on its way.
+    private var phoneTurns = 0
 
     private let activityLock = NSLock()
     private var lastRequestAt = Date.distantPast
@@ -203,7 +208,7 @@ final class MobileServer {
             self.managerChanged()
             let now = Date()
             for client in self.clients.values
-            where client.events && now.timeIntervalSince(client.lastWrite) >= Self.pingInterval {
+            where client.streaming && now.timeIntervalSince(client.lastWrite) >= Self.pingInterval {
                 self.write(Data(": ping\n\n".utf8), to: client)
             }
             self.dropIdle(now: now)
@@ -232,7 +237,8 @@ final class MobileServer {
         queue.async {
             guard !delta.isEmpty, self.turn != nil else { return }
             self.turn?.reply += delta
-            self.managerChanged()
+            guard self.config.allows(.manager) else { return }
+            self.broadcast(Self.event("manager-delta", Self.json(["text": delta])))
         }
     }
 
@@ -244,10 +250,20 @@ final class MobileServer {
     }
 
     private func managerChanged() {
-        let body = MobileManager.liveJSON(board: board, snapshot: snapshot, turn: turn)
-        guard body != managerBody else { return }
-        managerBody = body
-        if config.allows(.manager) { broadcast(Self.event("manager", body)) }
+        let key = MobileManager.liveJSON(
+            board: board, snapshot: snapshot, turn: turn.map { MobileManagerTurn(prompt: $0.prompt) })
+        guard key != managerKey else { return }
+        managerKey = key
+        if config.allows(.manager) { broadcast(Self.event("manager", managerBody)) }
+    }
+
+    /// The `manager` event's data: the cards and the turn with its reply so far.
+    private var managerBody: Data {
+        MobileManager.liveJSON(board: board, snapshot: snapshot, turn: turn)
+    }
+
+    private static func json(_ object: [String: Any]) -> Data {
+        (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data("{}".utf8)
     }
 
     /// The Settings the phone is held to. Applies to the next request, and tells
@@ -441,17 +457,24 @@ final class MobileServer {
                     chat: chat ?? MobileChatPage()))
             }
         case .managerText:
-            guard let text = MobileManager.text(in: request.body) else {
-                return send(.error(400, "bad_request"), to: client, head: head)
+            let field = MobileManager.text(in: request.body)
+            guard case .value(let text) = field else {
+                return send(field.refusal ?? .error(400, "bad_request"), to: client, head: head)
             }
             startTurn(text, client: client)
         case .managerDismiss:
-            guard let key = MobileManager.key(in: request.body) else {
-                return send(.error(400, "bad_request"), to: client, head: head)
+            let field = MobileManager.key(in: request.body)
+            guard case .value(let key) = field else {
+                return send(field.refusal ?? .error(400, "bad_request"), to: client, head: head)
             }
             guard let manager else {
                 return send(.error(503, "unavailable", message: MobileManager.offMessage),
                             to: client, head: head)
+            }
+            // Only a review item on the board can be dismissed: the key is
+            // never passed on as it came.
+            guard MobileManager.hasReview(key, in: board) else {
+                return send(.error(404, "not_found"), to: client, head: head)
             }
             manager.dismiss(key)
             send(.json(["ok": true]), to: client, head: head)
@@ -501,19 +524,23 @@ final class MobileServer {
             let status = manager.pane().status
             self?.queue.async {
                 guard let self, let client, self.clients[ObjectIdentifier(client)] != nil else { return }
-                if let refusal = MobileManager.refusal(status: status, turnRunning: self.turn != nil) {
+                if let refusal = MobileManager.refusal(
+                    status: status, turnRunning: self.turn != nil || self.phoneTurns > 0) {
                     return self.send(refusal, to: client, head: false)
                 }
+                self.phoneTurns += 1
                 client.streaming = true
                 client.buffer.removeAll()
                 self.write(Self.streamHead, to: client)
                 self.receive(client)
+                // The turn runs to its end even when the phone hangs up: only
+                // the writes stop.
                 let event = { [weak self, weak client] (name: String, object: [String: Any], last: Bool) in
-                    let json = (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]))
-                        ?? Data("{}".utf8)
+                    let json = Self.json(object)
                     self?.queue.async {
-                        guard let self, let client, self.clients[ObjectIdentifier(client)] != nil
-                        else { return }
+                        guard let self else { return }
+                        if last { self.phoneTurns -= 1 }
+                        guard let client, self.clients[ObjectIdentifier(client)] != nil else { return }
                         self.write(Self.event(name, json), to: client, close: last)
                     }
                 }
