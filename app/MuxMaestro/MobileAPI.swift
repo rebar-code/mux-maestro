@@ -212,6 +212,17 @@ enum MobileEndpoint: Equatable {
     case dirs(host: String)
     /// Find `query` in the thread's scrollback.
     case find(id: String, query: String)
+    /// What the thread's agent made: files and links.
+    case artifacts(id: String)
+    /// One file of that list, named by its id there. Never by a path.
+    case file(id: String, artifact: String)
+    /// What the thread has running: dev servers, stacks, containers.
+    case running(id: String)
+    /// The local ports this app has published on the tailnet.
+    case servers
+    /// Publish one port a thread has running. The body names both.
+    case serverOpen
+    case serverClose
 
     var capability: MobileCapability {
         switch self {
@@ -224,6 +235,8 @@ enum MobileEndpoint: Equatable {
         case .tmux(let action): return action.isKill ? .kill : .sessionActions
         case .dirs: return .sessionActions
         case .find: return .find
+        case .artifacts, .file: return .artifacts
+        case .running, .servers, .serverOpen, .serverClose: return .localServers
         }
     }
 
@@ -232,10 +245,10 @@ enum MobileEndpoint: Equatable {
     var method: String {
         switch self {
         case .config, .threads, .hosts, .events, .chat, .screen, .manager, .prompt, .commands,
-             .dirs, .find:
+             .dirs, .find, .artifacts, .file, .running, .servers:
             return "GET"
         case .managerText, .managerDismiss, .voice, .voiceReplay, .voiceWarm, .text, .key, .answer,
-             .upload, .tmux:
+             .upload, .tmux, .serverOpen, .serverClose:
             return "POST"
         }
     }
@@ -348,6 +361,7 @@ enum MobileAPI {
             case "key": return .keyBar
             case "upload": return .upload
             case "artifacts", "file": return .artifacts
+            case "running": return .localServers
             case "find": return .find
             default: return nil
             }
@@ -405,6 +419,15 @@ enum MobileAPI {
             endpoint = .upload(id: segments[2], name: request.query["name"] ?? "")
         case 4 where segments[1] == "threads" && segments[3] == "find":
             endpoint = .find(id: segments[2], query: request.query["q"] ?? "")
+        case 4 where segments[1] == "threads" && segments[3] == "artifacts":
+            endpoint = .artifacts(id: segments[2])
+        case 4 where segments[1] == "threads" && segments[3] == "file":
+            endpoint = .file(id: segments[2], artifact: request.query["id"] ?? "")
+        case 4 where segments[1] == "threads" && segments[3] == "running":
+            endpoint = .running(id: segments[2])
+        case 2 where segments[1] == "servers": endpoint = .servers
+        case 3 where segments[1] == "servers" && segments[2] == "open": endpoint = .serverOpen
+        case 3 where segments[1] == "servers" && segments[2] == "close": endpoint = .serverClose
         case 4 where segments[1] == "hosts" && segments[3] == "dirs":
             endpoint = .dirs(host: segments[2])
         case 3 where segments[1] == "tmux":

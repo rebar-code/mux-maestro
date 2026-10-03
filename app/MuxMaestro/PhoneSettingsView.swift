@@ -38,6 +38,10 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
     private let sessionActions = NSSwitch()
     private let kill = NSSwitch()
     private let find = NSSwitch()
+    private let artifacts = NSSwitch()
+    private let localServers = NSSwitch()
+    /// The ports of the dev servers published on the tailnet now.
+    private let mappings = NSTextField(labelWithString: "")
     private let url = NSTextField(labelWithString: "")
     private let copy = NSButton(title: "Copy Pairing Link", target: nil, action: nil)
     private let rotate = NSButton(title: "New Pairing Code…", target: nil, action: nil)
@@ -69,6 +73,7 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
         status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         for control in [
             toggle, keepAwake, manager, voice, replies, keyBar, upload, sessionActions, kill, find,
+            artifacts, localServers,
         ] {
             control.controlSize = .small
             control.target = self
@@ -112,6 +117,13 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
         sessionActions.action = #selector(sessionActionsToggled)
         kill.action = #selector(killToggled)
         find.action = #selector(findToggled)
+        artifacts.action = #selector(artifactsToggled)
+        localServers.action = #selector(localServersToggled)
+        mappings.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        mappings.textColor = theme.muted
+        mappings.lineBreakMode = .byTruncatingTail
+        mappings.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        mappings.setAccessibilityLabel("Open local servers")
         uploadLimit.controlSize = .small
         uploadLimit.font = .systemFont(ofSize: 12)
         uploadLimit.addItems(withTitles: Self.uploadLimits.map(\.1))
@@ -138,6 +150,8 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
             ("Session actions", NSGridCell.emptyContentView, sessionActions),
             ("Kill", NSGridCell.emptyContentView, kill),
             ("Find", NSGridCell.emptyContentView, find),
+            ("Artifacts", NSGridCell.emptyContentView, artifacts),
+            ("Local servers", mappings, localServers),
         ]
         for (title, middle, control) in rows {
             let name = NSTextField(labelWithString: title)
@@ -150,7 +164,7 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
         grid.column(at: 2).xPlacement = .trailing
         grid.row(at: 0).rowAlignment = .none
         grid.row(at: 0).yPlacement = .center
-        for row in [3, 4, 5, 8, 9, 10, 12, 13, 14] {
+        for row in [3, 4, 5, 8, 9, 10, 12, 13, 14, 15, 16] {
             grid.row(at: row).rowAlignment = .none
             grid.row(at: row).yPlacement = .center
         }
@@ -226,6 +240,8 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
         // Kill is one of the session actions: it has nothing to do without them.
         kill.isEnabled = sessionActions.state == .on
         find.state = Settings.phoneCapability(.find) ? .on : .off
+        artifacts.state = Settings.phoneCapability(.artifacts) ? .on : .off
+        localServers.state = Settings.phoneCapability(.localServers) ? .on : .off
         let limit = Settings.phoneUploadLimit()
         uploadLimit.selectItem(at: Self.uploadLimits.firstIndex { $0.0 == limit } ?? 0)
     }
@@ -306,6 +322,19 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
 
     @objc private func findToggled() {
         onCapability?(.find, find.state == .on)
+    }
+
+    @objc private func artifactsToggled() {
+        onCapability?(.artifacts, artifacts.state == .on)
+    }
+
+    @objc private func localServersToggled() {
+        onCapability?(.localServers, localServers.state == .on)
+    }
+
+    /// Show the dev-server ports that are published on the tailnet now.
+    func renderMappings(_ ports: [Int]) {
+        mappings.stringValue = ports.sorted().map { ":\($0)" }.joined(separator: " ")
     }
 
     @objc private func uploadLimitPicked() {

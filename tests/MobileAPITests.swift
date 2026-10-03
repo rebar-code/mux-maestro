@@ -143,7 +143,10 @@ final class MobileAPITests: XCTestCase {
             ("POST", "/api/threads/localhost%3A1/key", .keyBar),
             ("POST", "/api/threads/localhost%3A1/upload", .upload),
             ("GET", "/api/threads/localhost%3A1/artifacts", .artifacts),
-            ("GET", "/api/threads/localhost%3A1/file?path=a", .artifacts),
+            ("GET", "/api/threads/localhost%3A1/file?id=a", .artifacts),
+            ("GET", "/api/threads/localhost%3A1/running", .localServers),
+            ("GET", "/api/servers", .localServers),
+            ("POST", "/api/servers/close", .localServers),
             ("POST", "/api/tmux/new-window", .sessionActions),
             ("POST", "/api/tmux/kill", .kill),
             ("POST", "/api/servers/open", .localServers),
@@ -165,8 +168,8 @@ final class MobileAPITests: XCTestCase {
         // A feature whose routes are not built yet: the router answers, not the gate.
         XCTAssertEqual(
             MobileAPI.route(
-                request("/api/threads/localhost%3A1/artifacts"),
-                config: MobileConfig(capabilities: [.artifacts])),
+                request("/api/terminal/localhost%3A1"),
+                config: MobileConfig(capabilities: [.liveTerminal])),
             .notFound)
         XCTAssertEqual(
             MobileAPI.route(request("/api/threads/localhost%3A1/upload", method: "POST"), config: config),
@@ -548,5 +551,39 @@ final class MobileAPITests: XCTestCase {
         XCTAssertFalse(MobileTailnet.servesOurs(serveStatusJSON: serving, port: 9000))
         XCTAssertFalse(MobileTailnet.servesOurs(serveStatusJSON: serving, port: 7434))
         XCTAssertFalse(MobileTailnet.servesOurs(serveStatusJSON: "{}", port: 7433))
+    }
+
+    func testArtifactAndServerRoutesAreMatchedOnceTheirSwitchesAreOn() {
+        let config = MobileConfig(capabilities: [.artifacts, .localServers])
+        let routed = { (path: String, method: String) in
+            MobileAPI.route(self.request(path, method: method), config: config)
+        }
+        XCTAssertEqual(routed("/api/threads/localhost%3A1/artifacts", "GET"), .api(.artifacts(id: "localhost:1")))
+        XCTAssertEqual(
+            routed("/api/threads/localhost%3A1/file?id=0123abcd", "GET"),
+            .api(.file(id: "localhost:1", artifact: "0123abcd")))
+        // The id is one query value. A path in the URL is no route.
+        XCTAssertEqual(
+            routed("/api/threads/localhost%3A1/file?path=%2Fetc%2Fpasswd", "GET"),
+            .api(.file(id: "localhost:1", artifact: "")))
+        XCTAssertEqual(routed("/api/threads/localhost%3A1/file/etc/passwd", "GET"), .notFound)
+        XCTAssertEqual(routed("/api/threads/localhost%3A1/running", "GET"), .api(.running(id: "localhost:1")))
+        XCTAssertEqual(routed("/api/servers", "GET"), .api(.servers))
+        XCTAssertEqual(routed("/api/servers/open", "POST"), .api(.serverOpen))
+        XCTAssertEqual(routed("/api/servers/close", "POST"), .api(.serverClose))
+        for (path, method) in [
+            ("/api/servers/open", "GET"), ("/api/servers/close", "GET"), ("/api/servers", "POST"),
+            ("/api/threads/localhost%3A1/file?id=a", "POST"), ("/api/threads/localhost%3A1/running", "POST"),
+        ] {
+            XCTAssertEqual(routed(path, method), .methodNotAllowed, path)
+        }
+        XCTAssertEqual(routed("/api/servers/5173/stop", "POST"), .disabled(.stopServers))
+        XCTAssertEqual(routed("/api/servers/funnel", "POST"), .notFound)
+        for endpoint in [MobileEndpoint.artifacts(id: "a"), .file(id: "a", artifact: "b")] {
+            XCTAssertEqual(endpoint.capability, .artifacts)
+        }
+        for endpoint in [MobileEndpoint.running(id: "a"), .servers, .serverOpen, .serverClose] {
+            XCTAssertEqual(endpoint.capability, .localServers)
+        }
     }
 }

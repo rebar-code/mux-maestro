@@ -1,3 +1,4 @@
+import Network
 import XCTest
 
 // PhoneLink.swift compiles into this test target. The tailscale CLI is a fake
@@ -11,6 +12,10 @@ private final class FakeTailscale: CommandRunner {
         """
     var serving: String? = "{}"
     var serveFails = false
+    /// When set, the serve status is what the serve calls so far add up to,
+    /// as the real CLI answers. `serving` is not read then.
+    var live = false
+    private var proxies: [Int: String] = [:]
 
     var calls: [[String]] {
         lock.lock()
@@ -21,12 +26,33 @@ private final class FakeTailscale: CommandRunner {
     func run(_ path: String, _ args: [String], stdin: Data?) -> String? {
         lock.lock()
         recorded.append(args)
-        lock.unlock()
+        defer { lock.unlock() }
         if args == MobileTailnet.statusArgv { return status }
-        if args == MobileTailnet.serveStatusArgv { return serving }
+        if args == MobileTailnet.serveStatusArgv { return live ? liveStatus : serving }
         if args.contains("--bg"), serveFails { return nil }
+        if args.count == 4, args[1] == "--bg", let port = Int(args[2].dropFirst("--https=".count)) {
+            proxies[port] = args[3]
+        }
+        if args.count == 3, args[2] == "off", let port = Int(args[1].dropFirst("--https=".count)) {
+            proxies[port] = nil
+        }
         return ""
     }
+
+    private var liveStatus: String {
+        let web = proxies.map {
+            #""devmac.example.ts.net:\#($0.key)":{"Handlers":{"/":{"Proxy":"\#($0.value)"}}}"#
+        }
+        return "{\"Web\":{\(web.joined(separator: ","))}}"
+    }
+}
+
+/// The stored list of mapped ports, in memory.
+private final class MemoryPorts: PhonePortStore {
+    var stored: [Int] = []
+
+    func load() -> [Int] { stored }
+    func save(_ ports: [Int]) { stored = ports }
 }
 
 /// The Keychain's stand-in: one token in memory.
@@ -46,6 +72,10 @@ private final class MemoryTokens: PhoneTokenStore {
 final class PhoneLinkTests: XCTestCase {
     private var tokens: MemoryTokens!
     private var tailscale: FakeTailscale!
+    private var ports: MemoryPorts!
+    /// The clock the link reads; a test moves it.
+    private var clock = Date(timeIntervalSince1970: 1_700_000_000)
+    private var published: [[Int]] = []
     private var server: MobileServer!
     private var states: [PhoneLink.State] = []
     private let lock = NSLock()
@@ -53,6 +83,8 @@ final class PhoneLinkTests: XCTestCase {
     override func setUp() {
         tailscale = FakeTailscale()
         tokens = MemoryTokens()
+        ports = MemoryPorts()
+        published = []
         server = MobileServer(staticRoot: nil, sources: MobileServer.Sources(
             screen: { _ in nil }, transcript: { _ in nil }))
         states = []
@@ -68,7 +100,14 @@ final class PhoneLinkTests: XCTestCase {
     ) -> PhoneLink {
         let link = PhoneLink(
             server: server, runner: tailscale, tailscalePath: { tailscalePath },
-            port: { port }, keepAwake: { keepAwake }, tokens: tokens, notify: { $0() })
+            port: { port }, keepAwake: { keepAwake }, tokens: tokens, ports: ports,
+            now: { [unowned self] in self.clock }, notify: { $0() })
+        link.onMappings = { [weak self] mappings in
+            guard let self else { return }
+            self.lock.lock()
+            self.published.append(mappings.map(\.port))
+            self.lock.unlock()
+        }
         link.onChange = { [weak self] state in
             guard let self else { return }
             self.lock.lock()
@@ -227,5 +266,332 @@ final class PhoneLinkTests: XCTestCase {
         XCTAssertTrue(awake.isKeepingAwake)
         awake.shutdown()
         XCTAssertFalse(awake.isKeepingAwake)
+    }
+
+    // MARK: dev-server mappings
+
+    /// A link that is on, with a serve status that follows the serve calls.
+    /// Returns it with the port its own server is published on.
+    private func linkOn() throws -> (PhoneLink, Int) {
+        tailscale.live = true
+        let link = link()
+        link.turnOn()
+        settle(link)
+        guard case .on(let url, _) = link.state else {
+            XCTFail("\(link.state)")
+            throw CancellationError()
+        }
+        return (link, try XCTUnwrap(URL(string: url)?.port))
+    }
+
+    private func open(_ link: PhoneLink, _ port: Int, https: Bool = false) -> MobileServing.Opened {
+        link.openMapping(port: port, https: https, thread: "localhost:12", label: "acme-app")
+    }
+
+    /// The serve calls that publish or unpublish a dev server (not the status reads).
+    private func serves(own: Int) -> [[String]] {
+        tailscale.calls.filter { $0.first == "serve" && $0[1] != "status" && $0[1] != "--https=\(own)"
+            && !($0.count == 4 && $0[2] == "--https=\(own)") }
+    }
+
+    func testOpeningAMappingRunsTheExactServeCommandAndClosingTakesItAway() throws {
+        let (link, own) = try linkOn()
+        XCTAssertEqual(open(link, 5173), .ok)
+        XCTAssertEqual(open(link, 6006, https: true), .ok)
+        XCTAssertEqual(serves(own: own), [
+            ["serve", "--bg", "--https=5173", "http://localhost:5173"],
+            ["serve", "--bg", "--https=6006", "https+insecure://localhost:6006"],
+        ])
+        XCTAssertEqual(link.mappings.map(\.port), [5173, 6006])
+        XCTAssertEqual(link.mappings.first?.thread, "localhost:12")
+        XCTAssertEqual(link.mappings.first?.label, "acme-app")
+        XCTAssertEqual(ports.stored, [5173, 6006])
+        XCTAssertEqual(published, [[5173], [5173, 6006]])
+        XCTAssertFalse(tailscale.calls.contains { $0.contains { $0.contains("funnel") } })
+
+        XCTAssertTrue(link.closeMapping(port: 5173))
+        XCTAssertEqual(serves(own: own).last, ["serve", "--https=5173", "off"])
+        XCTAssertEqual(link.mappings.map(\.port), [6006])
+        XCTAssertEqual(ports.stored, [6006])
+        // Not a mapping of ours: nothing runs.
+        let before = tailscale.calls.count
+        XCTAssertFalse(link.closeMapping(port: 5173))
+        XCTAssertFalse(link.closeMapping(port: 3000))
+        XCTAssertFalse(link.closeMapping(port: own))
+        XCTAssertEqual(tailscale.calls.count, before)
+        link.shutdown()
+    }
+
+    func testOpeningTheSamePortAgainRenewsItWithoutASecondServe() throws {
+        let (link, own) = try linkOn()
+        XCTAssertEqual(open(link, 5173), .ok)
+        clock.addTimeInterval(600)
+        XCTAssertEqual(open(link, 5173), .ok)
+        XCTAssertEqual(serves(own: own).count, 1)
+        XCTAssertEqual(link.mappings.first?.openedAt, clock)
+        link.shutdown()
+    }
+
+    func testTheOwnPortAndAPrivilegedPortAreRefusedBeforeAnythingRuns() throws {
+        let (link, own) = try linkOn()
+        let before = tailscale.calls.count
+        for port in [own, 22, 80, 443, 1023, 0, -5, 65536] {
+            XCTAssertEqual(open(link, port), .refused, "\(port)")
+        }
+        XCTAssertEqual(tailscale.calls.count, before)
+        XCTAssertEqual(link.mappings, [])
+        link.shutdown()
+    }
+
+    func testAPortSomethingElseAlreadyPublishesIsLeftAlone() throws {
+        let (link, own) = try linkOn()
+        tailscale.live = false
+        for serving in [
+            // Another project's mapping.
+            #"{"Web":{"devmac.example.ts.net:5173":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:3000"}}}}}"#,
+            // A raw TCP forward.
+            #"{"TCP":{"5173":{"TCPForward":"127.0.0.1:22"}}}"#,
+            // Open to the internet.
+            #"{"AllowFunnel":{"devmac.example.ts.net:5173":true},"Web":{"devmac.example.ts.net:5173":{"Handlers":{"/":{"Proxy":"http://localhost:5173"}}}}}"#,
+            // The same target, and not one this app made.
+            #"{"Web":{"devmac.example.ts.net:5173":{"Handlers":{"/":{"Proxy":"http://localhost:5173"}}}}}"#,
+        ] {
+            tailscale.serving = serving
+            XCTAssertEqual(open(link, 5173), .taken, serving)
+        }
+        // No answer from Tailscale proves nothing: nothing is published.
+        tailscale.serving = nil
+        XCTAssertEqual(open(link, 5173), .unavailable("Tailscale did not answer"))
+        XCTAssertEqual(serves(own: own), [])
+        XCTAssertEqual(link.mappings, [])
+        XCTAssertEqual(ports.stored, [])
+        tailscale.serving = "{}"
+        link.shutdown()
+    }
+
+    func testNoMoreThanFiveMappingsAreOpenAtOnce() throws {
+        let (link, own) = try linkOn()
+        XCTAssertEqual(MobileServing.maxMappings, 5)
+        for port in 3001...3005 { XCTAssertEqual(open(link, port), .ok) }
+        XCTAssertEqual(open(link, 3006), .limit)
+        // One of the five again is not a sixth.
+        XCTAssertEqual(open(link, 3003), .ok)
+        XCTAssertEqual(serves(own: own).count, 5)
+        XCTAssertTrue(link.closeMapping(port: 3001))
+        XCTAssertEqual(open(link, 3006), .ok)
+        XCTAssertEqual(link.mappings.map(\.port), [3002, 3003, 3004, 3005, 3006])
+        link.shutdown()
+    }
+
+    func testAFailedServeOrALinkThatIsOffPublishesNothing() throws {
+        let off = link()
+        XCTAssertEqual(open(off, 5173), .unavailable("Phone access is off"))
+        XCTAssertEqual(tailscale.calls, [])
+
+        let (link, _) = try linkOn()
+        tailscale.serveFails = true
+        XCTAssertEqual(open(link, 5173), .unavailable("tailscale serve failed"))
+        XCTAssertEqual(link.mappings, [])
+        XCTAssertEqual(ports.stored, [])
+        tailscale.serveFails = false
+        link.shutdown()
+    }
+
+    func testTurningThePhoneOffOrQuittingRemovesEveryMapping() throws {
+        for quit in [false, true] {
+            let (link, own) = try linkOn()
+            XCTAssertEqual(open(link, 5173), .ok)
+            XCTAssertEqual(open(link, 6006), .ok)
+            if quit {
+                link.shutdown()
+            } else {
+                link.turnOff()
+                while link.state != .off { usleep(10_000) }
+            }
+            XCTAssertEqual(Array(tailscale.calls.suffix(3)), [
+                ["serve", "--https=5173", "off"], ["serve", "--https=6006", "off"],
+                ["serve", "--https=\(own)", "off"],
+            ])
+            XCTAssertEqual(link.mappings, [])
+            XCTAssertEqual(ports.stored, [])
+            XCTAssertEqual(published.last, [])
+        }
+    }
+
+    func testTheSwitchGoingOffAStoppedServerAndHalfAnHourEachCloseAMapping() throws {
+        let (link, own) = try linkOn()
+        // Read through the link's queue, so what was asked before has run.
+        let drain = { _ = link.isKeepingAwake }
+        XCTAssertEqual(open(link, 5173), .ok)
+        XCTAssertEqual(open(link, 6006), .ok)
+        XCTAssertEqual(open(link, 8080), .ok)
+
+        // Nothing is stale yet.
+        link.sweepMappings(gone: [])
+        drain()
+        XCTAssertEqual(link.mappings.map(\.port), [5173, 6006, 8080])
+        XCTAssertEqual(serves(own: own).count, 3)
+
+        // The server on 6006 stopped.
+        link.sweepMappings(gone: [6006, 9999])
+        drain()
+        XCTAssertEqual(link.mappings.map(\.port), [5173, 8080])
+        XCTAssertEqual(serves(own: own).last, ["serve", "--https=6006", "off"])
+
+        // 8080 was opened again 20 minutes in; 5173 was not.
+        clock.addTimeInterval(1200)
+        XCTAssertEqual(open(link, 8080), .ok)
+        clock.addTimeInterval(600)
+        link.sweepMappings()
+        drain()
+        XCTAssertEqual(link.mappings.map(\.port), [8080])
+        XCTAssertEqual(serves(own: own).last, ["serve", "--https=5173", "off"])
+
+        // The "Local servers" switch was turned off.
+        link.closeAllMappings()
+        drain()
+        XCTAssertEqual(link.mappings, [])
+        XCTAssertEqual(serves(own: own).last, ["serve", "--https=8080", "off"])
+        XCTAssertEqual(ports.stored, [])
+        XCTAssertTrue(link.isOn)
+        link.shutdown()
+    }
+
+    func testAMappingSomeoneReplacedIsNotRemoved() throws {
+        let (link, own) = try linkOn()
+        XCTAssertEqual(open(link, 5173), .ok)
+        tailscale.live = false
+        tailscale.serving = """
+            {"Web":{"devmac.example.ts.net:5173":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:3000"}}}}}
+            """
+        XCTAssertTrue(link.closeMapping(port: 5173))
+        XCTAssertFalse(serves(own: own).contains(["serve", "--https=5173", "off"]))
+        XCTAssertEqual(link.mappings, [])
+        link.shutdown()
+    }
+
+    func testLeftoverMappingsOfOursAreRemovedAtStartAndAnotherProjectsAreNot() {
+        // 5173 and 6006 are still ours; 8080 is now another project's; 9000 is gone.
+        let serving = """
+            {"Web":{"devmac.example.ts.net:5173":{"Handlers":{"/":{"Proxy":"http://localhost:5173"}}},
+            "devmac.example.ts.net:6006":{"Handlers":{"/":{"Proxy":"https+insecure://localhost:6006"}}},
+            "devmac.example.ts.net:8080":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:8080"}}},
+            "devmac.example.ts.net:4000":{"Handlers":{"/":{"Proxy":"http://localhost:4000"}}}}}
+            """
+        // With the switch off, at launch.
+        tailscale.serving = serving
+        ports.stored = [5173, 6006, 8080, 9000]
+        let off = link(port: 7433)
+        off.removeLeftoverMapping()
+        off.shutdown()  // drains the link's queue
+        XCTAssertEqual(tailscale.calls, [
+            ["serve", "status", "--json"],
+            ["serve", "--https=5173", "off"], ["serve", "--https=6006", "off"],
+        ])
+        XCTAssertEqual(ports.stored, [])
+
+        // With the switch on, before the listener starts.
+        ports.stored = [5173, 6006, 8080, 9000]
+        let on = link()
+        on.turnOn()
+        settle(on)
+        XCTAssertTrue(on.isOn)
+        let offs = tailscale.calls.filter { $0.last == "off" }
+        XCTAssertEqual(offs, [
+            ["serve", "--https=5173", "off"], ["serve", "--https=6006", "off"],
+            ["serve", "--https=5173", "off"], ["serve", "--https=6006", "off"],
+        ])
+        // 4000 has our target form and was never stored: not ours to remove.
+        XCTAssertFalse(tailscale.calls.contains(["serve", "--https=4000", "off"]))
+        XCTAssertEqual(ports.stored, [])
+        XCTAssertEqual(on.mappings, [])
+        tailscale.serving = "{}"
+        on.shutdown()
+    }
+
+    /// The whole path of one tap: the phone's request, the server's checks,
+    /// the link, and the command Tailscale gets. Whatever else the body says,
+    /// the command holds the port and the constant `localhost`.
+    func testAnOpenRequestPutsNothingOfItsBodyButThePortIntoTheServeCommand() throws {
+        tailscale.live = true
+        final class Box { var link: PhoneLink? }
+        let box = Box()
+        let running = RunningSet(
+            known: true,
+            resources: [RunningResource(
+                kind: .server(port: 5173), host: Running.localHostName, paneID: "%12",
+                label: "acme-app", tooltip: "", url: "http://localhost:5173", pid: 4242)],
+            unknowns: [])
+        server = MobileServer(
+            staticRoot: nil,
+            sources: MobileServer.Sources(
+                screen: { _ in nil }, transcript: { _ in nil }, running: { _ in running }),
+            serving: MobileServer.Serving(
+                open: { port, https, thread, label in
+                    box.link?.openMapping(port: port, https: https, thread: thread, label: label)
+                        ?? .unavailable("off")
+                },
+                close: { box.link?.closeMapping(port: $0) ?? false },
+                list: { box.link?.mappings ?? [] }))
+        let link = link()
+        box.link = link
+        link.turnOn()
+        settle(link)
+        guard case .on(let url, _) = link.state else { return XCTFail("\(link.state)") }
+        let own = try XCTUnwrap(URL(string: url)?.port)
+        server.configure(MobileConfig(capabilities: [.localServers]))
+        var agent = TmuxPane(id: "%12", index: 0, command: "claude", title: "", active: true)
+        agent.claudeSessionId = "c1"
+        server.update(MobileSnapshot.build([MobileHostInput(
+            host: .local, colorHex: "#3291ff", reachability: .reachable, stats: nil,
+            sessions: [TmuxSession(name: "acme-app", attached: true, windows: [
+                TmuxWindow(index: 1, name: "checkout-fix", active: true, panes: [agent]),
+            ])])]))
+
+        func post(_ path: String, _ json: String) -> String {
+            let raw = "POST \(path) HTTP/1.1\r\nHost: devmac.example.ts.net:\(own)\r\n"
+                + "Tailscale-User-Login: me@example.com\r\nOrigin: https://devmac.example.ts.net:\(own)\r\n"
+                + "X-MuxMaestro: 1\r\nX-MuxMaestro-Token: \(tokens.token ?? "")\r\n"
+                + "Content-Length: \(json.utf8.count)\r\nConnection: close\r\n\r\n" + json
+            let connection = NWConnection(
+                host: "127.0.0.1", port: NWEndpoint.Port(rawValue: UInt16(own))!, using: .tcp)
+            let queue = DispatchQueue(label: "phone-link-tests")
+            let finished = DispatchSemaphore(value: 0)
+            var received = Data()
+            func read() {
+                connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { data, _, complete, error in
+                    if let data { received.append(data) }
+                    let text = String(decoding: received, as: UTF8.self)
+                    if complete || error != nil || text.hasSuffix("}") { finished.signal() } else { read() }
+                }
+            }
+            connection.start(queue: queue)
+            connection.send(content: Data(raw.utf8), completion: .contentProcessed { _ in })
+            read()
+            _ = finished.wait(timeout: .now() + 5)
+            connection.cancel()
+            return queue.sync { String(decoding: received, as: UTF8.self) }
+        }
+
+        let opened = post("/api/servers/open", """
+            {"thread":"localhost:12","port":5173,"host":"evil.example","url":"http://evil.example:80/",
+            "target":"http://169.254.169.254:80","scheme":"https+insecure","funnel":true}
+            """)
+        XCTAssertTrue(opened.hasPrefix("HTTP/1.1 200"), opened)
+        XCTAssertTrue(opened.hasSuffix(#"{"port":5173,"url":"https:\/\/devmac.example.ts.net:5173\/"}"#), opened)
+        XCTAssertEqual(serves(own: own), [["serve", "--bg", "--https=5173", "http://localhost:5173"]])
+        XCTAssertFalse(tailscale.calls.contains { $0.contains { $0.contains("evil") || $0.contains("169.254") || $0.contains("funnel") } })
+
+        // The link's own port is refused by the server and never reaches Tailscale.
+        let before = tailscale.calls.count
+        XCTAssertTrue(post("/api/servers/open", #"{"thread":"localhost:12","port":\#(own)}"#).hasPrefix("HTTP/1.1 403"))
+        // A port that runs, but not for this thread.
+        XCTAssertTrue(post("/api/servers/open", #"{"thread":"localhost:12","port":6006}"#).hasPrefix("HTTP/1.1 404"))
+        XCTAssertEqual(tailscale.calls.count, before)
+
+        XCTAssertTrue(post("/api/servers/close", #"{"port":5173}"#).hasPrefix("HTTP/1.1 200"))
+        XCTAssertEqual(serves(own: own).last, ["serve", "--https=5173", "off"])
+        XCTAssertEqual(link.mappings, [])
+        link.shutdown()
     }
 }
