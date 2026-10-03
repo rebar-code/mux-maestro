@@ -121,14 +121,16 @@
 	<!-- Voice arrives later: its controls are drawn and do nothing. -->
 	<div class="vbar" data-voicebar>
 		<span class="wave" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
-		<div class="vseg" role="group" aria-label="Voice mode">
-			<button disabled aria-disabled="true">Auto</button>
-			<button disabled aria-disabled="true">Manual</button>
+		<div class="vrow">
+			<div class="vseg" role="group" aria-label="Voice mode">
+				<button disabled aria-disabled="true">Auto</button>
+				<button class="on" disabled aria-disabled="true">Manual</button>
+			</div>
+			<button class="ip" disabled aria-disabled="true" aria-label="Speaker">🔊</button>
+			<button class="ip" disabled aria-disabled="true" aria-label="Replay">↻</button>
+			<button class="ip" disabled aria-disabled="true" aria-label="Skip">⏭</button>
+			<button class="ip" disabled aria-disabled="true" aria-label="Microphone">🎙</button>
 		</div>
-		<button class="ip" disabled aria-disabled="true" aria-label="Speaker">🔊</button>
-		<button class="ip" disabled aria-disabled="true" aria-label="Replay">↻</button>
-		<button class="ip" disabled aria-disabled="true" aria-label="Skip">⏭</button>
-		<button class="ip" disabled aria-disabled="true" aria-label="Microphone">🎙</button>
 	</div>
 	<form class="compose" onsubmit={submit}>
 		<input
@@ -321,20 +323,24 @@
 
 	.vbar {
 		flex: none;
-		display: flex;
-		align-items: center;
-		gap: 8px;
 		padding: 7px 12px 2px;
 		border-top: 1px solid var(--border);
 		background: var(--bar);
 	}
 
 	.wave {
-		display: inline-flex;
+		display: flex;
 		align-items: center;
 		gap: 2px;
 		height: 14px;
+		margin: 0 2px 7px;
 		opacity: 0.4;
+	}
+
+	.vrow {
+		display: flex;
+		align-items: center;
+		gap: 8px;
 	}
 
 	.wave i {
@@ -359,6 +365,11 @@
 		border-radius: 7px;
 		font-size: 12px;
 		color: var(--muted);
+	}
+
+	.vseg button.on {
+		background: #2a2a2a;
+		color: var(--text);
 	}
 
 	.ip {
