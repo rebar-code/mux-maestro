@@ -1863,6 +1863,13 @@ final class TmuxService {
         return tmux(FileTransfer.capturePaneArgv(target: target))
     }
 
+    /// Capture a pane's last `lines` lines of scrollback plus its screen, with
+    /// colour escapes. For the phone's terminal view. Nil if the capture failed.
+    func captureScrollback(target: String, lines: Int) -> String? {
+        guard transport.command(forTmux: []) != nil else { return nil }
+        return tmux(FileTransfer.captureScrollbackArgv(target: target, lines: lines))
+    }
+
     /// Drop a local file onto a session on this host: resolve the session's cwd,
     /// copy the file there (cp local / scp remote), then PASTE the resulting path
     /// into the session's active pane (no auto-run — the M11 decision). Returns

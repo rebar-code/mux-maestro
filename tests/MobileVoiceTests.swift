@@ -589,7 +589,7 @@ final class MobileVoiceServerTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         server = MobileServer(
             staticRoot: nil,
-            sources: MobileServer.Sources(screen: { _ in nil }, transcript: { _ in nil }),
+            sources: MobileServer.Sources(screen: { _, _ in nil }, transcript: { _ in nil }),
             manager: MobileServer.Manager(
                 pane: { [unowned self] in locked { (status, transcript) } },
                 send: { [unowned self] text, onDelta, completion in

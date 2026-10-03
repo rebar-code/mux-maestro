@@ -79,8 +79,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var mobileServer = MobileServer(
         staticRoot: Bundle.main.resourceURL?.appendingPathComponent("mobile", isDirectory: true),
         sources: MobileServer.Sources(
-            screen: { [registry] thread in
-                registry.service(for: thread.host).capturePane(target: thread.pane)
+            screen: { [registry] thread, lines in
+                registry.service(for: thread.host).captureScrollback(target: thread.pane, lines: lines)
             },
             transcript: { thread in
                 [thread.claudeSessionId, thread.codexSessionId].compactMap { $0 }

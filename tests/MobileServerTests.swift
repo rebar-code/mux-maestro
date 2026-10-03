@@ -45,6 +45,9 @@ final class MobileServerTests: XCTestCase {
                 dismiss: { [self] key in lock.lock(); _dismissed.append(key); lock.unlock() })
         }
     }
+    /// What the fake pane shows, and the line counts the server asked it for.
+    private var screenText = "$ make test\n\u{1B}[32mok\u{1B}[0m\n\n\n"
+    private var askedLines: [Int] = []
 
     override func setUpWithError() throws {
         root = FileManager.default.temporaryDirectory
@@ -65,7 +68,10 @@ final class MobileServerTests: XCTestCase {
     private func makeServer(limits: MobileServer.Limits = MobileServer.Limits()) -> MobileServer {
         let transcript = transcript!
         return MobileServer(staticRoot: root, sources: MobileServer.Sources(
-            screen: { thread in thread.pane == "%12" ? "$ make test\nok\n\n\n" : nil },
+            screen: { [weak self] thread, lines in
+                self?.askedLines.append(lines)
+                return thread.pane == "%12" ? (self?.screenText ?? "") : nil
+            },
             transcript: { _ in (transcript.path, false) }), limits: limits, manager: manager.source)
     }
 
@@ -313,14 +319,48 @@ final class MobileServerTests: XCTestCase {
         let chat = get("/api/threads/localhost%3A12/chat")
         XCTAssertEqual(chat.status, 200)
         XCTAssertTrue(chat.body.contains(#""text":"hello""#))
-        // Trailing blank rows of the pane are cut.
-        XCTAssertEqual(get("/api/threads/localhost%3A12/screen").body, #"{"text":"$ make test\nok"}"#)
+        // Colour escapes pass through; trailing blank rows of the pane are cut.
+        let screen = get("/api/threads/localhost%3A12/screen")
+        XCTAssertEqual(
+            screen.body,
+            #"{"lines":2000,"max":10000,"text":"$ make test\n\u001b[32mok\u001b[0m"}"#)
+        XCTAssertTrue(screen.head.contains("ETag: \""))
         // A shell has a screen and no chat.
         XCTAssertEqual(get("/api/threads/localhost%3A13/chat").status, 404)
         XCTAssertEqual(get("/api/threads/localhost%3A13/screen").status, 503)
         XCTAssertEqual(get("/api/threads/localhost%3A99/screen").status, 404)
         XCTAssertEqual(get("/api/threads/localhost%3A99/chat").status, 404)
         XCTAssertEqual(get("/api/threads", method: "POST").status, 403)
+    }
+
+    func testScreenLinesReachThePaneClamped() {
+        _ = get("/api/threads/localhost%3A12/screen")
+        _ = get("/api/threads/localhost%3A12/screen?lines=4000")
+        _ = get("/api/threads/localhost%3A12/screen?lines=999999")
+        _ = get("/api/threads/localhost%3A12/screen?lines=-50")
+        _ = get("/api/threads/localhost%3A12/screen?lines=5;kill-server")
+        XCTAssertEqual(askedLines, [2000, 4000, 10_000, 2000, 2000])
+    }
+
+    func testAnUnchangedScreenIsNotSentAgain() throws {
+        let first = get("/api/threads/localhost%3A12/screen")
+        let tag = try XCTUnwrap(first.head.components(separatedBy: "\r\n")
+            .first { $0.hasPrefix("ETag: ") }?.dropFirst("ETag: ".count))
+        let raw = "GET /api/threads/localhost%3A12/screen HTTP/1.1\r\nHost: devmac.example.ts.net\r\n"
+            + "Tailscale-User-Login: me@example.com\r\nX-MuxMaestro-Token: demo-token\r\n"
+            + "If-None-Match: \(tag)\r\n\r\n"
+        let same = exchange(raw, until: whole)
+        XCTAssertTrue(same.hasPrefix("HTTP/1.1 304 Not Modified\r\n"))
+        XCTAssertTrue(same.contains("Content-Length: 0\r\n"))
+        XCTAssertTrue(same.contains("ETag: \(tag)\r\n"))
+        XCTAssertTrue(same.hasSuffix("\r\n\r\n"))
+
+        // New output: the same validator now gets the new body.
+        screenText += "more\n"
+        let changed = exchange(raw, until: whole)
+        XCTAssertTrue(changed.hasPrefix("HTTP/1.1 200 OK\r\n"))
+        XCTAssertTrue(changed.contains("more"))
+        XCTAssertFalse(changed.contains("ETag: \(tag)\r\n"))
     }
 
     func testServesTheBundleWithTheShellAsFallback() {
