@@ -31,7 +31,7 @@ struct MobileResponse: Equatable {
     var body = Data()
 
     static let reasons = [
-        200: "OK", 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found",
+        200: "OK", 304: "Not Modified", 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found",
         405: "Method Not Allowed", 413: "Payload Too Large",
         431: "Request Header Fields Too Large", 500: "Internal Server Error",
         503: "Service Unavailable",
@@ -155,7 +155,8 @@ enum MobileEndpoint: Equatable {
     case events
     /// `after` is the cursor a previous chat response returned as `next`.
     case chat(id: String, after: UInt64?)
-    case screen(id: String)
+    /// `lines` is how much scrollback to capture, already clamped.
+    case screen(id: String, lines: Int)
 
     var capability: MobileCapability {
         switch self {
@@ -283,11 +284,46 @@ enum MobileAPI {
         case 4 where segments[1] == "threads" && segments[3] == "chat":
             endpoint = .chat(id: segments[2], after: request.query["after"].flatMap(UInt64.init))
         case 4 where segments[1] == "threads" && segments[3] == "screen":
-            endpoint = .screen(id: segments[2])
+            endpoint = .screen(id: segments[2], lines: screenLines(request.query["lines"]))
         default: return .notFound
         }
         guard config.allows(endpoint.capability) else { return .disabled(endpoint.capability) }
         return request.method == "GET" ? .api(endpoint) : .methodNotAllowed
+    }
+
+    /// Scrollback lines a screen request gets when it names none, and the most
+    /// it can ask for. A pane's history can be far longer; the cap bounds what
+    /// one request costs the Mac and the phone.
+    static let screenLinesDefault = 2000
+    static let screenLinesMax = 10_000
+
+    /// The `lines` query value as a line count: digits only, clamped to
+    /// 1...`screenLinesMax`. Anything else reads as the default.
+    static func screenLines(_ raw: String?) -> Int {
+        guard let raw, !raw.isEmpty, raw.count <= 9,
+              raw.allSatisfy({ $0.isASCII && $0.isNumber }), let value = Int(raw)
+        else { return screenLinesDefault }
+        return min(max(value, 1), screenLinesMax)
+    }
+
+    /// A validator for a response body: equal bodies give equal tags, so a
+    /// phone that sends it back in `If-None-Match` is told "unchanged" instead
+    /// of being sent a long scrollback again. FNV-1a; not a security boundary.
+    static func etag(_ body: Data) -> String {
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        for byte in body {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x0000_0100_0000_01b3
+        }
+        return "\"\(String(hash, radix: 16))-\(body.count)\""
+    }
+
+    /// Whether the request already holds the body `etag` names.
+    static func isFresh(_ request: MobileRequest, etag: String) -> Bool {
+        guard let sent = request.header("if-none-match") else { return false }
+        return sent.split(separator: ",").contains {
+            $0.trimmingCharacters(in: .whitespaces) == etag
+        }
     }
 
     /// The header that carries the pairing token.

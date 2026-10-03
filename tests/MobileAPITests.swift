@@ -95,7 +95,11 @@ final class MobileAPITests: XCTestCase {
         XCTAssertEqual(
             MobileAPI.route(request("/api/threads/devbox%3A3/chat")), .api(.chat(id: "devbox:3", after: nil)))
         XCTAssertEqual(
-            MobileAPI.route(request("/api/threads/devbox%3A3/screen")), .api(.screen(id: "devbox:3")))
+            MobileAPI.route(request("/api/threads/devbox%3A3/screen")),
+            .api(.screen(id: "devbox:3", lines: 2000)))
+        XCTAssertEqual(
+            MobileAPI.route(request("/api/threads/devbox%3A3/screen?lines=4000")),
+            .api(.screen(id: "devbox:3", lines: 4000)))
         XCTAssertEqual(MobileAPI.route(request("/api/nope")), .notFound)
         XCTAssertEqual(MobileAPI.route(request("/api/threads/a/b/c")), .notFound)
         XCTAssertEqual(MobileAPI.route(request("/api/threads", method: "POST")), .methodNotAllowed)
@@ -126,6 +130,34 @@ final class MobileAPITests: XCTestCase {
             "public, max-age=31536000, immutable")
         XCTAssertEqual(MobileAPI.cacheControl(forPath: "service-worker.js"), "no-cache")
         XCTAssertEqual(MobileAPI.cacheControl(forPath: "index.html"), "no-cache")
+    }
+
+    // MARK: screen lines and validators
+
+    func testScreenLinesAreDigitsOnlyAndClamped() {
+        XCTAssertEqual(MobileAPI.screenLines(nil), 2000)
+        XCTAssertEqual(MobileAPI.screenLines("500"), 500)
+        XCTAssertEqual(MobileAPI.screenLines("10000"), 10_000)
+        XCTAssertEqual(MobileAPI.screenLines("10001"), 10_000)
+        XCTAssertEqual(MobileAPI.screenLines("999999999"), 10_000)
+        XCTAssertEqual(MobileAPI.screenLines("0"), 1)
+        // Not all digits, or too long to be a count: the default, never an error
+        // and never a value passed on to tmux.
+        for raw in ["", "-5", "+5", "5e3", "12a", " 12", "1.5", "0x10", "１２", "99999999999999999999",
+                    "500;rm", "500 -t %1"] {
+            XCTAssertEqual(MobileAPI.screenLines(raw), 2000, raw)
+        }
+    }
+
+    func testEtagMatchesOnlyTheSameBody() {
+        let a = MobileAPI.etag(Data("one".utf8)), b = MobileAPI.etag(Data("two".utf8))
+        XCTAssertEqual(a, MobileAPI.etag(Data("one".utf8)))
+        XCTAssertNotEqual(a, b)
+        XCTAssertTrue(a.hasPrefix("\"") && a.hasSuffix("\""))
+        XCTAssertTrue(MobileAPI.isFresh(request("/", headers: ["If-None-Match": a]), etag: a))
+        XCTAssertTrue(MobileAPI.isFresh(request("/", headers: ["If-None-Match": "\(b), \(a)"]), etag: a))
+        XCTAssertFalse(MobileAPI.isFresh(request("/", headers: ["If-None-Match": b]), etag: a))
+        XCTAssertFalse(MobileAPI.isFresh(request("/"), etag: a))
     }
 
     // MARK: capabilities

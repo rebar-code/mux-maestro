@@ -11,8 +11,9 @@ final class MobileServer {
     /// The two reads that go past the snapshot. Both are called off the server
     /// queue and may block.
     struct Sources {
-        /// The pane's visible text.
-        var screen: (MobileThread) -> String?
+        /// The pane's last `lines` lines of scrollback and its screen, with
+        /// colour escapes.
+        var screen: (MobileThread, _ lines: Int) -> String?
         /// The thread's transcript file, and whether it is a Codex rollout.
         var transcript: (MobileThread) -> (path: String, codex: Bool)?
     }
@@ -314,7 +315,7 @@ final class MobileServer {
 
         switch MobileAPI.route(request, config: config) {
         case .api(let endpoint):
-            respond(to: endpoint, client: client, head: head)
+            respond(to: endpoint, request: request, client: client, head: head)
         case .disabled:
             send(.error(403, "disabled"), to: client, head: head)
         case .asset(let path):
@@ -326,7 +327,9 @@ final class MobileServer {
         }
     }
 
-    private func respond(to endpoint: MobileEndpoint, client: Client, head: Bool) {
+    private func respond(
+        to endpoint: MobileEndpoint, request: MobileRequest, client: Client, head: Bool
+    ) {
         switch endpoint {
         case .config:
             send(.json(data: config.json()), to: client, head: head)
@@ -346,15 +349,26 @@ final class MobileServer {
                 else { return .error(404, "not_found") }
                 return .json(page.json)
             }
-        case .screen(let id):
+        case .screen(let id, let lines):
             guard let thread = snapshot.thread(id: id) else {
                 return send(.error(404, "not_found"), to: client, head: head)
             }
             reply(to: client) { [sources] in
-                guard let text = sources.screen(thread) else { return .error(503, "unavailable") }
+                guard let text = sources.screen(thread, lines) else { return .error(503, "unavailable") }
                 // A pane is mostly empty rows below its prompt; the phone needs none of them.
                 let end = text.lastIndex { !$0.isNewline && !$0.isWhitespace }
-                return .json(["text": end.map { String(text[...$0]) } ?? ""])
+                var response = MobileResponse.json([
+                    "text": end.map { String(text[...$0]) } ?? "",
+                    "lines": lines, "max": MobileAPI.screenLinesMax,
+                ])
+                // A scrollback is long and mostly unchanged between polls: a
+                // phone that already holds this body gets 304 and no body.
+                let etag = MobileAPI.etag(response.body)
+                if MobileAPI.isFresh(request, etag: etag) {
+                    response = MobileResponse(status: 304, headers: ["Cache-Control": "no-store"])
+                }
+                response.headers["ETag"] = etag
+                return response
             }
         }
     }
