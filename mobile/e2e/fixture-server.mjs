@@ -143,7 +143,10 @@ CHATS[MAKER] = [
 	['tool', 'pnpm exec playwright screenshot localhost:5173/settings', 'Bash'],
 	['assistant', 'Here is the page after the change: settings-after.png'],
 	['tool', 'pnpm exec vitest run --coverage', 'Bash'],
-	['assistant', 'Coverage is in coverage/index.html. Docs: https://example.com/docs/push-tokens'],
+	[
+		'assistant',
+		'Coverage is in coverage/index.html, the trend in coverage/chart.svg. Docs: https://example.com/docs/push-tokens'
+	],
 	// Enough rows after the files that the chat scrolls.
 	...Array.from({ length: 14 }, (_, i) => [
 		i % 2 ? 'assistant' : 'tool',
@@ -223,6 +226,7 @@ h2{margin:0 0 18px;font-size:24px}.ln{display:flex;justify-content:space-between
 <div class="ln"><span>src/settings</span><span>88%</span></div>
 <div class="ln"><span>src/push</span><span>71%</span></div>
 <p id="probe">Generated nightly</p>
+<a id="out" href="/__mapped/1/">Full report</a>
 <script>
 document.getElementById('probe').textContent = 'script ran';
 parent.postMessage('artifact-script-ran', '*');
@@ -241,6 +245,18 @@ export async function rotateExpired(now: Date): Promise<number> {
 }
 `;
 
+// An image that carries a script. Shown as a picture it runs nothing; as a
+// page of the app's own origin it would read the pairing token.
+const CHART = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 160" width="300" height="160">
+<rect width="300" height="160" fill="#101418"/>
+<polyline points="20,130 80,96 140,104 200,58 280,30" fill="none" stroke="#45d483" stroke-width="4"/>
+<script>
+window.__svgRan = localStorage.getItem('mm.token');
+document.title = 'svg script ran';
+fetch('/api/config', { headers: { 'X-MuxMaestro-Token': localStorage.getItem('mm.token') } });
+</script>
+</svg>`;
+
 const ROOT_DIR = '/Users/me/code/mobile';
 const artifactId = (path) => createHash('sha256').update(path).digest('hex').slice(0, 32);
 // [name, dir, kind, mime, age in seconds, bytes]
@@ -254,6 +270,7 @@ const FILES = [
 		120,
 		Buffer.from(COVERAGE)
 	],
+	['chart.svg', `${ROOT_DIR}/coverage`, 'image', 'image/svg+xml', 130, Buffer.from(CHART)],
 	['PLAN.md', ROOT_DIR, 'markdown', 'text/plain; charset=utf-8', 720, Buffer.from(PLAN)],
 	[
 		'rotate-tokens.ts',
@@ -1481,6 +1498,34 @@ function hook(res, url) {
 	return send(res, 200, { ok: true });
 }
 
+// The policy the Mac sends with the app shell: only the app's own scripts
+// run, and the one inline script of the shell is named by its hash.
+let shellPolicy;
+async function policy() {
+	if (shellPolicy) return shellPolicy;
+	const shell = await readFile(join(ROOT, 'index.html'), 'utf8');
+	const hashes = [...shell.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)].map(
+		([, text]) => `'sha256-${createHash('sha256').update(text).digest('base64')}'`
+	);
+	shellPolicy = [
+		"default-src 'self'",
+		["script-src 'self'", ...hashes].join(' '),
+		"style-src 'self' 'unsafe-inline'",
+		"img-src 'self' data: blob:",
+		"media-src 'self' data: blob:",
+		"font-src 'self' data:",
+		"connect-src 'self'",
+		"worker-src 'self'",
+		"manifest-src 'self'",
+		"frame-src 'none'",
+		"object-src 'none'",
+		"base-uri 'none'",
+		"form-action 'none'",
+		"frame-ancestors 'none'"
+	].join('; ');
+	return shellPolicy;
+}
+
 async function asset(res, url) {
 	const rel = normalize(decodeURIComponent(url.pathname)).replace(/^(\.\.[/\\])+/, '');
 	const file = join(ROOT, rel);
@@ -1488,6 +1533,7 @@ async function asset(res, url) {
 	try {
 		const body = await readFile(wanted);
 		res.writeHead(200, {
+			'content-security-policy': await policy(),
 			'content-type': TYPES[extname(wanted)] ?? 'application/octet-stream',
 			'cache-control': url.pathname.startsWith('/_app/immutable/')
 				? 'public, max-age=31536000, immutable'

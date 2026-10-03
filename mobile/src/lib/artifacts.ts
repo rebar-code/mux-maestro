@@ -79,14 +79,41 @@ export function shortDir(dir: string): string {
 	return parts.length <= 2 ? dir : `…/${parts.slice(-2).join('/')}`;
 }
 
+const RASTER = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+
+/**
+ * How an image of this type gets an address for an `<img>`.
+ *
+ * A `blob:` address has the app's origin. Opened as a page (a long press, "open
+ * image in new tab"), a blob typed SVG runs its scripts there, next to the
+ * pairing token. So only formats that cannot hold a script get a blob, and
+ * with that exact type. SVG gets a `data:` address, which has no origin.
+ * Anything else is not shown as an image at all.
+ */
+export function imageAddress(mime: string): { as: 'blob' | 'data'; type: string } | null {
+	const type = mime.split(';')[0].trim().toLowerCase();
+	if (RASTER.has(type)) return { as: 'blob', type };
+	if (type === 'image/svg+xml') return { as: 'data', type };
+	return null;
+}
+
+/** The type a file is saved under: bytes, never something a browser would open as a page. */
+export const SAVED_TYPE = 'application/octet-stream';
+
 const CSP =
 	"default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; form-action 'none'; base-uri 'none'";
+// A link in the page asks for a new window, and the sandbox allows none: a tap
+// loads nothing. The first `<base target>` in a page is the one that counts.
+const HEAD = `<meta http-equiv="Content-Security-Policy" content="${CSP}"><base target="_blank">`;
+const DOCTYPE = /^(?:\s|<!--[\s\S]*?-->)*<!doctype[^>]*>\s*/i;
 
 /**
  * An HTML artifact as the frame's `srcdoc`. The frame is sandboxed with no
  * permissions, so its scripts do not run and it has no origin; this policy
- * also stops it loading anything from the network.
+ * also stops it loading anything from the network. It goes right after the
+ * doctype, which must stay first for the page to keep standards mode.
  */
 export function framedHtml(html: string): string {
-	return `<meta http-equiv="Content-Security-Policy" content="${CSP}">${html}`;
+	const doctype = DOCTYPE.exec(html)?.[0] ?? '';
+	return `${doctype}${HEAD}${html.slice(doctype.length)}`;
 }
