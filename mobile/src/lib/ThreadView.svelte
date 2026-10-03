@@ -137,15 +137,7 @@
 						</div>
 					</div>
 				{:else}
-					<div
-						class="scroll"
-						data-pull={PULL}
-						data-view="terminal"
-						data-zoom
-						{@attach feed.scroller('terminal')}
-						{@attach pullToRefresh(PULL, () => feed.load('terminal'))}
-					>
-						<PullIndicator key={PULL} />
+					<div class="scroll" data-view="terminal" data-zoom {@attach feed.scroller('terminal')}>
 						{#if feed.screen === null}
 							<div class="chat">
 								{#each [90, 70, 82, 55, 76] as width (width)}
@@ -153,9 +145,38 @@
 								{/each}
 							</div>
 						{:else}
-							<pre class="screen mono" data-hscroll>{feed.screen}</pre>
+							{#if feed.screen.hasOlder}
+								<button class="older" disabled={feed.loadingOlder} onclick={feed.loadOlder}>
+									Load older
+								</button>
+							{/if}
+							<div class="screen mono" data-hscroll>
+								<div class="lines" data-lines style:min-width="{feed.screen.cols}ch">
+									{#each feed.screen.blocks as block (block.key)}
+										<div class="blk" style:--n={block.lines.length}>
+											{#each block.lines as line (line.n)}
+												<div class="ln">
+													{#each line.spans as span, at (at)}
+														<span
+															class:sb={span.bold}
+															class:sd={span.dim}
+															class:si={span.italic}
+															class:su={span.underline}
+															style:color={span.color}
+															style:background-color={span.background}>{span.text}</span
+														>
+													{/each}
+												</div>
+											{/each}
+										</div>
+									{/each}
+								</div>
+							</div>
 						{/if}
 					</div>
+					{#if !feed.atBottom}
+						<button class="jump" aria-label="Jump to bottom" onclick={feed.jumpToBottom}>↓</button>
+					{/if}
 				{/if}
 			</section>
 		{/each}
@@ -274,16 +295,103 @@
 		font-weight: 600;
 	}
 
+	/* The feed keeps the view in place itself; the browser must not also try. */
+	[data-view='terminal'] {
+		overflow-anchor: none;
+		display: flex;
+		flex-direction: column;
+	}
+
 	.screen {
-		margin: 0;
 		padding: 10px 12px calc(16px + env(safe-area-inset-bottom));
 		font-size: var(--term-size);
-		line-height: 1.3;
+		/* A whole number of pixels, so a thousand lines are exactly a thousand times one. */
+		--lh: calc(var(--term-size) * 1.3);
+		line-height: var(--lh);
 		color: #cfcfcf;
-		white-space: pre;
 		/* Moved by the gesture controller, so it can hand over to the drawer at its edge. */
 		overflow-x: hidden;
-		min-height: 100%;
+		/* Fills the page when the text is short, so a drag below the text still lands on it. */
+		flex: 1 0 auto;
+	}
+
+	@supports (width: round(1.5px, 1px)) {
+		.screen {
+			--lh: round(calc(var(--term-size) * 1.3), 1px);
+		}
+	}
+
+	/* A run of lines the browser may skip while it is off screen. */
+	.blk {
+		content-visibility: auto;
+		/*
+		 * Exact, because every line is the same height. No `auto`: a remembered
+		 * height would be wrong as soon as the block gains or loses lines.
+		 */
+		contain-intrinsic-height: calc(var(--n) * var(--lh));
+	}
+
+	/*
+	 * One terminal line. A flex row, so the only text in it is the spans': no
+	 * stray space from the markup can get between them.
+	 */
+	.ln {
+		display: flex;
+		height: var(--lh);
+	}
+
+	.ln span {
+		flex: none;
+		white-space: pre;
+	}
+
+	.sb {
+		font-weight: 700;
+	}
+
+	.sd {
+		opacity: 0.6;
+	}
+
+	.si {
+		font-style: italic;
+	}
+
+	.su {
+		text-decoration: underline;
+	}
+
+	.older {
+		display: block;
+		min-height: var(--hit);
+		margin: 8px auto 0;
+		padding: 0 18px;
+		border-radius: 22px;
+		background: var(--surface);
+		border: 1px solid var(--border);
+		font-size: 14px;
+		color: var(--accent);
+	}
+
+	.page {
+		position: relative;
+	}
+
+	.jump {
+		position: absolute;
+		right: max(12px, env(safe-area-inset-right));
+		bottom: calc(14px + env(safe-area-inset-bottom));
+		width: var(--hit);
+		height: var(--hit);
+		border-radius: 50%;
+		background: var(--surface);
+		border: 1px solid var(--border);
+		box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+		font-size: 18px;
+	}
+
+	.jump:active {
+		filter: brightness(1.4);
 	}
 
 	.empty {

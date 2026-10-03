@@ -243,7 +243,9 @@ export function gestures(node: HTMLElement): () => void {
 		mid: number;
 		offset: number;
 	}
-	let pinch: { size: number; distance: number; x: Axis; y: Axis } | null = null;
+	let pinch: { size: number; distance: number; lineHeight: number; x: Axis; y: Axis } | null = null;
+
+	const lineHeightOf = (el: HTMLElement): number => parseFloat(getComputedStyle(el).lineHeight);
 
 	const spread = (touches: TouchList): number =>
 		Math.hypot(touches[0].clientX - touches[1].clientX, touches[0].clientY - touches[1].clientY);
@@ -267,6 +269,7 @@ export function gestures(node: HTMLElement): () => void {
 		pinch = {
 			size: text.size,
 			distance: spread(event.touches),
+			lineHeight: lineHeightOf(wide),
 			x: {
 				el: wide,
 				scroll: wide.scrollLeft,
@@ -299,9 +302,11 @@ export function gestures(node: HTMLElement): () => void {
 			ratio,
 			midNow: mid.x - x.el.getBoundingClientRect().left
 		});
+		// Lines are a whole number of pixels tall, so they do not grow exactly as the text does.
+		const lines = lineHeightOf(x.el) / pinch.lineHeight;
 		y.el.scrollTop = anchorScroll({
 			...y,
-			ratio,
+			ratio: Number.isFinite(lines) && lines > 0 ? lines : ratio,
 			midNow: mid.y - y.el.getBoundingClientRect().top
 		});
 	}

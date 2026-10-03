@@ -4,7 +4,7 @@ import { drag, expectDrawerClosed, fresh, threadPath, touchDrag, twoFingers } fr
 const LOCAL = 'localhost:1';
 const REMOTE = 'devbox:2';
 
-const size = (page: Page, selector = 'pre.screen'): Promise<number> =>
+const size = (page: Page, selector = '.screen'): Promise<number> =>
 	page
 		.locator(selector)
 		.first()
@@ -12,7 +12,7 @@ const size = (page: Page, selector = 'pre.screen'): Promise<number> =>
 
 async function terminal(page: Page): Promise<void> {
 	await fresh(page, threadPath(REMOTE));
-	await expect(page.locator('pre.screen')).toBeVisible();
+	await expect(page.locator('.screen')).toBeVisible();
 	expect(await size(page)).toBe(11);
 }
 
@@ -86,14 +86,18 @@ test('the size stops at 24px and at 6px', async ({ page }) => {
 test('the text under the fingers stays under them, on both axes', async ({ page }) => {
 	// This pane has a long scrollback: it scrolls down as well as sideways.
 	await fresh(page, threadPath('devbox:5'));
-	await expect(page.locator('pre.screen')).toBeVisible();
+	await expect(page.locator('.screen')).toBeVisible();
 	await page.locator('[data-view="terminal"]').evaluate((el) => (el.scrollTop = 600));
-	const pre = page.locator('pre.screen');
+	const pre = page.locator('.screen');
 	// A character far along the wide line, scrolled into the middle of the screen.
 	const where = (): Promise<{ x: number; y: number }> =>
 		pre.evaluate((el) => {
-			const node = el.firstChild as Text;
-			const at = node.data.indexOf('lines) · Edit');
+			const needle = 'lines) · Edit';
+			const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+			let node = walker.nextNode() as Text | null;
+			while (node && !node.data.includes(needle)) node = walker.nextNode() as Text | null;
+			if (!node) throw new Error('text not found');
+			const at = node.data.indexOf(needle);
 			const range = document.createRange();
 			range.setStart(node, at);
 			range.setEnd(node, at + 1);
@@ -206,7 +210,7 @@ test('A+ and A− change the size by one pixel and stop at the limits', async ({
 
 	await page.evaluate(() => localStorage.setItem('mm.textSize', '23'));
 	await page.reload();
-	await expect(page.locator('pre.screen')).toBeVisible();
+	await expect(page.locator('.screen')).toBeVisible();
 	await larger.click();
 	expect(await size(page)).toBe(24);
 	await expect(larger).toBeDisabled();
@@ -214,7 +218,7 @@ test('A+ and A− change the size by one pixel and stop at the limits', async ({
 
 	await page.evaluate(() => localStorage.setItem('mm.textSize', '7'));
 	await page.reload();
-	await expect(page.locator('pre.screen')).toBeVisible();
+	await expect(page.locator('.screen')).toBeVisible();
 	await smaller.click();
 	expect(await size(page)).toBe(6);
 	await expect(smaller).toBeDisabled();
@@ -242,12 +246,12 @@ test('the size is kept, and the first paint already has it', async ({ page }) =>
 		const w = window as unknown as { seen: string[] };
 		w.seen = [];
 		new MutationObserver(() => {
-			const pre = document.querySelector('pre.screen');
+			const pre = document.querySelector('.screen');
 			if (pre) w.seen.push(getComputedStyle(pre).fontSize);
 		}).observe(document, { childList: true, subtree: true, attributes: true });
 	});
 	await page.reload();
-	await expect(page.locator('pre.screen')).toBeVisible();
+	await expect(page.locator('.screen')).toBeVisible();
 	expect(await size(page)).toBe(kept);
 	const seen = await page.evaluate(() => (window as unknown as { seen: string[] }).seen);
 	expect(seen.length).toBeGreaterThan(0);
@@ -324,7 +328,7 @@ test('reduced motion: a size change is not animated', async ({ page }) => {
 	await page.emulateMedia({ reducedMotion: 'reduce' });
 	await terminal(page);
 	const duration = await page
-		.locator('pre.screen')
+		.locator('.screen')
 		.evaluate((el) => getComputedStyle(el).transitionDuration);
 	expect(duration).toMatch(/^0s/);
 });

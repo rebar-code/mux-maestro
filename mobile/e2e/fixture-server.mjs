@@ -4,9 +4,12 @@
 //   PORT=5199 node e2e/fixture-server.mjs
 //
 // Test hooks (POST): /__fixture/reset, /__fixture/wait?id=, /__fixture/say?id=&text=,
-// /__fixture/grouping?value=, /__fixture/deny?on=1, /__fixture/rotate?value=, /__fixture/drop
+// /__fixture/grouping?value=, /__fixture/deny?on=1, /__fixture/rotate?value=, /__fixture/drop,
+// /__fixture/append?count= (adds lines to pane buildbox:8),
+// /__fixture/screen?default=&max= (the screen endpoint's default and cap)
 //
 // Every /api/ request needs the header `X-MuxMaestro-Token: demo-token`.
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { extname, join, normalize, resolve } from 'node:path';
@@ -121,7 +124,10 @@ const CHATS = {
 
 const DEMO_TOKEN = 'demo-token';
 const LONG_ID = 'devbox:5';
-let started, threads, chats, grouping, deny, token;
+// A pane with 500 numbered, coloured lines of scrollback.
+const LOG_ID = 'buildbox:8';
+const E = '\x1b';
+let started, threads, chats, grouping, deny, token, log, screenDefault, screenMax;
 const streams = new Set();
 
 function reset() {
@@ -129,6 +135,10 @@ function reset() {
 	grouping = 'recent';
 	deny = false;
 	token = DEMO_TOKEN;
+	screenDefault = 2000;
+	screenMax = 10000;
+	log = [];
+	appendLog(500);
 	const color = (host) => HOSTS.find((h) => h.name === host).color;
 	const make = (n, session, name, host, status, prompt, ageSeconds, idleStage) => {
 		const local = host === 'localhost';
@@ -234,6 +244,7 @@ const configBody = () => ({
 });
 
 function screen(t) {
+	if (t.id === LOG_ID) return log;
 	const last =
 		(chats[t.id] ?? []).filter((m) => m.role === 'assistant').at(-1)?.text ?? `${t.session} $ `;
 	const box = '─'.repeat(52);
@@ -241,11 +252,11 @@ function screen(t) {
 		t.status === 'waiting'
 			? [
 					`╭${box}╮`,
-					'│ Bash command',
+					`│ ${E}[1mBash command${E}[0m`,
 					'│',
 					'│   pnpm exec playwright test tests/checkout.spec.ts',
 					'│',
-					'│ ❯ 1. Yes',
+					`│ ${E}[1;34m❯ 1. Yes${E}[0m`,
 					'│   2. Yes, and don’t ask again for pnpm exec',
 					'│   3. No, tell Claude what to do',
 					`╰${box}╯`
@@ -254,12 +265,14 @@ function screen(t) {
 					`╭${box}╮`,
 					`│ >${' '.repeat(50)}│`,
 					`╰${box}╯`,
-					t.status === 'busy' ? '  ✻ Working… (esc to interrupt)' : '  ? for shortcuts'
+					t.status === 'busy'
+						? `  ${E}[33m✻ Working…${E}[0m ${E}[2m(esc to interrupt)${E}[0m`
+						: `  ${E}[2m? for shortcuts${E}[0m`
 				];
 	// One line wider than a phone: the terminal view has to scroll sideways.
 	const wide = `  ⎿  Read ${t.cwd}/tests/checkout.spec.ts (212 lines) · Edit tests/checkout.spec.ts (+3 −1) · 2 files changed`;
 	// One pane with a long scrollback, so the terminal also scrolls down.
-	const log =
+	const history =
 		t.id === LONG_ID
 			? Array.from(
 					{ length: 90 },
@@ -267,7 +280,14 @@ function screen(t) {
 						`  12:${String(n % 60).padStart(2, '0')}:07 deploy web-${n % 7} step ${n + 1}/90 ok`
 				)
 			: [];
-	return [...log, `⏺ ${last.slice(0, 50)}`, wide, '', ...tail, ''].join('\n');
+	return [
+		...history,
+		`${E}[32m⏺${E}[0m ${last.slice(0, 50)}`,
+		`${E}[2m${wide}${E}[0m`,
+		'',
+		...tail,
+		''
+	];
 }
 
 const send = (res, status, body, type = 'application/json') => {
@@ -303,7 +323,22 @@ function api(req, res, url) {
 	const match = /^\/api\/threads\/([^/]+)\/(chat|screen)$/.exec(path);
 	const thread = match && threads.find((t) => t.id === decodeURIComponent(match[1]));
 	if (!thread) return send(res, 404, { error: 'not_found' });
-	if (match[2] === 'screen') return send(res, 200, { text: screen(thread) });
+	if (match[2] === 'screen') {
+		// Same rules as the Mac: digits only, else the default; then 1 to the cap.
+		const asked = url.searchParams.get('lines') ?? '';
+		const lines = Math.min(
+			Math.max(/^\d+$/.test(asked) ? Number(asked) : screenDefault, 1),
+			screenMax
+		);
+		const text = screen(thread).slice(-lines).join('\n');
+		const etag = `"${createHash('sha1').update(`${lines}\n${text}`).digest('hex').slice(0, 16)}"`;
+		if (req.headers['if-none-match'] === etag) {
+			res.writeHead(304, { etag, 'cache-control': 'no-store' });
+			return res.end();
+		}
+		res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store', etag });
+		return res.end(JSON.stringify({ text, lines, max: screenMax }));
+	}
 	const all = chats[thread.id];
 	if (!all) return send(res, 404, { error: 'not_found' });
 	const after = url.searchParams.get('after');
@@ -312,6 +347,23 @@ function api(req, res, url) {
 		next: all.length,
 		reset: false
 	});
+}
+
+/** One numbered line of the log pane. A few carry things the parser must handle. */
+function logLine(n) {
+	const label = `line ${String(n).padStart(3, '0')}`;
+	const rest = `  build step ${n} of the nightly run finished without warnings (${(n * 37) % 900}ms)`;
+	if (n === 100) return `${E}[38;5;208m${label}${E}[0m${rest}`;
+	if (n === 200) return `${E}[38;2;255;100;0m${label}${E}[0m${rest}`;
+	if (n === 300) return `${label}  <script>alert(1)</script>`;
+	if (n === 400) return `${E}]0;window title\x07${label}  after a title${E}[K`;
+	if (n === 450) return `${E}[1;7m${label}${E}[0m${E}[2m${rest}${E}[0m`;
+	if (n === 460) return `${E}[44m${label}${E}[49m ${E}[3;4mitalic underline${E}[0m`;
+	return `${E}[${31 + (n % 6)}m${label}${E}[0m${rest}`;
+}
+
+function appendLog(count) {
+	for (let i = 0; i < count; i += 1) log.push(logLine(log.length + 1));
 }
 
 function dropStreams() {
@@ -345,6 +397,15 @@ function hook(res, url) {
 			grouping = url.searchParams.get('value') ?? 'recent';
 			push('config', configBody());
 			break;
+		case '/__fixture/append':
+			appendLog(Number(url.searchParams.get('count') ?? 1));
+			// The row changes too, so an open thread view fetches at once.
+			threads.find((t) => t.id === LOG_ID).since = now + log.length;
+			break;
+		case '/__fixture/screen':
+			screenDefault = Number(url.searchParams.get('default') ?? 2000);
+			screenMax = Number(url.searchParams.get('max') ?? 10000);
+			return send(res, 200, { ok: true });
 		case '/__fixture/rotate':
 			token = url.searchParams.get('value') ?? 'rotated-token';
 			dropStreams();
