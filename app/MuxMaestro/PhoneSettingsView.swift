@@ -172,6 +172,10 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
             status.stringValue = "Starting…"
             status.textColor = theme.muted
             toggle.state = .on
+        case .waitingForKeychain:
+            status.stringValue = "Waiting"
+            status.textColor = theme.amber
+            toggle.state = .on
         case .on(let address, let pairingLink):
             status.stringValue = "On"
             status.textColor = theme.green
@@ -183,8 +187,12 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
             status.textColor = theme.red
             toggle.state = .off
         }
+        // The full-width line under the grid: why a start failed, or what a
+        // start is waiting for.
         var reason = ""
         if case .failed(let why) = state { reason = why }
+        if state == .waitingForKeychain { reason = "Waiting for Keychain" }
+        failure.textColor = state == .waitingForKeychain ? theme.amber : theme.red
         let failureChanged = failure.stringValue != reason
         failure.stringValue = reason
         failure.isHidden = reason.isEmpty
