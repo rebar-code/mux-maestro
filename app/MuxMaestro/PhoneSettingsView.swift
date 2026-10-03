@@ -10,6 +10,8 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
     var onPort: ((Int) -> Void)?
     var onGrouping: ((MobileGrouping) -> Void)?
     var onKeepAwake: ((Bool) -> Void)?
+    /// A feature's switch was flipped.
+    var onCapability: ((MobileCapability, Bool) -> Void)?
     /// The view's height changed; the window refits.
     var onResize: (() -> Void)?
 
@@ -18,6 +20,7 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
     private let port = NSTextField(string: "")
     private let grouping = NSPopUpButton()
     private let keepAwake = NSSwitch()
+    private let manager = NSSwitch()
     private let url = NSTextField(labelWithString: "")
     private let copy = NSButton(title: "Copy", target: nil, action: nil)
     private let qr = NSImageView()
@@ -40,12 +43,13 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
         status.textColor = theme.muted
         status.lineBreakMode = .byTruncatingTail
         status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        for control in [toggle, keepAwake] {
+        for control in [toggle, keepAwake, manager] {
             control.controlSize = .small
             control.target = self
         }
         toggle.action = #selector(toggled)
         keepAwake.action = #selector(keepAwakeToggled)
+        manager.action = #selector(managerToggled)
 
         port.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
         port.alignment = .right
@@ -76,6 +80,7 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
             ("Port", NSGridCell.emptyContentView, port),
             ("Default grouping", NSGridCell.emptyContentView, grouping),
             ("Keep Mac awake", NSGridCell.emptyContentView, keepAwake),
+            ("Manager", NSGridCell.emptyContentView, manager),
         ]
         for (title, middle, control) in rows {
             let name = NSTextField(labelWithString: title)
@@ -88,8 +93,10 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
         grid.column(at: 2).xPlacement = .trailing
         grid.row(at: 0).rowAlignment = .none
         grid.row(at: 0).yPlacement = .center
-        grid.row(at: 3).rowAlignment = .none
-        grid.row(at: 3).yPlacement = .center
+        for row in [3, 4] {
+            grid.row(at: row).rowAlignment = .none
+            grid.row(at: row).yPlacement = .center
+        }
 
         url.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
         url.textColor = theme.accent
@@ -137,6 +144,7 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
         let current = Settings.phoneGrouping()
         grouping.selectItem(at: Self.groupings.firstIndex { $0.0 == current } ?? 0)
         keepAwake.state = Settings.phoneKeepAwake() ? .on : .off
+        manager.state = Settings.phoneCapability(.manager) ? .on : .off
     }
 
     func render(_ state: PhoneLink.State) {
@@ -177,6 +185,10 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
 
     @objc private func keepAwakeToggled() {
         onKeepAwake?(keepAwake.state == .on)
+    }
+
+    @objc private func managerToggled() {
+        onCapability?(.manager, manager.state == .on)
     }
 
     @objc private func groupingPicked() {

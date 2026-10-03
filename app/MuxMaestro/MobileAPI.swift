@@ -32,7 +32,7 @@ struct MobileResponse: Equatable {
 
     static let reasons = [
         200: "OK", 400: "Bad Request", 403: "Forbidden", 404: "Not Found",
-        405: "Method Not Allowed", 413: "Payload Too Large",
+        405: "Method Not Allowed", 409: "Conflict", 413: "Payload Too Large",
         431: "Request Header Fields Too Large", 500: "Internal Server Error",
         503: "Service Unavailable",
     ]
@@ -54,6 +54,11 @@ struct MobileResponse: Equatable {
 
     static func error(_ status: Int, _ code: String) -> MobileResponse {
         json(["error": code], status: status)
+    }
+
+    /// An error the phone shows as it is: `message` is the sentence.
+    static func error(_ status: Int, _ code: String, message: String) -> MobileResponse {
+        json(["error": code, "message": message], status: status)
     }
 
     /// The bytes to write. A HEAD response keeps `Content-Length` and drops the body.
@@ -154,6 +159,11 @@ enum MobileRoute: Equatable {
     /// `after` is the cursor a previous chat response returned as `next`.
     case chat(id: String, after: UInt64?)
     case screen(id: String)
+    /// The manager home: what needs the human, and the chat so far.
+    case manager
+    /// One manager turn. The reply streams back.
+    case managerText
+    case managerDismiss
     /// A file of the static bundle, as a path relative to its root.
     case asset(String)
     case methodNotAllowed
@@ -258,18 +268,24 @@ enum MobileAPI {
             return .disabled(capability)
         }
         let route: MobileRoute
+        var method = "GET"
         switch segments.count {
         case 2 where segments[1] == "config": route = .config
         case 2 where segments[1] == "threads": route = .threads
         case 2 where segments[1] == "hosts": route = .hosts
         case 2 where segments[1] == "events": route = .events
+        case 2 where segments[1] == "manager": route = .manager
+        case 3 where segments[1] == "manager" && segments[2] == "text":
+            (route, method) = (.managerText, "POST")
+        case 3 where segments[1] == "manager" && segments[2] == "dismiss":
+            (route, method) = (.managerDismiss, "POST")
         case 4 where segments[1] == "threads" && segments[3] == "chat":
             route = .chat(id: segments[2], after: request.query["after"].flatMap(UInt64.init))
         case 4 where segments[1] == "threads" && segments[3] == "screen":
             route = .screen(id: segments[2])
         default: return .notFound
         }
-        return request.method == "GET" ? route : .methodNotAllowed
+        return request.method == method ? route : .methodNotAllowed
     }
 
     /// Every request must come through `tailscale serve` from this Mac's own

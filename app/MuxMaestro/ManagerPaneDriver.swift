@@ -612,6 +612,13 @@ final class ManagerPaneDriver {
         ManagerTranscript.sessionId(forTmuxSession: config.tmuxSession, sessionsDir: sessionsDir)
     }
 
+    /// The manager pane's transcript file, once its session has written one.
+    func transcript() -> URL? {
+        currentSessionId().flatMap {
+            ManagerTranscript.findJSONL(sessionId: $0, projectsDir: projectsDir)
+        }
+    }
+
     /// The pane's most recent substantive reply, for "catch me up".
     func lastReply() -> String {
         guard let id = currentSessionId(),
