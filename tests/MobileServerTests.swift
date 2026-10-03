@@ -76,15 +76,50 @@ final class MobileServerTests: XCTestCase {
             limits: limits, manager: manager.source)
     }
 
+    /// Start `server` on a port a client can reach. With many test runs on
+    /// one machine the system can hand out a port that connects fail on
+    /// ("Address already in use") for as long as the listener holds it, so a
+    /// port that takes no connection is given back and another is asked for.
     private func start(_ server: MobileServer) {
-        let started = expectation(description: "listening")
-        server.start(port: 0, identity: identity, token: "demo-token") { result in
-            if case .success(let bound) = result { self.port = bound }
-            started.fulfill()
+        for _ in 0..<10 {
+            let started = expectation(description: "listening")
+            server.start(port: 0, identity: identity, token: "demo-token") { result in
+                if case .success(let bound) = result { self.port = bound }
+                started.fulfill()
+            }
+            wait(for: [started], timeout: 5)
+            XCTAssertGreaterThan(port, 0)
+            if reachable() { break }
+            server.stop()
         }
-        wait(for: [started], timeout: 5)
-        XCTAssertGreaterThan(port, 0)
         server.update(snapshot())
+    }
+
+    /// Whether a connection to the server's port opens.
+    private func reachable() -> Bool {
+        let connection = NWConnection(
+            host: "127.0.0.1", port: NWEndpoint.Port(rawValue: UInt16(port))!, using: .tcp)
+        let settled = DispatchSemaphore(value: 0)
+        let queue = DispatchQueue(label: "mobile-server-tests.probe")
+        var opened = false
+        var done = false
+        connection.stateUpdateHandler = { state in
+            switch state {
+            case .ready:
+                opened = true
+                fallthrough
+            case .waiting, .failed:
+                guard !done else { return }
+                done = true
+                settled.signal()
+            default:
+                break
+            }
+        }
+        connection.start(queue: queue)
+        _ = settled.wait(timeout: .now() + 2)
+        connection.cancel()
+        return queue.sync { opened }
     }
 
     /// Swap the default server for one with tight limits.
@@ -117,10 +152,10 @@ final class MobileServerTests: XCTestCase {
 
     /// Send `raw` and read until `done` says the reply is whole (or 5 s pass).
     ///
-    /// A connection that never opens is tried again. Each exchange uses a new
-    /// local port, and with many test runs on one machine the system can have
-    /// none free for a moment (`connectx` fails with "Address already in use").
-    /// Nothing was sent then, so asking again cannot repeat a write.
+    /// A connection that does not open is tried again. Each exchange takes a
+    /// new local port, and with many test runs on one machine a connect can
+    /// fail ("Address already in use") or hang. Nothing was sent then, so
+    /// asking again cannot repeat a write.
     private func exchange(_ raw: String, until done: @escaping (String) -> Bool) -> String {
         for _ in 0..<20 {
             if let reply = attempt(raw, until: done) { return reply }
@@ -134,10 +169,35 @@ final class MobileServerTests: XCTestCase {
         let connection = NWConnection(
             host: "127.0.0.1", port: NWEndpoint.Port(rawValue: UInt16(port))!, using: .tcp)
         let queue = DispatchQueue(label: "mobile-server-tests")
+        let settled = DispatchSemaphore(value: 0)
         let finished = DispatchSemaphore(value: 0)
         var received = Data()
         var opened = false
-        var unopened = false
+        var refused = false
+        var settledOnce = false
+        connection.stateUpdateHandler = { state in
+            switch state {
+            case .waiting(.posix(.ECONNREFUSED)), .failed(.posix(.ECONNREFUSED)):
+                // Nothing listens there: trying again will not change it.
+                refused = true
+                fallthrough
+            case .ready:
+                if !refused { opened = true }
+                fallthrough
+            case .waiting, .failed:
+                guard !settledOnce else { return }
+                settledOnce = true
+                settled.signal()
+            default:
+                break
+            }
+        }
+        connection.start(queue: queue)
+        // The request leaves only on an open connection.
+        guard settled.wait(timeout: .now() + 2) == .success, queue.sync(execute: { opened }) else {
+            connection.cancel()
+            return queue.sync(execute: { refused }) ? "" : nil
+        }
         func read() {
             connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { data, _, complete, error in
                 if let data { received.append(data) }
@@ -148,25 +208,11 @@ final class MobileServerTests: XCTestCase {
                 }
             }
         }
-        connection.stateUpdateHandler = { state in
-            switch state {
-            case .ready:
-                opened = true
-            case .waiting, .failed:
-                // Not connected, and it never was: no byte of the request left.
-                guard !opened, !unopened else { return }
-                unopened = true
-                finished.signal()
-            default:
-                break
-            }
-        }
-        connection.start(queue: queue)
         connection.send(content: Data(raw.utf8), completion: .contentProcessed { _ in })
         read()
         _ = finished.wait(timeout: .now() + 5)
         connection.cancel()
-        return queue.sync { unopened && received.isEmpty ? nil : String(decoding: received, as: UTF8.self) }
+        return queue.sync { String(decoding: received, as: UTF8.self) }
     }
 
     private func whole(_ text: String) -> Bool {
@@ -894,8 +940,19 @@ final class MobileServerTests: XCTestCase {
         // Its own code, and the text is taken out of the input box again.
         XCTAssertEqual(
             refused.body,
-            #"{"cleared":true,"error":"not_sent","message":"Thread is waiting on a prompt","reason":"waiting"}"#)
-        XCTAssertEqual(pane.argv.map(\.first), ["copy-mode", "load-buffer", "paste-buffer", "send-keys"])
+            #"{"cleared":false,"error":"not_sent","message":"Thread is waiting on a prompt","reason":"waiting"}"#)
+        // A prompt is in front now: no key goes to it, not even one that clears.
+        XCTAssertEqual(pane.argv.map(\.first), ["copy-mode", "load-buffer", "paste-buffer"])
+    }
+
+    func testTextRefusedForABusyPaneIsTakenOutOfItsInputBox() {
+        repliesOn()
+        pane.statusAfterPaste = .busy
+        pane.screenAfterPaste = DemoPrompt.input("go on")
+        let refused = post(Self.thread + "/text", json: #"{"text":"go on"}"#)
+        XCTAssertEqual(
+            refused.body,
+            #"{"cleared":true,"error":"not_sent","message":"Thread is busy","reason":"busy"}"#)
         XCTAssertEqual(pane.argv.last, ["send-keys", "-t", "%12", "C-u"])
     }
 
@@ -1385,5 +1442,129 @@ final class MobileServerTests: XCTestCase {
         XCTAssertEqual(tmux.argv.count, 1)
         // A find is a read: it does not make the app load the tree again.
         XCTAssertEqual(changes.count, 0)
+    }
+
+    // MARK: replies, second review
+
+    private func promptID() throws -> String {
+        try XCTUnwrap(
+            (JSONSerialization.jsonObject(with: Data(get(Self.thread + "/prompt").body.utf8))
+                as? [String: Any])?["id"] as? String)
+    }
+
+    func testAnInputBoxWithAnythingButItsFooterBelowItIsNotAnInputBox() {
+        repliesOn()
+        // The agent exited: its last input box is still on screen, and a
+        // shell prompt is under it. Text and Enter would go to the shell.
+        for below in ["$ rm -i build\nremove build? [y/N] ", "$ ", ":", "  (END)\n~\n~\n~\n~\n~"] {
+            for id in ["localhost%3A12", "localhost%3A13"] {
+                pane.status = id.hasSuffix("12") ? .idle : nil
+                pane.screen = DemoPrompt.idle + "\n" + below
+                let refused = post("/api/threads/\(id)/text", json: #"{"text":"y"}"#)
+                XCTAssertEqual(refused.status, 409, below)
+                XCTAssertEqual(
+                    refused.body, #"{"error":"no_input","message":"Thread shows no input box"}"#, below)
+            }
+        }
+        XCTAssertEqual(pane.argv.count, 0)
+        // The box with only its footer under it takes text.
+        pane.status = .idle
+        pane.screen = DemoPrompt.idle
+        XCTAssertEqual(post(Self.thread + "/text", json: #"{"text":"go on"}"#).status, 200)
+    }
+
+    func testNoKeyGoesToAPromptThatCameUpAfterThePaste() {
+        repliesOn()
+        // By status, and by screen alone.
+        for byScreen in [false, true] {
+            pane.status = .idle
+            pane.screen = DemoPrompt.idle
+            pane.statusAfterPaste = byScreen ? nil : .waiting
+            pane.screenAfterPaste = DemoPrompt.permission
+            let before = pane.argv.count
+            let refused = post(Self.thread + "/text", json: #"{"text":"go on"}"#)
+            XCTAssertEqual(refused.status, 409)
+            // The text may still be in the hidden input box: the phone is told so.
+            XCTAssertEqual(
+                refused.body,
+                #"{"cleared":false,"error":"not_sent","message":"Thread is waiting on a prompt","reason":"waiting"}"#)
+            // The paste, and nothing after it: no Ctrl-U, no Enter.
+            XCTAssertEqual(
+                pane.argv.dropFirst(before).map(\.first), ["copy-mode", "load-buffer", "paste-buffer"])
+        }
+    }
+
+    func testANumberedPromptIsNeverDroppedForAStaleBoxOrPassedAsAnEcho() {
+        repliesOn()
+        // A prompt, a stale input box under it, and a shell line under that.
+        pane.screen = DemoPrompt.permission + "\n" + DemoPrompt.idle + "\n$ "
+        let stale = post(Self.thread + "/text", json: #"{"text":"go on"}"#)
+        XCTAssertEqual(stale.status, 409)
+        XCTAssertEqual(stale.body, #"{"error":"waiting","message":"Thread is waiting on a prompt"}"#)
+        XCTAssertEqual(pane.argv.count, 0)
+
+        // A prompt drawn between two rules with the cursor on its first row,
+        // and a reply that holds its option lines.
+        pane.screen = DemoPrompt.idle
+        pane.screenAfterPaste = "────────\n❯ 1. Yes\n  2. No\n────────"
+        let echo = post(Self.thread + "/text", json: #"{"text":"pick one:\n1. Yes\n2. No"}"#)
+        XCTAssertEqual(echo.status, 409)
+        XCTAssertTrue(echo.body.contains(#""reason":"waiting""#), echo.body)
+        XCTAssertFalse(pane.argv.contains { $0.contains("Enter") })
+    }
+
+    func testTheSameWordsAskedAgainAreAnotherPromptEvenWithNoTimeOnThePane() throws {
+        repliesOn()
+        // No `since` at all, as on a remote host.
+        pane.status = .waiting
+        pane.screen = DemoPrompt.permission
+        let first = try promptID()
+        XCTAssertEqual(try promptID(), first)
+        XCTAssertEqual(post(Self.thread + "/answer", json: #"{"prompt":"\#(first)","option":1}"#).status, 200)
+        // The agent asks the very same thing again.
+        let second = try promptID()
+        XCTAssertNotEqual(second, first)
+        let old = post(Self.thread + "/answer", json: #"{"prompt":"\#(first)","option":1}"#)
+        XCTAssertEqual(old.status, 409)
+        XCTAssertEqual(old.body, #"{"error":"stale"}"#)
+        XCTAssertEqual(pane.argv.count, 1)
+
+        // The pane left the waiting state and came back, seen only in the tree.
+        pane.status = nil
+        server.update(snapshot(status: .waiting))
+        let third = try promptID()
+        server.update(snapshot(status: .busy))
+        server.update(snapshot(status: .waiting))
+        XCTAssertNotEqual(try promptID(), third)
+        // The prompt went away and the same one came back.
+        let fourth = try promptID()
+        pane.screen = DemoPrompt.idle
+        _ = get(Self.thread + "/prompt")
+        pane.screen = DemoPrompt.permission
+        XCTAssertNotEqual(try promptID(), fourth)
+    }
+
+    func testEnterAndDigitsAnswerOnlyAPromptThePhoneCanShow() throws {
+        repliesOn()
+        // A waiting pane with no choices to read: the phone has no card for it.
+        pane.status = .waiting
+        pane.screen = DemoPrompt.yesNo
+        let blind = try promptID()
+        for key in ["Enter", "1", "9"] {
+            let refused = post(Self.thread + "/key", json: #"{"key":"\#(key)","prompt":"\#(blind)"}"#)
+            XCTAssertEqual(refused.status, 409, key)
+            XCTAssertEqual(refused.body, #"{"error":"unseen","message":"Open the terminal to answer"}"#, key)
+        }
+        XCTAssertEqual(pane.argv.count, 0)
+        // Escape and the arrows stay: they answer nothing.
+        for key in ["Escape", "Down", "Up"] {
+            XCTAssertEqual(
+                post(Self.thread + "/key", json: #"{"key":"\#(key)","prompt":"\#(blind)"}"#).status, 200, key)
+        }
+        // A prompt with a card takes Enter with that card's id.
+        pane.screen = DemoPrompt.permission
+        let card = try promptID()
+        XCTAssertEqual(post(Self.thread + "/key", json: #"{"key":"Enter","prompt":"\#(card)"}"#).status, 200)
+        XCTAssertEqual(pane.argv.map(\.last), ["Escape", "Down", "Up", "Enter"])
     }
 }
