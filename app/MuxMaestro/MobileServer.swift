@@ -31,6 +31,9 @@ final class MobileServer {
             _ completion: @escaping (ManagerTurnOutcome) -> Void
         ) -> Void
         var dismiss: (_ key: String) -> Void
+        /// The pane's last `lines` lines and its screen, with colour escapes.
+        /// Called off the server queue and may block.
+        var screen: (_ lines: Int) -> String?
     }
 
     /// Bounds on what one listener holds, so a client that opens connections
@@ -47,6 +50,9 @@ final class MobileServer {
         /// A turn stream with nothing to say gets a comment line this often,
         /// so the phone can tell a quiet turn from a dead connection.
         var turnPing: TimeInterval = 15
+        /// How often the manager pane is read for its spinner line while a
+        /// turn runs.
+        var spinnerPoll: TimeInterval = 1
     }
 
     enum StartError: Error, Equatable {
@@ -102,6 +108,8 @@ final class MobileServer {
     /// Turns this server started that have not ended. The app tells the server
     /// about a running turn too, but only once the turn is on its way.
     private var phoneTurns = 0
+    /// Counts turns, so a spinner poll from an earlier turn stops.
+    private var turnSerial = 0
 
     private let activityLock = NSLock()
     private var lastRequestAt = Date.distantPast
@@ -234,6 +242,8 @@ final class MobileServer {
         queue.async {
             self.turn = MobileManagerTurn(prompt: prompt)
             self.managerChanged()
+            self.turnSerial += 1
+            self.pollSpinner(serial: self.turnSerial)
         }
     }
 
@@ -250,6 +260,32 @@ final class MobileServer {
         queue.async {
             self.turn = nil
             self.managerChanged()
+        }
+    }
+
+    /// How many pane lines are read to find the spinner line.
+    private static let spinnerLines = 40
+
+    /// While a turn runs, read the pane's own spinner line and send it on when
+    /// it changes, so the phone shows what the agent shows.
+    private func pollSpinner(serial: Int) {
+        guard let manager else { return }
+        queue.asyncAfter(deadline: .now() + limits.spinnerPoll) { [weak self] in
+            guard let self, self.turn != nil, self.turnSerial == serial else { return }
+            self.work.async { [weak self] in
+                let line = manager.screen(Self.spinnerLines).flatMap(MobileSpinner.line(in:))
+                self?.queue.async {
+                    guard let self, self.turn != nil, self.turnSerial == serial else { return }
+                    if line != self.turn?.spinner {
+                        self.turn?.spinner = line
+                        if self.config.allows(.manager) {
+                            self.broadcast(Self.event(
+                                "manager-spinner", Self.json(["text": line ?? NSNull()])))
+                        }
+                    }
+                    self.pollSpinner(serial: serial)
+                }
+            }
         }
     }
 
@@ -441,21 +477,26 @@ final class MobileServer {
                 return send(.error(404, "not_found"), to: client, head: head)
             }
             reply(to: client) { [sources] in
-                guard let text = sources.screen(thread, lines) else { return .error(503, "unavailable") }
-                // A pane is mostly empty rows below its prompt; the phone needs none of them.
-                let end = text.lastIndex { !$0.isNewline && !$0.isWhitespace }
-                var response = MobileResponse.json([
-                    "text": end.map { String(text[...$0]) } ?? "",
-                    "lines": lines, "max": MobileAPI.screenLinesMax,
-                ])
-                // A scrollback is long and mostly unchanged between polls: a
-                // phone that already holds this body gets 304 and no body.
-                let etag = MobileAPI.etag(response.body)
-                if MobileAPI.isFresh(request, etag: etag) {
-                    response = MobileResponse(status: 304, headers: ["Cache-Control": "no-store"])
-                }
-                response.headers["ETag"] = etag
-                return response
+                Self.screenResponse(sources.screen(thread, lines), lines: lines, request: request)
+            }
+        case .managerChat(let after):
+            guard let manager else {
+                return send(.error(503, "unavailable", message: MobileManager.offMessage),
+                            to: client, head: head)
+            }
+            reply(to: client) {
+                // No transcript yet is an empty chat, not a missing thread.
+                let page = manager.pane().transcript
+                    .flatMap { MobileChat.read(path: $0, codex: false, after: after) }
+                return .json((page ?? MobileChatPage()).json)
+            }
+        case .managerScreen(let lines):
+            guard let manager else {
+                return send(.error(503, "unavailable", message: MobileManager.offMessage),
+                            to: client, head: head)
+            }
+            reply(to: client) {
+                Self.screenResponse(manager.screen(lines), lines: lines, request: request)
             }
         case .manager:
             guard let manager else {
@@ -464,12 +505,8 @@ final class MobileServer {
             }
             let (board, snapshot, turn) = (board, snapshot, turn)
             reply(to: client) {
-                let pane = manager.pane()
-                let chat = pane.transcript
-                    .flatMap { MobileChat.read(path: $0, codex: false, after: nil) }
-                return .json(MobileManager.body(
-                    board: board, snapshot: snapshot, turn: turn, status: pane.status,
-                    chat: chat ?? MobileChatPage()))
+                .json(MobileManager.body(
+                    board: board, snapshot: snapshot, turn: turn, status: manager.pane().status))
             }
         case .managerText:
             let field = MobileManager.text(in: request.body)
@@ -494,6 +531,27 @@ final class MobileServer {
             manager.dismiss(key)
             send(.json(["ok": true]), to: client, head: head)
         }
+    }
+
+    /// A pane's text as the screen routes answer it; 503 when it could not be read.
+    private static func screenResponse(
+        _ text: String?, lines: Int, request: MobileRequest
+    ) -> MobileResponse {
+        guard let text else { return .error(503, "unavailable") }
+        // A pane is mostly empty rows below its prompt; the phone needs none of them.
+        let end = text.lastIndex { !$0.isNewline && !$0.isWhitespace }
+        var response = MobileResponse.json([
+            "text": end.map { String(text[...$0]) } ?? "",
+            "lines": lines, "max": MobileAPI.screenLinesMax,
+        ])
+        // A scrollback is long and mostly unchanged between polls: a
+        // phone that already holds this body gets 304 and no body.
+        let etag = MobileAPI.etag(response.body)
+        if MobileAPI.isFresh(request, etag: etag) {
+            response = MobileResponse(status: 304, headers: ["Cache-Control": "no-store"])
+        }
+        response.headers["ETag"] = etag
+        return response
     }
 
     /// Build a response off the server queue (a transcript read, a tmux call),

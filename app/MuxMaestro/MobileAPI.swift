@@ -167,11 +167,15 @@ enum MobileEndpoint: Equatable {
     /// One manager turn. The reply streams back.
     case managerText
     case managerDismiss
+    /// The manager pane's transcript as chat rows, like a thread's chat.
+    case managerChat(after: UInt64?)
+    /// The manager pane's terminal text, like a thread's screen.
+    case managerScreen(lines: Int)
 
     var capability: MobileCapability {
         switch self {
         case .config, .threads, .hosts, .events, .chat, .screen: return .access
-        case .manager, .managerText, .managerDismiss: return .manager
+        case .manager, .managerText, .managerDismiss, .managerChat, .managerScreen: return .manager
         }
     }
 
@@ -179,7 +183,9 @@ enum MobileEndpoint: Equatable {
     /// to pass the write checks in `MobileAPI.authorize`.
     var method: String {
         switch self {
-        case .config, .threads, .hosts, .events, .chat, .screen, .manager: return "GET"
+        case .config, .threads, .hosts, .events, .chat, .screen, .manager, .managerChat,
+             .managerScreen:
+            return "GET"
         case .managerText, .managerDismiss: return "POST"
         }
     }
@@ -304,6 +310,10 @@ enum MobileAPI {
         case 2 where segments[1] == "manager": endpoint = .manager
         case 3 where segments[1] == "manager" && segments[2] == "text": endpoint = .managerText
         case 3 where segments[1] == "manager" && segments[2] == "dismiss": endpoint = .managerDismiss
+        case 3 where segments[1] == "manager" && segments[2] == "chat":
+            endpoint = .managerChat(after: request.query["after"].flatMap(UInt64.init))
+        case 3 where segments[1] == "manager" && segments[2] == "screen":
+            endpoint = .managerScreen(lines: screenLines(request.query["lines"]))
         case 4 where segments[1] == "threads" && segments[3] == "chat":
             endpoint = .chat(id: segments[2], after: request.query["after"].flatMap(UInt64.init))
         case 4 where segments[1] == "threads" && segments[3] == "screen":
