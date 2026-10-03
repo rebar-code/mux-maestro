@@ -3,7 +3,7 @@
 # Milestone 1: build the embedded terminal engine (GhosttyKit.xcframework).
 # Milestone 2: build/run the native AppKit app (MuxMaestro.app).
 
-.PHONY: libghostty clean-libghostty app run install signing-identity test clean-app diff-bundle vendor-beam beam-selftest vendor-tools tools-selftest
+.PHONY: libghostty clean-libghostty app run install signing-identity test clean-app diff-bundle mobile vendor-beam beam-selftest vendor-tools tools-selftest
 
 # Xcode to build with. Overridable so CI can point at its Xcode_16.2.app; the
 # Swift packages need tools version 6.0, which the runner's default Xcode lacks.
@@ -111,6 +111,17 @@ diff-bundle:
 	pnpm -C web/diff install
 	pnpm -C web/diff build
 	@echo "Rebuilt web/diff → app/MuxMaestro/Resources/diff/ (commit the output)"
+
+# Rebuild the phone web app (Svelte, source in mobile/) and refresh the
+# committed output under app/MuxMaestro/Resources/mobile/. Only needed when
+# changing mobile/: the built bundle is committed, so `make app` and CI need
+# no Node. The same sources build the same files. Requires pnpm + node.
+MOBILE_OUT := app/MuxMaestro/Resources/mobile
+mobile:
+	pnpm -C mobile install --frozen-lockfile
+	rm -rf $(CURDIR)/$(MOBILE_OUT)
+	pnpm -C mobile build
+	@echo "Rebuilt mobile → $(MOBILE_OUT)/ (commit the output)"
 
 clean-app:
 	rm -rf $(BUILD_DIR)

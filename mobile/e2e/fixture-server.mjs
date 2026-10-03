@@ -1,0 +1,366 @@
+// A stand-in for the Mac app, for tests and screenshots: it serves the built
+// bundle and the same JSON API, from demo data only.
+//
+//   PORT=5199 node e2e/fixture-server.mjs
+//
+// Test hooks (POST): /__fixture/reset, /__fixture/wait?id=, /__fixture/say?id=&text=,
+// /__fixture/grouping?value=, /__fixture/deny?on=1
+import { createServer } from 'node:http';
+import { readFile } from 'node:fs/promises';
+import { extname, join, normalize, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = resolve(
+	fileURLToPath(new URL('.', import.meta.url)),
+	'../../app/MuxMaestro/Resources/mobile'
+);
+const PORT = Number(process.env.PORT);
+if (!PORT) throw new Error('Set PORT (claim a free one first).');
+
+const TYPES = {
+	'.html': 'text/html; charset=utf-8',
+	'.js': 'text/javascript; charset=utf-8',
+	'.css': 'text/css; charset=utf-8',
+	'.json': 'application/json',
+	'.webmanifest': 'application/manifest+json',
+	'.png': 'image/png',
+	'.svg': 'image/svg+xml'
+};
+
+const HOSTS = [
+	{
+		name: 'localhost',
+		color: '#3291ff',
+		local: true,
+		cpu: 38,
+		load1: 3.1,
+		cores: 10,
+		mem: [21, 32],
+		disk: 212
+	},
+	{
+		name: 'devbox',
+		color: '#f5a623',
+		local: false,
+		cpu: 12,
+		load1: 0.64,
+		cores: 8,
+		mem: [9, 64],
+		disk: 1434
+	},
+	{
+		name: 'buildbox',
+		color: '#a371f7',
+		local: false,
+		cpu: 71,
+		load1: 7.36,
+		cores: 8,
+		mem: [27, 32],
+		disk: 88
+	}
+];
+
+// [session, window, host, status, prompt, age in seconds, extra]
+const AWAKE = [
+	[
+		'acme-app',
+		'checkout-fix',
+		'localhost',
+		'waiting',
+		'fix the failing checkout test and open a PR',
+		120
+	],
+	['billing', 'proration', 'devbox', 'waiting', 'add proration to plan changes', 360],
+	['docs-site', 'search', 'localhost', 'busy', 'wire the search box to the new index', 40],
+	[
+		'acme-app',
+		'onboarding-copy',
+		'localhost',
+		'busy',
+		'shorten every step label to two words',
+		180
+	],
+	['infra', 'deploy-fix', 'devbox', 'busy', 'find why the staging deploy times out', 300],
+	['mobile', 'push-tokens', 'localhost', 'busy', 'rotate expired push tokens nightly', 540],
+	['acme-app', 'dark-mode', 'localhost', 'idle', 'audit contrast on the settings page', 840],
+	['reports', 'csv-export', 'buildbox', 'idle', 'export should stream, not buffer', 1860],
+	['billing', 'invoices-pdf', 'localhost', 'idle', 'PR is open, waiting on review', 3120, 'yawning']
+];
+const ASLEEP = [
+	'acme-app · flaky-e2e',
+	'docs-site · redirects',
+	'infra · log-retention',
+	'reports · charts',
+	'mobile · deep-links',
+	'billing · tax-ids',
+	'acme-app · a11y-pass',
+	'infra · backups',
+	'docs-site · changelog',
+	'reports · filters',
+	'mobile · offline',
+	'acme-app · search-rank',
+	'billing · coupons',
+	'infra · alerts'
+];
+
+const CHATS = {
+	'localhost:1': [
+		['user', 'fix the failing checkout test and open a PR'],
+		[
+			'assistant',
+			'The test fails because the tax line renders after the total is read. I will wait for the tax row before the assertion.'
+		],
+		['tool', 'tests/checkout.spec.ts', 'Read'],
+		['tool', 'tests/checkout.spec.ts', 'Edit'],
+		['assistant', 'Edited. The page is up on the dev server.'],
+		['assistant', 'I need to run the spec to confirm it passes.']
+	]
+};
+
+let started, threads, chats, grouping, deny;
+const streams = new Set();
+
+function reset() {
+	started = Math.floor(Date.now() / 1000);
+	grouping = 'recent';
+	deny = false;
+	const color = (host) => HOSTS.find((h) => h.name === host).color;
+	const make = (n, session, name, host, status, prompt, ageSeconds, idleStage) => {
+		const local = host === 'localhost';
+		return {
+			id: `${host}:${n}`,
+			host,
+			hostColor: color(host),
+			local,
+			session,
+			window: n,
+			name,
+			pane: `%${n}`,
+			panes: 1,
+			command: local ? 'claude' : 'zsh',
+			cwd: `${local ? '/Users/me' : '/home/me'}/code/${session}`,
+			status,
+			since: started - ageSeconds,
+			idleStage,
+			lastPrompt: prompt ? { text: prompt, at: started - ageSeconds } : null,
+			lastActivityAt: local ? started - ageSeconds : null,
+			sessionActivity: started - ageSeconds,
+			chat: local
+		};
+	};
+	threads = [
+		...AWAKE.map(([s, w, h, st, p, a, stage], i) =>
+			make(i + 1, s, w, h, st, p, a, stage ?? 'awake')
+		),
+		...ASLEEP.map((name, i) => {
+			const [s, w] = name.split(' · ');
+			return make(
+				100 + i,
+				s,
+				w,
+				i % 4 === 1 ? 'devbox' : 'localhost',
+				'idle',
+				'',
+				(2 + i) * 3600,
+				'dozing'
+			);
+		})
+	];
+	chats = {};
+	for (const t of threads.filter((t) => t.chat)) {
+		const lines = CHATS[t.id] ?? [
+			['user', t.lastPrompt?.text ?? 'continue'],
+			['tool', `"${t.name}"`, 'Grep'],
+			['tool', 'src/index.ts', 'Read'],
+			[
+				'assistant',
+				t.status === 'busy'
+					? 'Working on it. 3 files changed so far.'
+					: 'Done. 4 files changed, tests pass. Nothing else is needed from you.'
+			]
+		];
+		chats[t.id] = lines.map(([role, text, tool], n) => ({
+			n,
+			role,
+			text,
+			...(tool ? { tool } : {})
+		}));
+	}
+}
+reset();
+
+const GB = 1024 ** 3;
+const hostsBody = () => ({
+	hosts: HOSTS.map((h) => ({
+		name: h.name,
+		color: h.color,
+		local: h.local,
+		reachability: 'reachable',
+		threads: threads.filter((t) => t.host === h.name).length,
+		stats: {
+			cpuPercent: h.cpu,
+			load1: h.load1,
+			cores: h.cores,
+			memUsedBytes: h.mem[0] * GB,
+			memTotalBytes: h.mem[1] * GB,
+			diskFreeBytes: h.disk * GB,
+			diskTotalBytes: 2000 * GB,
+			uptimeSeconds: 432000
+		}
+	}))
+});
+const threadsBody = () => ({ threads });
+const configBody = () => ({
+	capabilities: {
+		manager: false,
+		voice: false,
+		replies: false,
+		upload: false,
+		sessionActions: false,
+		kill: false,
+		artifacts: false,
+		localServers: false,
+		stopServers: false,
+		notifications: false,
+		liveTerminal: false
+	},
+	grouping
+});
+
+function screen(t) {
+	const last =
+		(chats[t.id] ?? []).filter((m) => m.role === 'assistant').at(-1)?.text ?? `${t.session} $ `;
+	// A pane is wider than a phone: the terminal view has to scroll sideways.
+	const box = '─'.repeat(96);
+	const tail =
+		t.status === 'waiting'
+			? [
+					`╭${box}╮`,
+					'│ Bash command',
+					'│',
+					'│   pnpm exec playwright test tests/checkout.spec.ts',
+					'│',
+					'│ ❯ 1. Yes',
+					'│   2. Yes, and don’t ask again for pnpm exec',
+					'│   3. No, tell Claude what to do',
+					`╰${box}╯`
+				]
+			: [
+					`╭${box}╮`,
+					`│ >${' '.repeat(94)}│`,
+					`╰${box}╯`,
+					t.status === 'busy' ? '  ✻ Working… (esc to interrupt)' : '  ? for shortcuts'
+				];
+	return [`⏺ ${last}`, '', ...tail, ''].join('\n');
+}
+
+const send = (res, status, body, type = 'application/json') => {
+	res.writeHead(status, { 'content-type': type, 'cache-control': 'no-store' });
+	res.end(typeof body === 'string' ? body : JSON.stringify(body));
+};
+const push = (event, body) => {
+	for (const res of streams) res.write(`event: ${event}\ndata: ${JSON.stringify(body)}\n\n`);
+};
+
+function api(req, res, url) {
+	if (deny) return send(res, 403, { error: 'forbidden' });
+	const path = url.pathname;
+	if (path === '/api/threads') return send(res, 200, threadsBody());
+	if (path === '/api/hosts') return send(res, 200, hostsBody());
+	if (path === '/api/config') return send(res, 200, configBody());
+	// A later PR's endpoint, switched off: proves "disabled" is not "forbidden".
+	if (path === '/api/manager') return send(res, 403, { error: 'disabled' });
+	if (path === '/api/events') {
+		res.writeHead(200, {
+			'content-type': 'text/event-stream',
+			'cache-control': 'no-store',
+			connection: 'keep-alive'
+		});
+		streams.add(res);
+		req.on('close', () => streams.delete(res));
+		res.write(`event: config\ndata: ${JSON.stringify(configBody())}\n\n`);
+		res.write(`event: threads\ndata: ${JSON.stringify(threadsBody())}\n\n`);
+		res.write(`event: hosts\ndata: ${JSON.stringify(hostsBody())}\n\n`);
+		return;
+	}
+	const match = /^\/api\/threads\/([^/]+)\/(chat|screen)$/.exec(path);
+	const thread = match && threads.find((t) => t.id === decodeURIComponent(match[1]));
+	if (!thread) return send(res, 404, { error: 'not_found' });
+	if (match[2] === 'screen') return send(res, 200, { text: screen(thread) });
+	const all = chats[thread.id];
+	if (!all) return send(res, 404, { error: 'not_found' });
+	const after = url.searchParams.get('after');
+	return send(res, 200, {
+		messages: after === null ? all : all.slice(Number(after)),
+		next: all.length,
+		reset: false
+	});
+}
+
+function hook(res, url) {
+	const id = url.searchParams.get('id');
+	const thread = threads.find((t) => t.id === id);
+	const now = Math.floor(Date.now() / 1000);
+	switch (url.pathname) {
+		case '/__fixture/reset':
+			reset();
+			push('config', configBody());
+			break;
+		case '/__fixture/wait':
+			if (!thread) return send(res, 404, { error: 'not_found' });
+			Object.assign(thread, { status: 'waiting', since: now, idleStage: 'awake' });
+			break;
+		case '/__fixture/say':
+			if (!thread || !chats[thread.id]) return send(res, 404, { error: 'not_found' });
+			chats[thread.id].push({
+				n: chats[thread.id].length,
+				role: 'assistant',
+				text: url.searchParams.get('text') ?? ''
+			});
+			thread.lastActivityAt = now;
+			break;
+		case '/__fixture/grouping':
+			grouping = url.searchParams.get('value') ?? 'recent';
+			push('config', configBody());
+			break;
+		case '/__fixture/deny':
+			deny = url.searchParams.get('on') === '1';
+			break;
+		default:
+			return send(res, 404, { error: 'not_found' });
+	}
+	push('threads', threadsBody());
+	push('hosts', hostsBody());
+	return send(res, 200, { ok: true });
+}
+
+async function asset(res, url) {
+	const rel = normalize(decodeURIComponent(url.pathname)).replace(/^(\.\.[/\\])+/, '');
+	const file = join(ROOT, rel);
+	const wanted = file.startsWith(ROOT) && extname(file) ? file : join(ROOT, 'index.html');
+	try {
+		const body = await readFile(wanted);
+		res.writeHead(200, {
+			'content-type': TYPES[extname(wanted)] ?? 'application/octet-stream',
+			'cache-control': url.pathname.startsWith('/_app/immutable/')
+				? 'public, max-age=31536000, immutable'
+				: 'no-cache'
+		});
+		res.end(body);
+	} catch {
+		if (extname(file)) return send(res, 404, 'Not found', 'text/plain');
+		send(res, 503, 'Run `make mobile` first.', 'text/plain');
+	}
+}
+
+createServer((req, res) => {
+	const url = new URL(req.url, `http://${req.headers.host}`);
+	if (url.pathname.startsWith('/api/')) return api(req, res, url);
+	if (url.pathname.startsWith('/__fixture/'))
+		return req.method === 'POST' ? hook(res, url) : send(res, 405, { error: 'method' });
+	return asset(res, url);
+}).listen(PORT, '127.0.0.1', () => console.log(`fixture server on http://127.0.0.1:${PORT}`));
+
+setInterval(() => {
+	for (const res of streams) res.write(': ping\n\n');
+}, 15000).unref();
