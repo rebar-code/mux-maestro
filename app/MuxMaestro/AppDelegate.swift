@@ -4307,9 +4307,7 @@ extension AppDelegate: SidebarSelectionDelegate {
         // Every attach funnels through here (sidebar click, ⌘K, create, and the ⌘`
         // cycler's own commit) — so bump this session to the front of the MRU stack
         // here and the recency order is always correct without special-casing.
-        let ref = SessionRef(name: name, host: service.host)
-        sessionMRU.removeAll { $0 == ref }
-        sessionMRU.insert(ref, at: 0)
+        noteSessionVisited(SessionRef(name: name, host: service.host))
         // The attach lands on the session's active window — that's the window
         // you're now in, so it heads the ⌘` stack too.
         if let index = sidebarVC?.activeWindow(session: name, host: service.host) {
@@ -4370,11 +4368,27 @@ extension AppDelegate: SidebarSelectionDelegate {
     /// commit, and the poll observation above — so the recency order is always
     /// right without special-casing any one path.
     private func noteWindowVisited(_ ref: WindowRef) {
+        // An ⌥-hover preview passes over many windows; only the one it ends on
+        // is a visit (`sidebarDidEndHoverPreview`).
+        guard sidebarVC?.isHoverPreviewing != true else { return }
         guard windowMRU.first != ref else { return }
         windowMRU.removeAll { $0 == ref }
         windowMRU.insert(ref, at: 0)
         if windowMRU.count > Self.windowMRUCap {
             windowMRU.removeLast(windowMRU.count - Self.windowMRUCap)
+        }
+    }
+
+    private func noteSessionVisited(_ ref: SessionRef) {
+        guard sidebarVC?.isHoverPreviewing != true else { return }
+        sessionMRU.removeAll { $0 == ref }
+        sessionMRU.insert(ref, at: 0)
+    }
+
+    func sidebarDidEndHoverPreview(session: String, window: Int?, service: TmuxService) {
+        noteSessionVisited(SessionRef(name: session, host: service.host))
+        if let index = window ?? sidebarVC?.activeWindow(session: session, host: service.host) {
+            noteWindowVisited(WindowRef(session: session, window: index, host: service.host))
         }
     }
 

@@ -384,6 +384,24 @@ final class AttentionDotView: NSView {
 /// `indentationPerLevel` 0, so the step is undone here, where the outline lays
 /// out its cells and chevrons.
 final class SidebarOutlineView: NSOutlineView {
+    /// The pointer moved over the outline. Drives the ⌥-hover preview.
+    var onMouseMoved: ((NSEvent) -> Void)?
+    private var tracking: NSTrackingArea?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let t = NSTrackingArea(rect: bounds,
+            options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect], owner: self)
+        addTrackingArea(t)
+        tracking = t
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        onMouseMoved?(event)
+    }
+
     /// How far a card row moves left: its level times one level's step, one step
     /// less for a pane. 0 for rows outside a card.
     private func cardShift(_ row: Int) -> CGFloat {
@@ -1334,6 +1352,10 @@ protocol SidebarSelectionDelegate: AnyObject {
     /// User selected a herdr session — attach the terminal to it via `herdr`.
     func sidebarDidSelectHerdrSession(_ name: String, service: HerdrService)
 
+    /// An ⌥-hover preview ended on a tmux row: ⌥ was released there. `window` is
+    /// nil for a session row.
+    func sidebarDidEndHoverPreview(session: String, window: Int?, service: TmuxService)
+
     /// User clicked a session/window/pane row — hand keyboard focus to the
     /// terminal so typing lands there. Fires on every click, including a click
     /// on the row that is already selected (no selection change).
@@ -1800,6 +1822,12 @@ final class SidebarViewController: NSViewController {
     /// Suppresses the selection callback while we restore selection after a
     /// programmatic reload.
     private var restoringSelection = false
+    /// Watches for ⌥ being released while an ⌥-hover preview runs; nil otherwise.
+    private var hoverPreviewMonitor: Any?
+    private var hoverPreviewResignObserver: NSObjectProtocol?
+    /// Whether an ⌥-hover preview is switching rows. The rows it passes over are
+    /// not visits, so the AppDelegate keeps them out of its MRU stacks.
+    var isHoverPreviewing: Bool { hoverPreviewMonitor != nil }
     /// Hosts (by name) whose `loadTree()` is currently in flight. Each host loads
     /// and applies independently, so this is a *per-host* guard: a wedged remote
     /// blocks only its own reload across ticks, never the local tree or another
@@ -1862,6 +1890,7 @@ final class SidebarViewController: NSViewController {
         outline.target = self
         outline.action = #selector(handleClick)
         outline.doubleAction = #selector(handleDoubleClick)
+        outline.onMouseMoved = { [weak self] event in self?.previewHover(event) }
         outline.menu = makeContextMenu()
         // M11: session rows accept dropped file URLs (from Finder or the
         // scratchpad store) — copy to the session cwd + paste the path. The private
@@ -1979,6 +2008,71 @@ final class SidebarViewController: NSViewController {
         switch node.kind {
         case .session, .window, .pane, .herdrSession, .herdrTab, .herdrPane:
             selectionDelegate?.sidebarDidClickTerminalRow()
+        default:
+            break
+        }
+    }
+
+    /// ⌥-hover preview: while ⌥ is held, the terminal row under a moving pointer
+    /// becomes the selection, so the terminal shows it at once. Only a pointer
+    /// that moves counts — ⌥ pressed over a resting pointer is someone typing an
+    /// ⌥-key in the terminal. Releasing ⌥ stays on the row last shown.
+    private func previewHover(_ event: NSEvent) {
+        let optionOnly =
+            event.modifierFlags.intersection([.option, .command, .control, .shift]) == .option
+        // ⌥ can be released where the monitor can't see it (another app).
+        if !optionOnly { endHoverPreview() }
+        let point = outline.convert(event.locationInWindow, from: nil)
+        guard let row = TmuxCommands.hoverPreviewRow(
+                optionOnly: optionOnly, hoveredRow: outline.row(at: point),
+                selectedRow: outline.selectedRow),
+              let node = outline.item(atRow: row) as? SidebarNode
+        else { return }
+        switch node.kind {
+        case .session, .window, .pane, .herdrSession, .herdrTab, .herdrPane:
+            break
+        default:
+            return
+        }
+        beginHoverPreview()
+        outline.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+    }
+
+    private func beginHoverPreview() {
+        guard hoverPreviewMonitor == nil else { return }
+        hoverPreviewMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) {
+            [weak self] event in
+            if !event.modifierFlags.contains(.option) { self?.endHoverPreview() }
+            return event
+        }
+        hoverPreviewResignObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in self?.endHoverPreview() }
+    }
+
+    /// ⌥ was released: the row shown now is the one the user chose, so report it
+    /// as a real visit.
+    private func endHoverPreview() {
+        guard let monitor = hoverPreviewMonitor else { return }
+        NSEvent.removeMonitor(monitor)
+        hoverPreviewMonitor = nil
+        if let hoverPreviewResignObserver {
+            NotificationCenter.default.removeObserver(hoverPreviewResignObserver)
+        }
+        hoverPreviewResignObserver = nil
+        let row = outline.selectedRow
+        guard row >= 0, let node = outline.item(atRow: row) as? SidebarNode else { return }
+        let service = registry.service(for: node.host)
+        switch node.kind {
+        case .session(_, let s):
+            selectionDelegate?.sidebarDidEndHoverPreview(
+                session: s.name, window: nil, service: service)
+        case .window(_, let session, let w):
+            selectionDelegate?.sidebarDidEndHoverPreview(
+                session: session, window: w.index, service: service)
+        case .pane(_, let session, let window, _):
+            selectionDelegate?.sidebarDidEndHoverPreview(
+                session: session, window: window, service: service)
         default:
             break
         }
