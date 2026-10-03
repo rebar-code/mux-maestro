@@ -31,8 +31,8 @@ test('the app opens on the manager home', async ({ page }) => {
 
 test('a message to the manager streams its reply onto the home', async ({ page }) => {
 	await fresh(page);
-	// With nothing typed there is nothing to send.
-	await expect(page.getByRole('button', { name: '↑ Send' })).toBeDisabled();
+	// With nothing typed there is nothing to send: the button is Talk.
+	await expect(page.getByRole('button', { name: '↑ Send' })).toHaveCount(0);
 	await box(page).fill('what needs me?');
 	const sent = page.waitForRequest((request) => request.url().endsWith('/api/manager/text'));
 	await page.getByRole('button', { name: '↑ Send' }).click();
@@ -194,14 +194,58 @@ test('with the Manager switch off the home and its row are hidden', async ({ pag
 	await expect(box(page)).toHaveCount(0);
 });
 
-test('with the Voice switch off its controls are hidden and typing still works', async ({
+test('with the Voice switch off the Talk button is drawn, off, and says where to turn it on', async ({
 	page
 }) => {
 	await fresh(page);
 	await expect(box(page)).toBeVisible();
-	await expect(page.locator('[data-voicebar]')).toHaveCount(0);
-	await expect(page.locator('[data-orb]')).toHaveCount(0);
-	await expect(page.locator('[data-primary]')).toHaveCount(0);
+	const bar = page.locator('[data-voicebar]');
+	await expect(bar).toHaveText('Off in MuxMaestro Settings');
+	// The label only: no voice control that would do nothing.
+	await expect(bar.locator('button')).toHaveCount(0);
+	const talk = page.locator('[data-primary]');
+	await expect(talk).toHaveText('🎙 Talk');
+	await expect(talk).toBeDisabled();
+	await expect(page.locator('[data-orb]')).toBeDisabled();
+	await expect(page.locator('[data-orb]')).toHaveAccessibleName('Talk to the manager');
+
+	// A tap on either opens no microphone and sends nothing.
+	let asked = 0;
+	await page.exposeFunction('__asked', () => (asked += 1));
+	await page.evaluate(() => {
+		navigator.mediaDevices.getUserMedia = async () => {
+			await (window as unknown as { __asked: () => Promise<void> }).__asked();
+			throw new Error('no microphone in this test');
+		};
+	});
+	const voiceCalls: string[] = [];
+	page.on('request', (request) => {
+		if (request.url().includes('/api/voice')) voiceCalls.push(request.url());
+	});
+	await talk.click({ force: true });
+	await page.locator('[data-orb]').click({ force: true });
+	await page.waitForTimeout(300);
+	expect(asked).toBe(0);
+	expect(voiceCalls).toEqual([]);
+
+	// Typing is untouched: with text the button is Send, and it sends.
+	await box(page).fill('what needs me?');
+	await expect(talk).toHaveCount(0);
+	await page.getByRole('button', { name: '↑ Send' }).click();
+	await expect(said(page).locator('.m').last()).toHaveText(
+		'2 threads need you: acme-app · checkout-fix, billing · proration.'
+	);
+
+	// The switch is turned on at the Mac: the controls come alive with no reload.
+	await page.request.post('/__fixture/capability?name=voice&on=1');
+	await expect(talk).toBeEnabled();
+	await expect(page.locator('[data-orb]')).toBeEnabled();
+	await expect(bar).toContainText('Start talking');
+	await expect(bar.getByRole('button', { name: 'Auto' })).toBeVisible();
+	// And off again.
+	await page.request.post('/__fixture/capability?name=voice&on=0');
+	await expect(talk).toBeDisabled();
+	await expect(bar).toHaveText('Off in MuxMaestro Settings');
 });
 
 test('a write from another origin, without the header, or without the token is refused', async ({

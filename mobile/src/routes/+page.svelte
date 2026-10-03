@@ -55,9 +55,9 @@
 <div class="scroll home" data-pull={PULL} {@attach pullToRefresh(PULL, reload)}>
 	<PullIndicator key={PULL} />
 	<!-- Until the Mac says which features are on, hold the button's place. -->
-	{#if voiceOn}
+	{#if managerOn}
 		<div class="hero">
-			<TalkButton target="manager" sink={manager.voice} orb />
+			<TalkButton target="manager" sink={manager.voice} orb off={!voiceOn} />
 		</div>
 	{:else if live.config === null}
 		<div class="hero" aria-hidden="true"></div>
@@ -150,10 +150,8 @@
 </div>
 
 {#if managerOn}
-	{#if voiceOn}
-		<VoiceBar target="manager" sink={manager.voice} />
-	{/if}
-	<form class="compose" class:bare={!voiceOn} onsubmit={submit}>
+	<VoiceBar target="manager" sink={manager.voice} off={!voiceOn} />
+	<form class="compose" onsubmit={submit}>
 		<input
 			bind:value={manager.draft}
 			placeholder="Ask the manager"
@@ -163,12 +161,10 @@
 			autocapitalize="sentences"
 		/>
 		<!-- Typing is always there: with text in the box the button sends it. -->
-		{#if canSend || !voiceOn}
-			<button class="pill send grow" type="submit" disabled={!canSend || manager.busy}
-				>↑ Send</button
-			>
+		{#if canSend}
+			<button class="pill send grow" type="submit" disabled={manager.busy}>↑ Send</button>
 		{:else}
-			<TalkButton target="manager" sink={manager.voice} />
+			<TalkButton target="manager" sink={manager.voice} off={!voiceOn} />
 		{/if}
 	</form>
 {/if}
@@ -377,12 +373,6 @@
 		padding: 6px max(10px, env(safe-area-inset-right)) calc(10px + env(safe-area-inset-bottom))
 			max(10px, env(safe-area-inset-left));
 		background: var(--bar);
-	}
-
-	/* With no voice bar above it, the text box draws the top edge itself. */
-	.compose.bare {
-		padding-top: 8px;
-		border-top: 1px solid var(--border);
 	}
 
 	.compose input {
