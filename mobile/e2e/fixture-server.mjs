@@ -120,6 +120,7 @@ const CHATS = {
 };
 
 const DEMO_TOKEN = 'demo-token';
+const LONG_ID = 'devbox:5';
 let started, threads, chats, grouping, deny, token;
 const streams = new Set();
 
@@ -257,7 +258,16 @@ function screen(t) {
 				];
 	// One line wider than a phone: the terminal view has to scroll sideways.
 	const wide = `  ⎿  Read ${t.cwd}/tests/checkout.spec.ts (212 lines) · Edit tests/checkout.spec.ts (+3 −1) · 2 files changed`;
-	return [`⏺ ${last.slice(0, 50)}`, wide, '', ...tail, ''].join('\n');
+	// One pane with a long scrollback, so the terminal also scrolls down.
+	const log =
+		t.id === LONG_ID
+			? Array.from(
+					{ length: 90 },
+					(_, n) =>
+						`  12:${String(n % 60).padStart(2, '0')}:07 deploy web-${n % 7} step ${n + 1}/90 ok`
+				)
+			: [];
+	return [...log, `⏺ ${last.slice(0, 50)}`, wide, '', ...tail, ''].join('\n');
 }
 
 const send = (res, status, body, type = 'application/json') => {

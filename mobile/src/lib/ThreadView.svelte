@@ -3,6 +3,7 @@
 	import { pages, pullToRefresh, ui } from './gestures.svelte';
 	import { live } from './live.svelte';
 	import PullIndicator from './PullIndicator.svelte';
+	import { text } from './textsize.svelte';
 	import { ThreadFeed, type Mode } from './thread.svelte';
 
 	const { id }: { id: string } = $props();
@@ -73,6 +74,18 @@
 		{/each}
 	</div>
 	<button
+		class="tb size"
+		aria-label="Smaller text"
+		disabled={text.atMin}
+		onclick={() => text.step(-1)}>A−</button
+	>
+	<button
+		class="tb size"
+		aria-label="Larger text"
+		disabled={text.atMax}
+		onclick={() => text.step(1)}>A+</button
+	>
+	<button
 		class="tb"
 		aria-label="Refresh"
 		disabled={ui.refreshing !== null}
@@ -80,7 +93,13 @@
 	>
 </div>
 
-<div class="pager" {@attach pages(TAB_KEYS)} {@attach feed.watch(mode)}>
+<div
+	class="pager"
+	style:--term-size="{text.size}px"
+	style:--chat-size="{text.chat}px"
+	{@attach pages(TAB_KEYS)}
+	{@attach feed.watch(mode)}
+>
 	<div
 		class="track"
 		class:anim={!ui.dragging}
@@ -122,6 +141,7 @@
 						class="scroll"
 						data-pull={PULL}
 						data-view="terminal"
+						data-zoom
 						{@attach feed.scroller('terminal')}
 						{@attach pullToRefresh(PULL, () => feed.load('terminal'))}
 					>
@@ -164,12 +184,18 @@
 		display: flex;
 		align-items: center;
 		flex: none;
+		gap: 8px;
 		padding-right: 8px;
 	}
 
 	.tabs .seg {
 		flex: 1;
-		margin-right: 8px;
+		margin-right: 0;
+	}
+
+	.size {
+		font-size: 14px;
+		font-weight: 600;
 	}
 
 	.seg button {
@@ -211,6 +237,7 @@
 		flex-direction: column;
 		gap: 10px;
 		padding: 10px 14px calc(16px + env(safe-area-inset-bottom));
+		font-size: var(--chat-size);
 	}
 
 	.u {
@@ -232,7 +259,8 @@
 	}
 
 	.tool {
-		font-size: 12.5px;
+		/* 12.5px beside 15px text. */
+		font-size: 0.8333em;
 		color: var(--muted);
 		border-left: 2px solid var(--border);
 		padding: 1px 0 1px 9px;
@@ -249,7 +277,7 @@
 	.screen {
 		margin: 0;
 		padding: 10px 12px calc(16px + env(safe-area-inset-bottom));
-		font-size: 11px;
+		font-size: var(--term-size);
 		line-height: 1.3;
 		color: #cfcfcf;
 		white-space: pre;

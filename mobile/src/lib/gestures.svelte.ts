@@ -1,7 +1,13 @@
-import { untrack } from 'svelte';
+import { flushSync, untrack } from 'svelte';
 import { clamp, pageOffset, resolveDrag, settleDrawer, settlePage, type DragKind } from './pager';
 
+import { anchorScroll, pinchSize } from './textsize';
+import { text } from './textsize.svelte';
+
 const SLOP = 10;
+/** Two taps this close in time and place are a double tap. */
+const TAP_MS = 300;
+const TAP_PX = 30;
 const PULL_TRIGGER = 56;
 const PULL_MAX = 96;
 const PULL_HOLD = 44;
@@ -106,6 +112,11 @@ export function gestures(node: HTMLElement): () => void {
 	let hscrollStart = 0;
 	let momentum = 0;
 	let suppressClick = false;
+	let downT = 0;
+	let downZoom = false;
+	/** More than one finger has been down since the first one landed. */
+	let multi = false;
+	let lastTap: { t: number; x: number; y: number } | null = null;
 
 	const drawerWidth = (): number =>
 		node.querySelector<HTMLElement>('[data-drawer]')?.offsetWidth ?? node.clientWidth * 0.86;
@@ -119,7 +130,29 @@ export function gestures(node: HTMLElement): () => void {
 		vx = 0;
 		lastX = event.clientX;
 		lastT = event.timeStamp;
+		downT = event.timeStamp;
+		downZoom = (event.target as Element).closest('[data-zoom]') !== null;
 		hscroll = (event.target as Element).closest<HTMLElement>('[data-hscroll]');
+	}
+
+	/** Undo a drag that is under way, as if the finger had never moved. */
+	function cancelDrag(): void {
+		if (kind === 'drawer-open') ui.drawer = 0;
+		else if (kind === 'drawer-close') ui.drawer = 1;
+		else if (kind === 'page') ui.dragX = 0;
+		if (start) kind = 'none';
+		ui.dragging = false;
+	}
+
+	/** Two quick taps on zoomable text put it back to the default size. */
+	function noteTap(event: PointerEvent): void {
+		const tap = { t: event.timeStamp, x: event.clientX, y: event.clientY };
+		const double =
+			lastTap !== null &&
+			tap.t - lastTap.t <= TAP_MS &&
+			Math.hypot(tap.x - lastTap.x, tap.y - lastTap.y) <= TAP_PX;
+		lastTap = double ? null : tap;
+		if (double) text.reset();
 	}
 
 	function onPointerMove(event: PointerEvent): void {
@@ -127,6 +160,7 @@ export function gestures(node: HTMLElement): () => void {
 		const dx = event.clientX - start.x;
 		const dy = event.clientY - start.y;
 		if (kind === null) {
+			if (multi) return;
 			if (Math.max(Math.abs(dx), Math.abs(dy)) < SLOP) return;
 			if (Math.abs(dy) > Math.abs(dx)) {
 				kind = 'vertical';
@@ -173,6 +207,10 @@ export function gestures(node: HTMLElement): () => void {
 
 	function onPointerEnd(event: PointerEvent): void {
 		if (!start || event.pointerId !== start.id) return;
+		const tapped =
+			event.type === 'pointerup' && kind === null && !multi && event.timeStamp - downT <= TAP_MS;
+		if (tapped && downZoom) noteTap(event);
+		else lastTap = null;
 		const moved = event.clientX - start.x - base;
 		const speed = event.type === 'pointercancel' || event.timeStamp - lastT > 80 ? 0 : vx;
 		if (kind === 'drawer-open' || kind === 'drawer-close') {
@@ -199,8 +237,87 @@ export function gestures(node: HTMLElement): () => void {
 
 	let pull: { key: string; x: number; y: number; active: boolean } | null = null;
 
+	interface Axis {
+		el: HTMLElement;
+		scroll: number;
+		mid: number;
+		offset: number;
+	}
+	let pinch: { size: number; distance: number; x: Axis; y: Axis } | null = null;
+
+	const spread = (touches: TouchList): number =>
+		Math.hypot(touches[0].clientX - touches[1].clientX, touches[0].clientY - touches[1].clientY);
+	const middle = (touches: TouchList): { x: number; y: number } => ({
+		x: (touches[0].clientX + touches[1].clientX) / 2,
+		y: (touches[0].clientY + touches[1].clientY) / 2
+	});
+
+	/** Two fingers on zoomable text: from here they change its size, nothing else. */
+	function beginPinch(event: TouchEvent): boolean {
+		const zoom = (event.touches[0].target as Element).closest<HTMLElement>('[data-zoom]');
+		if (!zoom || !zoom.contains(event.touches[1].target as Node)) return false;
+		cancelDrag();
+		// The text scrolls down in `zoom` and sideways in its `data-hscroll` child.
+		const wide = zoom.querySelector<HTMLElement>('[data-hscroll]') ?? zoom;
+		const zoomBox = zoom.getBoundingClientRect();
+		const wideBox = wide.getBoundingClientRect();
+		const padding = getComputedStyle(wide);
+		const mid = middle(event.touches);
+		cancelAnimationFrame(momentum);
+		pinch = {
+			size: text.size,
+			distance: spread(event.touches),
+			x: {
+				el: wide,
+				scroll: wide.scrollLeft,
+				mid: mid.x - wideBox.left,
+				offset: parseFloat(padding.paddingLeft)
+			},
+			y: {
+				el: zoom,
+				scroll: zoom.scrollTop,
+				mid: mid.y - zoomBox.top,
+				offset:
+					wide === zoom
+						? 0
+						: wideBox.top - zoomBox.top + zoom.scrollTop + parseFloat(padding.paddingTop)
+			}
+		};
+		return true;
+	}
+
+	function movePinch(event: TouchEvent): void {
+		if (!pinch || event.touches.length < 2) return;
+		text.preview(pinchSize(pinch.size, pinch.distance, spread(event.touches)));
+		// Lay the text out at its new size now, so the scroll positions below hold.
+		flushSync();
+		const ratio = text.size / pinch.size;
+		const mid = middle(event.touches);
+		const { x, y } = pinch;
+		x.el.scrollLeft = anchorScroll({
+			...x,
+			ratio,
+			midNow: mid.x - x.el.getBoundingClientRect().left
+		});
+		y.el.scrollTop = anchorScroll({
+			...y,
+			ratio,
+			midNow: mid.y - y.el.getBoundingClientRect().top
+		});
+	}
+
 	function onTouchStart(event: TouchEvent): void {
+		multi = event.touches.length > 1;
+		if (pull?.active) {
+			ui.pulling = false;
+			ui.pull = 0;
+		}
 		pull = null;
+		if (event.touches.length === 2) {
+			lastTap = null;
+			beginPinch(event);
+			return;
+		}
 		if (event.touches.length !== 1 || ui.refreshing) return;
 		const scroller = (event.target as Element).closest<HTMLElement>('[data-pull]');
 		if (!scroller || scroller.scrollTop > 0) return;
@@ -209,6 +326,11 @@ export function gestures(node: HTMLElement): () => void {
 	}
 
 	function onTouchMove(event: TouchEvent): void {
+		if (pinch) {
+			if (event.cancelable) event.preventDefault();
+			movePinch(event);
+			return;
+		}
 		if (!pull) return;
 		const touch = event.touches[0];
 		const dx = touch.clientX - pull.x;
@@ -227,6 +349,12 @@ export function gestures(node: HTMLElement): () => void {
 	}
 
 	function onTouchEnd(): void {
+		// A pinch ends when either finger lifts; the one left does not start a drag.
+		if (pinch) {
+			pinch = null;
+			text.save();
+			return;
+		}
 		if (!pull?.active) {
 			pull = null;
 			return;
@@ -241,6 +369,11 @@ export function gestures(node: HTMLElement): () => void {
 	// A mouse would otherwise start dragging a link, which cancels the pointer.
 	const noNativeDrag = (event: DragEvent): void => event.preventDefault();
 
+	// Safari's own pinch would zoom the whole page.
+	const noPageZoom = (event: Event): void => event.preventDefault();
+
+	node.addEventListener('gesturestart', noPageZoom);
+	node.addEventListener('gesturechange', noPageZoom);
 	node.addEventListener('dragstart', noNativeDrag);
 	node.addEventListener('pointerdown', onPointerDown);
 	node.addEventListener('pointermove', onPointerMove);
@@ -254,6 +387,8 @@ export function gestures(node: HTMLElement): () => void {
 
 	return () => {
 		cancelAnimationFrame(momentum);
+		node.removeEventListener('gesturestart', noPageZoom);
+		node.removeEventListener('gesturechange', noPageZoom);
 		node.removeEventListener('dragstart', noNativeDrag);
 		node.removeEventListener('pointerdown', onPointerDown);
 		node.removeEventListener('pointermove', onPointerMove);
