@@ -122,6 +122,10 @@ final class MobileServer {
     /// Threads with a write on its way to their pane. One at a time per
     /// thread: a paste and its Enter are not interleaved with another's.
     private var writing = Set<String>()
+    /// Per thread: a counter that goes into a prompt's id, and the words of
+    /// the prompt last seen on its pane. See `sequence(of:)`.
+    private var promptSequence: [String: Int] = [:]
+    private var promptSeen: [String: String] = [:]
     /// The last `manager` event's state, without the reply text: a reply
     /// grows by `manager-delta` events, not by sending the board again.
     private var managerKey = MobileManager.liveJSON(
@@ -228,6 +232,15 @@ final class MobileServer {
     func update(_ snapshot: MobileSnapshot) {
         queue.async {
             guard self.listener != nil else { return }
+            // A pane that starts or stops waiting ends the prompt that was
+            // on it: the next one seen there is a new prompt.
+            for thread in snapshot.threads
+            where (thread.status == .waiting) != (self.snapshot.thread(id: thread.id)?.status == .waiting) {
+                self.promptSeen[thread.id] = nil
+            }
+            let live = Set(snapshot.threads.map(\.id))
+            self.promptSequence = self.promptSequence.filter { live.contains($0.key) }
+            self.promptSeen = self.promptSeen.filter { live.contains($0.key) }
             self.snapshot = snapshot
             let threads = snapshot.threadsJSON()
             let hosts = snapshot.hostsJSON()
@@ -575,7 +588,8 @@ final class MobileServer {
         case .prompt(let id):
             guard let (_, io) = pane(id, client: client) else { return }
             reply(to: client) { [weak self] in
-                .json(MobileReply.promptBody(state: self?.state(of: id, io: io), screen: io.screen()))
+                .json(MobileReply.promptBody(
+                    state: self?.state(of: id, io: io), screen: io.screen(), io: io))
             }
         case .answer(let id):
             guard let answer = MobileReply.answer(in: request.body) else {
@@ -611,11 +625,30 @@ final class MobileServer {
             send(.error(404, "not_found"), to: client, head: false)
             return nil
         }
-        guard let io = sources.pane(thread) else {
+        guard var io = sources.pane(thread) else {
             send(.error(503, "unavailable", message: MobileReply.unreachable), to: client, head: false)
             return nil
         }
+        io.sequence = sequence(of: id)
         return (thread, io)
+    }
+
+    /// The prompt counter of thread `id`, as `MobilePaneIO.sequence`. It
+    /// goes up each time the words on the pane become a prompt they were not
+    /// a moment ago: a new prompt, or the same one asked again after the pane
+    /// stopped waiting, showed no prompt, or was answered. Blocks on the
+    /// server queue, so it is never called from it.
+    private func sequence(of id: String) -> (String?) -> Int {
+        { [weak self] key in
+            guard let self else { return 0 }
+            return self.queue.sync {
+                if let key, self.promptSeen[id] != key {
+                    self.promptSequence[id, default: 0] += 1
+                }
+                self.promptSeen[id] = key
+                return self.promptSequence[id] ?? 0
+            }
+        }
     }
 
     /// The state of thread `id` now: its row in the latest tree, then the
