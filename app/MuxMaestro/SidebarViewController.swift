@@ -384,6 +384,24 @@ final class AttentionDotView: NSView {
 /// `indentationPerLevel` 0, so the step is undone here, where the outline lays
 /// out its cells and chevrons.
 final class SidebarOutlineView: NSOutlineView {
+    /// The pointer moved over the outline. Drives the ⌥-hover preview.
+    var onMouseMoved: ((NSEvent) -> Void)?
+    private var tracking: NSTrackingArea?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let t = NSTrackingArea(rect: bounds,
+            options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect], owner: self)
+        addTrackingArea(t)
+        tracking = t
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        onMouseMoved?(event)
+    }
+
     /// How far a card row moves left: its level times one level's step, one step
     /// less for a pane. 0 for rows outside a card.
     private func cardShift(_ row: Int) -> CGFloat {
@@ -1047,6 +1065,8 @@ final class RowCell: NSTableCellView {
     let trashButton = SidebarAddButton.make(tooltip: "Kill Window", symbol: "trash")
     /// Window rows set this; every other row kind leaves it off.
     var showsTrashOnHover = false { didSet { updateTrash() } }
+    /// A window whose PR merged keeps its trash visible without hover.
+    var pinsTrash = false { didSet { updateTrash() } }
     /// Set by `CardRowView` as the pointer enters and leaves the row.
     var isRowHovered = false { didSet { updateTrash() } }
     /// Line 2: the first line of the thread's last prompt. Hidden on one-line rows.
@@ -1163,7 +1183,7 @@ final class RowCell: NSTableCellView {
     }
 
     private func updateTrash() {
-        let visible = showsTrashOnHover && isRowHovered
+        let visible = showsTrashOnHover && (isRowHovered || pinsTrash)
         trashButton.isHidden = !showsTrashOnHover
         trashButton.alphaValue = visible ? 1 : 0
         // An invisible button must not take clicks meant for the row.
@@ -1332,6 +1352,10 @@ protocol SidebarSelectionDelegate: AnyObject {
     /// User selected a herdr session — attach the terminal to it via `herdr`.
     func sidebarDidSelectHerdrSession(_ name: String, service: HerdrService)
 
+    /// An ⌥-hover preview ended on a tmux row: ⌥ was released there. `window` is
+    /// nil for a session row.
+    func sidebarDidEndHoverPreview(session: String, window: Int?, service: TmuxService)
+
     /// User clicked a session/window/pane row — hand keyboard focus to the
     /// terminal so typing lands there. Fires on every click, including a click
     /// on the row that is already selected (no selection change).
@@ -1448,8 +1472,11 @@ protocol SidebarActionDelegate: AnyObject {
     /// the host has no tmux.
     func sidebarRequestLaunchSession(host: Host, service: TmuxService)
 
-    /// A window row's hover trash — kill the window behind the ⌘W close confirm.
-    func sidebarRequestConfirmKillWindow(session: String, window: Int, service: TmuxService)
+    /// A window row's trash — kill the window behind the ⌘W close confirm.
+    /// `merged` (the window's PR merged) skips the confirm and cleans up the
+    /// window's worktree.
+    func sidebarRequestConfirmKillWindow(
+        session: String, window: Int, merged: Bool, service: TmuxService)
 
     // Actions on a remote host that has no tmux.
     /// Open a plain (non-tmux) ssh login shell on `host`.
@@ -1795,6 +1822,12 @@ final class SidebarViewController: NSViewController {
     /// Suppresses the selection callback while we restore selection after a
     /// programmatic reload.
     private var restoringSelection = false
+    /// Watches for ⌥ being released while an ⌥-hover preview runs; nil otherwise.
+    private var hoverPreviewMonitor: Any?
+    private var hoverPreviewResignObserver: NSObjectProtocol?
+    /// Whether an ⌥-hover preview is switching rows. The rows it passes over are
+    /// not visits, so the AppDelegate keeps them out of its MRU stacks.
+    var isHoverPreviewing: Bool { hoverPreviewMonitor != nil }
     /// Hosts (by name) whose `loadTree()` is currently in flight. Each host loads
     /// and applies independently, so this is a *per-host* guard: a wedged remote
     /// blocks only its own reload across ticks, never the local tree or another
@@ -1857,6 +1890,7 @@ final class SidebarViewController: NSViewController {
         outline.target = self
         outline.action = #selector(handleClick)
         outline.doubleAction = #selector(handleDoubleClick)
+        outline.onMouseMoved = { [weak self] event in self?.previewHover(event) }
         outline.menu = makeContextMenu()
         // M11: session rows accept dropped file URLs (from Finder or the
         // scratchpad store) — copy to the session cwd + paste the path. The private
@@ -1935,14 +1969,17 @@ final class SidebarViewController: NSViewController {
         }
     }
 
-    /// A window row's hover trash: kill the window behind the same confirm ⌘W
-    /// raises. A separate delegate call from the context menu's Kill Window.
+    /// A window row's trash: kill the window behind the same confirm ⌘W raises,
+    /// or with no confirm once its PR merged. A separate delegate call from the
+    /// context menu's Kill Window.
     @objc private func trashOnRow(_ sender: NSButton) {
         let row = outline.row(for: sender)
         guard row >= 0, case .window(let host, let session, let w)? =
                 (outline.item(atRow: row) as? SidebarNode)?.kind else { return }
+        let prs = prByWindow[windowKey(host: host, session: session, window: w.index)] ?? []
         actionDelegate?.sidebarRequestConfirmKillWindow(
-            session: session, window: w.index, service: registry.service(for: host))
+            session: session, window: w.index, merged: WindowPRs.allMerged(prs),
+            service: registry.service(for: host))
     }
 
     // MARK: Context menu + double-click
@@ -1971,6 +2008,71 @@ final class SidebarViewController: NSViewController {
         switch node.kind {
         case .session, .window, .pane, .herdrSession, .herdrTab, .herdrPane:
             selectionDelegate?.sidebarDidClickTerminalRow()
+        default:
+            break
+        }
+    }
+
+    /// ⌥-hover preview: while ⌥ is held, the terminal row under a moving pointer
+    /// becomes the selection, so the terminal shows it at once. Only a pointer
+    /// that moves counts — ⌥ pressed over a resting pointer is someone typing an
+    /// ⌥-key in the terminal. Releasing ⌥ stays on the row last shown.
+    private func previewHover(_ event: NSEvent) {
+        let optionOnly =
+            event.modifierFlags.intersection([.option, .command, .control, .shift]) == .option
+        // ⌥ can be released where the monitor can't see it (another app).
+        if !optionOnly { endHoverPreview() }
+        let point = outline.convert(event.locationInWindow, from: nil)
+        guard let row = TmuxCommands.hoverPreviewRow(
+                optionOnly: optionOnly, hoveredRow: outline.row(at: point),
+                selectedRow: outline.selectedRow),
+              let node = outline.item(atRow: row) as? SidebarNode
+        else { return }
+        switch node.kind {
+        case .session, .window, .pane, .herdrSession, .herdrTab, .herdrPane:
+            break
+        default:
+            return
+        }
+        beginHoverPreview()
+        outline.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+    }
+
+    private func beginHoverPreview() {
+        guard hoverPreviewMonitor == nil else { return }
+        hoverPreviewMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) {
+            [weak self] event in
+            if !event.modifierFlags.contains(.option) { self?.endHoverPreview() }
+            return event
+        }
+        hoverPreviewResignObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in self?.endHoverPreview() }
+    }
+
+    /// ⌥ was released: the row shown now is the one the user chose, so report it
+    /// as a real visit.
+    private func endHoverPreview() {
+        guard let monitor = hoverPreviewMonitor else { return }
+        NSEvent.removeMonitor(monitor)
+        hoverPreviewMonitor = nil
+        if let hoverPreviewResignObserver {
+            NotificationCenter.default.removeObserver(hoverPreviewResignObserver)
+        }
+        hoverPreviewResignObserver = nil
+        let row = outline.selectedRow
+        guard row >= 0, let node = outline.item(atRow: row) as? SidebarNode else { return }
+        let service = registry.service(for: node.host)
+        switch node.kind {
+        case .session(_, let s):
+            selectionDelegate?.sidebarDidEndHoverPreview(
+                session: s.name, window: nil, service: service)
+        case .window(_, let session, let w):
+            selectionDelegate?.sidebarDidEndHoverPreview(
+                session: session, window: w.index, service: service)
+        case .pane(_, let session, let window, _):
+            selectionDelegate?.sidebarDidEndHoverPreview(
+                session: session, window: window, service: service)
         default:
             break
         }
@@ -5116,10 +5218,12 @@ extension SidebarViewController: NSOutlineViewDelegate {
         // Per-window PR chips: the PRs named in the window's title first, then
         // the one for its cwd's branch (see `WindowPRs`).
         if case .window(let host, let session, let w) = node.kind {
-            cell.prChips.configure(
-                prByWindow[windowKey(host: host, session: session, window: w.index)] ?? [])
+            let prs = prByWindow[windowKey(host: host, session: session, window: w.index)] ?? []
+            cell.prChips.configure(prs)
+            cell.pinsTrash = WindowPRs.allMerged(prs)
         } else {
             cell.prChips.isHidden = true
+            cell.pinsTrash = false
         }
         return cell
     }

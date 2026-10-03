@@ -245,6 +245,29 @@ final class WindowPRMergeTests: XCTestCase {
         XCTAssertEqual(out.map(\.number), [394, 411, 393, 395])
     }
 
+    // MARK: allMerged — the row's trash shows without hover
+
+    func testAllMergedWhenTheOnlyPRMerged() {
+        XCTAssertTrue(WindowPRs.allMerged([pr(393, .merged)]))
+    }
+
+    /// A closed PR beside a merged one is still finished work.
+    func testAllMergedIgnoresClosedPRsBesideAMergedOne() {
+        XCTAssertTrue(WindowPRs.allMerged([pr(393, .merged), pr(395, .closed)]))
+    }
+
+    /// Declared numbers are sticky: a merged PR stays listed after the window
+    /// moves on to a new open one. That window is still in use.
+    func testNotAllMergedWhileAnyPRIsOpen() {
+        XCTAssertFalse(WindowPRs.allMerged([pr(394), pr(393, .merged)]))
+    }
+
+    /// Closed without merging means the work did not land.
+    func testNotAllMergedForClosedOnlyOrNoPRs() {
+        XCTAssertFalse(WindowPRs.allMerged([pr(395, .closed)]))
+        XCTAssertFalse(WindowPRs.allMerged([]))
+    }
+
     // MARK: back-fill into @mm_prs
 
     func testBackfillIsNilWhenEveryOpenPRIsAlreadyDeclared() {

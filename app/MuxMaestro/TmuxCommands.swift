@@ -433,6 +433,15 @@ enum TmuxCommands {
         return nil
     }
 
+    /// Resolve which row an ⌥-hover previews. `optionOnly` is whether ⌥ is the one
+    /// modifier held; `hoveredRow` is the row under the pointer (or -1). Returns
+    /// nil when there is nothing to switch to: no ⌥, no row, or the row already
+    /// selected.
+    static func hoverPreviewRow(optionOnly: Bool, hoveredRow: Int, selectedRow: Int) -> Int? {
+        guard optionOnly, hoveredRow >= 0, hoveredRow != selectedRow else { return nil }
+        return hoveredRow
+    }
+
     // MARK: Validation
 
     /// tmux session names may not be empty and may not contain `.` or `:`
