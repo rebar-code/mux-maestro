@@ -18,6 +18,11 @@ final class MobileServer {
         /// The thread's pane, to type into. nil where nothing can be typed
         /// (the dev server): the reply routes then answer 503.
         var pane: (MobileThread) -> MobilePaneIO? = { _ in nil }
+        /// tmux on a host, for session actions and find. nil where there is
+        /// none (the dev server): those routes then answer 503. May block.
+        var tmux: (Host) -> MobileTmux? = { _ in nil }
+        /// A session action changed the tree: load it again now.
+        var changed: () -> Void = {}
         /// The home folder whose skills and commands the `/` list reads.
         var home = NSHomeDirectory()
     }
@@ -458,6 +463,8 @@ final class MobileServer {
             send(.error(405, "method_not_allowed"), to: client, head: head)
         case .notFound:
             send(.error(404, "not_found"), to: client, head: head)
+        case .unknownAction:
+            send(.error(400, "bad_action"), to: client, head: head)
         }
     }
 
@@ -582,6 +589,30 @@ final class MobileServer {
             write(to: id, client: client) { thread, io, status in
                 MobileReply.upload(
                     request.body, name: name, thread: thread, io: io, limit: limit, status: status)
+            }
+        case .tmux(let action):
+            // Checked against the tree as it is now; tmux runs off the queue.
+            let snapshot = snapshot
+            reply(to: client) { [sources] in
+                let response = MobileActions.perform(
+                    action, body: request.body, snapshot: snapshot, tmux: sources.tmux)
+                if response.status == 200 { sources.changed() }
+                return response
+            }
+        case .dirs(let host):
+            guard let dirs = MobileActions.dirs(host: host, snapshot: snapshot) else {
+                return send(.error(404, "not_found"), to: client, head: head)
+            }
+            send(.json(["dirs": dirs]), to: client, head: head)
+        case .find(let id, let raw):
+            guard let query = MobileFind.query(raw) else {
+                return send(.error(400, "bad_query"), to: client, head: head)
+            }
+            guard let thread = snapshot.thread(id: id) else {
+                return send(.error(404, "not_found"), to: client, head: head)
+            }
+            reply(to: client) { [sources] in
+                MobileFind.search(thread: thread, query: query, tmux: sources.tmux(thread.host))
             }
         }
     }

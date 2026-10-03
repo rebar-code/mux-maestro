@@ -35,6 +35,9 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
     private let keyBar = NSSwitch()
     private let upload = NSSwitch()
     private let uploadLimit = NSPopUpButton()
+    private let sessionActions = NSSwitch()
+    private let kill = NSSwitch()
+    private let find = NSSwitch()
     private let url = NSTextField(labelWithString: "")
     private let copy = NSButton(title: "Copy Pairing Link", target: nil, action: nil)
     private let rotate = NSButton(title: "New Pairing Code…", target: nil, action: nil)
@@ -64,7 +67,9 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
         status.textColor = theme.muted
         status.lineBreakMode = .byTruncatingTail
         status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        for control in [toggle, keepAwake, manager, voice, replies, keyBar, upload] {
+        for control in [
+            toggle, keepAwake, manager, voice, replies, keyBar, upload, sessionActions, kill, find,
+        ] {
             control.controlSize = .small
             control.target = self
         }
@@ -104,6 +109,9 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
         replies.action = #selector(repliesToggled)
         keyBar.action = #selector(keyBarToggled)
         upload.action = #selector(uploadToggled)
+        sessionActions.action = #selector(sessionActionsToggled)
+        kill.action = #selector(killToggled)
+        find.action = #selector(findToggled)
         uploadLimit.controlSize = .small
         uploadLimit.font = .systemFont(ofSize: 12)
         uploadLimit.addItems(withTitles: Self.uploadLimits.map(\.1))
@@ -127,6 +135,9 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
             ("Key bar", NSGridCell.emptyContentView, keyBar),
             ("File upload", NSGridCell.emptyContentView, upload),
             ("Upload limit", NSGridCell.emptyContentView, uploadLimit),
+            ("Session actions", NSGridCell.emptyContentView, sessionActions),
+            ("Kill", NSGridCell.emptyContentView, kill),
+            ("Find", NSGridCell.emptyContentView, find),
         ]
         for (title, middle, control) in rows {
             let name = NSTextField(labelWithString: title)
@@ -139,7 +150,7 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
         grid.column(at: 2).xPlacement = .trailing
         grid.row(at: 0).rowAlignment = .none
         grid.row(at: 0).yPlacement = .center
-        for row in [3, 4, 5, 8, 9, 10] {
+        for row in [3, 4, 5, 8, 9, 10, 12, 13, 14] {
             grid.row(at: row).rowAlignment = .none
             grid.row(at: row).yPlacement = .center
         }
@@ -210,6 +221,11 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
         replies.state = Settings.phoneCapability(.replies) ? .on : .off
         keyBar.state = Settings.phoneCapability(.keyBar) ? .on : .off
         upload.state = Settings.phoneCapability(.upload) ? .on : .off
+        sessionActions.state = Settings.phoneCapability(.sessionActions) ? .on : .off
+        kill.state = Settings.phoneCapability(.kill) ? .on : .off
+        // Kill is one of the session actions: it has nothing to do without them.
+        kill.isEnabled = sessionActions.state == .on
+        find.state = Settings.phoneCapability(.find) ? .on : .off
         let limit = Settings.phoneUploadLimit()
         uploadLimit.selectItem(at: Self.uploadLimits.firstIndex { $0.0 == limit } ?? 0)
     }
@@ -277,6 +293,19 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
 
     @objc private func uploadToggled() {
         onCapability?(.upload, upload.state == .on)
+    }
+
+    @objc private func sessionActionsToggled() {
+        kill.isEnabled = sessionActions.state == .on
+        onCapability?(.sessionActions, sessionActions.state == .on)
+    }
+
+    @objc private func killToggled() {
+        onCapability?(.kill, kill.state == .on)
+    }
+
+    @objc private func findToggled() {
+        onCapability?(.find, find.state == .on)
     }
 
     @objc private func uploadLimitPicked() {

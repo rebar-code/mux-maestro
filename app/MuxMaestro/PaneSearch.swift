@@ -154,9 +154,11 @@ enum PaneSearch {
     /// Match `query` against the captured buffers, in `panes` order. Literal and
     /// smart-case (an uppercase letter in the query makes it case-sensitive) —
     /// the same rules ripgrep applies to the repo scope, so one search field
-    /// behaves the same either way.
+    /// behaves the same either way. The caps default to the sweep's; a search
+    /// of one pane passes its own.
     static func match(
-        query: String, captures: [String: [String]], panes: [PaneSearchTarget]
+        query: String, captures: [String: [String]], panes: [PaneSearchTarget],
+        perPaneCap: Int = PaneSearch.perPaneCap, maxMatches: Int = PaneSearch.maxMatches
     ) -> PaneSearchResult {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !needle.isEmpty else { return PaneSearchResult(matches: [], truncated: false) }

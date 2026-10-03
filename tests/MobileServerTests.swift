@@ -12,6 +12,8 @@ final class MobileServerTests: XCTestCase {
     private var transcript: URL!
     private let manager = FakeManager()
     private let pane = FakePane()
+    private let tmux = FakeTmux()
+    private let changes = Counter()
     private var home: URL { root.appendingPathComponent("home") }
 
     /// The manager pane, scripted. The server calls it from its own queues.
@@ -69,7 +71,9 @@ final class MobileServerTests: XCTestCase {
         return MobileServer(staticRoot: root, sources: MobileServer.Sources(
             screen: { thread in thread.pane == "%12" ? "$ make test\nok\n\n\n" : nil },
             transcript: { _ in (transcript.path, false) },
-            pane: { [pane] _ in pane.io }, home: home.path), limits: limits, manager: manager.source)
+            pane: { [pane] _ in pane.io }, tmux: tmux.source,
+            changed: { [changes] in changes.add() }, home: home.path),
+            limits: limits, manager: manager.source)
     }
 
     private func start(_ server: MobileServer) {
@@ -981,5 +985,229 @@ final class MobileServerTests: XCTestCase {
         XCTAssertEqual(commands.first?["name"] as? String, "deploy")
         XCTAssertEqual(commands.first?["description"] as? String, "Deploy to staging")
         XCTAssertTrue(commands.contains { $0["name"] as? String == "compact" })
+    }
+
+    // MARK: session actions and find
+
+    private final class Counter {
+        private let lock = NSLock()
+        private var _count = 0
+        var count: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return _count
+        }
+        func add() {
+            lock.lock()
+            _count += 1
+            lock.unlock()
+        }
+    }
+
+    private func actionsOn() {
+        server.configure(MobileConfig(capabilities: [.sessionActions, .kill, .find]))
+    }
+
+    /// Every session action, with a body the route would take.
+    private var actions: [(path: String, body: String)] {
+        [
+            ("/api/tmux/new-session", #"{"host":"localhost","dir":"/Users/me/acme-app"}"#),
+            ("/api/tmux/new-window", #"{"host":"localhost","session":"acme-app"}"#),
+            ("/api/tmux/rename-session", #"{"host":"localhost","session":"acme-app","name":"shop"}"#),
+            ("/api/tmux/rename-window", #"{"thread":"localhost:12","name":"cart"}"#),
+            ("/api/tmux/zoom-pane", #"{"thread":"localhost:12"}"#),
+            ("/api/tmux/kill-pane", #"{"thread":"localhost:12","confirm":true}"#),
+            ("/api/tmux/kill-window", #"{"thread":"localhost:12","confirm":true}"#),
+            ("/api/tmux/kill-session", #"{"host":"localhost","session":"acme-app","confirm":true}"#),
+        ]
+    }
+
+    private static let find = thread + "/find?q=test"
+    private static let dirs = "/api/hosts/localhost/dirs"
+
+    func testActionAndFindRoutesAnswer403WhileTheirSwitchesAreOff() {
+        for action in actions {
+            let refused = post(action.path, json: action.body)
+            XCTAssertEqual(refused.status, 403, action.path)
+            XCTAssertEqual(refused.body, #"{"error":"disabled"}"#, action.path)
+        }
+        XCTAssertEqual(get(Self.find).status, 403)
+        XCTAssertEqual(get(Self.dirs).status, 403)
+
+        // Every other switch on: still refused.
+        server.configure(MobileConfig(capabilities: [.replies, .keyBar, .upload, .manager, .voice]))
+        for action in actions { XCTAssertEqual(post(action.path, json: action.body).status, 403, action.path) }
+        XCTAssertEqual(get(Self.find).status, 403)
+
+        // Session actions without Kill: the kills stay refused. Find is its own.
+        server.configure(MobileConfig(capabilities: [.sessionActions]))
+        for action in actions where action.path.contains("kill") {
+            XCTAssertEqual(post(action.path, json: action.body).status, 403, action.path)
+        }
+        XCTAssertEqual(get(Self.find).status, 403)
+        // Kill without session actions opens nothing.
+        server.configure(MobileConfig(capabilities: [.kill, .find]))
+        for action in actions { XCTAssertEqual(post(action.path, json: action.body).status, 403, action.path) }
+        XCTAssertEqual(get(Self.dirs).status, 403)
+        XCTAssertEqual(tmux.argv.count, 0)
+        XCTAssertEqual(changes.count, 0)
+    }
+
+    func testAnActionOrFindWithoutThePairingTokenIsRefusedAndRunsNothing() {
+        actionsOn()
+        for action in actions {
+            for token in [nil, "", "wrong", "demo-tokeN", "demo-token-2"] as [String?] {
+                let refused = post(action.path, json: action.body, token: token)
+                XCTAssertEqual(refused.status, 401, action.path)
+                XCTAssertEqual(refused.body, #"{"error":"unpaired"}"#, action.path)
+            }
+        }
+        XCTAssertEqual(get(Self.find, token: nil).status, 401)
+        XCTAssertEqual(get(Self.find, token: "wrong").status, 401)
+        XCTAssertEqual(get(Self.dirs, token: nil).status, 401)
+        XCTAssertEqual(tmux.argv.count, 0)
+    }
+
+    func testAnActionFromAnotherOriginIsRefusedAndRunsNothing() {
+        actionsOn()
+        for action in actions {
+            for origin in [
+                nil, "https://evil.example", "http://devmac.example.ts.net:7433",
+                "https://devmac.example.ts.net", "https://devmac.example.ts.net:5173", "null",
+            ] as [String?] {
+                let refused = post(action.path, json: action.body, origin: origin)
+                XCTAssertEqual(refused.status, 403, "\(action.path) \(origin ?? "none")")
+                XCTAssertEqual(refused.body, #"{"error":"forbidden"}"#, action.path)
+            }
+            XCTAssertEqual(post(action.path, json: action.body, writeHeader: false).status, 403, action.path)
+        }
+        // Not this Mac's login, or not its name: a read is refused too.
+        XCTAssertEqual(get(Self.find, login: "other@example.com").status, 403)
+        XCTAssertEqual(get(Self.find, login: nil).status, 403)
+        XCTAssertEqual(get(Self.find, host: "127.0.0.1:7433").status, 403)
+        XCTAssertEqual(tmux.argv.count, 0)
+        XCTAssertEqual(changes.count, 0)
+    }
+
+    func testAnUnknownActionIsA400AndRunsNothing() {
+        actionsOn()
+        for word in ["kill-server", "send-keys", "run-shell", "split-window", "kill", "new-window%3Bkill-server"] {
+            let refused = post("/api/tmux/\(word)", json: #"{"thread":"localhost:12","confirm":true}"#)
+            XCTAssertEqual(refused.status, 400, word)
+            XCTAssertEqual(refused.body, #"{"error":"bad_action"}"#, word)
+        }
+        XCTAssertEqual(get("/api/tmux/new-window").status, 405)
+        XCTAssertEqual(tmux.argv.count, 0)
+    }
+
+    func testAnActionOnATargetThatIsNotInTheLiveTreeIsA404() {
+        actionsOn()
+        // A thread action names a thread; a session action a host and a session.
+        let byThread = ["rename-window", "zoom-pane", "kill-pane", "kill-window", "new-window"]
+        for id in ["localhost:99", "devbox:12", "%12", "localhost:12/../13"] {
+            for action in byThread {
+                let body = #"{"thread":"\#(id)","name":"x","confirm":true}"#
+                XCTAssertEqual(post("/api/tmux/\(action)", json: body).status, 404, "\(action) \(id)")
+            }
+        }
+        let bySession = ["new-window", "rename-session", "kill-session"]
+        for (host, session) in [("localhost", "gone"), ("devbox", "acme-app"), ("localhost", "acme")] {
+            for action in bySession {
+                let body = #"{"host":"\#(host)","session":"\#(session)","name":"x","confirm":true}"#
+                XCTAssertEqual(post("/api/tmux/\(action)", json: body).status, 404, "\(action) \(host)")
+            }
+        }
+        XCTAssertEqual(post("/api/tmux/new-session", json: #"{"host":"devbox"}"#).status, 404)
+        XCTAssertEqual(get("/api/hosts/devbox/dirs").status, 404)
+        XCTAssertEqual(get("/api/threads/localhost%3A99/find?q=test").status, 404)
+        XCTAssertEqual(tmux.argv.count, 0)
+        XCTAssertEqual(changes.count, 0)
+    }
+
+    func testABadNameIsA400AndRunsNothing() {
+        actionsOn()
+        for name in ["a:b", "a.b", "-t", "=acme", "$(id)", "a;b", "", String(repeating: "a", count: 65)] {
+            for (path, target) in [
+                ("/api/tmux/rename-window", #""thread":"localhost:12""#),
+                ("/api/tmux/rename-session", #""host":"localhost","session":"acme-app""#),
+                ("/api/tmux/new-session", #""host":"localhost""#),
+            ] {
+                let refused = post(path, json: "{\(target),\"name\":\"\(name)\"}")
+                XCTAssertEqual(refused.status, 400, "\(path) \(name)")
+                XCTAssertEqual(refused.body, #"{"error":"bad_name"}"#, "\(path) \(name)")
+            }
+        }
+        XCTAssertEqual(tmux.argv.count, 0)
+    }
+
+    func testAKillWithoutConfirmIsRefusedAndWithItRuns() {
+        actionsOn()
+        let kills: [(String, String, [String])] = [
+            ("/api/tmux/kill-pane", #""thread":"localhost:12""#, ["kill-pane", "-t", "%12"]),
+            ("/api/tmux/kill-window", #""thread":"localhost:13""#, ["kill-window", "-t", "%13"]),
+            ("/api/tmux/kill-session", #""host":"localhost","session":"acme-app""#,
+             ["kill-session", "-t", "=acme-app"]),
+        ]
+        for (path, target, _) in kills {
+            for body in ["{\(target)}", "{\(target),\"confirm\":false}", "{\(target),\"confirm\":\"true\"}"] {
+                let refused = post(path, json: body)
+                XCTAssertEqual(refused.status, 400, "\(path) \(body)")
+                XCTAssertEqual(refused.body, #"{"error":"confirm_required"}"#, path)
+            }
+        }
+        XCTAssertEqual(tmux.argv.count, 0)
+        XCTAssertEqual(changes.count, 0)
+
+        for (path, target, _) in kills {
+            XCTAssertEqual(post(path, json: "{\(target),\"confirm\":true}").status, 200, path)
+        }
+        XCTAssertEqual(tmux.argv, kills.map(\.2))
+        // The app is told to load the tree again after each one.
+        XCTAssertEqual(changes.count, 3)
+    }
+
+    func testANewWindowAnswersWithItsThreadAndTheDirectoriesAreServed() throws {
+        actionsOn()
+        tmux.output = "3\t%41\n"
+        let made = post("/api/tmux/new-window", json: #"{"host":"localhost","session":"acme-app"}"#)
+        XCTAssertEqual(made.status, 200)
+        XCTAssertEqual(made.body, #"{"ok":true,"thread":"localhost:41"}"#)
+        XCTAssertEqual(tmux.argv.last, [
+            "new-window", "-a", "-t", "=acme-app:", "-P", "-F", "#{window_index}\t#{pane_id}",
+            "-c", "/Users/me/acme-app",
+        ])
+        XCTAssertEqual(get(Self.dirs).body, #"{"dirs":["\/Users\/me\/acme-app"]}"#)
+        // A directory the server did not offer starts nothing.
+        let before = tmux.argv.count
+        let refused = post("/api/tmux/new-session", json: #"{"host":"localhost","dir":"/etc"}"#)
+        XCTAssertEqual(refused.status, 400)
+        XCTAssertEqual(refused.body, #"{"error":"bad_dir"}"#)
+        XCTAssertEqual(tmux.argv.count, before)
+        tmux.failing = true
+        XCTAssertEqual(post("/api/tmux/zoom-pane", json: #"{"thread":"localhost:12"}"#).status, 503)
+    }
+
+    func testFindSearchesTheThreadsPaneAndRefusesABadQuery() throws {
+        actionsOn()
+        tmux.output = "\(PaneSearch.marker)%12\n$ make test\nok\n"
+        let found = get(Self.find)
+        XCTAssertEqual(found.status, 200)
+        let body = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(found.body.utf8)) as? [String: Any])
+        XCTAssertEqual(body["text"] as? String, "$ make test\nok")
+        XCTAssertEqual((body["matches"] as? [[String: Any]])?.first?["line"] as? Int, 0)
+        XCTAssertEqual(tmux.argv.count, 1)
+        XCTAssertEqual(tmux.argv[0].suffix(2), ["-t", "%12"])
+
+        let long = String(repeating: "a", count: MobileFind.maxQueryLength + 1)
+        for query in ["", "%20%20", long, "a%0Ab", "a%1B%5B31m"] {
+            let refused = get(Self.thread + "/find?q=\(query)")
+            XCTAssertEqual(refused.status, 400, query)
+            XCTAssertEqual(refused.body, #"{"error":"bad_query"}"#, query)
+        }
+        XCTAssertEqual(get(Self.thread + "/find").status, 400)
+        XCTAssertEqual(tmux.argv.count, 1)
+        // A find is a read: it does not make the app load the tree again.
+        XCTAssertEqual(changes.count, 0)
     }
 }

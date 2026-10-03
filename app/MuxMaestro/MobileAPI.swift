@@ -206,6 +206,12 @@ enum MobileEndpoint: Equatable {
     case commands(id: String)
     /// Save a file in the thread's working directory and paste its path.
     case upload(id: String, name: String)
+    /// One session action. The body names its target.
+    case tmux(MobileAction)
+    /// The directories a host offers for a new session.
+    case dirs(host: String)
+    /// Find `query` in the thread's scrollback.
+    case find(id: String, query: String)
 
     var capability: MobileCapability {
         switch self {
@@ -215,6 +221,9 @@ enum MobileEndpoint: Equatable {
         case .text, .prompt, .answer, .commands: return .replies
         case .key: return .keyBar
         case .upload: return .upload
+        case .tmux(let action): return action.isKill ? .kill : .sessionActions
+        case .dirs: return .sessionActions
+        case .find: return .find
         }
     }
 
@@ -222,10 +231,11 @@ enum MobileEndpoint: Equatable {
     /// to pass the write checks in `MobileAPI.authorize`.
     var method: String {
         switch self {
-        case .config, .threads, .hosts, .events, .chat, .screen, .manager, .prompt, .commands:
+        case .config, .threads, .hosts, .events, .chat, .screen, .manager, .prompt, .commands,
+             .dirs, .find:
             return "GET"
         case .managerText, .managerDismiss, .voice, .voiceReplay, .voiceWarm, .text, .key, .answer,
-             .upload:
+             .upload, .tmux:
             return "POST"
         }
     }
@@ -237,6 +247,8 @@ enum MobileRoute: Equatable {
     case asset(String)
     case methodNotAllowed
     case notFound
+    /// `/api/tmux/<action>` with an action that is not a `MobileAction`.
+    case unknownAction
     /// The route belongs to a feature whose switch is off.
     case disabled(MobileCapability)
 }
@@ -258,6 +270,8 @@ enum MobileCapability: String, CaseIterable {
     case upload
     case sessionActions
     case kill
+    /// Find in a thread's scrollback.
+    case find
     case artifacts
     case localServers
     case stopServers
@@ -326,13 +340,15 @@ enum MobileAPI {
         case "push": return .notifications
         case "terminal": return .liveTerminal
         case "servers": return segments.last == "stop" ? .stopServers : .localServers
-        case "tmux": return segments.count >= 3 && segments[2] == "kill" ? .kill : .sessionActions
+        case "tmux": return segments.count >= 3 && segments[2].hasPrefix("kill") ? .kill : .sessionActions
+        case "hosts" where segments.count >= 3: return .sessionActions
         case "threads" where segments.count >= 4:
             switch segments[3] {
             case "text", "prompt", "answer", "commands": return .replies
             case "key": return .keyBar
             case "upload": return .upload
             case "artifacts", "file": return .artifacts
+            case "find": return .find
             default: return nil
             }
         default: return nil
@@ -349,6 +365,10 @@ enum MobileAPI {
         // every path under it, built or not.
         if let capability = capability(forSegments: segments), !config.allows(capability) {
             return .disabled(capability)
+        }
+        // A kill is a session action too: it needs both switches.
+        if segments.count >= 2, segments[1] == "tmux", !config.allows(.sessionActions) {
+            return .disabled(.sessionActions)
         }
         let endpoint: MobileEndpoint
         switch segments.count {
@@ -378,6 +398,14 @@ enum MobileAPI {
             endpoint = .commands(id: segments[2])
         case 4 where segments[1] == "threads" && segments[3] == "upload":
             endpoint = .upload(id: segments[2], name: request.query["name"] ?? "")
+        case 4 where segments[1] == "threads" && segments[3] == "find":
+            endpoint = .find(id: segments[2], query: request.query["q"] ?? "")
+        case 4 where segments[1] == "hosts" && segments[3] == "dirs":
+            endpoint = .dirs(host: segments[2])
+        case 3 where segments[1] == "tmux":
+            // A fixed list: any other word is refused, whatever its method.
+            guard let action = MobileAction(rawValue: segments[2]) else { return .unknownAction }
+            endpoint = .tmux(action)
         default: return .notFound
         }
         guard config.allows(endpoint.capability) else { return .disabled(endpoint.capability) }

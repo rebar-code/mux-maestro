@@ -93,6 +93,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         thread: latest, rows: agentStates.rows(),
                         now: Int(Date().timeIntervalSince1970))
                 }
+            },
+            tmux: { [registry] host in
+                { args in registry.service(for: host).phoneTmux(args) }
+            },
+            changed: { [weak self] in
+                // The sidebar loads the tree again, and the phone follows it.
+                DispatchQueue.main.async { self?.sidebarVC?.refresh() }
             }),
         manager: MobileServer.Manager(
             pane: { [weak self] in

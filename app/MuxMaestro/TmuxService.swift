@@ -1890,6 +1890,12 @@ final class TmuxService {
             })
     }
 
+    /// One tmux call on this host, for the phone's session actions and find.
+    /// Blocking; call off the main thread.
+    func phoneTmux(_ args: [String]) -> String? {
+        tmux(args)
+    }
+
     /// Drop a local file onto a session on this host: resolve the session's cwd,
     /// copy the file there (cp local / scp remote), then PASTE the resulting path
     /// into the session's active pane (no auto-run — the M11 decision). Returns
