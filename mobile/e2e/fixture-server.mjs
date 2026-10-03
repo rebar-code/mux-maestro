@@ -14,7 +14,8 @@
 // /__fixture/serve-fails?code=, /__fixture/mappings (what the phone asked to publish),
 // /__fixture/tailnet?name= (publish under that name, for screenshots),
 // /__fixture/push (the subscriptions and the thread each phone says it shows),
-// /__fixture/push-limit?on=1 (refuse the next subscription: the Mac holds its most)
+// /__fixture/push-limit?on=1 (refuse the next subscription: the Mac holds its most),
+// /__fixture/push-forget (the Mac drops every subscription, as a new pairing code does),
 // /__fixture/prompt-delay?ms=,
 // /__fixture/append?count= (adds lines to pane buildbox:8),
 // /__fixture/screen?default=&max= (the screen endpoint's default and cap)
@@ -1666,6 +1667,10 @@ function hook(res, url) {
 			break;
 		case '/__fixture/push':
 			return send(res, 200, { subscriptions: pushSubs, focus: pushFocus });
+		case '/__fixture/push-forget':
+			pushSubs = [];
+			pushFocus = {};
+			break;
 		case '/__fixture/push-limit':
 			pushLimit = url.searchParams.get('on') === '1';
 			break;

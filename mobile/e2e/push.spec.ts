@@ -1,5 +1,5 @@
 import { mkdirSync } from 'node:fs';
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type BrowserContext, type Page, type Worker } from '@playwright/test';
 import { drawer, forget, pairingLink, reset, threadPath } from './helpers';
 
 // The headless shell refuses every notification. The full browser shows them.
@@ -11,6 +11,8 @@ const ENDPOINT = 'https://web.push.apple.com/QDemoPhone';
 declare global {
 	interface Window {
 		__push: { asked: number; key: number[]; userVisibleOnly: boolean | null };
+		/** Content-Security-Policy violations the page reported. */
+		__csp: string[];
 	}
 }
 
@@ -196,13 +198,80 @@ test('an open thread tells the Mac it is on screen, and says so when it is left'
 	await expect.poll(async () => (await held(page)).focus[ENDPOINT]).toBeNull();
 });
 
-test('a push shows a notification, and a tap on it opens that thread', async ({
-	page,
-	context
+test('the switch follows the Mac while the app is open, with no reload', async ({ page }) => {
+	await open(page, { standalone: true, answer: 'granted' }, threadPath(THREAD));
+	await expect(page.locator('.tbar .title b')).toBeVisible();
+	await openDrawer(page);
+	await toggle(page).click();
+	await expect(toggle(page)).toHaveAttribute('aria-checked', 'true');
+	await expect.poll(async () => (await held(page)).focus[ENDPOINT]).toBe(THREAD);
+
+	// The Mac turns notifications off and drops its phones. The app stays open.
+	await page.request.post('/__fixture/capability?name=notifications&on=0');
+	await expect(row(page)).toHaveCount(0);
+	await page.request.post('/__fixture/push-forget');
+	expect((await held(page)).subscriptions).toEqual([]);
+
+	// On again: the phone hands its subscription back and says what it shows.
+	await page.request.post('/__fixture/capability?name=notifications&on=1');
+	await expect(toggle(page)).toHaveAttribute('aria-checked', 'true');
+	expect((await held(page)).subscriptions).toHaveLength(1);
+	await expect.poll(async () => (await held(page)).focus[ENDPOINT]).toBe(THREAD);
+});
+
+test('a phone that gets its first config after the app started still shows the switch on', async ({
+	page
 }) => {
+	await reset(page);
+	await page.request.post('/__fixture/capability?name=notifications&on=1');
+	await forget(page);
+	// The phone holds a subscription made with the Mac's key, and no cached config.
+	await page.evaluate(() => {
+		const text = atob(
+			'BP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27mlmlMoZIIgDll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A8'
+				.replace(/-/g, '+')
+				.replace(/_/g, '/')
+		);
+		sessionStorage.clear();
+		sessionStorage.setItem('e2e.permission', 'granted');
+		sessionStorage.setItem('e2e.key', JSON.stringify([...text].map((char) => char.charCodeAt(0))));
+	});
+	await fakePush(page, { standalone: true, answer: 'granted' });
+	let release: () => void = () => {};
+	const gate = new Promise<void>((done) => (release = done));
+	await page.route('**/api/**', async (route) => {
+		await gate;
+		await route.continue();
+	});
+	await page.goto(pairingLink());
+	// The app has started and read the phone's state; the Mac has said nothing yet.
+	await page.evaluate(() => navigator.serviceWorker.ready);
+	await page.waitForTimeout(500);
+	expect((await held(page)).subscriptions).toEqual([]);
+	release();
+	await openDrawer(page);
+	await expect(toggle(page)).toHaveAttribute('aria-checked', 'true');
+	expect((await held(page)).subscriptions).toHaveLength(1);
+});
+
+interface Shown {
+	title: string;
+	body: string;
+	tag: string;
+}
+
+/** The real service worker of a paired app, active, with notifications allowed. */
+async function startWorker(page: Page, context: BrowserContext): Promise<Worker> {
 	await context.grantPermissions(['notifications']);
 	await reset(page);
 	await forget(page);
+	// Every policy violation the page reports, for the check at the end.
+	await page.addInitScript(() => {
+		window.__csp = [];
+		document.addEventListener('securitypolicyviolation', (event) => {
+			window.__csp.push(`${event.violatedDirective} ${event.blockedURI}`);
+		});
+	});
 	await page.goto(pairingLink());
 	await page.evaluate(() => navigator.serviceWorker.ready);
 	const worker = context.serviceWorkers()[0] ?? (await context.waitForEvent('serviceworker'));
@@ -214,58 +283,144 @@ test('a push shows a notification, and a tap on it opens that thread', async ({
 			)
 		)
 		.toBe('activated');
-
-	const shown = (): Promise<{ title: string; body: string; tag: string }[]> =>
-		worker.evaluate(async () => {
-			const scope = self as unknown as ServiceWorkerGlobalScope;
-			return (await scope.registration.getNotifications()).map((n) => ({
-				title: n.title,
-				body: n.body,
-				tag: n.tag
-			}));
+	await worker.evaluate(() => {
+		const scope = self as unknown as { __csp: string[] };
+		scope.__csp = [];
+		self.addEventListener('securitypolicyviolation', (event) => {
+			const violation = event as SecurityPolicyViolationEvent;
+			scope.__csp.push(`${violation.violatedDirective} ${violation.blockedURI}`);
 		});
-	const pushed = (data: string): Promise<void> =>
-		worker.evaluate((data) => {
-			self.dispatchEvent(new PushEvent('push', { data }));
-		}, data);
+	});
+	return worker;
+}
 
-	await pushed(
-		JSON.stringify({
-			v: 1,
-			kind: 'waiting',
-			thread: THREAD,
-			tag: 'demo-tag',
-			title: 'MuxMaestro',
-			body: 'A thread needs you'
-		})
-	);
-	await expect
-		.poll(shown)
-		.toEqual([{ title: 'MuxMaestro', body: 'A thread needs you', tag: 'demo-tag' }]);
+const shown = (worker: Worker): Promise<Shown[]> =>
+	worker.evaluate(async () => {
+		const scope = self as unknown as ServiceWorkerGlobalScope;
+		return (await scope.registration.getNotifications()).map((n) => ({
+			title: n.title,
+			body: n.body,
+			tag: n.tag
+		}));
+	});
+
+const pushed = (worker: Worker, data: string): Promise<void> =>
+	worker.evaluate((data) => {
+		self.dispatchEvent(new PushEvent('push', { data }));
+	}, data);
+
+/**
+ * Push `data` until the notifications are `expected`. The browser hands each
+ * notification to the system's notification centre, which was seen to drop the
+ * first one of a run. A message sent twice has one tag, so it still shows once.
+ */
+async function pushUntil(worker: Worker, data: string, expected: Shown[]): Promise<void> {
+	await expect(async () => {
+		await pushed(worker, data);
+		await expect.poll(() => shown(worker), { timeout: 1500 }).toEqual(expected);
+	}).toPass({ timeout: 15_000 });
+}
+
+const WAITING = JSON.stringify({
+	v: 1,
+	kind: 'waiting',
+	thread: THREAD,
+	tag: 'demo-tag',
+	title: 'MuxMaestro',
+	body: 'A thread needs you'
+});
+
+const tapped = (worker: Worker, tag: string): Promise<void> =>
+	worker.evaluate(async (tag) => {
+		const scope = self as unknown as ServiceWorkerGlobalScope;
+		const [notification] = await scope.registration.getNotifications({ tag });
+		self.dispatchEvent(new NotificationEvent('notificationclick', { notification }));
+	}, tag);
+
+const threadAddress = new RegExp(`${threadPath(THREAD).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`);
+
+test('a push shows a notification, and a tap on it opens that thread', async ({
+	page,
+	context
+}) => {
+	const worker = await startWorker(page, context);
+	// The app shell is served under the strict policy; the check below means something.
+	const policy = (await page.request.get('/')).headers()['content-security-policy'] ?? '';
+	expect(policy).toContain("script-src 'self'");
+	expect(policy).not.toContain("'unsafe-eval'");
+
+	await pushUntil(worker, WAITING, [
+		{ title: 'MuxMaestro', body: 'A thread needs you', tag: 'demo-tag' }
+	]);
 	// A second message for the thread replaces the first.
-	await pushed(
+	await pushUntil(
+		worker,
 		JSON.stringify({
 			thread: THREAD,
 			tag: 'demo-tag',
 			title: 'MuxMaestro',
 			body: 'A thread finished'
-		})
+		}),
+		[{ title: 'MuxMaestro', body: 'A thread finished', tag: 'demo-tag' }]
 	);
-	await expect
-		.poll(shown)
-		.toEqual([{ title: 'MuxMaestro', body: 'A thread finished', tag: 'demo-tag' }]);
 	// A message that cannot be read still shows something.
-	await pushed('not json');
-	await expect.poll(async () => (await shown()).length).toBe(2);
+	await pushed(worker, 'not json');
+	await expect.poll(async () => (await shown(worker)).length).toBe(2);
 
-	await worker.evaluate(async () => {
-		const scope = self as unknown as ServiceWorkerGlobalScope;
-		const [notification] = await scope.registration.getNotifications({ tag: 'demo-tag' });
-		self.dispatchEvent(new NotificationEvent('notificationclick', { notification }));
-	});
-	await expect(page).toHaveURL(
-		new RegExp(`${threadPath(THREAD).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`)
-	);
+	await tapped(worker, 'demo-tag');
+	await expect(page).toHaveURL(threadAddress);
 	await expect(page.locator('.tbar .title b')).toBeVisible();
-	await expect.poll(async () => (await shown()).map((n) => n.tag)).toEqual(['muxmaestro']);
+	await expect.poll(async () => (await shown(worker)).map((n) => n.tag)).toEqual(['muxmaestro']);
+
+	// Push, notification and tap ran under the policy with nothing blocked.
+	expect(await page.evaluate(() => window.__csp)).toEqual([]);
+	expect(await worker.evaluate(() => (self as unknown as { __csp: string[] }).__csp)).toEqual([]);
+});
+
+test('with no window open, a tap on the notification opens the thread in a new one', async ({
+	page,
+	context
+}) => {
+	const worker = await startWorker(page, context);
+	await pushUntil(worker, WAITING, [
+		{ title: 'MuxMaestro', body: 'A thread needs you', tag: 'demo-tag' }
+	]);
+	// The app is closed; only the service worker is left.
+	await page.goto('about:blank');
+	await expect
+		.poll(() =>
+			worker.evaluate(
+				async () =>
+					(
+						await (self as unknown as ServiceWorkerGlobalScope).clients.matchAll({
+							type: 'window',
+							includeUncontrolled: true
+						})
+					).length
+			)
+		)
+		.toBe(0);
+
+	// A browser opens a window only for a real tap, and a test cannot make
+	// one. So the call is recorded here, and the address is then opened as
+	// the browser would open it.
+	await worker.evaluate(() => {
+		const scope = self as unknown as ServiceWorkerGlobalScope & { __opened: string[] };
+		scope.__opened = [];
+		scope.clients.openWindow = async (url) => {
+			scope.__opened.push(String(url));
+			return null;
+		};
+	});
+	await tapped(worker, 'demo-tag');
+	const opened = (): Promise<string[]> =>
+		worker.evaluate(() => (self as unknown as { __opened: string[] }).__opened);
+	await expect.poll(opened).toEqual([threadPath(THREAD)]);
+	await expect.poll(async () => (await shown(worker)).length).toBe(0);
+
+	// The address is one the app shell answers from a cold start.
+	const cold = await context.newPage();
+	await cold.goto((await opened())[0]);
+	await expect(cold).toHaveURL(threadAddress);
+	await expect(cold.locator('.tbar .title b')).toBeVisible();
 });
