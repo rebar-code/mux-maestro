@@ -54,7 +54,7 @@ final class PhoneLinkTests: XCTestCase {
         tailscale = FakeTailscale()
         tokens = MemoryTokens()
         server = MobileServer(staticRoot: nil, sources: MobileServer.Sources(
-            screen: { _ in nil }, transcript: { _ in nil }))
+            screen: { _, _ in nil }, transcript: { _ in nil }))
         states = []
     }
 

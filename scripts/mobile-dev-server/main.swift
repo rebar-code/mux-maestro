@@ -57,8 +57,8 @@ let remote = value("--remote-socket").map { service("devbox", socket: $0) }
 let server = MobileServer(
     staticRoot: value("--static").map { URL(fileURLWithPath: $0, isDirectory: true) },
     sources: MobileServer.Sources(
-        screen: { thread in
-            (thread.host.isLocal ? local : remote)?.capturePane(target: thread.pane)
+        screen: { thread, lines in
+            (thread.host.isLocal ? local : remote)?.captureScrollback(target: thread.pane, lines: lines)
         },
         transcript: { thread in
             chat.count == 2 && thread.pane == chat[0] ? (chat[1], false) : nil
