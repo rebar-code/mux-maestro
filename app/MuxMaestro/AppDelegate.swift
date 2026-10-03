@@ -350,7 +350,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return self.mobileServer.hasRecentClient
         }
         mobileServer.configure(Settings.phoneConfig())
-        if Settings.phoneEnabled() { phoneLink.turnOn() }
+        if Settings.phoneEnabled() { phoneLink.turnOn() } else { phoneLink.removeLeftoverMapping() }
 
         NSApp.mainMenu = makeMenu()
         NSApp.activate(ignoringOtherApps: true)
@@ -933,6 +933,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 Settings.setPhoneGrouping(grouping)
                 self?.mobileServer.configure(Settings.phoneConfig())
             }
+            setup.phone.onRotate = { [weak self] in self?.phoneLink.rotateToken() }
             setup.phone.onKeepAwake = { [weak self] on in
                 Settings.setPhoneKeepAwake(on)
                 self?.phoneLink.refreshKeepAwake()

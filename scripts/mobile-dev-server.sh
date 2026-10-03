@@ -5,6 +5,7 @@
 #   scripts/mobile-dev-server.sh --socket demo --port 7433 \
 #       --static app/MuxMaestro/Resources/mobile
 #   curl -H 'Host: devmac.example.ts.net' -H 'Tailscale-User-Login: me@example.com' \
+#       -H 'X-MuxMaestro-Token: demo-token' \
 #       http://127.0.0.1:7433/api/threads
 #
 # It compiles the same Foundation-only sources the test target does, plus

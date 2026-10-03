@@ -23,18 +23,33 @@ final class MobileServerTests: XCTestCase {
         try Data((#"{"type":"user","message":{"role":"user","content":"hello"}}"# + "\n").utf8)
             .write(to: transcript)
 
+        server = makeServer()
+        start(server)
+    }
+
+    private func makeServer(limits: MobileServer.Limits = MobileServer.Limits()) -> MobileServer {
         let transcript = transcript!
-        server = MobileServer(staticRoot: root, sources: MobileServer.Sources(
-            screen: { thread in thread.pane == "%12" ? "$ make test\nok" : nil },
-            transcript: { _ in (transcript.path, false) }))
+        return MobileServer(staticRoot: root, sources: MobileServer.Sources(
+            screen: { thread in thread.pane == "%12" ? "$ make test\nok\n\n\n" : nil },
+            transcript: { _ in (transcript.path, false) }), limits: limits)
+    }
+
+    private func start(_ server: MobileServer) {
         let started = expectation(description: "listening")
-        server.start(port: 0, identity: identity) { result in
+        server.start(port: 0, identity: identity, token: "demo-token") { result in
             if case .success(let bound) = result { self.port = bound }
             started.fulfill()
         }
         wait(for: [started], timeout: 5)
         XCTAssertGreaterThan(port, 0)
         server.update(snapshot())
+    }
+
+    /// Swap the default server for one with tight limits.
+    private func restart(limits: MobileServer.Limits) {
+        server.stop()
+        server = makeServer(limits: limits)
+        start(server)
     }
 
     override func tearDown() {
@@ -92,10 +107,11 @@ final class MobileServerTests: XCTestCase {
 
     private func get(
         _ path: String, method: String = "GET", login: String? = "me@example.com",
-        host: String = "devmac.example.ts.net:7433"
+        host: String = "devmac.example.ts.net:7433", token: String? = "demo-token"
     ) -> (status: Int, head: String, body: String) {
         var raw = "\(method) \(path) HTTP/1.1\r\nHost: \(host)\r\n"
         if let login { raw += "Tailscale-User-Login: \(login)\r\n" }
+        if let token { raw += "X-MuxMaestro-Token: \(token)\r\n" }
         raw += "\r\n"
         let text = exchange(raw, until: whole)
         let parts = text.components(separatedBy: "\r\n\r\n")
@@ -113,6 +129,95 @@ final class MobileServerTests: XCTestCase {
         let rebound = get("/api/threads", host: "127.0.0.1:\(port)")
         XCTAssertEqual(rebound.status, 403)
         XCTAssertEqual(rebound.body, #"{"error":"forbidden"}"#)
+    }
+
+    func testTheAPINeedsThePairingTokenAndTheBundleDoesNot() {
+        // The right login and host are public values; without the token they
+        // are not enough.
+        for path in ["/api/threads", "/api/hosts", "/api/config", "/api/events",
+                     "/api/threads/localhost%3A12/chat", "/api/threads/localhost%3A12/screen",
+                     "/api/manager"] {
+            let refused = get(path, token: nil)
+            XCTAssertEqual(refused.status, 401, path)
+            XCTAssertEqual(refused.body, #"{"error":"unpaired"}"#, path)
+            XCTAssertEqual(get(path, token: "wrong-token").status, 401, path)
+        }
+        XCTAssertEqual(get("/", token: nil).status, 200)
+        XCTAssertEqual(get("/_app/immutable/a.js", token: nil).status, 200)
+        // The token never replaces the identity check.
+        XCTAssertEqual(get("/api/threads", login: nil).status, 403)
+    }
+
+    func testANewTokenSignsTheOldOneOutAndClosesItsStream() {
+        let raw = "GET /api/events HTTP/1.1\r\nHost: devmac.example.ts.net\r\n"
+            + "Tailscale-User-Login: me@example.com\r\nX-MuxMaestro-Token: demo-token\r\n\r\n"
+        var rotated = false
+        // The exchange ends when the server closes the stream.
+        let text = exchange(raw) { [self] received in
+            if !rotated, received.contains("event: hosts") {
+                rotated = true
+                server.setToken("next-token")
+            }
+            return false
+        }
+        XCTAssertTrue(text.contains("event: hosts"))
+        XCTAssertEqual(get("/api/threads").status, 401)
+        XCTAssertEqual(get("/api/threads", token: "next-token").status, 200)
+    }
+
+    func testOneConnectionOverTheCapIsClosed() {
+        restart(limits: MobileServer.Limits(maxConnections: 2))
+        let held = (0..<2).map { _ -> NWConnection in
+            let connection = NWConnection(
+                host: "127.0.0.1", port: NWEndpoint.Port(rawValue: UInt16(port))!, using: .tcp)
+            let ready = expectation(description: "connected")
+            connection.stateUpdateHandler = { if case .ready = $0 { ready.fulfill() } }
+            connection.start(queue: .global())
+            wait(for: [ready], timeout: 5)
+            return connection
+        }
+        // Let the listener register both before the third arrives.
+        usleep(200_000)
+        XCTAssertEqual(get("/api/threads").status, 0)
+        held.forEach { $0.cancel() }
+        usleep(200_000)
+        XCTAssertEqual(get("/api/threads").status, 200)
+    }
+
+    func testAnIdleConnectionIsClosedAndAStreamIsNot() {
+        restart(limits: MobileServer.Limits(idleTimeout: 0.2))
+        let idle = NWConnection(
+            host: "127.0.0.1", port: NWEndpoint.Port(rawValue: UInt16(port))!, using: .tcp)
+        let closed = expectation(description: "idle connection closed")
+        idle.start(queue: .global())
+        idle.receive(minimumIncompleteLength: 1, maximumLength: 16) { _, _, complete, error in
+            if complete || error != nil { closed.fulfill() }
+        }
+        let raw = "GET /api/events HTTP/1.1\r\nHost: devmac.example.ts.net\r\n"
+            + "Tailscale-User-Login: me@example.com\r\nX-MuxMaestro-Token: demo-token\r\n\r\n"
+        var waited = false
+        let text = exchange(raw) { [self] received in
+            if !waited, received.contains("event: hosts") {
+                waited = true
+                usleep(400_000)
+                // The sweep runs with the tree update; the stream outlives it.
+                server.update(snapshot(status: .waiting))
+            }
+            return received.contains(#""status":"waiting""#)
+        }
+        wait(for: [closed], timeout: 5)
+        XCTAssertTrue(text.contains(#""status":"waiting""#))
+    }
+
+    func testAStreamOverItsBacklogIsClosed() {
+        // Smaller than one event: the first write is already over the limit.
+        restart(limits: MobileServer.Limits(streamBacklog: 16))
+        let raw = "GET /api/events HTTP/1.1\r\nHost: devmac.example.ts.net\r\n"
+            + "Tailscale-User-Login: me@example.com\r\nX-MuxMaestro-Token: demo-token\r\n\r\n"
+        let started = Date()
+        let text = exchange(raw) { _ in false }
+        XCTAssertLessThan(Date().timeIntervalSince(started), 4)
+        XCTAssertFalse(text.contains("event: threads"))
     }
 
     func testServesThreadsHostsAndConfig() throws {
@@ -148,7 +253,8 @@ final class MobileServerTests: XCTestCase {
         let chat = get("/api/threads/localhost%3A12/chat")
         XCTAssertEqual(chat.status, 200)
         XCTAssertTrue(chat.body.contains(#""text":"hello""#))
-        XCTAssertTrue(get("/api/threads/localhost%3A12/screen").body.contains("make test"))
+        // Trailing blank rows of the pane are cut.
+        XCTAssertEqual(get("/api/threads/localhost%3A12/screen").body, #"{"text":"$ make test\nok"}"#)
         // A shell has a screen and no chat.
         XCTAssertEqual(get("/api/threads/localhost%3A13/chat").status, 404)
         XCTAssertEqual(get("/api/threads/localhost%3A13/screen").status, 503)
@@ -177,7 +283,7 @@ final class MobileServerTests: XCTestCase {
 
     func testAnswersTwoRequestsOnOneConnection() {
         let one = "GET /api/hosts HTTP/1.1\r\nHost: devmac.example.ts.net\r\n"
-            + "Tailscale-User-Login: me@example.com\r\n\r\n"
+            + "Tailscale-User-Login: me@example.com\r\nX-MuxMaestro-Token: demo-token\r\n\r\n"
         let text = exchange(one + one) { $0.components(separatedBy: "HTTP/1.1 200 OK").count == 3
             && $0.hasSuffix("}") }
         XCTAssertEqual(text.components(separatedBy: "HTTP/1.1 200 OK").count, 3)
@@ -185,7 +291,7 @@ final class MobileServerTests: XCTestCase {
 
     func testEventStreamSendsTheListsThenAChange() {
         let raw = "GET /api/events HTTP/1.1\r\nHost: devmac.example.ts.net\r\n"
-            + "Tailscale-User-Login: me@example.com\r\n\r\n"
+            + "Tailscale-User-Login: me@example.com\r\nX-MuxMaestro-Token: demo-token\r\n\r\n"
         var pushed = false
         let text = exchange(raw) { [self] received in
             // Once the first lists are in, change one thread: a second event follows.
@@ -208,7 +314,7 @@ final class MobileServerTests: XCTestCase {
 
     func testAnUnchangedTreeSendsNoEvent() {
         let raw = "GET /api/events HTTP/1.1\r\nHost: devmac.example.ts.net\r\n"
-            + "Tailscale-User-Login: me@example.com\r\n\r\n"
+            + "Tailscale-User-Login: me@example.com\r\nX-MuxMaestro-Token: demo-token\r\n\r\n"
         var pushed = false
         let text = exchange(raw) { [self] received in
             if !pushed, received.contains("event: hosts") {
