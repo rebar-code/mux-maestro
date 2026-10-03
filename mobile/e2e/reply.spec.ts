@@ -1,6 +1,14 @@
 import { mkdirSync } from 'node:fs';
 import { expect, test, type APIResponse, type Locator, type Page } from '@playwright/test';
-import { fakeMic, forget, pairingLink, reset, threadPath, TOKEN_HEADER } from './helpers';
+import {
+	fakeMic,
+	forget,
+	pairingLink,
+	reset,
+	threadPath,
+	TOKEN_HEADER,
+	touchDrag
+} from './helpers';
 
 /** Idle, local, with a chat. */
 const IDLE = 'localhost:7';
@@ -1027,7 +1035,7 @@ test('a truncated card says so and opens the terminal', async ({ page }) => {
 
 	await show.tap();
 	await expect(page.locator('[data-tab="main"]')).toHaveText(/Terminal\s*⇄/);
-	await expect(page.locator('pre.screen')).toContainText('kubectl get pods -n staging');
+	await expect(page.locator('.screen')).toContainText('kubectl get pods -n staging');
 	// The terminal is showing: the card has nothing more to open.
 	await expect(card(page)).toBeVisible();
 	await expect(show).toHaveCount(0);
@@ -1078,7 +1086,7 @@ test('with the key bar alone the card is read-only, and the keys name it', async
 	await expect(card(page)).toHaveAttribute('data-prompt', 'long-2');
 	await expect(card(page).getByRole('button')).toHaveText(['Show terminal']);
 	await card(page).getByRole('button').tap();
-	await expect(page.locator('pre.screen')).toContainText('kubectl get pods -n staging');
+	await expect(page.locator('.screen')).toContainText('kubectl get pods -n staging');
 });
 
 test('a prompt that came up after the paste: the box empties and the card shows', async ({
@@ -1124,4 +1132,53 @@ test('the prompt is closed to a phone with both switches off', async ({ page }) 
 	await page.request.post('/__fixture/capability?name=keyBar&on=0');
 	await page.request.post('/__fixture/capability?name=replies&on=1');
 	expect((await get()).status()).toBe(200);
+});
+
+test('the text size and the terminal view work with the bar and the card in place', async ({
+	page
+}) => {
+	await open(page, PERMISSION, ['replies', 'keyBar']);
+	const px = (selector: string): Promise<number> =>
+		page
+			.locator(selector)
+			.first()
+			.evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
+	// The card is chat text: it grows with it, heading and command too.
+	const before = { q: await px('[data-prompt] .q'), h3: await px('[data-prompt] h3') };
+	await page.getByRole('button', { name: 'Larger text' }).tap();
+	await expect.poll(() => px('[data-prompt] .q')).toBeGreaterThan(before.q);
+	expect(await px('[data-prompt] h3')).toBeGreaterThan(before.h3);
+	expect(await px('[data-prompt] .q')).toBe(await px('.a'));
+	// The bar below keeps its own size.
+	expect(await px('[data-keybar] .keys button')).toBe(14);
+	await page.getByRole('button', { name: 'Smaller text' }).tap();
+
+	// In the terminal the coloured text, the card and the bar stack: none covers another.
+	await page.locator('[data-tab="main"]').tap();
+	await expect(page.locator('.screen')).toContainText('pnpm exec playwright test');
+	await expect(card(page)).toBeVisible();
+	const view = await page.locator('[data-view="terminal"]').boundingBox();
+	const dock = await page.locator('[data-dock]').boundingBox();
+	expect((view?.y ?? 0) + (view?.height ?? 0)).toBeLessThanOrEqual(dock?.y ?? 0);
+	// The card is answered from the terminal view too.
+	await card(page).getByRole('button').nth(0).tap();
+	await expect(card(page)).toHaveCount(0);
+	expect((await received(page)).answers).toMatchObject([{ thread: PERMISSION, option: 1 }]);
+});
+
+test('the key bar scrolls sideways without moving the page or the drawer', async ({ page }) => {
+	await open(page, 'devbox:5', ['replies', 'keyBar']);
+	await expect(page.locator('.screen')).toBeVisible();
+	const keys = keybar(page).locator('.keys');
+	const at = await keys.boundingBox();
+	const y = (at?.y ?? 0) + (at?.height ?? 0) / 2;
+	const textSize = await page.locator('.screen').evaluate((el) => getComputedStyle(el).fontSize);
+	await touchDrag(page, [300, y], [80, y]);
+	expect(await keys.evaluate((el) => el.scrollLeft)).toBeGreaterThan(100);
+	// Not a page swipe, not the drawer, not a pinch.
+	await expect(page.locator('[data-drawer]')).toBeHidden();
+	expect(await page.locator('.screen').evaluate((el) => getComputedStyle(el).fontSize)).toBe(
+		textSize
+	);
+	expect(await page.locator('.screen').evaluate((el) => el.scrollLeft)).toBe(0);
 });

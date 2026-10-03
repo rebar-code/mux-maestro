@@ -592,7 +592,7 @@ final class MobileVoiceServerTests: XCTestCase {
         server = MobileServer(
             staticRoot: nil,
             sources: MobileServer.Sources(
-                screen: { _ in nil },
+                screen: { _, _ in nil },
                 transcript: { [unowned self] _ in (threadTranscript.path, false) },
                 pane: { [pane] _ in pane.io }),
             manager: MobileServer.Manager(

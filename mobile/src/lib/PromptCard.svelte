@@ -82,9 +82,10 @@
 		padding: 12px;
 	}
 
+	/* Sizes follow the chat's text size. */
 	h3 {
 		margin: 0 0 8px;
-		font-size: 13px;
+		font-size: 0.8667em;
 		color: var(--red);
 		font-weight: 600;
 	}
@@ -94,7 +95,7 @@
 		padding: 9px 10px;
 		background: #0a0a0a;
 		border-radius: 8px;
-		font-size: 12.5px;
+		font-size: 0.8333em;
 		white-space: pre-wrap;
 		word-break: break-all;
 	}
@@ -166,6 +167,6 @@
 	.k {
 		flex: none;
 		color: rgba(255, 255, 255, 0.55);
-		font-size: 12px;
+		font-size: 0.8em;
 	}
 </style>
