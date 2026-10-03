@@ -1889,6 +1889,10 @@ final class TmuxService {
                 // An upload to a remote host can take longer than a tmux call.
                 let (ssh, args) = FileTransfer.exclusiveWriteArgv(alias: alias, path: path)
                 return FileTransfer.saved(remoteOutput: slow.run(ssh, args, stdin: data))
+            },
+            cursorRow: { [self] in
+                tmux(["display-message", "-p", "-t", target, "#{cursor_y}"])
+                    .flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
             })
     }
 
