@@ -98,7 +98,7 @@ test('the shell opens with the server unreachable', async ({ page, context }) =>
 test('a refused device sees "Not allowed"; a switched-off feature does not', async ({ page }) => {
 	await fresh(page);
 	// A feature that is off answers 403 "disabled". That is not a refusal.
-	const disabled = await page.evaluate(async () => (await fetch('/api/manager')).status);
+	const disabled = await page.evaluate(async () => (await fetch('/api/voice')).status);
 	expect(disabled).toBe(403);
 	await page.getByRole('button', { name: 'Menu' }).click();
 	const refresh = drawer(page).getByRole('button', { name: 'Refresh' });

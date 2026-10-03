@@ -195,17 +195,18 @@ test('controls that arrive later are drawn but do nothing', async ({ page }) => 
 
 test('home: status chips and the threads that need you, live', async ({ page }) => {
 	await expect(page.locator('.chip')).toHaveText(['2 need you', '4 running', '💤 14']);
-	await expect(page.locator('.item')).toHaveCount(2);
+	const cards = page.locator('.item[data-thread]');
+	await expect(cards).toHaveCount(2);
 
 	// A live update lands without moving what is already on screen.
-	const first = page.locator('.item').first();
+	const first = cards.first();
 	const before = await first.boundingBox();
 	await page.request.post('/__fixture/wait?id=localhost:3');
 	await expect(page.locator('.chip').first()).toHaveText('3 need you');
-	await expect(page.locator('.item')).toHaveCount(3);
+	await expect(cards).toHaveCount(3);
 	expect(await first.boundingBox()).toEqual(before);
 
-	await page.locator('.item').first().click();
+	await first.click();
 	await expect(page).toHaveURL(/\/t\/localhost(:|%3A)1$/);
 });
 

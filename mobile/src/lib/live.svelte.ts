@@ -1,6 +1,7 @@
 import { ApiError, fetchConfig, fetchHosts, fetchThreads } from './api';
 import type { Grouping } from './group';
-import type { Capability, Config, Host, Thread } from './types';
+import { manager } from './manager.svelte';
+import type { Capability, Config, Host, ManagerLive, Thread } from './types';
 
 const THREADS_KEY = 'mm.threads';
 const HOSTS_KEY = 'mm.hosts';
@@ -118,6 +119,9 @@ export function connect(): () => void {
 	});
 	source.addEventListener('config', (event) => {
 		live.setConfig(JSON.parse((event as MessageEvent<string>).data) as Config);
+	});
+	source.addEventListener('manager', (event) => {
+		manager.apply(JSON.parse((event as MessageEvent<string>).data) as ManagerLive);
 	});
 	// The stream cannot say why it failed; a plain request can (403), and it
 	// also fills the lists while the stream reconnects on its own.

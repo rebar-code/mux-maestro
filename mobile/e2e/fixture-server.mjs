@@ -4,7 +4,8 @@
 //   PORT=5199 node e2e/fixture-server.mjs
 //
 // Test hooks (POST): /__fixture/reset, /__fixture/wait?id=, /__fixture/say?id=&text=,
-// /__fixture/grouping?value=, /__fixture/deny?on=1
+// /__fixture/grouping?value=, /__fixture/deny?on=1, /__fixture/capability?name=&on=,
+// /__fixture/manager-status?value=, /__fixture/mac-turn?text=&reply=
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { extname, join, normalize, resolve } from 'node:path';
@@ -117,13 +118,38 @@ const CHATS = {
 	]
 };
 
-let started, threads, chats, grouping, deny;
+// Why each waiting thread waits, as the manager's "Needs you" list says it.
+const REASONS = { 'localhost:1': 'Permission · Bash', 'devbox:2': 'Question' };
+
+let started, threads, chats, grouping, deny, capabilities, manager;
 const streams = new Set();
 
 function reset() {
 	started = Math.floor(Date.now() / 1000);
 	grouping = 'recent';
 	deny = false;
+	capabilities = { manager: true };
+	manager = {
+		status: 'idle',
+		turn: null,
+		chat: [
+			{
+				n: 0,
+				role: 'assistant',
+				text: 'Two threads need you. Four are running. Nothing has failed in the last hour.'
+			}
+		],
+		review: [
+			{
+				key: 'billing:invoices-pdf',
+				title: 'billing',
+				detail: 'PR open 52m, CI green, no review yet',
+				severity: 'warn',
+				at: started - 3120,
+				thread: 'localhost:9'
+			}
+		]
+	};
 	const color = (host) => HOSTS.find((h) => h.name === host).color;
 	const make = (n, session, name, host, status, prompt, ageSeconds, idleStage) => {
 		const local = host === 'localhost';
@@ -212,7 +238,7 @@ const hostsBody = () => ({
 const threadsBody = () => ({ threads });
 const configBody = () => ({
 	capabilities: {
-		manager: false,
+		manager: capabilities.manager,
 		voice: false,
 		replies: false,
 		upload: false,
@@ -226,6 +252,113 @@ const configBody = () => ({
 	},
 	grouping
 });
+
+const managerLive = () => ({
+	needsYou: threads
+		.filter((t) => t.status === 'waiting')
+		.map((t) => ({
+			key: null,
+			title: `${t.session} · ${t.name}`,
+			detail: REASONS[t.id] ?? 'Needs you',
+			severity: null,
+			at: t.since,
+			thread: t.id
+		})),
+	review: manager.review,
+	updates: [],
+	turn: manager.turn
+});
+const managerBody = () => ({
+	...managerLive(),
+	status: manager.turn ? 'busy' : manager.status,
+	chat: { messages: manager.chat, next: manager.chat.length, reset: false }
+});
+const say = (role, text) => manager.chat.push({ n: manager.chat.length, role, text });
+
+/** What the demo manager answers: the threads that wait. */
+function managerReply() {
+	const waiting = threads.filter((t) => t.status === 'waiting');
+	if (!waiting.length) {
+		const busy = threads.filter((t) => t.status === 'busy').length;
+		return `Nothing needs you. ${busy} threads are running.`;
+	}
+	return `${waiting.length} threads need you: ${waiting.map((t) => `${t.session} · ${t.name}`).join(', ')}.`;
+}
+
+/** Run one turn word by word. `onDelta` and `onEnd` are for the caller's own stream. */
+function runTurn(prompt, reply, onDelta = () => {}, onEnd = () => {}) {
+	manager.turn = { prompt, reply: '' };
+	push('manager', managerLive());
+	const words = reply.split(/(?<= )/);
+	const mine = manager;
+	const step = () => {
+		// A reset between two words: the turn belongs to the test before.
+		if (manager !== mine) return onEnd();
+		const word = words.shift();
+		if (word === undefined) {
+			say('user', prompt);
+			say('assistant', reply);
+			manager.turn = null;
+			onEnd();
+			push('manager', managerLive());
+			return;
+		}
+		manager.turn = { prompt, reply: manager.turn.reply + word };
+		onDelta(word);
+		push('manager', managerLive());
+		setTimeout(step, 40);
+	};
+	setTimeout(step, 150);
+}
+
+/** The Mac refuses a write without its header or from another origin. */
+function sameOriginWrite(req) {
+	const origin = req.headers.origin;
+	return (
+		req.headers['x-muxmaestro'] !== undefined &&
+		origin !== undefined &&
+		new URL(origin).host === req.headers.host
+	);
+}
+
+function managerApi(req, res, path, body) {
+	if (!capabilities.manager) return send(res, 403, { error: 'disabled' });
+	if (path === '/api/manager') {
+		if (req.method !== 'GET') return send(res, 405, { error: 'method_not_allowed' });
+		return send(res, 200, managerBody());
+	}
+	if (req.method !== 'POST') return send(res, 405, { error: 'method_not_allowed' });
+	let json = {};
+	try {
+		json = JSON.parse(body);
+	} catch {
+		// Not JSON: the checks below answer 400.
+	}
+	if (path === '/api/manager/dismiss') {
+		if (typeof json.key !== 'string') return send(res, 400, { error: 'bad_request' });
+		manager.review = manager.review.filter((item) => item.key !== json.key);
+		push('manager', managerLive());
+		return send(res, 200, { ok: true });
+	}
+	if (path !== '/api/manager/text') return send(res, 404, { error: 'not_found' });
+	const text = typeof json.text === 'string' ? json.text.trim() : '';
+	if (!text) return send(res, 400, { error: 'bad_request' });
+	if (manager.turn) return send(res, 409, { error: 'busy', message: 'A turn is running' });
+	if (manager.status === 'waiting')
+		return send(res, 409, { error: 'waiting', message: 'Manager is waiting on a prompt' });
+	res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' });
+	const event = (name, data) => res.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
+	const reply = managerReply();
+	runTurn(
+		text,
+		reply,
+		(word) => event('delta', { text: word }),
+		() => {
+			event('end', { outcome: 'done', reply, message: null });
+			res.end();
+		}
+	);
+}
 
 function screen(t) {
 	const last =
@@ -263,14 +396,16 @@ const push = (event, body) => {
 	for (const res of streams) res.write(`event: ${event}\ndata: ${JSON.stringify(body)}\n\n`);
 };
 
-function api(req, res, url) {
+function api(req, res, url, body) {
 	if (deny) return send(res, 403, { error: 'forbidden' });
+	if (req.method !== 'GET' && !sameOriginWrite(req)) return send(res, 403, { error: 'forbidden' });
 	const path = url.pathname;
 	if (path === '/api/threads') return send(res, 200, threadsBody());
 	if (path === '/api/hosts') return send(res, 200, hostsBody());
 	if (path === '/api/config') return send(res, 200, configBody());
+	if (path.startsWith('/api/manager')) return managerApi(req, res, path, body);
 	// A later PR's endpoint, switched off: proves "disabled" is not "forbidden".
-	if (path === '/api/manager') return send(res, 403, { error: 'disabled' });
+	if (path === '/api/voice') return send(res, 403, { error: 'disabled' });
 	if (path === '/api/events') {
 		res.writeHead(200, {
 			'content-type': 'text/event-stream',
@@ -278,10 +413,12 @@ function api(req, res, url) {
 			connection: 'keep-alive'
 		});
 		streams.add(res);
-		req.on('close', () => streams.delete(res));
+		res.on('close', () => streams.delete(res));
 		res.write(`event: config\ndata: ${JSON.stringify(configBody())}\n\n`);
 		res.write(`event: threads\ndata: ${JSON.stringify(threadsBody())}\n\n`);
 		res.write(`event: hosts\ndata: ${JSON.stringify(hostsBody())}\n\n`);
+		if (capabilities.manager)
+			res.write(`event: manager\ndata: ${JSON.stringify(managerLive())}\n\n`);
 		return;
 	}
 	const match = /^\/api\/threads\/([^/]+)\/(chat|screen)$/.exec(path);
@@ -327,11 +464,23 @@ function hook(res, url) {
 		case '/__fixture/deny':
 			deny = url.searchParams.get('on') === '1';
 			break;
+		case '/__fixture/capability':
+			capabilities[url.searchParams.get('name')] = url.searchParams.get('on') === '1';
+			push('config', configBody());
+			break;
+		case '/__fixture/manager-status':
+			manager.status = url.searchParams.get('value') ?? 'idle';
+			break;
+		case '/__fixture/mac-turn':
+			// A turn typed into the Mac rail: the phone must follow it.
+			runTurn(url.searchParams.get('text') ?? '', url.searchParams.get('reply') ?? '');
+			break;
 		default:
 			return send(res, 404, { error: 'not_found' });
 	}
 	push('threads', threadsBody());
 	push('hosts', hostsBody());
+	if (capabilities.manager) push('manager', managerLive());
 	return send(res, 200, { ok: true });
 }
 
@@ -356,7 +505,12 @@ async function asset(res, url) {
 
 createServer((req, res) => {
 	const url = new URL(req.url, `http://${req.headers.host}`);
-	if (url.pathname.startsWith('/api/')) return api(req, res, url);
+	if (url.pathname.startsWith('/api/')) {
+		let body = '';
+		req.on('data', (chunk) => (body += chunk));
+		req.on('end', () => api(req, res, url, body));
+		return;
+	}
 	if (url.pathname.startsWith('/__fixture/'))
 		return req.method === 'POST' ? hook(res, url) : send(res, 405, { error: 'method' });
 	return asset(res, url);

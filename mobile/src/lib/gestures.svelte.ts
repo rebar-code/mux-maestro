@@ -1,5 +1,13 @@
 import { untrack } from 'svelte';
-import { clamp, pageOffset, resolveDrag, settleDrawer, settlePage, type DragKind } from './pager';
+import {
+	clamp,
+	pageOffset,
+	resolveDrag,
+	settleDrawer,
+	settlePage,
+	settleSwipe,
+	type DragKind
+} from './pager';
 
 const SLOP = 10;
 const PULL_TRIGGER = 56;
@@ -83,6 +91,22 @@ export function pages(keys: string[]): () => () => void {
 	};
 }
 
+/** What a left swipe on each `data-swipe` row does once it is swiped away. */
+const swipes = new WeakMap<Element, () => void>();
+
+/**
+ * Attachment for a row a left swipe removes. The row follows the finger; past
+ * the settle point `away` runs. The row needs a visible control that does the
+ * same.
+ */
+export function swipeAway(away: () => void): (node: HTMLElement) => () => void {
+	return (node) => {
+		node.dataset.swipe = '';
+		swipes.set(node, away);
+		return () => swipes.delete(node);
+	};
+}
+
 function canScroll(el: HTMLElement | null, dx: number): boolean {
 	if (!el) return false;
 	const max = el.scrollWidth - el.clientWidth;
@@ -104,6 +128,7 @@ export function gestures(node: HTMLElement): () => void {
 	let vx = 0;
 	let hscroll: HTMLElement | null = null;
 	let hscrollStart = 0;
+	let swiped: HTMLElement | null = null;
 	let momentum = 0;
 	let suppressClick = false;
 
@@ -120,6 +145,7 @@ export function gestures(node: HTMLElement): () => void {
 		lastX = event.clientX;
 		lastT = event.timeStamp;
 		hscroll = (event.target as Element).closest<HTMLElement>('[data-hscroll]');
+		swiped = (event.target as Element).closest<HTMLElement>('[data-swipe]');
 	}
 
 	function onPointerMove(event: PointerEvent): void {
@@ -137,13 +163,15 @@ export function gestures(node: HTMLElement): () => void {
 				drawerOpen: ui.drawerOpen,
 				pageCount: ui.pages.length,
 				index: ui.index,
-				canScrollX: canScroll(hscroll, dx)
+				canScrollX: canScroll(hscroll, dx),
+				canSwipe: swiped !== null
 			});
 			if (kind === 'none') return;
 			base = dx;
 			hscrollStart = hscroll?.scrollLeft ?? 0;
 			node.setPointerCapture(start.id);
-			if (kind !== 'hscroll') ui.dragging = true;
+			if (kind === 'swipe') swiped?.style.setProperty('transition', 'none');
+			else if (kind !== 'hscroll') ui.dragging = true;
 		}
 		if (kind === 'vertical' || kind === 'none') return;
 
@@ -156,6 +184,8 @@ export function gestures(node: HTMLElement): () => void {
 		if (kind === 'drawer-open') ui.drawer = clamp(moved / drawerWidth(), 0, 1);
 		else if (kind === 'drawer-close') ui.drawer = clamp(1 + moved / drawerWidth(), 0, 1);
 		else if (kind === 'page') ui.dragX = pageOffset(moved, ui.index, ui.pages.length);
+		else if (kind === 'swipe')
+			swiped?.style.setProperty('transform', `translateX(${Math.min(moved, 0)}px)`);
 		else if (hscroll) hscroll.scrollLeft = hscrollStart - moved;
 	}
 
@@ -182,6 +212,14 @@ export function gestures(node: HTMLElement): () => void {
 			ui.dragX = 0;
 		} else if (kind === 'hscroll' && hscroll && Math.abs(speed) > 0.1) {
 			coast(hscroll, speed);
+		} else if (kind === 'swipe' && swiped) {
+			swiped.style.removeProperty('transition');
+			if (settleSwipe(moved, speed, swiped.offsetWidth)) {
+				swiped.style.setProperty('transform', 'translateX(-110%)');
+				swipes.get(swiped)?.();
+			} else {
+				swiped.style.removeProperty('transform');
+			}
 		}
 		suppressClick = kind !== null && kind !== 'vertical' && kind !== 'none';
 		ui.dragging = false;

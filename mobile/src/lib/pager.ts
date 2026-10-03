@@ -4,7 +4,7 @@
  * so it is tested directly.
  */
 
-export type DragKind = 'drawer-open' | 'drawer-close' | 'page' | 'hscroll' | 'none';
+export type DragKind = 'drawer-open' | 'drawer-close' | 'page' | 'hscroll' | 'swipe' | 'none';
 
 export interface DragContext {
 	/** Finger movement so far: positive is a right swipe. */
@@ -14,6 +14,8 @@ export interface DragContext {
 	index: number;
 	/** The content under the finger can still scroll sideways in this direction. */
 	canScrollX: boolean;
+	/** The row under the finger can be swiped away to the left. */
+	canSwipe?: boolean;
 }
 
 /** What a horizontal drag moves. Decided once, when the drag locks. */
@@ -22,11 +24,13 @@ export function resolveDrag({
 	drawerOpen,
 	pageCount,
 	index,
-	canScrollX
+	canScrollX,
+	canSwipe = false
 }: DragContext): DragKind {
 	if (drawerOpen) return dx < 0 ? 'drawer-close' : 'none';
 	if (canScrollX) return 'hscroll';
 	if (dx > 0) return index > 0 ? 'page' : 'drawer-open';
+	if (canSwipe) return 'swipe';
 	return pageCount > 0 ? 'page' : 'none';
 }
 
@@ -59,6 +63,11 @@ export function settlePage(
 ): number {
 	const next = index - commits(dx, vx, width);
 	return Math.min(Math.max(next, 0), Math.max(pageCount - 1, 0));
+}
+
+/** Whether a row released at `dx` (a left swipe is negative) is swiped away. */
+export function settleSwipe(dx: number, vx: number, width: number): boolean {
+	return dx < 0 && commits(dx, vx, width) === -1;
 }
 
 /** Whether the drawer ends open after a drag released at `progress` (0 to 1). */

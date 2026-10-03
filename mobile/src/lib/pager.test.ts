@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { pageOffset, resolveDrag, settleDrawer, settlePage } from './pager';
+import { pageOffset, resolveDrag, settleDrawer, settlePage, settleSwipe } from './pager';
 
 const base = { drawerOpen: false, pageCount: 3, index: 0, canScrollX: false };
 
@@ -31,6 +31,25 @@ describe('resolveDrag', () => {
 		expect(resolveDrag({ ...base, drawerOpen: true, dx: -12, canScrollX: true })).toBe(
 			'drawer-close'
 		);
+	});
+});
+
+describe('swipe away', () => {
+	it('a left swipe on a row that can go takes the row, not a page', () => {
+		expect(resolveDrag({ ...base, pageCount: 0, dx: -12, canSwipe: true })).toBe('swipe');
+		// A right swipe there still opens the drawer.
+		expect(resolveDrag({ ...base, pageCount: 0, dx: 12, canSwipe: true })).toBe('drawer-open');
+		expect(resolveDrag({ ...base, drawerOpen: true, dx: -12, canSwipe: true })).toBe(
+			'drawer-close'
+		);
+	});
+
+	it('goes after a long drag or a flick, and springs back otherwise', () => {
+		expect(settleSwipe(-200, 0, 360)).toBe(true);
+		expect(settleSwipe(-40, -0.8, 360)).toBe(true);
+		expect(settleSwipe(-40, 0, 360)).toBe(false);
+		expect(settleSwipe(-200, 0.8, 360)).toBe(true);
+		expect(settleSwipe(0, 0, 360)).toBe(false);
 	});
 });
 

@@ -82,3 +82,53 @@ export interface Config {
 	capabilities: Partial<Record<Capability, boolean>>;
 	grouping: 'recent' | 'host' | 'directory';
 }
+
+export type ManagerStatus = 'off' | 'idle' | 'busy' | 'waiting';
+
+/** A card on the manager home: an agent that waits, or a review item. */
+export interface ManagerItem {
+	/** What dismiss takes. Only a review item has one. */
+	key: string | null;
+	title: string;
+	detail: string;
+	severity: 'info' | 'warn' | 'blocked' | null;
+	at: number;
+	/** The thread it opens, when the thread list has it. */
+	thread: string | null;
+}
+
+export interface ManagerUpdate {
+	kind: 'done' | 'notification';
+	text: string;
+	at: number;
+	host: string;
+	session: string;
+	thread: string | null;
+}
+
+/** The manager turn in flight, whichever side started it. */
+export interface ManagerTurn {
+	prompt: string;
+	reply: string;
+}
+
+/** The `manager` event: what changes without a request. */
+export interface ManagerLive {
+	needsYou: ManagerItem[];
+	review: ManagerItem[];
+	updates: ManagerUpdate[];
+	turn: ManagerTurn | null;
+}
+
+export interface ManagerHome extends ManagerLive {
+	status: ManagerStatus;
+	chat: ChatPage;
+}
+
+/** The last event of a turn's stream. */
+export interface TurnEnd {
+	outcome: 'done' | 'permission' | 'timeout' | 'unreachable' | 'refused';
+	reply: string;
+	/** Set when there is something to tell the human. */
+	message: string | null;
+}

@@ -4,7 +4,7 @@
 	import { pullToRefresh, ui } from './gestures.svelte';
 	import { counts, GROUPINGS, sections } from './group';
 	import HostCard from './HostCard.svelte';
-	import { live } from './live.svelte';
+	import { can, live } from './live.svelte';
 	import PullIndicator from './PullIndicator.svelte';
 	import ThreadRow from './ThreadRow.svelte';
 
@@ -26,15 +26,19 @@
 	aria-label="Threads"
 >
 	<div class="dtop">
-		<a
-			class="mrow grow"
-			class:sel={page.route.id === '/'}
-			href={resolve('/')}
-			onclick={() => ui.closeDrawer()}
-		>
-			<span>✦ Manager</span>
-			{#if waiting}<span class="badge">{waiting}</span>{/if}
-		</a>
+		{#if can('manager')}
+			<a
+				class="mrow grow"
+				class:sel={page.route.id === '/'}
+				href={resolve('/')}
+				onclick={() => ui.closeDrawer()}
+			>
+				<span>✦ Manager</span>
+				{#if waiting}<span class="badge">{waiting}</span>{/if}
+			</a>
+		{:else}
+			<span class="mgap"></span>
+		{/if}
 		<button
 			class="tb"
 			aria-label="Refresh"
@@ -151,6 +155,10 @@
 	/* Its 44pt touch area must not make the top row taller than the Manager row. */
 	.dtop .tb {
 		margin: -2px 0;
+	}
+
+	.mgap {
+		flex: 1;
 	}
 
 	.mrow.sel {
