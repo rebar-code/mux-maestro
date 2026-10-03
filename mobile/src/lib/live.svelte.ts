@@ -161,12 +161,21 @@ class Live {
 
 export const live = new Live();
 
-/**
- * Whether the Mac has switched a feature on. A feature that is off is hidden,
- * not drawn disabled.
- */
+/** Whether the Mac has switched a feature on (`/api/config`). */
 export function can(capability: Capability): boolean {
 	return live.config?.capabilities[capability] === true;
+}
+
+/** The label of a control whose feature is switched off on the Mac. */
+export const OFF_LABEL = 'Off in MuxMaestro Settings';
+
+/**
+ * Whether the Mac has said a feature is off. Its main control is then drawn
+ * disabled with `OFF_LABEL`, so an app with nothing switched on does not look
+ * broken. False until the Mac has answered.
+ */
+export function isOff(capability: Capability): boolean {
+	return live.config !== null && !can(capability);
 }
 
 const RETRY_FIRST = 1000;

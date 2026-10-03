@@ -5,7 +5,7 @@
 	import { pages, pullToRefresh, ui } from './gestures.svelte';
 	import KeyBar from './KeyBar.svelte';
 	import { overKeyboard } from './keyboard';
-	import { can, live } from './live.svelte';
+	import { can, live, OFF_LABEL } from './live.svelte';
 	import NextBar from './NextBar.svelte';
 	import PromptCard from './PromptCard.svelte';
 	import PullIndicator from './PullIndicator.svelte';
@@ -127,18 +127,6 @@
 		{/each}
 	</div>
 	<button
-		class="tb size"
-		aria-label="Smaller text"
-		disabled={text.atMin}
-		onclick={() => text.step(-1)}>A−</button
-	>
-	<button
-		class="tb size"
-		aria-label="Larger text"
-		disabled={text.atMax}
-		onclick={() => text.step(1)}>A+</button
-	>
-	<button
 		class="tb"
 		aria-label="Refresh"
 		disabled={ui.refreshing !== null}
@@ -258,7 +246,8 @@
 			<div class="knote" class:bad={reply.note.bad} role="alert" data-note>{reply.note.text}</div>
 		{/if}
 		{#if keysOn}<KeyBar {reply} composer={repliesOn} />{/if}
-		{#if voiceOn}<VoiceBar target={id} sink={reply.voice} />{/if}
+		<!-- Voice switched off on the Mac: the bar stays and says so, like the manager's. -->
+		{#if repliesOn}<VoiceBar target={id} sink={reply.voice} off={!voiceOn} />{/if}
 		{#if repliesOn}
 			<Composer
 				bind:value={reply.draft}
@@ -283,11 +272,12 @@
 			<!-- Same box, same place: nothing moves when the Mac switches replies on. -->
 			<Composer
 				value=""
-				label="Off in MuxMaestro Settings"
+				label={OFF_LABEL}
 				target={id}
 				sink={reply.voice}
 				voiceOn={false}
 				off
+				bare
 				onsend={() => {}}
 			/>
 		{/if}
@@ -323,11 +313,6 @@
 	.tabs .seg {
 		flex: 1;
 		margin-right: 0;
-	}
-
-	.size {
-		font-size: 14px;
-		font-weight: 600;
 	}
 
 	.seg button {

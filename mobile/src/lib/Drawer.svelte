@@ -4,7 +4,7 @@
 	import { pullToRefresh, ui } from './gestures.svelte';
 	import { counts, GROUPINGS, sections } from './group';
 	import HostCard from './HostCard.svelte';
-	import { can, live } from './live.svelte';
+	import { live } from './live.svelte';
 	import PullIndicator from './PullIndicator.svelte';
 	import ThreadRow from './ThreadRow.svelte';
 
@@ -12,6 +12,7 @@
 
 	const groups = $derived(live.threads ? sections(live.threads, live.grouping) : []);
 	const waiting = $derived(live.threads ? counts(live.threads).waiting : 0);
+	const onHome = $derived(page.route.id === '/');
 	const openId = $derived(page.route.id === '/t/[id]' ? page.params.id : null);
 	const closed = $derived(ui.drawer === 0 && !ui.dragging);
 </script>
@@ -26,19 +27,18 @@
 	aria-label="Threads"
 >
 	<div class="dtop">
-		{#if can('manager')}
-			<a
-				class="mrow grow"
-				class:sel={page.route.id === '/'}
-				href={resolve('/')}
-				onclick={() => ui.closeDrawer()}
-			>
-				<span>✦ Manager</span>
-				{#if waiting}<span class="badge">{waiting}</span>{/if}
-			</a>
-		{:else}
-			<span class="mgap"></span>
-		{/if}
+		<!-- Always here: it is the way back to the home, whatever is switched on. -->
+		<a
+			class="mrow grow"
+			class:sel={onHome}
+			href={resolve('/')}
+			aria-current={onHome ? 'page' : undefined}
+			data-home
+			onclick={() => ui.closeDrawer()}
+		>
+			<span>✦ Manager</span>
+			{#if waiting}<span class="badge">{waiting}</span>{/if}
+		</a>
 		<button
 			class="tb"
 			aria-label="Refresh"
@@ -155,10 +155,6 @@
 	/* Its 44pt touch area must not make the top row taller than the Manager row. */
 	.dtop .tb {
 		margin: -2px 0;
-	}
-
-	.mgap {
-		flex: 1;
 	}
 
 	.mrow.sel {

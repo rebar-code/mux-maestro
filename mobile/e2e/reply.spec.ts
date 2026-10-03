@@ -7,7 +7,8 @@ import {
 	reset,
 	threadPath,
 	TOKEN_HEADER,
-	touchDrag
+	touchDrag,
+	twoFingers
 } from './helpers';
 
 /** Idle, local, with a chat. */
@@ -41,6 +42,11 @@ const key = (page: Page, name: string): Locator =>
 const slash = (page: Page): Locator => page.locator('[data-slash]');
 const card = (page: Page): Locator => page.locator('[data-prompt]');
 const nextBar = (page: Page): Locator => page.locator('[data-next]');
+/** The pill beside an empty box: the voice button, switched off while Voice is off on the Mac. */
+const idlePill = (page: Page): Locator => page.locator('[data-compose] [data-primary="talk"]');
+/** The voice bar with its controls. Switched off, the bar is one line with none. */
+const voiceControls = (page: Page): Locator =>
+	page.locator('[data-voicebar]:not([data-voice="off"])');
 /** The reply box while replies are switched off on the Mac. */
 const offBox = (page: Page): Locator =>
 	page.getByRole('textbox', { name: 'Off in MuxMaestro Settings' });
@@ -73,7 +79,7 @@ test('a reply is sent, shows in the chat, and the box clears', async ({ page }) 
 	await open(page, IDLE, ['replies', 'keyBar']);
 	await expect(box(page)).toHaveAttribute('enterkeyhint', 'send');
 	await expect(box(page)).toHaveAttribute('placeholder', 'Reply');
-	await expect(sendButton(page)).toBeDisabled();
+	await expect(idlePill(page)).toBeDisabled();
 	await shot(page, 'composer');
 
 	await box(page).fill('ship it');
@@ -645,7 +651,7 @@ test('with the features off, the thread shows none of this', async ({ page }) =>
 	await expect(card(page)).toHaveCount(0);
 	await expect(nextBar(page)).toHaveCount(0);
 	await expect(page.getByRole('button', { name: 'Attach' })).toHaveCount(0);
-	await expect(page.locator('[data-voicebar]')).toHaveCount(0);
+	await expect(voiceControls(page)).toHaveCount(0);
 
 	// Each switch shows only its own controls, as soon as the Mac flips it.
 	await page.request.post('/__fixture/capability?name=keyBar&on=1');
@@ -662,20 +668,20 @@ test('with the features off, the thread shows none of this', async ({ page }) =>
 	await page.request.post('/__fixture/capability?name=voice&on=1');
 	await page.waitForTimeout(300);
 	await expect(page.getByRole('button', { name: 'Attach' })).toHaveCount(0);
-	await expect(page.locator('[data-voicebar]')).toHaveCount(0);
+	await expect(voiceControls(page)).toHaveCount(0);
 
 	await page.request.post('/__fixture/capability?name=replies&on=1');
 	await expect(box(page)).toBeVisible();
 	await expect(card(page)).not.toHaveAttribute('data-readonly', '');
 	await expect(card(page).getByRole('button')).toHaveCount(3);
 	await expect(page.getByRole('button', { name: 'Attach' })).toBeVisible();
-	await expect(page.locator('[data-voicebar]')).toBeVisible();
+	await expect(voiceControls(page)).toBeVisible();
 	await expect(keybar(page).locator('.keys button')).toHaveCount(14);
 
 	await page.request.post('/__fixture/capability?name=upload&on=0');
 	await expect(page.getByRole('button', { name: 'Attach' })).toHaveCount(0);
 	await page.request.post('/__fixture/capability?name=voice&on=0');
-	await expect(page.locator('[data-voicebar]')).toHaveCount(0);
+	await expect(voiceControls(page)).toHaveCount(0);
 	await page.request.post('/__fixture/capability?name=keyBar&on=0');
 	await expect(keybar(page)).toHaveCount(0);
 	await expect(box(page)).toBeVisible();
@@ -870,7 +876,7 @@ test('a reply left in the pane empties the box, and is not sent twice', async ({
 	expect((await received(page)).left).toEqual([{ thread: IDLE, text: 'ship it' }]);
 
 	// Send has nothing to send: neither the button nor Enter posts the old text.
-	await expect(sendButton(page)).toBeDisabled();
+	await expect(idlePill(page)).toBeDisabled();
 	await box(page).press('Enter');
 	await page.waitForTimeout(300);
 	expect(posts).toBe(1);
@@ -1118,7 +1124,7 @@ test('a prompt that came up after the paste: the box empties and the card shows'
 	await expect(box(page)).toHaveValue('');
 	await expect(card(page)).toHaveAttribute('data-kind', 'permission');
 	// Nothing to send, by the pill or by Enter.
-	await expect(sendButton(page)).toBeDisabled();
+	await expect(idlePill(page)).toBeDisabled();
 	await box(page).press('Enter');
 	await page.waitForTimeout(300);
 	expect(posts).toBe(1);
@@ -1152,13 +1158,26 @@ test('the text size and the terminal view work with the bar and the card in plac
 			.evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
 	// The card is chat text: it grows with it, heading and command too.
 	const before = { q: await px('[data-prompt] .q'), h3: await px('[data-prompt] h3') };
-	await page.getByRole('button', { name: 'Larger text' }).tap();
+	// The size is set by a pinch on the terminal text; the chat follows it.
+	await page.locator('[data-tab="main"]').tap();
+	await expect(page.locator('.screen')).toBeVisible();
+	await twoFingers(
+		page,
+		[
+			[150, 300],
+			[250, 300]
+		],
+		[
+			[120, 300],
+			[280, 300]
+		]
+	);
+	await page.locator('[data-tab="main"]').tap();
 	await expect.poll(() => px('[data-prompt] .q')).toBeGreaterThan(before.q);
 	expect(await px('[data-prompt] h3')).toBeGreaterThan(before.h3);
 	expect(await px('[data-prompt] .q')).toBe(await px('.a'));
 	// The bar below keeps its own size.
 	expect(await px('[data-keybar] .keys button')).toBe(14);
-	await page.getByRole('button', { name: 'Smaller text' }).tap();
 
 	// In the terminal the coloured text, the card and the bar stack: none covers another.
 	await page.locator('[data-tab="main"]').tap();
@@ -1442,14 +1461,14 @@ test('with replies off the reply box is there, switched off, and posts nothing',
 	await expect(offBox(page)).toHaveAttribute('placeholder', 'Off in MuxMaestro Settings');
 	await expect(offBox(page)).toHaveValue('');
 	const pill = page.locator('[data-compose]').getByRole('button');
-	await expect(pill).toHaveText(['↑ Send']);
+	await expect(pill).toHaveText(['🎙 Talk']);
 	await expect(pill).toBeDisabled();
 	// The label and nothing more: no attach, no slash list, no voice bar, no key bar, no card.
 	await expect(page.locator('[data-compose] > *')).toHaveCount(2);
 	await expect(keybar(page)).toHaveCount(0);
 	await expect(slash(page)).toHaveCount(0);
 	await expect(nextBar(page)).toHaveCount(0);
-	await expect(page.locator('[data-voicebar]')).toHaveCount(0);
+	await expect(voiceControls(page)).toHaveCount(0);
 	await expect(page.locator('[data-note]')).toHaveCount(0);
 	// Readable, not a faded-out box.
 	await expect(offBox(page)).toHaveCSS('opacity', '1');

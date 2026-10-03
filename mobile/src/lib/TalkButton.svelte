@@ -8,8 +8,15 @@
 	const {
 		target,
 		sink,
-		orb = false
-	}: { target: VoiceTarget; sink: VoiceSink; orb?: boolean } = $props();
+		orb = false,
+		off = false
+	}: {
+		target: VoiceTarget;
+		sink: VoiceSink;
+		orb?: boolean;
+		/** Voice is switched off on the Mac: the button is drawn and does nothing. */
+		off?: boolean;
+	} = $props();
 
 	const FACE: Record<PrimaryKind, { icon: string; label: string }> = {
 		talk: { icon: '🎙', label: 'Talk' },
@@ -19,10 +26,10 @@
 		resume: { icon: '▶', label: 'Resume' }
 	};
 
-	const kind = $derived(voice.primaryOf(target));
+	const kind = $derived(off ? 'talk' : voice.primaryOf(target));
 	const face = $derived(FACE[kind]);
-	const status = $derived(voice.statusOf(target));
-	const disabled = $derived(kind === 'talk' && voice.micMuted);
+	const status = $derived(off ? 'idle' : voice.statusOf(target));
+	const disabled = $derived(off || (kind === 'talk' && voice.micMuted));
 </script>
 
 {#if orb}
@@ -42,6 +49,7 @@
 		class="pill grow {status}"
 		type="button"
 		{disabled}
+		aria-label={face.label}
 		data-primary={kind}
 		onclick={() => voice.primary(target, sink)}
 		><span class="icon {kind}">{face.icon}</span> {face.label}</button

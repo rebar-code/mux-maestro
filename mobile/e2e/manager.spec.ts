@@ -12,6 +12,8 @@ import {
 
 const said = (page: Page) => page.locator('[data-said]');
 const box = (page: Page) => page.getByRole('textbox', { name: 'Ask the manager' });
+const offBox = (page: Page) => page.getByRole('textbox', { name: 'Off in MuxMaestro Settings' });
+const homeRow = (page: Page) => drawer(page).locator('[data-home]');
 const review = (page: Page) => page.locator('[data-review]');
 
 test('the app opens on the manager home', async ({ page }) => {
@@ -31,8 +33,8 @@ test('the app opens on the manager home', async ({ page }) => {
 
 test('a message to the manager streams its reply onto the home', async ({ page }) => {
 	await fresh(page);
-	// With nothing typed there is nothing to send.
-	await expect(page.getByRole('button', { name: '↑ Send' })).toBeDisabled();
+	// With nothing typed there is nothing to send: the button is Talk.
+	await expect(page.getByRole('button', { name: '↑ Send' })).toHaveCount(0);
 	await box(page).fill('what needs me?');
 	const sent = page.waitForRequest((request) => request.url().endsWith('/api/manager/text'));
 	await page.getByRole('button', { name: '↑ Send' }).click();
@@ -159,23 +161,32 @@ test('a right swipe on the home still opens the sidebar, over a review card too'
 	await expect(review(page)).toHaveCount(1);
 });
 
-test('the Manager row in the sidebar opens the home', async ({ page }) => {
-	await fresh(page, threadPath('localhost:1'));
-	await page.getByRole('button', { name: 'Menu' }).click();
-	await drawer(page).getByText('Manager').click();
-	await expect(page).toHaveURL(/\/$/);
-	await expectDrawerClosed(page);
-	await expect(box(page)).toBeVisible();
+test('Manager switch on: the text box is enabled and asks for a message', async ({ page }) => {
+	await fresh(page);
+	await expect(box(page)).toBeEnabled();
+	await expect(box(page)).toHaveAttribute('placeholder', 'Ask the manager');
+	await expect(offBox(page)).toHaveCount(0);
+	await expect(page.getByRole('button', { name: 'Talk to the manager' })).toBeVisible();
 });
 
-test('with the Manager switch off the home and its row are hidden', async ({ page }) => {
+test('Manager switch off: the text box stays, disabled, and says where the switch is', async ({
+	page
+}) => {
 	await fresh(page);
 	await expect(box(page)).toBeVisible();
 	await page.request.post('/__fixture/capability?name=manager&on=0');
+	await expect(offBox(page)).toBeVisible();
+	await expect(offBox(page)).toBeDisabled();
+	await expect(offBox(page)).toHaveAttribute('placeholder', 'Off in MuxMaestro Settings');
 	await expect(box(page)).toHaveCount(0);
+	// The talk button is still drawn, and nothing can be sent.
+	await expect(page.getByRole('button', { name: 'Talk to the manager' })).toBeDisabled();
+	await expect(page.getByRole('button', { name: 'Talk', exact: true })).toBeDisabled();
+	await expect(page.getByRole('button', { name: '↑ Send' })).toHaveCount(0);
+	// Nothing of the manager itself is drawn.
 	await expect(said(page)).toHaveCount(0);
 	await expect(review(page)).toHaveCount(0);
-	await expect(page.getByRole('button', { name: 'Talk to the manager' })).toHaveCount(0);
+	await expect(page.locator('[data-update]')).toHaveCount(0);
 	await expect(page.locator('[data-voicebar]')).toHaveCount(0);
 	// The threads that wait are still listed: they come from the thread list.
 	await expect(page.locator('.sect').first()).toHaveText('Needs you · 2');
@@ -185,23 +196,103 @@ test('with the Manager switch off the home and its row are hidden', async ({ pag
 			TOKEN_HEADER
 		)
 	).toBe(403);
-	await page.getByRole('button', { name: 'Menu' }).click();
-	await expect(drawer(page).getByText('Manager')).toHaveCount(0);
 
-	// Off at first paint too: nothing of the manager is drawn from the cache.
+	// Off at first paint too: the box is there, and no request goes to the manager.
+	let asked = 0;
+	page.on('request', (request) => {
+		if (request.url().includes('/api/manager')) asked += 1;
+	});
 	await page.reload();
+	await expect(offBox(page)).toBeDisabled();
 	await expect(page.locator('.sect').first()).toHaveText('Needs you · 2');
-	await expect(box(page)).toHaveCount(0);
+	expect(asked).toBe(0);
+
+	// Switched on again on the Mac: the box works without a reload.
+	await page.request.post('/__fixture/capability?name=manager&on=1');
+	await expect(box(page)).toBeEnabled();
+	await expect(offBox(page)).toHaveCount(0);
 });
 
-test('with the Voice switch off its controls are hidden and typing still works', async ({
+for (const on of [true, false]) {
+	test(`the sidebar's Manager row goes back to the home, Manager switch ${on ? 'on' : 'off'}`, async ({
+		page
+	}) => {
+		await fresh(page, threadPath('localhost:1'));
+		if (!on) await page.request.post('/__fixture/capability?name=manager&on=0');
+		await expect(page.locator('.tbar .title b')).toHaveText('acme-app · checkout-fix');
+		await page.getByRole('button', { name: 'Menu' }).click();
+		await expectDrawerOpen(page);
+		// Pinned at the top, above the grouping control, and not the current page.
+		const row = await homeRow(page).boundingBox();
+		const seg = await drawer(page).getByRole('tablist', { name: 'Group by' }).boundingBox();
+		expect(row?.y ?? 999).toBeLessThan(seg?.y ?? 0);
+		await expect(homeRow(page)).not.toHaveAttribute('aria-current', 'page');
+
+		await homeRow(page).click();
+		await expect(page).toHaveURL(/\/$/);
+		await expectDrawerClosed(page);
+		await expect(on ? box(page) : offBox(page)).toBeVisible();
+		if (on) await expect(box(page)).toBeEnabled();
+		else await expect(offBox(page)).toBeDisabled();
+
+		// On the home the row is marked as the current page.
+		await page.getByRole('button', { name: 'Menu' }).click();
+		await expect(homeRow(page)).toHaveAttribute('aria-current', 'page');
+	});
+}
+
+test('with the Voice switch off the Talk button is drawn, off, and says where to turn it on', async ({
 	page
 }) => {
 	await fresh(page);
 	await expect(box(page)).toBeVisible();
-	await expect(page.locator('[data-voicebar]')).toHaveCount(0);
-	await expect(page.locator('[data-orb]')).toHaveCount(0);
-	await expect(page.locator('[data-primary]')).toHaveCount(0);
+	const bar = page.locator('[data-voicebar]');
+	await expect(bar).toHaveText('Off in MuxMaestro Settings');
+	// The label only: no voice control that would do nothing.
+	await expect(bar.locator('button')).toHaveCount(0);
+	const talk = page.locator('[data-primary]');
+	await expect(talk).toHaveText('🎙 Talk');
+	await expect(talk).toBeDisabled();
+	await expect(page.locator('[data-orb]')).toBeDisabled();
+	await expect(page.locator('[data-orb]')).toHaveAccessibleName('Talk to the manager');
+
+	// A tap on either opens no microphone and sends nothing.
+	let asked = 0;
+	await page.exposeFunction('__asked', () => (asked += 1));
+	await page.evaluate(() => {
+		navigator.mediaDevices.getUserMedia = async () => {
+			await (window as unknown as { __asked: () => Promise<void> }).__asked();
+			throw new Error('no microphone in this test');
+		};
+	});
+	const voiceCalls: string[] = [];
+	page.on('request', (request) => {
+		if (request.url().includes('/api/voice')) voiceCalls.push(request.url());
+	});
+	await talk.click({ force: true });
+	await page.locator('[data-orb]').click({ force: true });
+	await page.waitForTimeout(300);
+	expect(asked).toBe(0);
+	expect(voiceCalls).toEqual([]);
+
+	// Typing is untouched: with text the button is Send, and it sends.
+	await box(page).fill('what needs me?');
+	await expect(talk).toHaveCount(0);
+	await page.getByRole('button', { name: '↑ Send' }).click();
+	await expect(said(page).locator('.m').last()).toHaveText(
+		'2 threads need you: acme-app · checkout-fix, billing · proration.'
+	);
+
+	// The switch is turned on at the Mac: the controls come alive with no reload.
+	await page.request.post('/__fixture/capability?name=voice&on=1');
+	await expect(talk).toBeEnabled();
+	await expect(page.locator('[data-orb]')).toBeEnabled();
+	await expect(bar).toContainText('Start talking');
+	await expect(bar.getByRole('button', { name: 'Auto' })).toBeVisible();
+	// And off again.
+	await page.request.post('/__fixture/capability?name=voice&on=0');
+	await expect(talk).toBeDisabled();
+	await expect(bar).toHaveText('Off in MuxMaestro Settings');
 });
 
 test('a write from another origin, without the header, or without the token is refused', async ({

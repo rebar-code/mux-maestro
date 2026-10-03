@@ -9,11 +9,6 @@ export function clampSize(size: number): number {
 	return Math.min(Math.max(size, MIN_SIZE), MAX_SIZE);
 }
 
-/** One whole pixel up or down. A size between two whole pixels goes to the next one. */
-export function stepSize(size: number, direction: 1 | -1): number {
-	return clampSize(direction > 0 ? Math.floor(size) + 1 : Math.ceil(size) - 1);
-}
-
 /** The size during a pinch: it grows as the fingers move apart. */
 export function pinchSize(startSize: number, startDistance: number, distance: number): number {
 	if (startDistance <= 0) return clampSize(startSize);

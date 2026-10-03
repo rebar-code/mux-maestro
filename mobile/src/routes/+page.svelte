@@ -4,7 +4,7 @@
 	import { pullToRefresh, swipeAway, ui } from '$lib/gestures.svelte';
 	import Composer from '$lib/Composer.svelte';
 	import { counts } from '$lib/group';
-	import { can, live } from '$lib/live.svelte';
+	import { can, isOff, live, OFF_LABEL } from '$lib/live.svelte';
 	import { needsYouCards } from '$lib/manager';
 	import { manager } from '$lib/manager.svelte';
 	import PullIndicator from '$lib/PullIndicator.svelte';
@@ -20,6 +20,7 @@
 	const managerOn = $derived(can('manager'));
 	// A take goes to the manager, so voice needs the manager's switch too.
 	const voiceOn = $derived(managerOn && can('voice'));
+	const boxLabel = $derived(isOff('manager') ? OFF_LABEL : 'Ask the manager');
 	const waiting = $derived(needsYouCards(live.threads ?? [], managerOn ? manager.needsYou : []));
 	const review = $derived(managerOn ? manager.review : []);
 
@@ -53,14 +54,9 @@
 
 <div class="scroll home" data-pull={PULL} {@attach pullToRefresh(PULL, reload)}>
 	<PullIndicator key={PULL} />
-	<!-- Until the Mac says which features are on, hold the button's place. -->
-	{#if voiceOn}
-		<div class="hero">
-			<TalkButton target="manager" sink={manager.voice} orb />
-		</div>
-	{:else if live.config === null}
-		<div class="hero" aria-hidden="true"></div>
-	{/if}
+	<div class="hero">
+		<TalkButton target="manager" sink={manager.voice} orb off={!voiceOn} />
+	</div>
 
 	{#if managerOn}
 		<div class="said" aria-live="polite" data-said {@attach manager.watch}>
@@ -149,19 +145,20 @@
 </div>
 
 {#if managerOn}
-	{#if voiceOn}
-		<VoiceBar target="manager" sink={manager.voice} />
-	{/if}
-	<Composer
-		bind:value={manager.draft}
-		label="Ask the manager"
-		target="manager"
-		sink={manager.voice}
-		{voiceOn}
-		blocked={manager.busy}
-		onsend={send}
-	/>
+	<VoiceBar target="manager" sink={manager.voice} off={!voiceOn} />
 {/if}
+<!-- With the Manager switch off the box stays, disabled, and says where the switch is. -->
+<Composer
+	bind:value={manager.draft}
+	label={boxLabel}
+	target="manager"
+	sink={manager.voice}
+	{voiceOn}
+	bare={!managerOn}
+	off={!managerOn}
+	blocked={manager.busy}
+	onsend={send}
+/>
 
 <style>
 	.home {
