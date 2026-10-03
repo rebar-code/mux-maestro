@@ -9,13 +9,17 @@ import Foundation
 enum MobileManagerStatus: String, Equatable {
     /// The manager is not running on the Mac.
     case off
+    /// It runs, but what its pane is doing is not known yet. Not idle: the
+    /// pane may be on a prompt.
+    case unknown
     case idle, busy, waiting
 
     init(_ status: ManagerTurnStatus?) {
         switch status {
         case .busy: self = .busy
         case .waiting: self = .waiting
-        case .idle, nil: self = .idle
+        case .idle: self = .idle
+        case nil: self = .unknown
         }
     }
 }
@@ -63,8 +67,9 @@ enum MobileManager {
     static let chatLimit = 20
 
     static let busyMessage = "A turn is running"
-    static let paneBusyMessage = "Manager is busy"
-    static let waitingMessage = "Manager is waiting on a prompt"
+    static let paneBusyMessage = ManagerPaneDriver.busyMessage
+    static let waitingMessage = ManagerPaneDriver.waitingMessage
+    static let notReadyMessage = ManagerPaneDriver.notReadyMessage
     static let offMessage = "Manager is not running"
 
     /// The phone thread a rail link points at, or nil when no listed thread
@@ -200,6 +205,7 @@ enum MobileManager {
         if turnRunning { return .error(409, "busy", message: busyMessage) }
         if status == .waiting { return .error(409, "waiting", message: waitingMessage) }
         if status == .busy { return .error(409, "busy", message: paneBusyMessage) }
+        if status == .unknown { return .error(503, "not_ready", message: notReadyMessage) }
         return nil
     }
 

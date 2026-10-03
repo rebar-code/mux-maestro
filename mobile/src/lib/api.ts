@@ -1,5 +1,5 @@
 import { tokenFrom, withoutPair } from './pairing';
-import { frameParser, type Frame } from './sse';
+import { frameParser, readOrStall, STALLED, type Frame } from './sse';
 import type { ChatPage, Config, Host, ManagerHome, Thread, TurnEnd } from './types';
 
 const TOKEN_KEY = 'mm.token';
@@ -192,6 +192,9 @@ export async function dismissReview(key: string): Promise<void> {
 	await post('/api/manager/dismiss', { key });
 }
 
+/** The Mac pings a quiet turn stream every 15 s; three missed pings is a dead stream. */
+const TURN_STALL_MS = 45_000;
+
 /**
  * Run one manager turn. `onDelta` gets the reply as it is written. A turn the
  * Mac refuses to start throws an `ApiError` whose `detail` says why.
@@ -204,7 +207,12 @@ export async function sendManagerText(
 	const reader = response.body?.pipeThrough(new TextDecoderStream()).getReader();
 	const parse = frameParser();
 	while (reader) {
-		const { done, value } = await reader.read();
+		const chunk = await readOrStall(() => reader.read(), TURN_STALL_MS);
+		if (chunk === STALLED) {
+			void reader.cancel();
+			break;
+		}
+		const { done, value } = chunk;
 		if (done) break;
 		for (const frame of parse(value)) {
 			if (frame.event === 'delta') onDelta((JSON.parse(frame.data) as { text: string }).text);

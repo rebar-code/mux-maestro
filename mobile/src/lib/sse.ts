@@ -33,3 +33,26 @@ export function frameParser(): (chunk: string) => Frame[] {
 		return frames;
 	};
 }
+
+/** What `readOrStall` gives when nothing arrived in time. */
+export const STALLED = Symbol('stalled');
+
+/**
+ * One read of a stream, given up after `ms` with nothing. A stream the server
+ * keeps alive sends a comment line now and then, so silence this long means
+ * the connection is dead, not that the other side is thinking.
+ */
+export async function readOrStall<T>(
+	read: () => Promise<T>,
+	ms: number
+): Promise<T | typeof STALLED> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const stall = new Promise<typeof STALLED>((done) => {
+		timer = setTimeout(() => done(STALLED), ms);
+	});
+	try {
+		return await Promise.race([read(), stall]);
+	} finally {
+		clearTimeout(timer);
+	}
+}

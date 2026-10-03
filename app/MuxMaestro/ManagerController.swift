@@ -245,6 +245,7 @@ final class ManagerController {
     /// lands, `completion` fires once with the outcome (both on main).
     func send(
         _ text: String,
+        requireIdle: Bool = false,
         onDelta: @escaping (String) -> Void,
         completion: @escaping (ManagerTurnOutcome) -> Void
     ) {
@@ -252,7 +253,7 @@ final class ManagerController {
             DispatchQueue.main.async { completion(.unreachable("tmux not found")) }
             return
         }
-        driver.send(text, onDelta: onDelta, completion: completion)
+        driver.send(text, requireIdle: requireIdle, onDelta: onDelta, completion: completion)
     }
 
     /// The manager pane's status and transcript, for the phone server. Take it
@@ -261,9 +262,7 @@ final class ManagerController {
     func paneReader() -> (status: () -> ManagerTurnStatus?, transcript: () -> URL?)? {
         guard started, let driver else { return nil }
         return (
-            status: { [weak self] in
-                driver.currentSessionId().flatMap { self?.hookStatus(sessionId: $0) }
-            },
+            status: { driver.paneStatus() },
             transcript: { driver.transcript() })
     }
 

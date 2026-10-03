@@ -2624,6 +2624,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// and the voice take both come through here.
     private func runManagerTurn(
         _ text: String,
+        requireIdle: Bool = false,
         onDelta: @escaping (String) -> Void = { _ in },
         completion: @escaping (ManagerTurnOutcome) -> Void = { _ in }
     ) {
@@ -2641,6 +2642,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         managerRailVC?.beginTurn(text)
         manager.send(
             text,
+            requireIdle: requireIdle,
             onDelta: { [weak self] delta in
                 self?.managerRailVC?.appendReply(delta)
                 if tracked { self?.mobileServer.managerTurnAppended(delta) }
@@ -2665,7 +2667,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         completion: @escaping (ManagerTurnOutcome) -> Void
     ) {
         guard !managerTurnRunning else { return completion(.refused(MobileManager.busyMessage)) }
-        runManagerTurn(text, onDelta: onDelta, completion: completion)
+        // The phone cannot see the pane: its turn starts only from idle.
+        runManagerTurn(text, requireIdle: true, onDelta: onDelta, completion: completion)
     }
 
     /// The phone's manager home needs the manager running, rail shown or not.

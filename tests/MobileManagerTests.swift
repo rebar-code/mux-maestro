@@ -242,7 +242,8 @@ final class MobileManagerTests: XCTestCase {
     }
 
     func testStatusFollowsThePane() {
-        XCTAssertEqual(MobileManagerStatus(nil), .idle)
+        // No status yet is not idle: the pane may be on a prompt.
+        XCTAssertEqual(MobileManagerStatus(nil), .unknown)
         XCTAssertEqual(MobileManagerStatus(.idle), .idle)
         XCTAssertEqual(MobileManagerStatus(.busy), .busy)
         XCTAssertEqual(MobileManagerStatus(.waiting), .waiting)
@@ -345,6 +346,10 @@ final class MobileManagerTests: XCTestCase {
         let waiting = MobileManager.refusal(status: .waiting, turnRunning: false)
         XCTAssertEqual(waiting?.status, 409)
         XCTAssertEqual(error(waiting), ["error": "waiting", "message": "Manager is waiting on a prompt"])
+
+        let unknown = MobileManager.refusal(status: .unknown, turnRunning: false)
+        XCTAssertEqual(unknown?.status, 503)
+        XCTAssertEqual(error(unknown), ["error": "not_ready", "message": "Manager is not ready"])
 
         let off = MobileManager.refusal(status: .off, turnRunning: false)
         XCTAssertEqual(off?.status, 503)

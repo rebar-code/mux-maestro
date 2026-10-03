@@ -55,6 +55,9 @@ final class MobileServer {
         /// The same bound for a voice stream, which carries the reply's audio:
         /// a few minutes of speech, synthesized faster than it is sent.
         var voiceBacklog = 16_777_216
+        /// A turn stream with nothing to say gets a comment line this often,
+        /// so the phone can tell a quiet turn from a dead connection.
+        var turnPing: TimeInterval = 15
     }
 
     enum StartError: Error, Equatable {
@@ -578,6 +581,7 @@ final class MobileServer {
                 client.buffer.removeAll()
                 self.write(Self.streamHead, to: client)
                 self.receive(client)
+                self.pingTurn(client)
                 // The turn runs to its end even when the phone hangs up: only
                 // the writes stop.
                 let event = { [weak self, weak client] (name: String, object: [String: Any], last: Bool) in
@@ -594,6 +598,18 @@ final class MobileServer {
                     { delta in event("delta", ["text": delta], false) },
                     { outcome in event("end", MobileManager.end(outcome), true) })
             }
+        }
+    }
+
+    /// Keep a turn stream alive on a timer of its own: a turn can be quiet for
+    /// a long time, and the tree updates that ping the event stream may not come.
+    private func pingTurn(_ client: Client) {
+        queue.asyncAfter(deadline: .now() + limits.turnPing) { [weak self, weak client] in
+            guard let self, let client, self.clients[ObjectIdentifier(client)] != nil else { return }
+            if Date().timeIntervalSince(client.lastWrite) >= self.limits.turnPing * 0.9 {
+                self.write(Data(": ping\n\n".utf8), to: client)
+            }
+            self.pingTurn(client)
         }
     }
 
@@ -630,6 +646,7 @@ final class MobileServer {
         client.buffer.removeAll()
         write(Self.streamHead, to: client)
         receive(client)
+        pingTurn(client)
         let turn = MobileVoiceTurn(speech: voice.speech, speaker: speaker) {
             [weak self, weak client] name, object, last in
             let json = Self.json(object)

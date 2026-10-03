@@ -265,6 +265,14 @@ test('the manager status is drawn while a message cannot go to it', async ({ pag
 	await expect(page.getByRole('alert')).toHaveText('Manager is busy');
 	await expect(box(page)).toHaveValue('what needs me?');
 
+	// Running, but its pane's state is not known: not idle.
+	await page.request.post('/__fixture/manager-status?value=unknown');
+	await page.reload();
+	await expect(status).toHaveText('Manager is not ready');
+	await box(page).fill('what needs me?');
+	await box(page).press('Enter');
+	await expect(page.getByRole('alert')).toHaveText('Manager is not ready');
+
 	await page.request.post('/__fixture/manager-status?value=idle');
 	await page.reload();
 	await expect(box(page)).toBeVisible();

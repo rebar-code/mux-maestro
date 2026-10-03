@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { frameParser } from './sse';
+import { describe, expect, it, vi } from 'vitest';
+import { frameParser, readOrStall, STALLED } from './sse';
 
 describe('frameParser', () => {
 	it('reads one frame', () => {
@@ -36,5 +36,36 @@ describe('frameParser', () => {
 
 	it('names an unnamed frame "message"', () => {
 		expect(frameParser()('data: hi\n\n')).toEqual([{ event: 'message', data: 'hi' }]);
+	});
+});
+
+describe('readOrStall', () => {
+	it('gives the read when it arrives in time', async () => {
+		expect(await readOrStall(() => Promise.resolve('chunk'), 1000)).toBe('chunk');
+	});
+
+	it('gives up on a read that never arrives, and leaves no timer behind', async () => {
+		vi.useFakeTimers();
+		try {
+			const result = readOrStall(() => new Promise<string>(() => {}), 45_000);
+			await vi.advanceTimersByTimeAsync(44_999);
+			let settled = false;
+			void result.then(() => (settled = true));
+			await Promise.resolve();
+			expect(settled).toBe(false);
+			await vi.advanceTimersByTimeAsync(1);
+			expect(await result).toBe(STALLED);
+
+			await readOrStall(() => Promise.resolve('chunk'), 45_000);
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('passes a failed read on', async () => {
+		await expect(readOrStall(() => Promise.reject(new Error('reset')), 1000)).rejects.toThrow(
+			'reset'
+		);
 	});
 });

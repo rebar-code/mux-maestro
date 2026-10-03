@@ -53,7 +53,7 @@ prompt, this is for you.
   each agent's resume command.
 - **Phone.** A web app for your phone, served by the Mac over your tailnet:
   the thread list, each host's load, and a read-only view of every thread
-  (chat or terminal). With the Manager switch on, it opens on the manager:
+  (chat or terminal). With "Run manager agent" on, it opens on the manager:
   what needs you, the review items, and a text box to ask it. Off by default.
 - **herdr provider.** If you use [herdr](https://github.com/herdrdev/herdr) (a
   non-tmux workspace manager for agents), its sessions show next to tmux.
