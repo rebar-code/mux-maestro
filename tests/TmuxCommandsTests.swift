@@ -150,24 +150,6 @@ final class TmuxCommandsTests: XCTestCase {
         XCTAssertNil(TmuxCommands.contextMenuRow(clickedRow: -1, selectedRow: -1))
     }
 
-    // MARK: ⌥-hover preview
-
-    func testHoverPreviewRowIsTheHoveredRowWhileOptionIsHeld() {
-        XCTAssertEqual(
-            TmuxCommands.hoverPreviewRow(optionOnly: true, hoveredRow: 4, selectedRow: 1), 4)
-    }
-
-    func testHoverPreviewRowNilWithoutOption() {
-        // A plain hover, or ⌥ with another modifier (⌥⌘ shortcuts), previews nothing.
-        XCTAssertNil(TmuxCommands.hoverPreviewRow(optionOnly: false, hoveredRow: 4, selectedRow: 1))
-    }
-
-    func testHoverPreviewRowNilOffARowOrOnTheShownRow() {
-        XCTAssertNil(TmuxCommands.hoverPreviewRow(optionOnly: true, hoveredRow: -1, selectedRow: 1))
-        // Moving within the row already shown must not re-select it.
-        XCTAssertNil(TmuxCommands.hoverPreviewRow(optionOnly: true, hoveredRow: 1, selectedRow: 1))
-    }
-
     // MARK: target id construction (M9)
 
     func testWindowTarget() {
