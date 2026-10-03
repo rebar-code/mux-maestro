@@ -62,6 +62,7 @@ export interface ChatPage {
 }
 
 export const CAPABILITIES = [
+	'access',
 	'manager',
 	'voice',
 	'replies',

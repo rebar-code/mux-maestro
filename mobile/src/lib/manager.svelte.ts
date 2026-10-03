@@ -98,7 +98,7 @@ class Manager {
 			if (!this.sending) this.turn = home.turn;
 			this.save();
 		} catch (error) {
-			if (error instanceof ApiError && error.forbidden) live.forbidden = true;
+			live.fail(error);
 			if (this.review === null) this.review = [];
 		} finally {
 			this.loading = false;
@@ -135,7 +135,7 @@ class Manager {
 				this.note = end.message;
 			}
 		} catch (error) {
-			if (error instanceof ApiError && error.forbidden) live.forbidden = true;
+			live.fail(error);
 			refused = error instanceof ApiError && error.detail ? error.detail : 'The Mac did not answer';
 		}
 		this.turn = null;

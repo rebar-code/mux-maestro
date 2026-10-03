@@ -73,12 +73,18 @@ final class MobileManagerTests: XCTestCase {
     // MARK: routes
 
     func testRoutesTheManagerAPIByMethod() {
-        XCTAssertEqual(MobileAPI.route(request("/api/manager"), config: on), .manager)
+        XCTAssertEqual(MobileAPI.route(request("/api/manager"), config: on), .api(.manager))
         XCTAssertEqual(
-            MobileAPI.route(request("/api/manager/text", method: "POST"), config: on), .managerText)
+            MobileAPI.route(request("/api/manager/text", method: "POST"), config: on),
+            .api(.managerText))
         XCTAssertEqual(
             MobileAPI.route(request("/api/manager/dismiss", method: "POST"), config: on),
-            .managerDismiss)
+            .api(.managerDismiss))
+        for endpoint in [MobileEndpoint.manager, .managerText, .managerDismiss] {
+            XCTAssertEqual(endpoint.capability, .manager)
+        }
+        XCTAssertEqual(MobileEndpoint.managerText.method, "POST")
+        XCTAssertEqual(MobileEndpoint.managerDismiss.method, "POST")
         XCTAssertEqual(
             MobileAPI.route(request("/api/manager", method: "POST"), config: on), .methodNotAllowed)
         XCTAssertEqual(MobileAPI.route(request("/api/manager/text"), config: on), .methodNotAllowed)
@@ -119,6 +125,20 @@ final class MobileManagerTests: XCTestCase {
             XCTAssertEqual(
                 MobileAPI.authorize(request(path, method: "POST", headers: headers), identity: identity),
                 .allowed, path)
+        }
+    }
+
+    func testAManagerRequestNeedsThePairingToken() {
+        for (method, path) in [("GET", "/api/manager"), ("POST", "/api/manager/text"),
+                               ("POST", "/api/manager/dismiss")] {
+            XCTAssertTrue(MobileAPI.needsToken(request(path, method: method)), path)
+            XCTAssertFalse(MobileAPI.hasToken(request(path, method: method), token: "demo-token"), path)
+            XCTAssertFalse(MobileAPI.hasToken(
+                request(path, method: method, headers: ["X-MuxMaestro-Token": "other"]),
+                token: "demo-token"), path)
+            XCTAssertTrue(MobileAPI.hasToken(
+                request(path, method: method, headers: ["X-MuxMaestro-Token": "demo-token"]),
+                token: "demo-token"), path)
         }
     }
 

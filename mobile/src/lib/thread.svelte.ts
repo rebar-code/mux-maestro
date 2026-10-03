@@ -63,7 +63,7 @@ export class ThreadFeed {
 			this.gone = false;
 		} catch (error) {
 			if (error instanceof ApiError && error.status === 404) this.gone = true;
-			if (error instanceof ApiError && error.forbidden) live.forbidden = true;
+			live.fail(error);
 		} finally {
 			this.loading[mode] = false;
 		}

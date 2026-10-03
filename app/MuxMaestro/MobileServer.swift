@@ -32,6 +32,19 @@ final class MobileServer {
         var dismiss: (_ key: String) -> Void
     }
 
+    /// Bounds on what one listener holds, so a client that opens connections
+    /// and never reads cannot take the app's memory or descriptors.
+    struct Limits {
+        /// Connections held at once; one more is closed on arrival.
+        var maxConnections = 64
+        /// A connection that is not an event stream is closed after this long
+        /// without a request.
+        var idleTimeout: TimeInterval = 30
+        /// Bytes a stream may have queued and unsent before it is closed. A
+        /// phone that fell asleep reconnects and gets the current lists.
+        var streamBacklog = 1_048_576
+    }
+
     enum StartError: Error, Equatable {
         case badPort
         case listener(String)
@@ -46,6 +59,10 @@ final class MobileServer {
         /// It holds the event stream, so it gets every broadcast.
         var events = false
         var lastWrite = Date()
+        /// When the connection last sent a request or was answered.
+        var lastActive = Date()
+        /// Bytes handed to the connection that it has not sent yet.
+        var pending = 0
 
         init(_ connection: NWConnection) { self.connection = connection }
     }
@@ -58,6 +75,7 @@ final class MobileServer {
 
     private let staticRoot: URL?
     private let sources: Sources
+    private let limits: Limits
     private let manager: Manager?
     private let queue = DispatchQueue(label: "is.rebar.muxmaestro.mobile")
     private let work = DispatchQueue(label: "is.rebar.muxmaestro.mobile.work", attributes: .concurrent)
@@ -65,6 +83,7 @@ final class MobileServer {
     // Confined to `queue`.
     private var listener: NWListener?
     private var identity: MobileIdentity?
+    private var token: String?
     private var snapshot = MobileSnapshot()
     private var threadsBody = MobileSnapshot().threadsJSON()
     private var hostsBody = MobileSnapshot().hostsJSON()
@@ -79,9 +98,10 @@ final class MobileServer {
     private var lastRequestAt = Date.distantPast
     private var streamCount = 0
 
-    init(staticRoot: URL?, sources: Sources, manager: Manager? = nil) {
+    init(staticRoot: URL?, sources: Sources, limits: Limits = Limits(), manager: Manager? = nil) {
         self.staticRoot = staticRoot
         self.sources = sources
+        self.limits = limits
         self.manager = manager
     }
 
@@ -96,9 +116,10 @@ final class MobileServer {
     // MARK: Lifecycle
 
     /// Listen on `127.0.0.1:port` (0 picks a free port). `completion` gets the
-    /// bound port once, on the server queue.
+    /// bound port once, on the server queue. `token` is the pairing token every
+    /// API request must carry.
     func start(
-        port: Int, identity: MobileIdentity,
+        port: Int, identity: MobileIdentity, token: String,
         completion: @escaping (Result<Int, StartError>) -> Void
     ) {
         queue.async { [self] in
@@ -133,6 +154,7 @@ final class MobileServer {
             }
             listener.newConnectionHandler = { [weak self] connection in self?.accept(connection) }
             self.identity = identity
+            self.token = token
             self.listener = listener
             listener.start(queue: self.queue)
         }
@@ -146,9 +168,20 @@ final class MobileServer {
         listener?.cancel()
         listener = nil
         identity = nil
+        token = nil
         for client in clients.values { client.connection.cancel() }
         clients.removeAll()
         setStreamCount(0)
+    }
+
+    /// Replace the pairing token. Every open stream is closed: a phone holding
+    /// the old token is signed out at once.
+    func setToken(_ token: String) {
+        queue.async {
+            guard self.listener != nil else { return }
+            self.token = token
+            for client in self.clients.values where client.streaming { self.drop(client) }
+        }
     }
 
     /// The latest tree. Pushes an event to open streams when a body changed.
@@ -173,6 +206,7 @@ final class MobileServer {
             where client.events && now.timeIntervalSince(client.lastWrite) >= Self.pingInterval {
                 self.write(Data(": ping\n\n".utf8), to: client)
             }
+            self.dropIdle(now: now)
         }
     }
 
@@ -230,7 +264,18 @@ final class MobileServer {
 
     // MARK: Connections
 
+    /// Close connections that hold a slot and ask for nothing. Runs on each
+    /// tree update and each new connection, so it needs no timer.
+    private func dropIdle(now: Date = Date()) {
+        for client in clients.values
+        where !client.streaming && now.timeIntervalSince(client.lastActive) >= limits.idleTimeout {
+            drop(client)
+        }
+    }
+
     private func accept(_ connection: NWConnection) {
+        dropIdle()
+        guard clients.count < limits.maxConnections else { return connection.cancel() }
         let client = Client(connection)
         clients[ObjectIdentifier(client)] = client
         connection.stateUpdateHandler = { [weak self, weak client] state in
@@ -278,6 +323,7 @@ final class MobileServer {
         case .invalid(let status):
             send(.error(status, "bad_request"), to: client, head: false, close: true)
         case .request(let request, let consumed):
+            client.lastActive = Date()
             client.buffer.removeFirst(consumed)
             respond(to: request, client: client)
         }
@@ -285,6 +331,7 @@ final class MobileServer {
 
     private func send(_ response: MobileResponse, to client: Client, head: Bool, close: Bool = false) {
         client.lastWrite = Date()
+        client.lastActive = client.lastWrite
         client.connection.send(
             content: response.serialized(head: head, keepAlive: !close),
             completion: .contentProcessed { [weak self, weak client] error in
@@ -294,10 +341,16 @@ final class MobileServer {
             })
     }
 
+    /// Queue `data` on an event stream. A stream that is not being read is
+    /// closed once its unsent bytes pass the backlog limit.
     private func write(_ data: Data, to client: Client, close: Bool = false) {
+        guard client.pending + data.count <= limits.streamBacklog else { return drop(client) }
         client.lastWrite = Date()
+        client.pending += data.count
         client.connection.send(content: data, completion: .contentProcessed { [weak self, weak client] error in
-            if close || error != nil, let client { self?.drop(client) }
+            guard let client else { return }
+            client.pending -= data.count
+            if close || error != nil { self?.drop(client) }
         })
     }
 
@@ -319,15 +372,34 @@ final class MobileServer {
         guard MobileAPI.authorize(request, identity: identity) == .allowed else {
             return send(.error(403, "forbidden"), to: client, head: head)
         }
+        // The API also needs the pairing token; the static bundle does not.
+        guard !MobileAPI.needsToken(request) || MobileAPI.hasToken(request, token: token) else {
+            return send(.error(401, "unpaired"), to: client, head: head)
+        }
         activityLock.lock()
         lastRequestAt = Date()
         activityLock.unlock()
 
         switch MobileAPI.route(request, config: config) {
-        case .config:
-            send(.json(data: config.json()), to: client, head: head)
+        case .api(let endpoint):
+            respond(to: endpoint, request: request, client: client, head: head)
         case .disabled:
             send(.error(403, "disabled"), to: client, head: head)
+        case .asset(let path):
+            send(asset(path), to: client, head: head)
+        case .methodNotAllowed:
+            send(.error(405, "method_not_allowed"), to: client, head: head)
+        case .notFound:
+            send(.error(404, "not_found"), to: client, head: head)
+        }
+    }
+
+    private func respond(
+        to endpoint: MobileEndpoint, request: MobileRequest, client: Client, head: Bool
+    ) {
+        switch endpoint {
+        case .config:
+            send(.json(data: config.json()), to: client, head: head)
         case .threads:
             send(.json(data: threadsBody), to: client, head: head)
         case .hosts:
@@ -383,12 +455,6 @@ final class MobileServer {
             }
             manager.dismiss(key)
             send(.json(["ok": true]), to: client, head: head)
-        case .asset(let path):
-            send(asset(path), to: client, head: head)
-        case .methodNotAllowed:
-            send(.error(405, "method_not_allowed"), to: client, head: head)
-        case .notFound:
-            send(.error(404, "not_found"), to: client, head: head)
         }
     }
 

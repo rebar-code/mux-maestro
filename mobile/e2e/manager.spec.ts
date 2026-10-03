@@ -1,5 +1,14 @@
 import { expect, test, type Page } from '@playwright/test';
-import { drag, drawer, expectDrawerClosed, expectDrawerOpen, fresh } from './helpers';
+import {
+	drag,
+	drawer,
+	expectDrawerClosed,
+	expectDrawerOpen,
+	fresh,
+	threadPath,
+	TOKEN,
+	TOKEN_HEADER
+} from './helpers';
 
 const said = (page: Page) => page.locator('[data-said]');
 const box = (page: Page) => page.getByRole('textbox', { name: 'Ask the manager' });
@@ -151,7 +160,7 @@ test('a right swipe on the home still opens the sidebar, over a review card too'
 });
 
 test('the Manager row in the sidebar opens the home', async ({ page }) => {
-	await fresh(page, '/t/localhost%3A1');
+	await fresh(page, threadPath('localhost:1'));
 	await page.getByRole('button', { name: 'Menu' }).click();
 	await drawer(page).getByText('Manager').click();
 	await expect(page).toHaveURL(/\/$/);
@@ -170,7 +179,12 @@ test('with the Manager switch off the home and its row are hidden', async ({ pag
 	await expect(page.locator('[data-voicebar]')).toHaveCount(0);
 	// The threads that wait are still listed: they come from the thread list.
 	await expect(page.locator('.sect').first()).toHaveText('Needs you · 2');
-	expect(await page.evaluate(async () => (await fetch('/api/manager')).status)).toBe(403);
+	expect(
+		await page.evaluate(
+			async (headers) => (await fetch('/api/manager', { headers })).status,
+			TOKEN_HEADER
+		)
+	).toBe(403);
 	await page.getByRole('button', { name: 'Menu' }).click();
 	await expect(drawer(page).getByText('Manager')).toHaveCount(0);
 
@@ -189,7 +203,9 @@ test('voice controls are drawn and do nothing', async ({ page }) => {
 	await expect(page.locator('[data-voicebar] button')).toHaveCount(6);
 });
 
-test('a write from another origin, or without the header, is refused', async ({ page }) => {
+test('a write from another origin, without the header, or without the token is refused', async ({
+	page
+}) => {
 	await fresh(page);
 	const status = (headers: Record<string, string>): Promise<number> =>
 		page.evaluate(async (headers) => {
@@ -200,13 +216,25 @@ test('a write from another origin, or without the header, is refused', async ({ 
 			});
 			return response.status;
 		}, headers);
-	expect(await status({ 'content-type': 'application/json' })).toBe(403);
+	// Paired, but not the app's own write: no custom header.
+	expect(await status({ 'content-type': 'application/json', ...TOKEN_HEADER })).toBe(403);
 	const foreign = await page.request.post('/api/manager/text', {
-		headers: { 'x-muxmaestro': '1', origin: 'https://evil.example.com' },
+		headers: { 'x-muxmaestro': '1', origin: 'https://evil.example.com', ...TOKEN_HEADER },
 		data: { text: 'what needs me?' }
 	});
 	expect(foreign.status()).toBe(403);
+	// The app's own write, from a phone that is not paired.
+	expect(await status({ 'content-type': 'application/json', 'x-muxmaestro': '1' })).toBe(401);
 	await expect(said(page).locator('.u')).toHaveCount(0);
+});
+
+test('the app sends the pairing token with a manager turn', async ({ page }) => {
+	await fresh(page);
+	await box(page).fill('what needs me?');
+	const sent = page.waitForRequest((request) => request.url().endsWith('/api/manager/text'));
+	await box(page).press('Enter');
+	expect((await sent).headers()['x-muxmaestro-token']).toBe(TOKEN);
+	await expect(said(page).locator('.m').last()).toContainText('2 threads need you');
 });
 
 test('the home fits a phone: no sideways scroll, the box above the home indicator', async ({

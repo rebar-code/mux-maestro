@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { drawer, fresh, reset } from './helpers';
+import { drawer, forget, fresh, pairingLink, reset, TOKEN_HEADER } from './helpers';
 
 test('cached lists paint before the network answers', async ({ page }) => {
 	await fresh(page);
@@ -30,9 +30,8 @@ test('first visit shows skeleton rows, not a spinner, until data lands', async (
 		await held;
 		await route.continue();
 	});
-	await page.goto('/');
-	await page.evaluate(() => localStorage.clear());
-	await page.reload();
+	await forget(page);
+	await page.goto(pairingLink());
 	await page.getByRole('button', { name: 'Menu' }).click();
 	await expect(drawer(page).locator('.skrow')).toHaveCount(6);
 	release();
@@ -63,12 +62,12 @@ test('the service worker caches the shell and never the API', async ({ page }) =
 
 	// With the worker in control, an API read still sees the server's newest state.
 	const count = (): Promise<number> =>
-		page.evaluate(async () => {
-			const body = (await (await fetch('/api/threads')).json()) as {
+		page.evaluate(async (headers) => {
+			const body = (await (await fetch('/api/threads', { headers })).json()) as {
 				threads: { status: string }[];
 			};
 			return body.threads.filter((thread) => thread.status === 'waiting').length;
-		});
+		}, TOKEN_HEADER);
 	expect(await count()).toBe(2);
 	await page.request.post('/__fixture/wait?id=localhost:3');
 	expect(await count()).toBe(3);
@@ -98,7 +97,10 @@ test('the shell opens with the server unreachable', async ({ page, context }) =>
 test('a refused device sees "Not allowed"; a switched-off feature does not', async ({ page }) => {
 	await fresh(page);
 	// A feature that is off answers 403 "disabled". That is not a refusal.
-	const disabled = await page.evaluate(async () => (await fetch('/api/voice')).status);
+	const disabled = await page.evaluate(
+		async (headers) => (await fetch('/api/voice', { headers })).status,
+		TOKEN_HEADER
+	);
 	expect(disabled).toBe(403);
 	await page.getByRole('button', { name: 'Menu' }).click();
 	const refresh = drawer(page).getByRole('button', { name: 'Refresh' });

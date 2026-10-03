@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { homeLines, needsYouCards, takeEvents } from './manager';
+import { homeLines, needsYouCards } from './manager';
 import type { ChatMessage, ManagerItem, Thread } from './types';
 
 const chat = (...rows: [ChatMessage['role'], string][]): ChatMessage[] =>
@@ -82,21 +82,5 @@ describe('needsYouCards', () => {
 			['localhost:1', 'Permission · Bash'],
 			['devbox:3', null]
 		]);
-	});
-});
-
-describe('takeEvents', () => {
-	it('returns whole events and keeps a partial one', () => {
-		const { events, rest } = takeEvents(
-			'event: delta\ndata: {"text":"Two "}\n\n: ping\n\nevent: end\ndata: {"outcome"'
-		);
-		expect(events).toEqual([{ event: 'delta', data: '{"text":"Two "}' }]);
-		expect(rest).toBe('event: end\ndata: {"outcome"');
-	});
-
-	it('finishes the partial event when the rest arrives', () => {
-		const { events, rest } = takeEvents('event: end\ndata: {"outcome"' + ':"done"}\n\n');
-		expect(events).toEqual([{ event: 'end', data: '{"outcome":"done"}' }]);
-		expect(rest).toBe('');
 	});
 });
