@@ -7,9 +7,11 @@ import Foundation
 // The rules, in one place:
 // - An action is a case of `MobileAction`. Nothing else reaches tmux.
 // - A target is looked up in the live tree. The phone names a thread, or a
-//   host and a session; what goes to tmux is the tree's own pane id, never a
-//   string the phone sent. A pane id is never used again by a tmux server, so
-//   a request that is sent twice cannot reach a newer session of the same name.
+//   host and a session; what goes to tmux is the tree's own pane id (`%12`)
+//   or session id (`$3`), never a string the phone sent. tmux gives neither
+//   to another pane or session, so a request that is sent twice cannot reach
+//   a newer session of the same name. A session is not targeted by a pane:
+//   the sessions of one group share their panes.
 // - tmux reads an argument that ends in `;` as the end of one command and the
 //   start of the next. No argument built here can end in one.
 // - A name passes `MobileActions.name`. It is one argv item of its own.
@@ -113,11 +115,18 @@ enum MobileActions {
 
     // MARK: Targets
 
+    /// Whether the last byte is `;`. tmux reads bytes: a `;` that a combining
+    /// mark follows on screen is still not last, and one that is last counts
+    /// whatever character Swift makes of it.
+    static func endsInSemicolon(_ text: String) -> Bool {
+        text.utf8.last == UInt8(ascii: ";")
+    }
+
     /// A path from the live tree that can be a tmux `-c` argument. tmux
     /// expands `#{…}` in that argument, so a path with a `#` is left out, and
     /// so is one that ends in `;`.
     static func path(_ raw: String) -> String? {
-        guard raw.hasPrefix("/"), !raw.contains("\n"), !raw.contains("#"), !raw.hasSuffix(";"),
+        guard raw.hasPrefix("/"), !raw.contains("\n"), !raw.contains("#"), !endsInSemicolon(raw),
               raw.unicodeScalars.allSatisfy(MobileManager.isText) else { return nil }
         return raw
     }
@@ -180,7 +189,12 @@ enum MobileActions {
             found = try thread(["thread": first.id], snapshot: snapshot)
         }
         // A name that ends in `;` would end the tmux command where it stands.
-        guard !found.session.hasSuffix(";") else { throw Refusal(404, "not_found") }
+        guard !endsInSemicolon(found.session) else { throw Refusal(404, "not_found") }
+        // The id is the tree's: `$` and digits. Without one the session
+        // cannot be told from another of its group.
+        guard found.sessionId.hasPrefix("$"), found.sessionId.count > 1,
+              found.sessionId.dropFirst().allSatisfy({ $0.isASCII && $0.isNumber })
+        else { throw Refusal(409, "failed") }
         return found
     }
 
@@ -204,11 +218,12 @@ enum MobileActions {
             let host = try host(fields, snapshot: snapshot)
             var dir: String?
             if let raw = fields["dir"], !(raw is NSNull) {
-                // Only a directory this server offered.
+                // Only a directory this server offered, and in the server's
+                // own bytes: two strings that compare equal can differ in theirs.
                 guard let asked = raw as? String,
-                      dirs(host: host.name, snapshot: snapshot)?.contains(asked) == true
+                      let offered = dirs(host: host.name, snapshot: snapshot)?.first(where: { $0 == asked })
                 else { throw Refusal(400, "bad_dir") }
-                dir = asked
+                dir = offered
             }
             let wanted: String
             if let raw = fields["name"], !(raw is NSNull) {
@@ -227,12 +242,10 @@ enum MobileActions {
                 host: host, argv: TmuxCommands.newSession(name: unique, dir: start), made: .session(unique))
         case .newWindow:
             let target = try session(fields, snapshot: snapshot)
-            // `=` pins the session to an exact name, and the `:` after it is
-            // the argument's last character.
             return Call(
                 host: target.host,
                 argv: TmuxCommands.newWindow(
-                    session: "=\(target.session)", cwd: path(target.cwd), printTarget: true),
+                    session: target.sessionId, cwd: path(target.cwd), printTarget: true),
                 made: .window)
         case .renameSession:
             let target = try session(fields, snapshot: snapshot)
@@ -240,8 +253,8 @@ enum MobileActions {
             guard new == target.session
                 || !sessionNames(on: target.host, snapshot: snapshot).contains(new)
             else { throw Refusal(409, "exists") }
-            // The pane id names its session.
-            return Call(host: target.host, argv: TmuxCommands.renameSession(from: target.pane, to: new))
+            return Call(
+                host: target.host, argv: TmuxCommands.renameSession(from: target.sessionId, to: new))
         case .renameWindow:
             let thread = try thread(fields, snapshot: snapshot)
             guard let new = name(fields["name"]) else { throw Refusal(400, "bad_name") }
@@ -253,7 +266,7 @@ enum MobileActions {
             // a request that was sent twice arrives.
             let target = try session(fields, snapshot: snapshot, byThreadOnly: true)
             try confirmed(fields)
-            return Call(host: target.host, argv: TmuxCommands.killSession(holding: target.pane))
+            return Call(host: target.host, argv: TmuxCommands.killSession(id: target.sessionId))
         case .killWindow:
             let thread = try thread(fields, snapshot: snapshot)
             try confirmed(fields)

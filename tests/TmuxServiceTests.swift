@@ -801,9 +801,31 @@ final class TmuxServiceTests: XCTestCase {
         }
         XCTAssertTrue(remote.hasSuffix(Ssh.shellQuote("deploy fix")))
 
-        // A call that exits non-zero is a failure, not "no tmux".
+        // tmux refused the call and the host still answers: a failure of
+        // tmux, not of the way there.
+        let probe = (Ssh.opts(host: "devbox") + ["true"]).joined(separator: " ")
         runner.defaultResponse = nil
+        runner.responses[probe] = ""
         XCTAssertEqual(service.phoneTmux(["kill-window", "-t", "%3"])?.ok, false)
+        XCTAssertEqual(runner.calls.last?.args.last, "true")
+
+        // ssh does not get there: there is no tmux to call.
+        runner.responses[probe] = .some(nil)
+        XCTAssertNil(service.phoneTmux(["kill-window", "-t", "%3"]))
+    }
+
+    func testTheTreeCarriesEachSessionsIdAndGroupsKeepTheirOwn() {
+        // `a` and `a-view` are one group; the tree keeps `a`, with a's id.
+        let out = "a\t1\ta\t100\t$0\na-view\t0\ta\t90\t$1\nother\t0\t\t80\t$2\nold\t0\t\t70\n"
+        XCTAssertEqual(TmuxModel.parseSessionIds(out), ["a": "$0", "a-view": "$1", "other": "$2"])
+        XCTAssertTrue(TmuxModel.sessionsFormat.hasSuffix("\t#{session_id}"))
+        let runner = FakeRunner()
+        runner.responses["list-sessions -F \(TmuxModel.sessionsFormat)"] = out
+        let tree = makeService(runner).loadTree() ?? []
+        XCTAssertEqual(tree.map(\.name).sorted(), ["a", "old", "other"])
+        XCTAssertEqual(tree.first { $0.name == "a" }?.id, "$0")
+        XCTAssertEqual(tree.first { $0.name == "other" }?.id, "$2")
+        XCTAssertEqual(tree.first { $0.name == "old" }?.id, "")
     }
 
     func testRemoteAttachUsesMoshWhenRequestedAndAvailable() {

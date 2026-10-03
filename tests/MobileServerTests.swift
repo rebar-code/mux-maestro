@@ -82,50 +82,15 @@ final class MobileServerTests: XCTestCase {
             limits: limits, manager: manager.source)
     }
 
-    /// Start `server` on a port a client can reach. With many test runs on
-    /// one machine the system can hand out a port that connects fail on
-    /// ("Address already in use") for as long as the listener holds it, so a
-    /// port that takes no connection is given back and another is asked for.
     private func start(_ server: MobileServer) {
-        for _ in 0..<10 {
-            let started = expectation(description: "listening")
-            server.start(port: 0, identity: identity, token: "demo-token") { result in
-                if case .success(let bound) = result { self.port = bound }
-                started.fulfill()
-            }
-            wait(for: [started], timeout: 5)
-            XCTAssertGreaterThan(port, 0)
-            if reachable() { break }
-            server.stop()
+        let started = expectation(description: "listening")
+        server.start(port: 0, identity: identity, token: "demo-token") { result in
+            if case .success(let bound) = result { self.port = bound }
+            started.fulfill()
         }
+        wait(for: [started], timeout: 5)
+        XCTAssertGreaterThan(port, 0)
         server.update(snapshot())
-    }
-
-    /// Whether a connection to the server's port opens.
-    private func reachable() -> Bool {
-        let connection = NWConnection(
-            host: "127.0.0.1", port: NWEndpoint.Port(rawValue: UInt16(port))!, using: .tcp)
-        let settled = DispatchSemaphore(value: 0)
-        let queue = DispatchQueue(label: "mobile-server-tests.probe")
-        var opened = false
-        var done = false
-        connection.stateUpdateHandler = { state in
-            switch state {
-            case .ready:
-                opened = true
-                fallthrough
-            case .waiting, .failed:
-                guard !done else { return }
-                done = true
-                settled.signal()
-            default:
-                break
-            }
-        }
-        connection.start(queue: queue)
-        _ = settled.wait(timeout: .now() + 2)
-        connection.cancel()
-        return queue.sync { opened }
     }
 
     /// Swap the default server for one with tight limits.
@@ -148,7 +113,7 @@ final class MobileServerTests: XCTestCase {
         let shell = TmuxPane(id: "%13", index: 0, command: "zsh", title: "", active: true)
         return MobileSnapshot.build([MobileHostInput(
             host: .local, colorHex: "#3291ff", reachability: .reachable, stats: nil,
-            sessions: [TmuxSession(name: "acme-app", attached: true, windows: [
+            sessions: [TmuxSession(name: "acme-app", attached: true, id: "$1", windows: [
                 TmuxWindow(index: 1, name: "checkout-fix", active: true, panes: [agent]),
                 TmuxWindow(index: 2, name: "shell", active: false, panes: [shell]),
             ])])])
@@ -156,53 +121,65 @@ final class MobileServerTests: XCTestCase {
 
     // MARK: client
 
+    /// How long a closed TCP connection keeps its local port (twice the
+    /// system's 15 s segment lifetime), and a little more.
+    private static let portWait: TimeInterval = 35
+
     /// Send `raw` and read until `done` says the reply is whole (or 5 s pass).
     ///
-    /// A connection that does not open is tried again. Each exchange takes a
-    /// new local port, and with many test runs on one machine a connect can
-    /// fail ("Address already in use") or hang. Nothing was sent then, so
-    /// asking again cannot repeat a write.
+    /// Each exchange is a new connection from a new local port, and a closed
+    /// connection keeps its port for 30 s. The system has 16 384 of them, so
+    /// when test runs, dev servers and browsers on one machine close more
+    /// than that in 30 s, a connect fails with "Address already in use" until
+    /// some come free. That is waited out: nothing was sent, so asking again
+    /// cannot repeat a write.
     private func exchange(_ raw: String, until done: @escaping (String) -> Bool) -> String {
-        for _ in 0..<20 {
-            if let reply = attempt(raw, until: done) { return reply }
-            Thread.sleep(forTimeInterval: 0.25)
+        let deadline = Date().addingTimeInterval(Self.portWait)
+        while true {
+            switch attempt(raw, until: done) {
+            case .reply(let text): return text
+            case .refused: return ""
+            case .noLocalPort where Date() < deadline: Thread.sleep(forTimeInterval: 0.5)
+            case .noLocalPort:
+                XCTFail("no free local port in \(Int(Self.portWait)) s")
+                return ""
+            }
         }
-        return ""
     }
 
-    /// One try. nil when the connection did not open.
-    private func attempt(_ raw: String, until done: @escaping (String) -> Bool) -> String? {
+    private enum Attempt {
+        case reply(String)
+        /// Nothing listens on the port.
+        case refused
+        /// The connect failed for want of a local port.
+        case noLocalPort
+    }
+
+    private func attempt(_ raw: String, until done: @escaping (String) -> Bool) -> Attempt {
         let connection = NWConnection(
             host: "127.0.0.1", port: NWEndpoint.Port(rawValue: UInt16(port))!, using: .tcp)
         let queue = DispatchQueue(label: "mobile-server-tests")
-        let settled = DispatchSemaphore(value: 0)
         let finished = DispatchSemaphore(value: 0)
         var received = Data()
+        var unopened: Attempt?
         var opened = false
-        var refused = false
-        var settledOnce = false
         connection.stateUpdateHandler = { state in
             switch state {
-            case .waiting(.posix(.ECONNREFUSED)), .failed(.posix(.ECONNREFUSED)):
-                // Nothing listens there: trying again will not change it.
-                refused = true
-                fallthrough
             case .ready:
-                if !refused { opened = true }
-                fallthrough
-            case .waiting, .failed:
-                guard !settledOnce else { return }
-                settledOnce = true
-                settled.signal()
+                opened = true
+            case .waiting(let error), .failed(let error):
+                // Only before the connection opened: after that an error is
+                // the server hanging up, which the read sees.
+                guard !opened, unopened == nil else { return }
+                switch error {
+                case .posix(.EADDRINUSE), .posix(.EADDRNOTAVAIL): unopened = .noLocalPort
+                case .posix(.ECONNREFUSED): unopened = .refused
+                default: return
+                }
+                finished.signal()
             default:
                 break
             }
-        }
-        connection.start(queue: queue)
-        // The request leaves only on an open connection.
-        guard settled.wait(timeout: .now() + 2) == .success, queue.sync(execute: { opened }) else {
-            connection.cancel()
-            return queue.sync(execute: { refused }) ? "" : nil
         }
         func read() {
             connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { data, _, complete, error in
@@ -214,11 +191,16 @@ final class MobileServerTests: XCTestCase {
                 }
             }
         }
+        connection.start(queue: queue)
+        // Queued until the connection opens; never sent when it does not.
         connection.send(content: Data(raw.utf8), completion: .contentProcessed { _ in })
         read()
         _ = finished.wait(timeout: .now() + 5)
         connection.cancel()
-        return queue.sync { String(decoding: received, as: UTF8.self) }
+        return queue.sync {
+            if let unopened, received.isEmpty { return unopened }
+            return .reply(String(decoding: received, as: UTF8.self))
+        }
     }
 
     private func whole(_ text: String) -> Bool {
@@ -1370,7 +1352,7 @@ final class MobileServerTests: XCTestCase {
         let kills: [(String, String, [String])] = [
             ("/api/tmux/kill-pane", #""thread":"localhost:12""#, ["kill-pane", "-t", "%12"]),
             ("/api/tmux/kill-window", #""thread":"localhost:13""#, ["kill-window", "-t", "%13"]),
-            ("/api/tmux/kill-session", #""thread":"localhost:12""#, ["kill-session", "-t", "%12"]),
+            ("/api/tmux/kill-session", #""thread":"localhost:12""#, ["kill-session", "-t", "$1"]),
         ]
         for (path, target, _) in kills {
             for body in ["{\(target)}", "{\(target),\"confirm\":false}", "{\(target),\"confirm\":\"true\"}"] {
@@ -1397,7 +1379,7 @@ final class MobileServerTests: XCTestCase {
         XCTAssertEqual(made.status, 200)
         XCTAssertEqual(made.body, #"{"ok":true,"thread":"localhost:41"}"#)
         XCTAssertEqual(tmux.argv.last, [
-            "new-window", "-a", "-t", "=acme-app:", "-P", "-F", "#{window_index}\t#{pane_id}",
+            "new-window", "-a", "-t", "$1:", "-P", "-F", "#{window_index}\t#{pane_id}",
             "-c", "/Users/me/acme-app",
         ])
         XCTAssertEqual(get(Self.dirs).body, #"{"dirs":["\/Users\/me\/acme-app"]}"#)

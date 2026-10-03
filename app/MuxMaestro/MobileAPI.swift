@@ -581,6 +581,8 @@ struct MobileThread: Equatable {
     let pane: String
     /// Threads in this window.
     var panes = 1
+    /// The session's tmux id (`$3`), empty when the tree has none.
+    var sessionId = ""
     let command: String
     let cwd: String
     let status: AttentionStatus
@@ -708,7 +710,7 @@ struct MobileSnapshot: Equatable {
                 id: threadID(host: input.host, pane: pane.id),
                 host: input.host, hostColor: input.colorHex,
                 session: session.name, window: window.index, name: windowName(window),
-                pane: pane.id, panes: panes.count, command: pane.command,
+                pane: pane.id, panes: panes.count, sessionId: session.id, command: pane.command,
                 cwd: pane.path.isEmpty ? window.cwd : pane.path,
                 status: pane.attention, since: pane.agentState?.since,
                 idleStage: pane.idleStage, lastPrompt: pane.lastPrompt,

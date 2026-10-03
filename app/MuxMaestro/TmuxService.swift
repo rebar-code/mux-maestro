@@ -895,6 +895,7 @@ final class TmuxService {
         }
 
         let sessionRows = TmuxModel.dedupeGroups(TmuxModel.parseSessions(sessOut))
+        let sessionIds = TmuxModel.parseSessionIds(sessOut)
 
         // Two server-wide queries, not one per session and one per window. A failed
         // query yields no windows/panes rather than dropping the session itself —
@@ -912,7 +913,8 @@ final class TmuxService {
                     TmuxModel.paneKey(session: row.name, window: windows[i].index)] ?? []
             }
             sessions.append(TmuxSession(
-                name: row.name, attached: row.attached, windows: windows, activity: row.activity))
+                name: row.name, attached: row.attached, id: sessionIds[row.name] ?? "",
+                windows: windows, activity: row.activity))
         }
         // One status read, parsed three ways — `statuses()`, `activity()` and
         // `paneStatuses()` each used to spawn their own `sessions.py` (~200ms apiece).
@@ -1899,6 +1901,13 @@ final class TmuxService {
     func phoneTmux(_ args: [String]) -> (ok: Bool, output: String)? {
         guard let (path, full) = transport.command(forTmux: args) else { return nil }
         let (ok, text) = runner.runCapturing(path, full)
+        // A call to a remote host fails when tmux refuses it and when ssh
+        // does not get there. One more call that needs no tmux tells which:
+        // a host that cannot be reached has no tmux to call.
+        if !ok, let alias = host.sshAlias,
+           runner.run(Ssh.sshPath, Ssh.opts(host: alias) + ["true"]) == nil {
+            return nil
+        }
         return (ok, text)
     }
 

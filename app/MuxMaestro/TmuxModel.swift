@@ -186,6 +186,9 @@ struct TmuxSession: Equatable {
     let name: String
     /// Whether a client is currently attached to this session.
     let attached: Bool
+    /// tmux `session_id` (`$3`), empty when it was not read. Never given to
+    /// another session while the tmux server runs. Not part of `==`.
+    var id: String = ""
     var windows: [TmuxWindow]
     /// Attention status joined from Claude Code session data; defaults to
     /// `.unknown` until joined.
@@ -236,8 +239,10 @@ enum TmuxModel {
     /// `-F` format for `list-sessions`: name, attached flag, session group.
     /// The group lets us collapse tmux "grouped" sessions (which share windows,
     /// so they'd otherwise show as identical duplicates).
+    /// Last comes the session id (`$3`): the one name for a session that
+    /// tmux never gives to another, which the phone's actions target.
     static let sessionsFormat =
-        "#{session_name}\t#{session_attached}\t#{session_group}\t#{session_activity}"
+        "#{session_name}\t#{session_attached}\t#{session_group}\t#{session_activity}\t#{session_id}"
 
     /// `-F` format for `list-windows -t <session>`: index, name, active flag, then
     /// the `@mm_prs` / `@mm_repo` user options an agent may have set on the window,
@@ -310,6 +315,18 @@ enum TmuxModel {
             return (name: f[0], attached: f[1] == "1", group: f.count >= 3 ? f[2] : "",
                     activity: f.count >= 4 ? Int(f[3]) ?? 0 : 0)
         }
+    }
+
+    /// Each session's id (`$3`) by its name, from the same `list-sessions`
+    /// output. A line without one (an older format) is left out.
+    static func parseSessionIds(_ output: String) -> [String: String] {
+        var ids: [String: String] = [:]
+        for line in output.split(separator: "\n", omittingEmptySubsequences: true) {
+            let f = line.components(separatedBy: fieldSep)
+            guard f.count >= 5, !f[0].isEmpty, f[4].hasPrefix("$") else { continue }
+            ids[f[0]] = f[4]
+        }
+        return ids
     }
 
     /// Collapse tmux grouped sessions to one row per group (they share windows,
