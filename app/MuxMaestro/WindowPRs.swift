@@ -145,6 +145,13 @@ enum WindowPRs {
         return out.filter { $0.state == .open } + out.filter { $0.state != .open }
     }
 
+    /// Whether the window's work has landed: at least one PR merged and none
+    /// still open. A closed PR counts for nothing either way. The row then shows
+    /// its trash without hover and closes without the confirm.
+    static func allMerged(_ prs: [PullRequest]) -> Bool {
+        prs.contains { $0.state == .merged } && !prs.contains { $0.state == .open }
+    }
+
     // MARK: - Write-back
 
     /// The new `@mm_prs` value for a window after detection, or nil when there is

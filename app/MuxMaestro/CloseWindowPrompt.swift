@@ -98,12 +98,15 @@ enum CloseWindowPrompt {
         case contextMenu
         /// ⌘W or the menu bar's Close.
         case keyboard
+        /// The trash on a window row whose PR merged (`WindowPRs.allMerged`).
+        case mergedTrash
     }
 
     /// Whether a close raises the confirm sheet. Choosing Kill/Close from the
     /// sidebar's right-click menu is already a deliberate second step, so a sheet
     /// after it is a double confirm — even for a busy agent. ⌘W sits one
-    /// keystroke from typing, so it keeps the sheet (Return confirms).
+    /// keystroke from typing, so it keeps the sheet (Return confirms). A window
+    /// whose PR merged has nothing left to lose, so its trash skips the sheet too.
     static func needsConfirm(_ source: Source) -> Bool {
         source == .keyboard
     }

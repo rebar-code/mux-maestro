@@ -106,6 +106,11 @@ final class CloseWindowPromptTests: XCTestCase {
         XCTAssertFalse(CloseWindowPrompt.needsConfirm(.contextMenu))
     }
 
+    /// The trash on a window whose PR merged: the work landed, so no sheet.
+    func testMergedTrashNeverConfirms() {
+        XCTAssertFalse(CloseWindowPrompt.needsConfirm(.mergedTrash))
+    }
+
     /// ⌘W is one keystroke away from typing, so it keeps the sheet (Return confirms).
     func testKeyboardCloseConfirms() {
         XCTAssertTrue(CloseWindowPrompt.needsConfirm(.keyboard))
