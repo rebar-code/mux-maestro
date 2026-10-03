@@ -82,9 +82,16 @@ enum MobileHTTP {
     static let maxBodyBytes = 1_048_576
 
     /// The largest body a request to `path` may carry. Only a voice take, which
-    /// is audio, gets more than `maxBodyBytes`.
+    /// is audio, and an upload, which is a file, get more than `maxBodyBytes`.
+    /// The upload's own limit, from Settings, is checked when it is answered.
     static func bodyLimit(method: String, path: String) -> Int {
-        method == "POST" && path == "/api/voice" ? MobileVoice.maxBodyBytes : maxBodyBytes
+        guard method == "POST" else { return maxBodyBytes }
+        if path == "/api/voice" { return MobileVoice.maxBodyBytes }
+        let segments = path.split(separator: "/", omittingEmptySubsequences: true)
+        if segments.count == 4, segments[0] == "api", segments[1] == "threads", segments[3] == "upload" {
+            return MobileReply.maxUploadBytes
+        }
+        return maxBodyBytes
     }
 
     enum Parsed: Equatable {
@@ -181,12 +188,27 @@ enum MobileEndpoint: Equatable {
     case voiceReplay
     /// A take has started: load the models while the human talks.
     case voiceWarm
+    /// Paste text into a thread's pane and submit it.
+    case text(id: String)
+    /// Press one whitelisted key in a thread's pane.
+    case key(id: String)
+    /// The prompt a thread's pane waits on, as choices.
+    case prompt(id: String)
+    /// Pick one choice of that prompt.
+    case answer(id: String)
+    /// The thread's skills and commands, for the `/` list.
+    case commands(id: String)
+    /// Save a file in the thread's working directory and paste its path.
+    case upload(id: String, name: String)
 
     var capability: MobileCapability {
         switch self {
         case .config, .threads, .hosts, .events, .chat, .screen: return .access
         case .manager, .managerText, .managerDismiss: return .manager
         case .voice, .voiceReplay, .voiceWarm: return .voice
+        case .text, .prompt, .answer, .commands: return .replies
+        case .key: return .keyBar
+        case .upload: return .upload
         }
     }
 
@@ -194,8 +216,11 @@ enum MobileEndpoint: Equatable {
     /// to pass the write checks in `MobileAPI.authorize`.
     var method: String {
         switch self {
-        case .config, .threads, .hosts, .events, .chat, .screen, .manager: return "GET"
-        case .managerText, .managerDismiss, .voice, .voiceReplay, .voiceWarm: return "POST"
+        case .config, .threads, .hosts, .events, .chat, .screen, .manager, .prompt, .commands:
+            return "GET"
+        case .managerText, .managerDismiss, .voice, .voiceReplay, .voiceWarm, .text, .key, .answer,
+             .upload:
+            return "POST"
         }
     }
 }
@@ -220,7 +245,10 @@ enum MobileCapability: String, CaseIterable {
     case access
     case manager
     case voice
+    /// Text into a thread and answers to its prompts.
     case replies
+    /// Key presses from the key bar.
+    case keyBar
     case upload
     case sessionActions
     case kill
@@ -243,6 +271,8 @@ struct MobileConfig: Equatable {
     var capabilities: Set<MobileCapability> = []
     var grouping = MobileGrouping.recent
     var voice = MobileVoiceDefaults()
+    /// The largest file the phone may upload, in bytes.
+    var uploadLimit = MobileReply.defaultUploadLimit
 
     func allows(_ capability: MobileCapability) -> Bool {
         capability == .access || capabilities.contains(capability)
@@ -256,6 +286,7 @@ struct MobileConfig: Equatable {
             }),
             "grouping": grouping.rawValue,
             "voice": voice.json,
+            "upload": ["maxBytes": min(uploadLimit, MobileReply.maxUploadBytes)],
         ]
         return (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]))
             ?? Data("{}".utf8)
@@ -292,7 +323,8 @@ enum MobileAPI {
         case "tmux": return segments.count >= 3 && segments[2] == "kill" ? .kill : .sessionActions
         case "threads" where segments.count >= 4:
             switch segments[3] {
-            case "text", "key": return .replies
+            case "text", "prompt", "answer", "commands": return .replies
+            case "key": return .keyBar
             case "upload": return .upload
             case "artifacts", "file": return .artifacts
             default: return nil
@@ -328,6 +360,18 @@ enum MobileAPI {
             endpoint = .chat(id: segments[2], after: request.query["after"].flatMap(UInt64.init))
         case 4 where segments[1] == "threads" && segments[3] == "screen":
             endpoint = .screen(id: segments[2])
+        case 4 where segments[1] == "threads" && segments[3] == "text":
+            endpoint = .text(id: segments[2])
+        case 4 where segments[1] == "threads" && segments[3] == "key":
+            endpoint = .key(id: segments[2])
+        case 4 where segments[1] == "threads" && segments[3] == "prompt":
+            endpoint = .prompt(id: segments[2])
+        case 4 where segments[1] == "threads" && segments[3] == "answer":
+            endpoint = .answer(id: segments[2])
+        case 4 where segments[1] == "threads" && segments[3] == "commands":
+            endpoint = .commands(id: segments[2])
+        case 4 where segments[1] == "threads" && segments[3] == "upload":
+            endpoint = .upload(id: segments[2], name: request.query["name"] ?? "")
         default: return .notFound
         }
         guard config.allows(endpoint.capability) else { return .disabled(endpoint.capability) }

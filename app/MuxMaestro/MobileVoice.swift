@@ -66,7 +66,6 @@ enum MobileVoice {
     static let modelsNotReady = "Voice models not ready"
     static let unavailable = "Voice is not available"
     static let busy = "A voice turn is running"
-    static let managerOnly = "Voice goes to the manager only"
     static let nothingToReplay = "Nothing to replay"
     static let speechFailed = "Could not speak the reply"
     static let notText = "Could not use what was heard"

@@ -1863,6 +1863,33 @@ final class TmuxService {
         return tmux(FileTransfer.capturePaneArgv(target: target))
     }
 
+    // MARK: Phone replies
+
+    /// What the phone server may do to a pane on this host. Each call runs one
+    /// argv the server built (`MobileReply`); nothing here goes through a shell
+    /// on this Mac.
+    func phonePane(
+        target: String, status: @escaping (MobileThread) -> AttentionStatus
+    ) -> MobilePaneIO {
+        MobilePaneIO(
+            tmux: { [self] args, stdin in tmux(args, stdin: stdin) },
+            screen: { [self] in capturePane(target: target) },
+            status: status,
+            copy: { [self] localPath, path in
+                let (cp, args) = FileTransfer.copyArgv(host: host, localPath: localPath, remotePath: path)
+                // An upload to a remote host can take longer than a tmux call.
+                return slow.run(cp, args) != nil
+            },
+            exists: { [self] path in
+                guard let alias = host.sshAlias else {
+                    return FileManager.default.fileExists(atPath: path)
+                }
+                // `test` prints nothing: the runner's nil is "no such file".
+                return runner.run(
+                    Ssh.sshPath, Ssh.opts(host: alias) + ["test -e " + Ssh.shellQuote(path)]) != nil
+            })
+    }
+
     /// Drop a local file onto a session on this host: resolve the session's cwd,
     /// copy the file there (cp local / scp remote), then PASTE the resulting path
     /// into the session's active pane (no auto-run — the M11 decision). Returns

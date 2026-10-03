@@ -30,10 +30,13 @@ enum TmuxCommands {
     /// The same two steps for a prompt that is then submitted. `-p` makes the
     /// text one bracketed paste and `-r` keeps its newlines as newlines, so no
     /// byte of it is read as a key press and a newline cannot submit it early.
-    static func pastePrompt(session: String) -> (load: [String], paste: [String]) {
+    /// `buffer` names the tmux buffer: two pastes that may overlap need one each.
+    static func pastePrompt(
+        session: String, buffer: String = sendBuffer
+    ) -> (load: [String], paste: [String]) {
         (
-            load: ["load-buffer", "-b", sendBuffer, "-"],
-            paste: ["paste-buffer", "-p", "-r", "-d", "-b", sendBuffer, "-t", session]
+            load: ["load-buffer", "-b", buffer, "-"],
+            paste: ["paste-buffer", "-p", "-r", "-d", "-b", buffer, "-t", session]
         )
     }
 

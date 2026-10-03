@@ -137,7 +137,10 @@ final class MobileAPITests: XCTestCase {
             ("POST", "/api/manager/text", .manager),
             ("POST", "/api/voice", .voice),
             ("POST", "/api/threads/localhost%3A1/text", .replies),
-            ("POST", "/api/threads/localhost%3A1/key", .replies),
+            ("GET", "/api/threads/localhost%3A1/prompt", .replies),
+            ("POST", "/api/threads/localhost%3A1/answer", .replies),
+            ("GET", "/api/threads/localhost%3A1/commands", .replies),
+            ("POST", "/api/threads/localhost%3A1/key", .keyBar),
             ("POST", "/api/threads/localhost%3A1/upload", .upload),
             ("GET", "/api/threads/localhost%3A1/artifacts", .artifacts),
             ("GET", "/api/threads/localhost%3A1/file?path=a", .artifacts),
@@ -156,9 +159,14 @@ final class MobileAPITests: XCTestCase {
 
     func testAnEnabledCapabilityReachesTheRouterAndOthersStayOff() {
         let config = MobileConfig(capabilities: [.replies])
-        // Its routes are not built yet, so the router answers, not the gate.
         XCTAssertEqual(
             MobileAPI.route(request("/api/threads/localhost%3A1/text", method: "POST"), config: config),
+            .api(.text(id: "localhost:1")))
+        // A feature whose routes are not built yet: the router answers, not the gate.
+        XCTAssertEqual(
+            MobileAPI.route(
+                request("/api/threads/localhost%3A1/artifacts"),
+                config: MobileConfig(capabilities: [.artifacts])),
             .notFound)
         XCTAssertEqual(
             MobileAPI.route(request("/api/threads/localhost%3A1/upload", method: "POST"), config: config),

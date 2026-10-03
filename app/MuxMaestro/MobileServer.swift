@@ -15,6 +15,11 @@ final class MobileServer {
         var screen: (MobileThread) -> String?
         /// The thread's transcript file, and whether it is a Codex rollout.
         var transcript: (MobileThread) -> (path: String, codex: Bool)?
+        /// The thread's pane, to type into. nil where nothing can be typed
+        /// (the dev server): the reply routes then answer 503.
+        var pane: (MobileThread) -> MobilePaneIO? = { _ in nil }
+        /// The home folder whose skills and commands the `/` list reads.
+        var home = NSHomeDirectory()
     }
 
     /// The manager pane, as the app reaches it. nil where there is no manager
@@ -111,6 +116,9 @@ final class MobileServer {
     /// The voice turn in flight. One at a time: the Mac has one engine.
     private var voiceTurn: MobileVoiceTurn?
     private var voiceStarting = false
+    /// Threads with a write on its way to their pane. One at a time per
+    /// thread: a paste and its Enter are not interleaved with another's.
+    private var writing = Set<String>()
     /// The last `manager` event's state, without the reply text: a reply
     /// grows by `manager-delta` events, not by sending the board again.
     private var managerKey = MobileManager.liveJSON(
@@ -517,6 +525,122 @@ final class MobileServer {
             }
             voice.warm(request.query["speaker"] == "1")
             send(.json(["ok": true]), to: client, head: head)
+        case .text(let id):
+            // The one filter for text that is pasted into a terminal.
+            let field = MobileManager.text(in: request.body)
+            guard case .value(let text) = field else {
+                return send(field.refusal ?? .error(400, "bad_request"), to: client, head: head)
+            }
+            write(to: id, client: client) { thread, io, status in
+                MobileReply.send(text, target: thread.pane, io: io, status: status)
+            }
+        case .key(let id):
+            guard let key = MobileReply.key(in: request.body) else {
+                return send(.error(400, "bad_key"), to: client, head: head)
+            }
+            guard let (thread, io) = pane(id, client: client) else { return }
+            reply(to: client) { MobileReply.press(key, target: thread.pane, io: io) }
+        case .prompt(let id):
+            guard let (_, io) = pane(id, client: client) else { return }
+            reply(to: client) { [weak self] in
+                let prompt = MobileReply.prompt(status: self?.status(of: id, io: io), io: io)
+                return .json(["prompt": prompt.map { $0.json as Any } ?? NSNull()])
+            }
+        case .answer(let id):
+            guard let answer = MobileReply.answer(in: request.body) else {
+                return send(.error(400, "bad_request"), to: client, head: head)
+            }
+            write(to: id, client: client) { thread, io, status in
+                MobileReply.answer(
+                    prompt: answer.prompt, option: answer.option, target: thread.pane, io: io,
+                    status: status())
+            }
+        case .commands(let id):
+            guard let thread = snapshot.thread(id: id) else {
+                return send(.error(404, "not_found"), to: client, head: head)
+            }
+            reply(to: client) { [sources] in
+                .json(["commands": MobileCommands.list(for: thread, home: sources.home).map(\.json)])
+            }
+        case .upload(let id, let name):
+            let limit = config.uploadLimit
+            write(to: id, client: client) { thread, io, status in
+                MobileReply.upload(
+                    request.body, name: name, thread: thread, io: io, limit: limit, status: status)
+            }
+        }
+    }
+
+    // MARK: Replies
+
+    /// The thread `id` names in the live tree and its pane. Answers the client
+    /// and returns nil when there is none: a stale id never reaches a pane.
+    private func pane(_ id: String, client: Client) -> (MobileThread, MobilePaneIO)? {
+        guard let thread = snapshot.thread(id: id) else {
+            send(.error(404, "not_found"), to: client, head: false)
+            return nil
+        }
+        guard let io = sources.pane(thread) else {
+            send(.error(503, "unavailable", message: MobileReply.unreachable), to: client, head: false)
+            return nil
+        }
+        return (thread, io)
+    }
+
+    /// The status of thread `id` now: its row in the latest tree, then the
+    /// pane's own newer state. nil once the thread has gone. Blocks on the
+    /// server queue, so it is never called from it.
+    private func status(of id: String, io: MobilePaneIO) -> AttentionStatus? {
+        queue.sync { snapshot.thread(id: id) }.map(io.status)
+    }
+
+    /// Run one write to a thread's pane off the server queue. `body` gets the
+    /// thread, its pane and the status to ask again before it commits.
+    private func write(
+        to id: String, client: Client,
+        _ body: @escaping (MobileThread, MobilePaneIO, @escaping () -> AttentionStatus?) -> MobileResponse
+    ) {
+        guard let (thread, io) = pane(id, client: client) else { return }
+        guard writing.insert(id).inserted else {
+            return send(.error(409, "busy", message: MobileReply.sending), to: client, head: false)
+        }
+        work.async { [weak self, weak client] in
+            let response = body(thread, io) { self?.status(of: id, io: io) }
+            self?.queue.async {
+                guard let self else { return }
+                self.writing.remove(id)
+                guard let client, self.clients[ObjectIdentifier(client)] != nil else { return }
+                self.send(response, to: client, head: false)
+            }
+        }
+    }
+
+    /// A voice take's text into a thread: the same send as typed text. With
+    /// `follow`, the reply is then read from the thread's transcript.
+    private func threadTurn(
+        _ text: String, thread: MobileThread, io: MobilePaneIO, follow: Bool,
+        onDelta: @escaping (String) -> Void, completion: @escaping (ManagerTurnOutcome) -> Void
+    ) {
+        let id = thread.id
+        queue.async { [self] in
+            guard writing.insert(id).inserted else { return completion(.refused(MobileReply.sending)) }
+            work.async { [self] in
+                let status = { [weak self] in self?.status(of: id, io: io) }
+                let file = follow && thread.hasChat ? sources.transcript(thread) : nil
+                let turn = file.map { file in
+                    MobileThreadTurn(
+                        read: { MobileChat.read(path: file.path, codex: file.codex, after: $0) },
+                        status: status)
+                }
+                turn?.mark()
+                let response = MobileReply.send(text, target: thread.pane, io: io, status: status)
+                queue.async { self.writing.remove(id) }
+                guard response.status == 200 else {
+                    return completion(.refused(MobileReply.message(of: response)))
+                }
+                guard let turn else { return completion(.done(reply: "")) }
+                turn.follow(onDelta: onDelta, completion: completion)
+            }
         }
     }
 
@@ -600,12 +724,21 @@ final class MobileServer {
         guard let ask = MobileVoiceRequest(query: request.query) else {
             return .error(400, "bad_request")
         }
-        // A take into a thread needs the reply path, which is not built yet.
-        guard ask.target == .manager else {
-            return .error(400, "unsupported_target", message: MobileVoice.managerOnly)
+        switch ask.target {
+        case .manager:
+            guard config.allows(.manager) else { return .error(403, "disabled") }
+            guard manager != nil else {
+                return .error(503, "unavailable", message: MobileVoice.unavailable)
+            }
+        case .thread(let id):
+            // A take into a thread types into its pane: the Replies switch.
+            guard config.allows(.replies) else { return .error(403, "disabled") }
+            guard let thread = snapshot.thread(id: id) else { return .error(404, "not_found") }
+            guard sources.pane(thread) != nil else {
+                return .error(503, "unavailable", message: MobileReply.unreachable)
+            }
         }
-        guard config.allows(.manager) else { return .error(403, "disabled") }
-        guard let voice, manager != nil else {
+        guard let voice else {
             return .error(503, "unavailable", message: MobileVoice.unavailable)
         }
         guard voice.speech.modelsReady else {
@@ -651,7 +784,11 @@ final class MobileServer {
     /// then one `end`.
     private func startVoice(_ request: MobileRequest, client: Client) {
         if let refusal = voiceRefusal(request) { return send(refusal, to: client, head: false) }
-        guard let ask = MobileVoiceRequest(query: request.query), let voice, let manager else { return }
+        guard let ask = MobileVoiceRequest(query: request.query), let voice else { return }
+        if case .thread(let id) = ask.target {
+            return startThreadVoice(request, id: id, speaker: ask.speaker, voice: voice, client: client)
+        }
+        guard let manager else { return }
         voiceStarting = true
         work.async { [weak self, weak client] in
             let take = MobileVoice.take(wav: request.body)
@@ -684,15 +821,54 @@ final class MobileServer {
         }
     }
 
-    /// Replay: read the manager's last reply again. It answers with the same
+    /// One voice take into a thread. The pane is asked first, so a take into
+    /// a pane that is busy or on a prompt costs nothing and types nothing.
+    private func startThreadVoice(
+        _ request: MobileRequest, id: String, speaker: Bool, voice: Voice, client: Client
+    ) {
+        guard let thread = snapshot.thread(id: id), let io = sources.pane(thread) else { return }
+        voiceStarting = true
+        work.async { [weak self, weak client] in
+            let take = MobileVoice.take(wav: request.body)
+            let refusal = MobileReply.refusal(status: self?.status(of: id, io: io), screen: io.screen)
+            self?.queue.async {
+                guard let self else { return }
+                self.voiceStarting = false
+                guard let client, self.clients[ObjectIdentifier(client)] != nil else { return }
+                if let refusal { return self.send(refusal, to: client, head: false) }
+                guard case .samples(let samples) = take else {
+                    if case .refused(let response) = take { self.send(response, to: client, head: false) }
+                    return
+                }
+                self.voiceStream(to: client, voice: voice, speaker: speaker)
+                    .start(samples: samples) { [weak self] text, onDelta, completion in
+                        guard let self else { return completion(.unreachable(MobileReply.unreachable)) }
+                        self.threadTurn(
+                            text, thread: thread, io: io, follow: speaker, onDelta: onDelta,
+                            completion: completion)
+                    }
+            }
+        }
+    }
+
+    /// Replay: read the target's last reply again. It answers with the same
     /// stream as a take, without a transcript.
     private func startReplay(_ request: MobileRequest, client: Client) {
         if let refusal = voiceRefusal(request) { return send(refusal, to: client, head: false) }
-        guard let voice, let manager else { return }
+        guard let ask = MobileVoiceRequest(query: request.query), let voice else { return }
+        let transcript: () -> (path: String, codex: Bool)?
+        switch ask.target {
+        case .manager:
+            guard let manager else { return }
+            transcript = { manager.pane().transcript.map { ($0, false) } }
+        case .thread(let id):
+            guard let thread = snapshot.thread(id: id) else { return }
+            transcript = { [sources] in thread.hasChat ? sources.transcript(thread) : nil }
+        }
         voiceStarting = true
         work.async { [weak self, weak client] in
-            let reply = MobileVoice.lastReply(in: manager.pane().transcript
-                .flatMap { MobileChat.read(path: $0, codex: false, after: nil) })
+            let reply = MobileVoice.lastReply(in: transcript()
+                .flatMap { MobileChat.read(path: $0.path, codex: $0.codex, after: nil) })
             self?.queue.async {
                 guard let self else { return }
                 self.voiceStarting = false

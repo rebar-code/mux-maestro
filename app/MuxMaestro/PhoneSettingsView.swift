@@ -13,6 +13,7 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
     /// A feature's switch was flipped.
     var onCapability: ((MobileCapability, Bool) -> Void)?
     var onVoice: ((MobileVoiceDefaults) -> Void)?
+    var onUploadLimit: ((Int) -> Void)?
     /// "New Pairing Code" was confirmed.
     var onRotate: (() -> Void)?
     /// The view's height changed; the window refits.
@@ -27,6 +28,10 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
     private let voice = NSSwitch()
     private let voiceMode = NSPopUpButton()
     private let voiceSpeaker = NSPopUpButton()
+    private let replies = NSSwitch()
+    private let keyBar = NSSwitch()
+    private let upload = NSSwitch()
+    private let uploadLimit = NSPopUpButton()
     private let url = NSTextField(labelWithString: "")
     private let copy = NSButton(title: "Copy Pairing Link", target: nil, action: nil)
     private let rotate = NSButton(title: "New Pairing Code…", target: nil, action: nil)
@@ -42,6 +47,7 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
     ]
     private static let voiceModes: [(MobileVoiceMode, String)] = [(.manual, "Manual"), (.auto, "Auto")]
     private static let voiceSpeakers: [(Bool, String)] = [(true, "Two-way"), (false, "Input only")]
+    private static let uploadLimits = MobileReply.uploadLimits.map { ($0, "\($0 / 1_048_576) MB") }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -55,7 +61,7 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
         status.textColor = theme.muted
         status.lineBreakMode = .byTruncatingTail
         status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        for control in [toggle, keepAwake, manager, voice] {
+        for control in [toggle, keepAwake, manager, voice, replies, keyBar, upload] {
             control.controlSize = .small
             control.target = self
         }
@@ -92,6 +98,14 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
             popup.target = self
             popup.action = #selector(voicePicked)
         }
+        replies.action = #selector(repliesToggled)
+        keyBar.action = #selector(keyBarToggled)
+        upload.action = #selector(uploadToggled)
+        uploadLimit.controlSize = .small
+        uploadLimit.font = .systemFont(ofSize: 12)
+        uploadLimit.addItems(withTitles: Self.uploadLimits.map(\.1))
+        uploadLimit.target = self
+        uploadLimit.action = #selector(uploadLimitPicked)
 
         let grid = NSGridView()
         grid.rowSpacing = 8
@@ -106,6 +120,10 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
             ("Voice", NSGridCell.emptyContentView, voice),
             ("Voice mode", NSGridCell.emptyContentView, voiceMode),
             ("Voice speaker", NSGridCell.emptyContentView, voiceSpeaker),
+            ("Replies", NSGridCell.emptyContentView, replies),
+            ("Key bar", NSGridCell.emptyContentView, keyBar),
+            ("File upload", NSGridCell.emptyContentView, upload),
+            ("Upload limit", NSGridCell.emptyContentView, uploadLimit),
         ]
         for (title, middle, control) in rows {
             let name = NSTextField(labelWithString: title)
@@ -118,7 +136,7 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
         grid.column(at: 2).xPlacement = .trailing
         grid.row(at: 0).rowAlignment = .none
         grid.row(at: 0).yPlacement = .center
-        for row in [3, 4, 5] {
+        for row in [3, 4, 5, 8, 9, 10] {
             grid.row(at: row).rowAlignment = .none
             grid.row(at: row).yPlacement = .center
         }
@@ -180,6 +198,11 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
         let defaults = Settings.phoneVoice()
         voiceMode.selectItem(at: Self.voiceModes.firstIndex { $0.0 == defaults.mode } ?? 0)
         voiceSpeaker.selectItem(at: Self.voiceSpeakers.firstIndex { $0.0 == defaults.speaker } ?? 0)
+        replies.state = Settings.phoneCapability(.replies) ? .on : .off
+        keyBar.state = Settings.phoneCapability(.keyBar) ? .on : .off
+        upload.state = Settings.phoneCapability(.upload) ? .on : .off
+        let limit = Settings.phoneUploadLimit()
+        uploadLimit.selectItem(at: Self.uploadLimits.firstIndex { $0.0 == limit } ?? 0)
     }
 
     func render(_ state: PhoneLink.State) {
@@ -229,6 +252,24 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
 
     @objc private func voiceToggled() {
         onCapability?(.voice, voice.state == .on)
+    }
+
+    @objc private func repliesToggled() {
+        onCapability?(.replies, replies.state == .on)
+    }
+
+    @objc private func keyBarToggled() {
+        onCapability?(.keyBar, keyBar.state == .on)
+    }
+
+    @objc private func uploadToggled() {
+        onCapability?(.upload, upload.state == .on)
+    }
+
+    @objc private func uploadLimitPicked() {
+        let index = uploadLimit.indexOfSelectedItem
+        guard Self.uploadLimits.indices.contains(index) else { return }
+        onUploadLimit?(Self.uploadLimits[index].0)
     }
 
     @objc private func voicePicked() {

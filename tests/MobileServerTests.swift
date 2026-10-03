@@ -11,6 +11,8 @@ final class MobileServerTests: XCTestCase {
     private var root: URL!
     private var transcript: URL!
     private let manager = FakeManager()
+    private let pane = FakePane()
+    private var home: URL { root.appendingPathComponent("home") }
 
     /// The manager pane, scripted. The server calls it from its own queues.
     private final class FakeManager {
@@ -66,7 +68,8 @@ final class MobileServerTests: XCTestCase {
         let transcript = transcript!
         return MobileServer(staticRoot: root, sources: MobileServer.Sources(
             screen: { thread in thread.pane == "%12" ? "$ make test\nok\n\n\n" : nil },
-            transcript: { _ in (transcript.path, false) }), limits: limits, manager: manager.source)
+            transcript: { _ in (transcript.path, false) },
+            pane: { [pane] _ in pane.io }, home: home.path), limits: limits, manager: manager.source)
     }
 
     private func start(_ server: MobileServer) {
@@ -96,6 +99,7 @@ final class MobileServerTests: XCTestCase {
         var agent = TmuxPane(id: "%12", index: 0, command: "claude", title: "", active: true)
         agent.claudeSessionId = "c1"
         agent.attention = status
+        agent.path = "/Users/me/acme-app"
         let shell = TmuxPane(id: "%13", index: 0, command: "zsh", title: "", active: true)
         return MobileSnapshot.build([MobileHostInput(
             host: .local, colorHex: "#3291ff", reachability: .reachable, stats: nil,
@@ -691,5 +695,247 @@ final class MobileServerTests: XCTestCase {
         let text = exchange(raw) { $0.contains("event: manager") && $0.hasSuffix("\n\n") }
         XCTAssertTrue(text.contains(#""turn":{"prompt":"summarise the morning","reply":"All quiet"}"#))
         XCTAssertTrue(get("/api/manager").body.contains(#""reply":"All quiet""#))
+    }
+
+    // MARK: replies
+
+    private func repliesOn() {
+        server.configure(MobileConfig(capabilities: [.replies, .keyBar, .upload], uploadLimit: 64))
+        pane.status = .idle
+    }
+
+    private static let thread = "/api/threads/localhost%3A12"
+
+    /// Every write to a thread, with a body the route would take.
+    private var writes: [(path: String, body: String)] {
+        [
+            (Self.thread + "/text", #"{"text":"run the tests"}"#),
+            (Self.thread + "/key", #"{"key":"Enter"}"#),
+            (Self.thread + "/answer", #"{"prompt":"9f2c","option":1}"#),
+            (Self.thread + "/upload?name=notes.txt", "demo"),
+        ]
+    }
+
+    func testReplyRoutesAnswer403WhileTheirSwitchesAreOff() {
+        pane.status = .idle
+        for write in writes {
+            let refused = post(write.path, json: write.body)
+            XCTAssertEqual(refused.status, 403, write.path)
+            XCTAssertEqual(refused.body, #"{"error":"disabled"}"#, write.path)
+        }
+        XCTAssertEqual(get(Self.thread + "/prompt").status, 403)
+        XCTAssertEqual(get(Self.thread + "/commands").status, 403)
+
+        // Each switch opens its own routes and no other.
+        server.configure(MobileConfig(capabilities: [.replies]))
+        XCTAssertEqual(post(Self.thread + "/key", json: #"{"key":"Enter"}"#).status, 403)
+        XCTAssertEqual(post(Self.thread + "/upload?name=notes.txt", json: "demo").status, 403)
+        server.configure(MobileConfig(capabilities: [.keyBar, .upload, .manager, .voice]))
+        XCTAssertEqual(post(Self.thread + "/text", json: #"{"text":"run the tests"}"#).status, 403)
+        XCTAssertEqual(post(Self.thread + "/answer", json: #"{"prompt":"9f2c","option":1}"#).status, 403)
+        XCTAssertEqual(get(Self.thread + "/prompt").status, 403)
+        XCTAssertEqual(pane.argv.count, 0)
+        XCTAssertEqual(pane.copies.count, 0)
+    }
+
+    func testAReplyWriteWithoutThePairingTokenIsRefusedAndTypesNothing() {
+        repliesOn()
+        for write in writes {
+            for token in [nil, "wrong-token", ""] {
+                let refused = post(write.path, json: write.body, token: token)
+                XCTAssertEqual(refused.status, 401, write.path)
+                XCTAssertEqual(refused.body, #"{"error":"unpaired"}"#, write.path)
+            }
+        }
+        XCTAssertEqual(get(Self.thread + "/prompt", token: nil).status, 401)
+        XCTAssertEqual(get(Self.thread + "/commands", token: nil).status, 401)
+        XCTAssertEqual(pane.argv.count, 0)
+        XCTAssertEqual(pane.copies.count, 0)
+    }
+
+    func testAReplyWriteFromAnotherOriginIsRefusedAndTypesNothing() {
+        repliesOn()
+        for write in writes {
+            for refused in [
+                post(write.path, json: write.body, origin: "https://evil.example.com"),
+                // This Mac's name, but another `tailscale serve` port.
+                post(write.path, json: write.body, origin: "https://devmac.example.ts.net:8443"),
+                post(write.path, json: write.body, origin: "https://devmac.example.ts.net"),
+                post(write.path, json: write.body, origin: "http://devmac.example.ts.net:7433"),
+                post(write.path, json: write.body, origin: "http://127.0.0.1:\(port)"),
+                post(write.path, json: write.body, origin: nil),
+                post(write.path, json: write.body, writeHeader: false),
+            ] {
+                XCTAssertEqual(refused.status, 403, write.path)
+                XCTAssertEqual(refused.body, #"{"error":"forbidden"}"#, write.path)
+            }
+        }
+        XCTAssertEqual(pane.argv.count, 0)
+        XCTAssertEqual(pane.copies.count, 0)
+    }
+
+    func testATextIsPastedIntoItsThreadsPaneAndSubmitted() {
+        repliesOn()
+        let sent = post(Self.thread + "/text", json: #"{"text":"run the tests\nthen push"}"#)
+        XCTAssertEqual(sent.status, 200)
+        XCTAssertEqual(sent.body, #"{"ok":true}"#)
+        XCTAssertTrue(FakePane.sendArgv(pane.argv, target: "%12"), "\(pane.argv)")
+        XCTAssertEqual(pane.calls[1].stdin, "run the tests\nthen push")
+    }
+
+    func testAThreadTextWithAKeyPressOrOverTheSizeLimitTypesNothing() {
+        repliesOn()
+        for text in [#"a\u001b[Zb"#, #"a\u0003b"#, #"first\rsecond"#, #"a\u007fb"#, #"a\u009bZb"#, #"a\u0000b"#] {
+            let refused = post(Self.thread + "/text", json: #"{"text":"\#(text)"}"#)
+            XCTAssertEqual(refused.status, 400, text)
+            XCTAssertEqual(refused.body, #"{"error":"bad_request"}"#, text)
+        }
+        for body in ["{}", #"{"text":""}"#, #"{"text":7}"#, "run the tests"] {
+            XCTAssertEqual(post(Self.thread + "/text", json: body).status, 400, body)
+        }
+        let long = String(repeating: "a", count: MobileManager.maxTextBytes + 1)
+        let tooLong = post(Self.thread + "/text", json: #"{"text":"\#(long)"}"#)
+        XCTAssertEqual(tooLong.status, 413)
+        XCTAssertEqual(tooLong.body, #"{"error":"too_large"}"#)
+        XCTAssertEqual(pane.argv.count, 0)
+    }
+
+    func testFreeTextIntoABusyOrWaitingThreadIsRefused() {
+        repliesOn()
+        pane.status = .busy
+        let busy = post(Self.thread + "/text", json: #"{"text":"go on"}"#)
+        XCTAssertEqual(busy.status, 409)
+        XCTAssertEqual(busy.body, #"{"error":"busy","message":"Thread is busy"}"#)
+        pane.status = .waiting
+        let waiting = post(Self.thread + "/text", json: #"{"text":"go on"}"#)
+        XCTAssertEqual(waiting.status, 409)
+        XCTAssertEqual(waiting.body, #"{"error":"waiting","message":"Thread is waiting on a prompt"}"#)
+        // The tree's own status counts when the pane has no newer one.
+        pane.status = nil
+        XCTAssertEqual(post(Self.thread + "/text", json: #"{"text":"go on"}"#).status, 409)
+        XCTAssertEqual(pane.argv.count, 0)
+    }
+
+    func testAPromptThatComesUpBetweenThePasteAndTheEnterGetsNoEnter() {
+        repliesOn()
+        pane.statusAfterPaste = .waiting
+        let refused = post(Self.thread + "/text", json: #"{"text":"go on"}"#)
+        XCTAssertEqual(refused.status, 409)
+        XCTAssertEqual(pane.argv.map(\.first), ["copy-mode", "load-buffer", "paste-buffer"])
+    }
+
+    func testAStaleThreadIdIsA404AndTypesNothing() {
+        repliesOn()
+        for id in ["localhost%3A99", "devbox%3A12", "%2512", "..", "localhost%3A12%2F..%2F13"] {
+            let base = "/api/threads/\(id)"
+            XCTAssertEqual(post(base + "/text", json: #"{"text":"go on"}"#).status, 404, id)
+            XCTAssertEqual(post(base + "/key", json: #"{"key":"Enter"}"#).status, 404, id)
+            XCTAssertEqual(post(base + "/answer", json: #"{"prompt":"9f2c","option":1}"#).status, 404, id)
+            XCTAssertEqual(post(base + "/upload?name=notes.txt", json: "demo").status, 404, id)
+            XCTAssertEqual(get(base + "/prompt").status, 404, id)
+            XCTAssertEqual(get(base + "/commands").status, 404, id)
+        }
+        XCTAssertEqual(pane.argv.count, 0)
+        XCTAssertEqual(pane.copies.count, 0)
+    }
+
+    func testAKeyOffTheWhitelistIsRefusedAndAWhitelistedOneIsPressed() {
+        repliesOn()
+        for key in ["F1", "C-1", "M-a", "q", "0", "10", "Enter; kill-server", "-X", ""] {
+            let refused = post(Self.thread + "/key", json: #"{"key":"\#(key)"}"#)
+            XCTAssertEqual(refused.status, 400, key)
+            XCTAssertEqual(refused.body, #"{"error":"bad_key"}"#, key)
+        }
+        XCTAssertEqual(pane.argv.count, 0)
+
+        // A pane on a prompt, or at work, still takes a key: Escape backs out.
+        for (status, key) in [(AttentionStatus.waiting, "Escape"), (.busy, "C-c"), (.idle, "BTab"), (.idle, "3")] {
+            pane.status = status
+            XCTAssertEqual(post(Self.thread + "/key", json: #"{"key":"\#(key)"}"#).status, 200, key)
+        }
+        XCTAssertEqual(pane.argv, [
+            ["send-keys", "-t", "%12", "Escape"], ["send-keys", "-t", "%12", "C-c"],
+            ["send-keys", "-t", "%12", "BTab"], ["send-keys", "-t", "%12", "3"],
+        ])
+    }
+
+    func testAWaitingThreadShowsItsPromptAndTakesATappedAnswer() throws {
+        repliesOn()
+        pane.status = .waiting
+        pane.screen = DemoPrompt.permission
+        let shown = get(Self.thread + "/prompt")
+        XCTAssertEqual(shown.status, 200)
+        let prompt = try XCTUnwrap(
+            (JSONSerialization.jsonObject(with: Data(shown.body.utf8)) as? [String: Any])?["prompt"]
+                as? [String: Any])
+        XCTAssertEqual(prompt["kind"] as? String, "permission")
+        XCTAssertEqual(prompt["title"] as? String, "Bash command")
+        let id = try XCTUnwrap(prompt["id"] as? String)
+
+        // Free text is still refused; the tapped answer goes through.
+        XCTAssertEqual(post(Self.thread + "/text", json: #"{"text":"yes"}"#).status, 409)
+        XCTAssertEqual(post(Self.thread + "/answer", json: #"{"prompt":"\#(id)","option":4}"#).status, 400)
+        XCTAssertEqual(post(Self.thread + "/answer", json: #"{"prompt":"\#(id)","option":"1"}"#).status, 400)
+        XCTAssertEqual(pane.argv.count, 0)
+        XCTAssertEqual(post(Self.thread + "/answer", json: #"{"prompt":"\#(id)","option":2}"#).status, 200)
+        XCTAssertEqual(pane.argv, [["send-keys", "-t", "%12", "2"]])
+
+        // The pane moved to another prompt: the old card answers nothing.
+        pane.screen = DemoPrompt.question
+        let stale = post(Self.thread + "/answer", json: #"{"prompt":"\#(id)","option":1}"#)
+        XCTAssertEqual(stale.status, 409)
+        XCTAssertEqual(stale.body, #"{"error":"stale"}"#)
+        // A pane that is not waiting shows no prompt.
+        pane.status = .busy
+        XCTAssertEqual(get(Self.thread + "/prompt").body, #"{"prompt":null}"#)
+        XCTAssertEqual(pane.argv.count, 1)
+    }
+
+    func testAnUploadIsSavedInTheThreadsDirectoryUnderASafeName() {
+        repliesOn()
+        let saved = post(Self.thread + "/upload?name=..%2F..%2F.ssh%2Fauthorized_keys", json: "demo key")
+        XCTAssertEqual(saved.status, 200)
+        XCTAssertEqual(saved.body, #"{"ok":true,"pasted":true,"path":"\/Users\/me\/acme-app\/authorized_keys"}"#)
+        XCTAssertEqual(pane.copies.map(\.path), ["/Users/me/acme-app/authorized_keys"])
+        XCTAssertEqual(pane.copies.first?.data, Data("demo key".utf8))
+        XCTAssertEqual(pane.calls[1].stdin, "/Users/me/acme-app/authorized_keys ")
+        XCTAssertFalse(pane.argv.contains { $0.contains("Enter") })
+    }
+
+    func testAnUploadOverTheLimitOrIntoABusyThreadSavesNothing() {
+        repliesOn()
+        let big = post(Self.thread + "/upload?name=big.bin", json: String(repeating: "a", count: 65))
+        XCTAssertEqual(big.status, 413)
+        XCTAssertEqual(big.body, #"{"error":"too_large"}"#)
+        XCTAssertEqual(post(Self.thread + "/upload", json: "demo").status, 400)
+        XCTAssertEqual(post(Self.thread + "/upload?name=...", json: "demo").status, 400)
+        XCTAssertEqual(post(Self.thread + "/upload?name=a.txt", json: "").status, 400)
+        pane.status = .busy
+        XCTAssertEqual(post(Self.thread + "/upload?name=a.txt", json: "demo").status, 409)
+        pane.status = .waiting
+        XCTAssertEqual(post(Self.thread + "/upload?name=a.txt", json: "demo").status, 409)
+        XCTAssertEqual(pane.copies.count, 0)
+        XCTAssertEqual(pane.argv.count, 0)
+
+        // Past what any setting allows, the request is refused as it is read.
+        let raw = "POST \(Self.thread)/upload?name=a.bin HTTP/1.1\r\nHost: devmac.example.ts.net:7433\r\n"
+            + "Content-Length: \(MobileReply.maxUploadBytes + 1)\r\n\r\n"
+        XCTAssertTrue(exchange(raw, until: whole).hasPrefix("HTTP/1.1 413"))
+    }
+
+    func testListsAThreadsCommandsFromItsHomeAndTheBuiltIns() throws {
+        let skill = home.appendingPathComponent(".claude/skills/deploy")
+        try FileManager.default.createDirectory(at: skill, withIntermediateDirectories: true)
+        try Data("---\ndescription: Deploy to staging\n---\n".utf8)
+            .write(to: skill.appendingPathComponent("SKILL.md"))
+        repliesOn()
+        let listed = get(Self.thread + "/commands")
+        XCTAssertEqual(listed.status, 200)
+        let commands = try XCTUnwrap(
+            (JSONSerialization.jsonObject(with: Data(listed.body.utf8)) as? [String: Any])?["commands"]
+                as? [[String: Any]])
+        XCTAssertEqual(commands.first?["name"] as? String, "deploy")
+        XCTAssertEqual(commands.first?["description"] as? String, "Deploy to staging")
+        XCTAssertTrue(commands.contains { $0["name"] as? String == "compact" })
     }
 }

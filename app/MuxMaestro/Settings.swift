@@ -321,11 +321,23 @@ enum Settings {
         defaults.set(!voice.speaker, forKey: "phone.voice.inputOnly")
     }
 
+    /// The largest file the phone may upload, in bytes: one of
+    /// `MobileReply.uploadLimits`.
+    static func phoneUploadLimit(defaults: UserDefaults = .standard) -> Int {
+        let stored = defaults.integer(forKey: "phone.upload.maxBytes")
+        return MobileReply.uploadLimits.contains(stored) ? stored : MobileReply.defaultUploadLimit
+    }
+
+    static func setPhoneUploadLimit(_ bytes: Int, defaults: UserDefaults = .standard) {
+        defaults.set(bytes, forKey: "phone.upload.maxBytes")
+    }
+
     /// The phone settings as the server enforces them.
     static func phoneConfig(defaults: UserDefaults = .standard) -> MobileConfig {
         MobileConfig(
             capabilities: Set(MobileCapability.allCases.filter { phoneCapability($0, defaults: defaults) }),
             grouping: phoneGrouping(defaults: defaults),
-            voice: phoneVoice(defaults: defaults))
+            voice: phoneVoice(defaults: defaults),
+            uploadLimit: phoneUploadLimit(defaults: defaults))
     }
 }

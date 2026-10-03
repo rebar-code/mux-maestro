@@ -85,6 +85,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             transcript: { thread in
                 [thread.claudeSessionId, thread.codexSessionId].compactMap { $0 }
                     .compactMap { TranscriptTailReader.shared.transcript(sessionId: $0) }.first
+            },
+            pane: { [registry, agentStates = AgentStateReader()] thread in
+                registry.service(for: thread.host).phonePane(target: thread.pane) { latest in
+                    // The hooks' own rows, read now: newer than the tree.
+                    MobileReply.status(
+                        thread: latest, rows: agentStates.rows(),
+                        now: Int(Date().timeIntervalSince1970))
+                }
             }),
         manager: MobileServer.Manager(
             pane: { [weak self] in
@@ -971,6 +979,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             setup.phone.onVoice = { [weak self] voice in
                 Settings.setPhoneVoice(voice)
+                self?.mobileServer.configure(Settings.phoneConfig())
+            }
+            setup.phone.onUploadLimit = { [weak self] bytes in
+                Settings.setPhoneUploadLimit(bytes)
                 self?.mobileServer.configure(Settings.phoneConfig())
             }
             setup.phone.onRotate = { [weak self] in self?.phoneLink.rotateToken() }
