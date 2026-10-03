@@ -1,0 +1,685 @@
+#!/bin/sh
+# mux — the manager agent's only write path into MuxMaestro's shared SQLite DB.
+# The app reads/writes the same DB directly; the agent goes through this CLI so
+# every value is escaped in one place. It is also how the agent starts work:
+# `mux spin` runs the bundled spin.py and the resulting run shows up in
+# work_log, which `mux event` then keeps current. See AGENT.md for the contract.
+set -eu
+
+SQLITE=/usr/bin/sqlite3
+
+# DB lives beside this script's parent (installed at <home>/bin/mux, so
+# <home>/manager.db). MUX_MANAGER_DB overrides it (used by tests). Only resolve
+# the default path when no override is set, so a bare override never requires
+# the install layout to exist.
+if [ -n "${MUX_MANAGER_DB:-}" ]; then
+    DB=$MUX_MANAGER_DB
+else
+    DB=$(cd "$(dirname "$0")/.." && pwd)/manager.db
+fi
+
+usage() {
+    cat >&2 <<'EOF'
+usage: mux <command> …
+  mux sessions [--json]                      # survey every session the app sees
+  mux notify [--session S] [--host H] TEXT…
+  mux review add --key K --text T [--session S] [--host H] [--window N]
+                 [--severity info|warn|blocked]
+  mux review done --key K
+  mux review list
+  mux name --session S --window N NAME…      # name a local tmux window (sticks)
+  mux name --pane %ID TITLE…                 # set a local tmux pane's title
+  mux spin --repo PATH --branch B --session S [--base X] [--agent claude|codex]
+           [--prompt TEXT] [--name N] [--model M]  # start an agent in a worktree
+  mux event claude|codex                     # agent hook: reads the hook JSON on stdin
+  mux link SESSION_ID                        # link to the pane running a claude/codex thread
+  mux link --target T [--host H]             # link to a tmux target (session, session:window, %pane)
+  mux help
+EOF
+    exit 2
+}
+
+die() { printf 'mux: %s\n' "$1" >&2; exit 2; }
+
+# Escape a value for single-quoted SQL by doubling embedded single quotes.
+sq() { printf %s "$1" | sed "s/'/''/g"; }
+
+now() { date +%s; }
+
+# Every invocation gets a 3s busy timeout via the CLI's `.timeout` dot command
+# (the silent equivalent of `PRAGMA busy_timeout=3000`; the PRAGMA statement
+# would echo its value onto stdout and corrupt `review list` output). SQL is fed
+# on stdin so the dot command is honored.
+sql() { printf '.timeout 3000\n%s\n' "$1" | "$SQLITE" "$DB"; }
+
+SCHEMA="PRAGMA journal_mode=WAL;
+CREATE TABLE IF NOT EXISTS review (
+  key TEXT PRIMARY KEY,
+  host TEXT NOT NULL DEFAULT 'localhost',
+  session TEXT NOT NULL DEFAULT '',
+  window INTEGER,
+  severity TEXT NOT NULL DEFAULT 'info',
+  text TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  dismissed INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS notifications (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  host TEXT NOT NULL DEFAULT 'localhost',
+  session TEXT NOT NULL DEFAULT '',
+  text TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  seen INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS sessions (
+  name TEXT NOT NULL,
+  host TEXT NOT NULL DEFAULT 'localhost',
+  attached INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'inactive',
+  windows INTEGER NOT NULL DEFAULT 0,
+  panes INTEGER NOT NULL DEFAULT 0,
+  cwd TEXT NOT NULL DEFAULT '',
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (host, name)
+);
+CREATE TABLE IF NOT EXISTS agent_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  event TEXT NOT NULL,
+  cwd TEXT NOT NULL DEFAULT '',
+  pane TEXT NOT NULL DEFAULT '',
+  summary TEXT NOT NULL DEFAULT '',
+  ts INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS agent_events_session ON agent_events(session_id, id);
+CREATE INDEX IF NOT EXISTS agent_events_ts ON agent_events(ts);
+CREATE TABLE IF NOT EXISTS agent_state (
+  session_id TEXT PRIMARY KEY,
+  agent TEXT NOT NULL,
+  state TEXT NOT NULL,
+  reason TEXT NOT NULL DEFAULT '',
+  pane TEXT NOT NULL DEFAULT '',
+  cwd TEXT NOT NULL DEFAULT '',
+  since INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS work_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL DEFAULT '',   -- claude/codex id; '' until the agent's first event
+  agent TEXT NOT NULL DEFAULT '',        -- claude | codex | ''
+  repo TEXT NOT NULL DEFAULT '',         -- basename of the main checkout (worktree-aware)
+  branch TEXT NOT NULL DEFAULT '',
+  prs TEXT NOT NULL DEFAULT '',          -- @mm_prs verbatim: space-separated numbers
+  host TEXT NOT NULL DEFAULT 'localhost',
+  session TEXT NOT NULL DEFAULT '',      -- tmux session name
+  window INTEGER,                        -- tmux window index
+  pane TEXT NOT NULL DEFAULT '',         -- %id
+  cwd TEXT NOT NULL DEFAULT '',
+  last_state TEXT NOT NULL DEFAULT '',   -- spawned | idle | busy | waiting | done | ended
+  first_seen INTEGER NOT NULL,
+  last_seen INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS work_log_session ON work_log(session_id) WHERE session_id <> '';
+CREATE INDEX IF NOT EXISTS work_log_last_seen ON work_log(last_seen);"
+
+init_db() {
+    printf '.timeout 3000\n%s\n' "$SCHEMA" | "$SQLITE" "$DB" >/dev/null
+}
+
+# Rows older than this are pruned whenever a session starts.
+EVENTS_KEEP_SECONDS=1209600  # 14 days
+# A work_log row outlives the window the work ran in, so it is kept far longer
+# than the raw events: it is the record of what was worked on, not of a turn.
+WORK_LOG_KEEP_SECONDS=7776000  # 90 days
+
+# Gather what work_log stores about a run beyond the event itself: its tmux
+# window and PR tags, and the repo and branch of the directory the agent is in.
+# Sets tsession, twindow, prs, have_tmux, repo and branch. Called only for events
+# that are not part of the per-tool storm, and kept to one tmux call and zero git
+# subprocesses, because this is the agent's hook path.
+work_log_context() {
+    tsession=""
+    twindow=""
+    prs=""
+    have_tmux=0
+    repo=""
+    branch=""
+    tab=$(printf '\t')
+
+    # One call for all three: a second one would double the hook's tmux cost.
+    if [ -n "$pane" ] && TMUX_BIN=$(command -v tmux); then
+        ctx=$("$TMUX_BIN" display-message -p -t "$pane" \
+              "#{session_name}$tab#{window_index}$tab#{@mm_prs}" 2>/dev/null) || ctx=""
+        if [ -n "$ctx" ]; then
+            have_tmux=1
+            IFS="$tab" read -r tsession twindow prs <<CTX
+$ctx
+CTX
+        fi
+    fi
+
+    # The agent's cwd, lifted out of the JSON text rather than parsed: the SQL
+    # below needs it before sqlite3 runs. A path holding a backslash is really
+    # escaped JSON, so treat it as unknown instead of unescaping it here.
+    cwd_dir=""
+    case "$hook" in
+        *'"cwd":"'*) cwd_dir=${hook#*'"cwd":"'}; cwd_dir=${cwd_dir%%'"'*};;
+        *'"cwd": "'*) cwd_dir=${hook#*'"cwd": "'}; cwd_dir=${cwd_dir%%'"'*};;
+    esac
+    # Foundation and PHP escape every slash as `\/`; that one escape is undone
+    # (only when present, so the common path stays subprocess-free). Anything
+    # else escaped is left unknown.
+    case "$cwd_dir" in *'\/'*) cwd_dir=$(printf %s "$cwd_dir" | sed 's#\\/#/#g');; esac
+    case "$cwd_dir" in *\\*) cwd_dir="";; esac
+
+    # Walk up to the checkout, in parameter expansion only.
+    d=$cwd_dir
+    while [ -n "$d" ] && [ ! -e "$d/.git" ]; do
+        case "$d" in */?*) d=${d%/*};; *) d="";; esac
+    done
+    [ -n "$d" ] || return 0
+
+    head=""
+    if [ -d "$d/.git" ]; then
+        read -r head 2>/dev/null < "$d/.git/HEAD" || :
+        repo=${d##*/}
+    else
+        # In a worktree `.git` is a file pointing at the main checkout's
+        # .git/worktrees/<name>, which is where this branch's HEAD lives. The
+        # repo is the main checkout's name, not the pooled worktree's.
+        first=""
+        read -r first 2>/dev/null < "$d/.git" || :
+        case "$first" in
+            'gitdir: '*)
+                gitdir=${first#gitdir: }
+                read -r head 2>/dev/null < "$gitdir/HEAD" || :
+                case "$gitdir" in
+                    */.git/worktrees/*) main=${gitdir%/.git/worktrees/*}; repo=${main##*/};;
+                    *) repo=${d##*/};;
+                esac;;
+        esac
+    fi
+    case "$head" in 'ref: refs/heads/'*) branch=${head#ref: refs/heads/};; esac
+    return 0
+}
+
+# One agent hook firing (Claude Code or Codex): log the event to agent_events
+# and move the session's agent_state. Installed by scripts/install-agent-hooks.py.
+#
+# This runs on every tool call of every agent, so it must never slow one down
+# or break one: one sqlite3 run, no network, nothing on stdout (Claude Code adds
+# SessionStart/UserPromptSubmit stdout to the model's context), and exit 0 on
+# every path — exit 2 would block the agent's prompt or tool call.
+#
+# The hook JSON is fed into a SQL string literal (quotes doubled by sed)
+# and parsed with SQLite's json functions, so nothing is parsed in shell.
+#
+# State per event:
+#   SessionStart → idle (not for source=compact: that fires mid-turn)
+#   UserPromptSubmit, PreToolUse, PostToolUse → busy
+#   PreToolUse of AskUserQuestion/ExitPlanMode, PermissionRequest,
+#     a permission/elicitation Notification, StopFailure → waiting
+#   Stop → done;  SessionEnd → ended;  any other event → logged, no state change
+# `since` is when the session entered its current state; it only moves when the
+# state changes, so the app can tell a new `done` from the same one seen again.
+#
+# The same run also maintains work_log, the durable record of what each agent
+# worked on. That needs the event name before any SQL runs, so the payload is
+# read into a variable once and matched with a glob; it is small (a prompt or a
+# tool input), and stdin can only be consumed once.
+cmd_event() {
+    agent=${1:-}
+    case "$agent" in claude|codex) ;; *) return 0;; esac
+    pane=${TMUX_PANE:-}
+    case "$pane" in *[!%0-9]*) pane="";; esac
+    hook=$(cat) || hook=""
+
+    # Both spacings, because the glob is all the shell knows about the JSON.
+    tool_event=0
+    case "$hook" in
+        *'"hook_event_name":"PreToolUse"'*|*'"hook_event_name": "PreToolUse"'*|\
+        *'"hook_event_name":"PostToolUse"'*|*'"hook_event_name": "PostToolUse"'*)
+            tool_event=1;;
+    esac
+    tsession=""; twindow=""; prs=""; have_tmux=0; repo=""; branch=""
+    [ "$tool_event" -eq 1 ] || work_log_context
+
+    # Values go into single-quoted SQL, so double any quote in them — but only
+    # pay for the sed when there is one, since this is the hook path. The pane
+    # and agent are already validated above.
+    case "$repo" in *"'"*) repo=$(sq "$repo");; esac
+    case "$branch" in *"'"*) branch=$(sq "$branch");; esac
+    case "$prs" in *"'"*) prs=$(sq "$prs");; esac
+    case "$tsession" in *"'"*) tsession=$(sq "$tsession");; esac
+    case "$twindow" in
+        ''|*[!0-9]*) twindow=""; twindow_sql=NULL;;
+        *) twindow_sql=$twindow;;
+    esac
+    {
+        printf '.timeout 1000\n%s\n' "$SCHEMA"
+        printf "CREATE TEMP TABLE hook(j TEXT);\nINSERT INTO hook VALUES('"
+        printf %s "$hook" | sed "s/'/''/g"
+        printf "');\n"
+        cat <<EOF
+CREATE TEMP VIEW h AS SELECT
+  CAST(json_extract(j, '\$.session_id') AS TEXT) AS sid,
+  json_extract(j, '\$.hook_event_name') AS ev,
+  COALESCE(json_extract(j, '\$.cwd'), '') AS cwd,
+  COALESCE(json_extract(j, '\$.tool_name'), '') AS tool,
+  COALESCE(json_extract(j, '\$.tool_input.command'), json_extract(j, '\$.tool_input.file_path'),
+           json_extract(j, '\$.tool_input.pattern'), json_extract(j, '\$.tool_input.url'),
+           json_extract(j, '\$.tool_input.description'), '') AS detail,
+  json_extract(j, '\$.source') AS source,
+  json_extract(j, '\$.notification_type') AS ntype,
+  CASE json_extract(j, '\$.hook_event_name')
+    WHEN 'SessionStart' THEN json_extract(j, '\$.source')
+    WHEN 'UserPromptSubmit' THEN json_extract(j, '\$.prompt')
+    WHEN 'Notification' THEN json_extract(j, '\$.message')
+    WHEN 'Stop' THEN json_extract(j, '\$.last_assistant_message')
+    WHEN 'StopFailure' THEN json_extract(j, '\$.error')
+    WHEN 'SessionEnd' THEN json_extract(j, '\$.reason')
+  END AS text
+FROM hook WHERE json_valid(j);
+CREATE TEMP VIEW e AS SELECT sid, ev, cwd,
+  CASE ev
+    WHEN 'SessionStart' THEN CASE WHEN source = 'compact' THEN NULL ELSE 'idle' END
+    WHEN 'UserPromptSubmit' THEN 'busy'
+    WHEN 'PreToolUse' THEN
+      CASE WHEN tool IN ('AskUserQuestion', 'ExitPlanMode') THEN 'waiting' ELSE 'busy' END
+    WHEN 'PostToolUse' THEN 'busy'
+    WHEN 'PermissionRequest' THEN 'waiting'
+    WHEN 'Notification' THEN
+      CASE WHEN ntype IN ('permission_prompt', 'elicitation_dialog', 'elicitation_url_dialog')
+           THEN 'waiting' END
+    WHEN 'Stop' THEN 'done'
+    WHEN 'StopFailure' THEN 'waiting'
+    WHEN 'SessionEnd' THEN 'ended'
+  END AS state,
+  substr(replace(replace(COALESCE(
+    CASE WHEN ev IN ('PreToolUse', 'PostToolUse', 'PermissionRequest')
+         THEN tool || CASE WHEN detail <> '' THEN ': ' || detail ELSE '' END
+         ELSE text END, ''), char(10), ' '), char(13), ' '), 1, 200) AS summary
+FROM h WHERE sid IS NOT NULL AND sid <> '' AND ev IS NOT NULL;
+BEGIN IMMEDIATE;
+INSERT INTO agent_events(agent, session_id, event, cwd, pane, summary, ts)
+SELECT '$agent', sid, ev, cwd, '$pane', summary, unixepoch() FROM e;
+INSERT INTO agent_state(session_id, agent, state, reason, pane, cwd, since, updated_at)
+SELECT sid, '$agent', state, summary, '$pane', cwd, unixepoch(), unixepoch()
+FROM e WHERE state IS NOT NULL
+ON CONFLICT(session_id) DO UPDATE SET
+  agent = excluded.agent,
+  since = CASE WHEN agent_state.state = excluded.state THEN agent_state.since
+               ELSE excluded.since END,
+  state = excluded.state,
+  reason = excluded.reason,
+  pane = CASE WHEN excluded.pane <> '' THEN excluded.pane ELSE agent_state.pane END,
+  cwd = CASE WHEN excluded.cwd <> '' THEN excluded.cwd ELSE agent_state.cwd END,
+  updated_at = excluded.updated_at;
+-- A run started by \`mux spin\` already has a \`spawned\` row, keyed by the pane the
+-- agent was launched into and waiting for a session id. The agent's first event
+-- claims the newest such row, so the log keeps the repo and branch it was
+-- started on even before the agent says a word. \`EXISTS (SELECT 1 FROM e)\` is
+-- what keeps an unparseable payload from claiming a row with a NULL id.
+UPDATE work_log SET session_id = (SELECT sid FROM e), agent = '$agent'
+WHERE EXISTS (SELECT 1 FROM e)
+  AND id = (SELECT max(id) FROM work_log
+            WHERE session_id = '' AND pane = '$pane' AND '$pane' <> '')
+  AND NOT EXISTS (SELECT 1 FROM work_log WHERE session_id = (SELECT sid FROM e));
+INSERT INTO work_log(session_id, agent, repo, branch, prs, host, session, window,
+                     pane, cwd, last_state, first_seen, last_seen)
+SELECT sid, '$agent', '$repo', '$branch', '$prs', 'localhost', '$tsession', $twindow_sql,
+       '$pane', cwd, COALESCE(state, ''), unixepoch(), unixepoch()
+FROM e WHERE NOT EXISTS (SELECT 1 FROM work_log WHERE session_id = e.sid);
+-- Only overwrite what this event actually knows: the tool-event path gathers no
+-- tmux or git context, and an empty value there means unknown, not cleared. PR
+-- tags are the exception — they are replaced whenever the tmux call worked, so
+-- removing a tag removes it here too.
+UPDATE work_log SET
+  last_state = COALESCE((SELECT state FROM e), last_state),
+  last_seen = unixepoch(),
+  agent = '$agent',
+  repo = CASE WHEN '$repo' <> '' THEN '$repo' ELSE repo END,
+  branch = CASE WHEN '$branch' <> '' THEN '$branch' ELSE branch END,
+  prs = CASE WHEN $have_tmux THEN '$prs' ELSE prs END,
+  session = CASE WHEN '$tsession' <> '' THEN '$tsession' ELSE session END,
+  window = CASE WHEN '$twindow' <> '' THEN $twindow_sql ELSE window END,
+  pane = CASE WHEN '$pane' <> '' THEN '$pane' ELSE pane END,
+  cwd = CASE WHEN (SELECT cwd FROM e) <> '' THEN (SELECT cwd FROM e) ELSE cwd END
+WHERE session_id = (SELECT sid FROM e);
+DELETE FROM agent_events WHERE (SELECT ev FROM e) = 'SessionStart'
+  AND ts < unixepoch() - $EVENTS_KEEP_SECONDS;
+DELETE FROM agent_state WHERE (SELECT ev FROM e) = 'SessionStart'
+  AND updated_at < unixepoch() - $EVENTS_KEEP_SECONDS;
+DELETE FROM work_log WHERE (SELECT ev FROM e) = 'SessionStart'
+  AND last_seen < unixepoch() - $WORK_LOG_KEEP_SECONDS;
+COMMIT;
+EOF
+    } | "$SQLITE" "$DB" >/dev/null 2>&1 || true
+    return 0
+}
+
+# A snapshot older than this is almost certainly a MuxMaestro that isn't
+# running: the app republishes on every tree refresh (~1.5s).
+SESSIONS_STALE_AFTER=60
+
+# Survey every session the app can see — local and remote — from the snapshot
+# MuxMaestro publishes on each tree refresh. This is a single local SQLite read
+# on purpose: fanning ssh out to every host from here is what made the old poll
+# slow. Status is active (working) | inactive (idle) | waiting (needs a reply).
+cmd_sessions() {
+    json=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --json) json=1; shift;;
+            --) shift; break;;
+            *) die "sessions: unexpected argument: $1";;
+        esac
+    done
+    [ $# -eq 0 ] || die "sessions: unexpected argument: $1"
+
+    updated=$(sql "SELECT COALESCE(MAX(updated_at), 0) FROM sessions;")
+    age=$(( $(now) - updated ))
+    [ "$updated" -gt 0 ] || age=-1
+
+    if [ "$json" -eq 1 ]; then
+        sql "SELECT json_object(
+  'updated_at', $updated,
+  'age_seconds', $age,
+  'stale', json(CASE WHEN $age < 0 OR $age > $SESSIONS_STALE_AFTER THEN 'true' ELSE 'false' END),
+  'sessions', COALESCE((SELECT json_group_array(json_object(
+      'name', name, 'host', host, 'status', status,
+      'attached', json(CASE WHEN attached THEN 'true' ELSE 'false' END),
+      'windows', windows, 'panes', panes, 'cwd', cwd))
+    FROM (SELECT * FROM sessions
+          ORDER BY CASE status WHEN 'waiting' THEN 0 WHEN 'active' THEN 1 ELSE 2 END,
+                   host, name)), json('[]'))
+);"
+    else
+        # status|name|host|attached|windows|panes|cwd — one line per session,
+        # most-urgent first, same pipe-separated shape as `review list`.
+        sql "SELECT status, name, host,
+  CASE WHEN attached THEN 'attached' ELSE 'detached' END, windows, panes, cwd
+FROM sessions
+ORDER BY CASE status WHEN 'waiting' THEN 0 WHEN 'active' THEN 1 ELSE 2 END,
+         host, name;"
+    fi
+
+    # Staleness goes to stderr so stdout stays parseable either way.
+    if [ "$age" -lt 0 ]; then
+        printf 'mux: no session snapshot yet — is MuxMaestro running?\n' >&2
+    elif [ "$age" -gt "$SESSIONS_STALE_AFTER" ]; then
+        printf 'mux: snapshot is %ss old — MuxMaestro may not be running\n' "$age" >&2
+    fi
+}
+
+cmd_notify() {
+    session=""
+    host="localhost"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --session) [ $# -ge 2 ] || die "--session requires a value"; session=$2; shift 2;;
+            --host) [ $# -ge 2 ] || die "--host requires a value"; host=$2; shift 2;;
+            --) shift; break;;
+            *) break;;
+        esac
+    done
+    text="$*"
+    [ -n "$text" ] || die "notify: empty text"
+    sql "INSERT INTO notifications(host, session, text, created_at)
+VALUES('$(sq "$host")', '$(sq "$session")', '$(sq "$text")', $(now));"
+}
+
+cmd_review_add() {
+    key=""
+    text=""
+    session=""
+    host="localhost"
+    window=""
+    severity="info"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --key) [ $# -ge 2 ] || die "--key requires a value"; key=$2; shift 2;;
+            --text) [ $# -ge 2 ] || die "--text requires a value"; text=$2; shift 2;;
+            --session) [ $# -ge 2 ] || die "--session requires a value"; session=$2; shift 2;;
+            --host) [ $# -ge 2 ] || die "--host requires a value"; host=$2; shift 2;;
+            --window) [ $# -ge 2 ] || die "--window requires a value"; window=$2; shift 2;;
+            --severity) [ $# -ge 2 ] || die "--severity requires a value"; severity=$2; shift 2;;
+            *) die "review add: unexpected argument: $1";;
+        esac
+    done
+    [ -n "$key" ] || die "review add: --key is required"
+    [ -n "$text" ] || die "review add: --text is required"
+    case "$severity" in
+        info|warn|blocked) ;;
+        *) die "review add: invalid severity: $severity (want info|warn|blocked)";;
+    esac
+    if [ -n "$window" ]; then
+        case "$window" in
+            ''|*[!0-9]*) die "review add: --window must be an integer";;
+        esac
+        window_sql=$window
+    else
+        window_sql=NULL
+    fi
+    sql "INSERT INTO review(key, host, session, window, severity, text, created_at, updated_at)
+VALUES('$(sq "$key")', '$(sq "$host")', '$(sq "$session")', $window_sql, '$(sq "$severity")', '$(sq "$text")', $(now), $(now))
+ON CONFLICT(key) DO UPDATE SET
+  host=excluded.host,
+  session=excluded.session,
+  window=excluded.window,
+  severity=excluded.severity,
+  text=excluded.text,
+  updated_at=excluded.updated_at;"
+}
+
+cmd_review_done() {
+    key=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --key) [ $# -ge 2 ] || die "--key requires a value"; key=$2; shift 2;;
+            *) die "review done: unexpected argument: $1";;
+        esac
+    done
+    [ -n "$key" ] || die "review done: --key is required"
+    sql "DELETE FROM review WHERE key='$(sq "$key")';"
+}
+
+cmd_review_list() {
+    # Default sqlite3 list mode is pipe-separated, matching the documented shape.
+    sql "SELECT key, severity, host, session, dismissed, text FROM review ORDER BY updated_at DESC;"
+}
+
+cmd_review() {
+    [ $# -ge 1 ] || usage
+    sub=$1
+    shift
+    case "$sub" in
+        add) cmd_review_add "$@";;
+        done) cmd_review_done "$@";;
+        list) cmd_review_list;;
+        *) usage;;
+    esac
+}
+
+# Name a local tmux window (or set a pane title). This is a tmux write, not a DB
+# write, but it lives here so the agent has one CLI. Window renames turn
+# `allow-rename` off so the pane program's title escape can't clobber the name.
+# LOCAL server only — for a remote host the agent runs `ssh <host> tmux …` itself.
+cmd_name() {
+    session=""
+    window=""
+    pane=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --session) [ $# -ge 2 ] || die "--session requires a value"; session=$2; shift 2;;
+            --window) [ $# -ge 2 ] || die "--window requires a value"; window=$2; shift 2;;
+            --pane) [ $# -ge 2 ] || die "--pane requires a value"; pane=$2; shift 2;;
+            --) shift; break;;
+            *) break;;
+        esac
+    done
+    name="$*"
+    [ -n "$name" ] || die "name: empty name"
+    TMUX_BIN=$(command -v tmux) || die "name: tmux not found on PATH"
+    if [ -n "$pane" ]; then
+        "$TMUX_BIN" select-pane -t "$pane" -T "$name"
+    else
+        [ -n "$session" ] || die "name: --session is required (or use --pane)"
+        [ -n "$window" ] || die "name: --window is required (or use --pane)"
+        case "$window" in ''|*[!0-9]*) die "name: --window must be an integer";; esac
+        target="$session:$window"
+        "$TMUX_BIN" rename-window -t "$target" "$name"
+        "$TMUX_BIN" set-window-option -t "$target" allow-rename off >/dev/null 2>&1 || true
+    fi
+}
+
+# Start a new agent on a branch: lease a treehouse worktree, cut the branch, and
+# open a tmux window running claude (or codex) in it. All of that is spin.py's
+# job; this wrapper exists so the agent has one CLI, and so the run is written to
+# work_log as `spawned` before the agent's first hook fires.
+#
+# --session is required because the manager runs in its own session: without it
+# spin.py would open the window next to the manager, where nobody is looking.
+cmd_spin() {
+    repo=""
+    branch=""
+    session=""
+    base=""
+    spin_agent=""
+    prompt=""
+    name=""
+    model=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --repo) [ $# -ge 2 ] || die "--repo requires a value"; repo=$2; shift 2;;
+            --branch) [ $# -ge 2 ] || die "--branch requires a value"; branch=$2; shift 2;;
+            --session) [ $# -ge 2 ] || die "--session requires a value"; session=$2; shift 2;;
+            --base) [ $# -ge 2 ] || die "--base requires a value"; base=$2; shift 2;;
+            --agent) [ $# -ge 2 ] || die "--agent requires a value"; spin_agent=$2; shift 2;;
+            --prompt) [ $# -ge 2 ] || die "--prompt requires a value"; prompt=$2; shift 2;;
+            --name) [ $# -ge 2 ] || die "--name requires a value"; name=$2; shift 2;;
+            --model) [ $# -ge 2 ] || die "--model requires a value"; model=$2; shift 2;;
+            --) shift; break;;
+            *) die "spin: unexpected argument: $1";;
+        esac
+    done
+    [ $# -eq 0 ] || die "spin: unexpected argument: $1"
+    [ -n "$repo" ] || die "spin: --repo PATH --branch B --session S are all required"
+    [ -n "$branch" ] || die "spin: --repo PATH --branch B --session S are all required"
+    [ -n "$session" ] || die "spin: --repo PATH --branch B --session S are all required"
+    case "$spin_agent" in
+        ''|claude|codex) ;;
+        *) die "spin: invalid agent: $spin_agent (want claude|codex)";;
+    esac
+
+    # Installed layout: this script is <support>/MuxMaestro/manager/bin/mux and
+    # the vendored tools sit in <support>/MuxMaestro/tools.
+    if [ -n "${MUX_SPIN:-}" ]; then
+        SPIN=$MUX_SPIN
+    else
+        SPIN=$(cd "$(dirname "$0")/../.." && pwd)/tools/spin.py \
+            || die "spin: cannot resolve the tools directory from $0"
+    fi
+    [ -f "$SPIN" ] || die "spin: no spin.py at $SPIN (set MUX_SPIN to override)"
+
+    set -- --repo "$repo" --branch "$branch" --session "$session" --work-log "$DB"
+    [ -z "$base" ] || set -- "$@" --base "$base"
+    [ -z "$spin_agent" ] || set -- "$@" --agent "$spin_agent"
+    [ -z "$prompt" ] || set -- "$@" --prompt "$prompt"
+    [ -z "$name" ] || set -- "$@" --name "$name"
+    [ -z "$model" ] || set -- "$@" --model "$model"
+    exec /usr/bin/env python3 "$SPIN" "$@"
+}
+
+# Percent-encode one URL value: every byte outside A-Z a-z 0-9 - . _ ~, so a
+# session named "a & b" or a pane id like %12 survives the query string. Must
+# match ThreadLinks.url(for:) byte for byte (ThreadLinksTests pins the two).
+urlencode() {
+    printf %s "$1" | od -An -v -tx1 | tr -s ' \n' '\n' | while read -r byte; do
+        [ -n "$byte" ] || continue
+        case $byte in
+            2d|2e|5f|7e|3[0-9]|4[1-9a-f]|5[0-9a]|6[1-9a-f]|7[0-9a])
+                printf "\\$(printf %03o "0x$byte")";;
+            *) printf %%%s "$byte" | tr a-f A-F;;
+        esac
+    done
+}
+
+# Single-quote a value for a remote shell.
+shq() { printf "'%s'" "$(printf %s "$1" | sed "s/'/'\\\\''/g")"; }
+
+# Print a muxmaestro:// link the app opens on click — in a toast, a review row,
+# or anywhere else a URL is clickable. A session id links to whichever pane runs
+# that claude/codex thread when it is clicked; a tmux target is resolved now to
+# its session, window and pane.
+cmd_link() {
+    target=""
+    host=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --target) [ $# -ge 2 ] || die "--target requires a value"; target=$2; shift 2;;
+            --host) [ $# -ge 2 ] || die "--host requires a value"; host=$2; shift 2;;
+            --) shift; break;;
+            -*) die "link: unexpected argument: $1";;
+            *) break;;
+        esac
+    done
+    if [ -z "$target" ]; then
+        [ $# -eq 1 ] || die "link: give one session id, or --target T"
+        [ -z "$host" ] || die "link: --host goes with --target"
+        case "$1" in
+            ''|*[!0-9A-Za-z-]*) die "link: not a session id: $1";;
+        esac
+        printf 'muxmaestro://thread/%s\n' "$1"
+        return
+    fi
+    [ $# -eq 0 ] || die "link: unexpected argument: $1"
+    [ "$host" != localhost ] || host=""
+
+    # Session name last: `read` hands everything after the second field to it,
+    # spaces included.
+    fmt='#{window_index} #{pane_id} #{session_name}'
+    if [ -z "$host" ]; then
+        TMUX_BIN=$(command -v tmux) || die "link: tmux not found on PATH"
+        resolved=$("$TMUX_BIN" display-message -p -t "$target" "$fmt") \
+            || die "link: no tmux target $target"
+    else
+        resolved=$(ssh -o BatchMode=yes -o ConnectTimeout=5 "$host" \
+            "tmux display-message -p -t $(shq "$target") $(shq "$fmt")") \
+            || die "link: no tmux target $target on $host"
+    fi
+    read -r window pane session <<EOF
+$resolved
+EOF
+    [ -n "$session" ] || die "link: no tmux target $target"
+
+    link="muxmaestro://open?session=$(urlencode "$session")&window=$window&pane=$(urlencode "$pane")"
+    [ -z "$host" ] || link="$link&host=$(urlencode "$host")"
+    printf '%s\n' "$link"
+}
+
+[ $# -ge 1 ] || usage
+
+# Hooks first, before init_db: `event` owns its own error handling and must exit 0.
+if [ "$1" = event ]; then
+    shift
+    cmd_event "$@"
+    exit 0
+fi
+
+init_db
+
+cmd=$1
+shift
+case "$cmd" in
+    sessions) cmd_sessions "$@";;
+    notify) cmd_notify "$@";;
+    review) cmd_review "$@";;
+    name) cmd_name "$@";;
+    spin) cmd_spin "$@";;
+    link) cmd_link "$@";;
+    help) usage;;
+    *) usage;;
+esac

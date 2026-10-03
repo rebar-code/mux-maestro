@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    # Cost guardrail: this is the only macOS job in the org and macOS bills at
+    # 10x, so a run that cannot fail is a run worth not starting. A docs-only
+    # change cannot break a Swift build.
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.gitignore'
+      - 'LICENSE'
+    # `ready_for_review` is not a default type. It is added so a PR that was
+    # drafted still gets a full build the moment it is marked ready - the draft
+    # skip below defers CI, it must not skip it altogether.
+    types: [opened, synchronize, reopened, ready_for_review]
+
+# Pinned versions live in scripts/build-libghostty.sh. These are duplicated here
+# ONLY to key the cache; the script remains the single source of truth for the
+# actual build. If you bump a pin there, bump it here too so the cache busts.
+env:
+  GHOSTTY_TAG: v1.3.1
+  GHOSTTY_SHA: 332b2aefc6e72d363aa93ab6ecfc86eeeeb5ed28
+  ZIG_VERSION: 0.15.2
+
+# Cost guardrail: a new commit on the same ref supersedes the in-flight run.
+# Without this every push to a PR branch stacks another full run and both bill.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: build + test (macos-14, arm64)
+    # Draft PRs do not build - CI resumes when the PR is marked ready. This is
+    # preventative, not a fix for observed spend: the 2026-09-10 spike was six
+    # non-draft PRs opened in 23 minutes, and every one of those builds was
+    # legitimate. It only pays off once someone pushes to a draft.
+    # The `event_name` guard matters: on a `push` event
+    # `github.event.pull_request` is null, and `null == false` is false, so
+    # testing the draft flag alone would silently disable CI on main.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: macos-14
+    # Cost guardrail: macOS bills at 10x, so a hung job here is the most expensive
+    # minute in the org. Healthy runs are p95 2.5 min / max 28 min over Jul-Aug.
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.2.app
+
+      # Cache the built xcframework (and its build inputs) keyed on the pinned
+      # Ghostty SHA + Zig version, so libghostty is built once and reused across
+      # runs rather than recompiled (a multi-minute Zig build) every time.
+      - name: Cache GhosttyKit.xcframework
+        id: cache-ghostty
+        uses: actions/cache@v4
+        with:
+          path: |
+            vendor/ghostty/macos/GhosttyKit.xcframework
+            .toolchain
+          key: ghostty-${{ runner.os }}-${{ runner.arch }}-${{ env.GHOSTTY_SHA }}-zig${{ env.ZIG_VERSION }}-v1
+
+      # On a cache hit the xcframework already exists under vendor/; just relink
+      # it to the repo root (the symlink isn't part of the cached paths). On a
+      # miss, build it from pinned source via the Makefile target.
+      - name: Build libghostty (cache miss only)
+        if: steps.cache-ghostty.outputs.cache-hit != 'true'
+        run: make libghostty
+
+      - name: Relink xcframework to repo root (cache hit)
+        if: steps.cache-ghostty.outputs.cache-hit == 'true'
+        run: |
+          rm -rf GhosttyKit.xcframework
+          ln -s vendor/ghostty/macos/GhosttyKit.xcframework GhosttyKit.xcframework
+          test -f GhosttyKit.xcframework/macos-arm64/Headers/ghostty.h
+
+      # The Makefile pins DEVELOPER_DIR to /Applications/Xcode.app; on the runner
+      # that is the default Xcode, whose Swift tools are too old for the packages.
+      - name: Build app
+        run: make app
+        env:
+          DEVELOPER_DIR: /Applications/Xcode_16.2.app/Contents/Developer
+
+      - name: Run tests
+        run: make test
+        env:
+          DEVELOPER_DIR: /Applications/Xcode_16.2.app/Contents/Developer

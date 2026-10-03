@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    :root {
+      --bg: #1e1e22; --fg: #d8d8dc; --muted: #8a8a92;
+      --file-bg: #2a2a30; --file-fg: #e8e8ec; --border: #3a3a42;
+      --hunk-bg: #23232a; --hunk-fg: #7aa2f7;
+      --add-bg: rgba(63,185,80,0.16); --add-gutter: rgba(63,185,80,0.30);
+      --del-bg: rgba(248,81,73,0.16); --del-gutter: rgba(248,81,73,0.30);
+      --gutter-fg: #6a6a72;
+      --add-fg: #6cc36c; --del-fg: #e06c6c;
+    }
+    body.theme-light {
+      --bg: #ffffff; --fg: #1f2328; --muted: #6e7781;
+      --file-bg: #f2f2f4; --file-fg: #1f2328; --border: #d8dee4;
+      --hunk-bg: #eef2ff; --hunk-fg: #4060c0;
+      --add-bg: rgba(46,160,67,0.14); --add-gutter: rgba(46,160,67,0.28);
+      --del-bg: rgba(207,34,46,0.12); --del-gutter: rgba(207,34,46,0.26);
+      --gutter-fg: #8c959f;
+      --add-fg: #1a7f37; --del-fg: #cf222e;
+    }
+    html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); }
+    body {
+      font: 12px ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+      -webkit-font-smoothing: antialiased;
+    }
+    #root { padding: 0 0 40px; }
+    .empty { color: var(--muted); padding: 16px; font-family: -apple-system, system-ui, sans-serif; }
+
+    /* Sticky toolbar with collapse-all / expand-all. */
+    #bar {
+      position: sticky; top: 0; z-index: 2;
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 10px; background: var(--bg);
+      border-bottom: 1px solid var(--border);
+      font-family: -apple-system, system-ui, sans-serif;
+    }
+    #bar button {
+      display: inline-flex; align-items: center; justify-content: center;
+      color: var(--muted); background: var(--file-bg);
+      border: 1px solid var(--border); border-radius: 6px;
+      padding: 4px; cursor: pointer;
+    }
+    #bar button:hover { border-color: var(--muted); color: var(--fg); }
+    #bar button svg { width: 16px; height: 16px; display: block; }
+    #bar .spacer { flex: 1; }
+    #bar #summary { color: var(--muted); font-size: 11px; }
+
+    .files { padding-top: 8px; }
+    .file { margin: 0 10px 14px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+    .file-head {
+      display: flex; align-items: center; gap: 8px;
+      background: var(--file-bg); color: var(--file-fg); padding: 7px 12px;
+      font-weight: 600; cursor: pointer; user-select: none;
+      border-bottom: 1px solid var(--border);
+    }
+    .file.collapsed .file-head { border-bottom: 0; }
+    .file-head .chev {
+      flex: none; color: var(--muted); font-size: 10px; width: 1ch;
+      transition: transform 0.1s ease;
+    }
+    .file.collapsed .file-head .chev { transform: rotate(-90deg); }
+    .file-head .path {
+      flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .file-head .stats { flex: none; font-weight: 600; font-size: 11px; }
+    .file-head .stats .add { color: var(--add-fg); }
+    .file-head .stats .del { color: var(--del-fg); margin-left: 6px; }
+    .file.collapsed .file-body { display: none; }
+
+    table { width: 100%; border-collapse: collapse; }
+    td { padding: 0 6px; vertical-align: top; white-space: pre-wrap; word-break: break-word; }
+    td.gutter {
+      width: 1%; text-align: right; color: var(--gutter-fg); user-select: none;
+      padding: 0 8px; white-space: nowrap; border-right: 1px solid var(--border);
+    }
+    tr.hunk td { background: var(--hunk-bg); color: var(--hunk-fg); padding: 3px 12px; }
+    tr.add td.code { background: var(--add-bg); }
+    tr.add td.gutter { background: var(--add-gutter); }
+    tr.del td.code { background: var(--del-bg); }
+    tr.del td.gutter { background: var(--del-gutter); }
+    .sign { display: inline-block; width: 1ch; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <div id="root"><div class="empty">No diff yet.</div></div>
+  <script>
+    const root = document.getElementById('root');
+
+    // File paths the user collapsed, kept across re-renders (refresh) so a
+    // collapsed file you don't care about stays collapsed after recompute.
+    const collapsed = new Set();
+
+    function esc(s) {
+      return s.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+    }
+
+    // Parse a combined `git diff` unified patch into per-file hunk rows.
+    function parse(patch) {
+      const files = [];
+      let cur = null, oldNo = 0, newNo = 0;
+      const lines = patch.split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (line.startsWith('diff --git')) {
+          cur = { header: line.replace('diff --git ', ''), rows: [], adds: 0, dels: 0 };
+          files.push(cur);
+          continue;
+        }
+        if (!cur) continue;
+        if (line.startsWith('--- ') || line.startsWith('+++ ')) {
+          // Prefer the real path from +++ (b/...) for the file header.
+          if (line.startsWith('+++ ')) {
+            const p = line.slice(4).replace(/^b\//, '');
+            if (p && p !== '/dev/null') cur.header = p;
+          }
+          continue;
+        }
+        if (line.startsWith('index ') || line.startsWith('new file') ||
+            line.startsWith('deleted file') || line.startsWith('old mode') ||
+            line.startsWith('new mode') || line.startsWith('similarity') ||
+            line.startsWith('rename ') || line.startsWith('copy ')) {
+          continue;
+        }
+        const hunk = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+        if (hunk) {
+          oldNo = parseInt(hunk[1], 10); newNo = parseInt(hunk[2], 10);
+          cur.rows.push({ type: 'hunk', text: line });
+          continue;
+        }
+        if (line.startsWith('+')) {
+          cur.rows.push({ type: 'add', text: line.slice(1), oldNo: '', newNo: newNo++ });
+          cur.adds++;
+        } else if (line.startsWith('-')) {
+          cur.rows.push({ type: 'del', text: line.slice(1), oldNo: oldNo++, newNo: '' });
+          cur.dels++;
+        } else if (line.startsWith('\\')) {
+          cur.rows.push({ type: 'meta', text: line });
+        } else {
+          cur.rows.push({ type: 'ctx', text: line.slice(1), oldNo: oldNo++, newNo: newNo++ });
+        }
+      }
+      return files;
+    }
+
+    function render(patch) {
+      if (!patch || !patch.trim()) {
+        root.innerHTML = '<div class="empty">No changes.</div>';
+        return;
+      }
+      const files = parse(patch);
+      if (!files.length) { root.innerHTML = '<div class="empty">No changes.</div>'; return; }
+
+      const out = [
+        '<div id="bar">' +
+          '<button id="toggleAll"></button>' +
+          '<span class="spacer"></span>' +
+          `<span id="summary">${files.length} file${files.length === 1 ? '' : 's'}</span>` +
+        '</div>',
+        '<div class="files">',
+      ];
+      for (const f of files) {
+        const rows = [];
+        for (const r of f.rows) {
+          if (r.type === 'hunk') {
+            rows.push(`<tr class="hunk"><td colspan="3">${esc(r.text)}</td></tr>`);
+          } else if (r.type === 'meta') {
+            rows.push(`<tr><td class="gutter"></td><td class="gutter"></td><td class="code">${esc(r.text)}</td></tr>`);
+          } else {
+            const sign = r.type === 'add' ? '+' : r.type === 'del' ? '-' : ' ';
+            rows.push(
+              `<tr class="${r.type}">` +
+              `<td class="gutter">${r.oldNo}</td>` +
+              `<td class="gutter">${r.newNo}</td>` +
+              `<td class="code"><span class="sign">${sign}</span>${esc(r.text)}</td></tr>`);
+          }
+        }
+        const isCollapsed = collapsed.has(f.header);
+        const stats =
+          `<span class="stats">` +
+          (f.adds ? `<span class="add">+${f.adds}</span>` : '') +
+          (f.dels ? `<span class="del">−${f.dels}</span>` : '') +
+          `</span>`;
+        out.push(
+          `<div class="file${isCollapsed ? ' collapsed' : ''}" data-path="${esc(f.header)}">` +
+          `<div class="file-head">` +
+            `<span class="chev">▾</span>` +
+            `<span class="path">${esc(f.header)}</span>` +
+            stats +
+          `</div>` +
+          `<div class="file-body"><table><tbody>${rows.join('')}</tbody></table></div></div>`);
+      }
+      out.push('</div>');
+      root.innerHTML = out.join('');
+      wire(files);
+    }
+
+    // Lucide icons. Shown on the single toggle button depending on state: when
+    // everything is collapsed the button offers "expand all" (chevrons apart);
+    // otherwise it offers "collapse all" (chevrons together).
+    const EXPAND_ICON =
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+      'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+      '<path d="M3 5h8"/><path d="M3 12h8"/><path d="M3 19h8"/><path d="m15 8 3-3 3 3"/><path d="m15 16 3 3 3-3"/></svg>';
+    const COLLAPSE_ICON =
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+      'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+      '<path d="M3 5h8"/><path d="M3 12h8"/><path d="M3 19h8"/><path d="m15 5 3 3 3-3"/><path d="m15 19 3-3 3 3"/></svg>';
+
+    // Attach toggle handlers after each render (innerHTML replaces the nodes).
+    function wire(files) {
+      const total = files.length;
+      root.querySelectorAll('.file').forEach(el => {
+        el.querySelector('.file-head').addEventListener('click', () => {
+          const path = el.getAttribute('data-path');
+          const nowCollapsed = el.classList.toggle('collapsed');
+          if (nowCollapsed) collapsed.add(path); else collapsed.delete(path);
+          updateToggleAll(total);
+        });
+      });
+      const setAll = (wantCollapsed) => {
+        root.querySelectorAll('.file').forEach(el => {
+          el.classList.toggle('collapsed', wantCollapsed);
+        });
+        collapsed.clear();
+        if (wantCollapsed) for (const f of files) collapsed.add(f.header);
+        updateToggleAll(total);
+      };
+      const btn = document.getElementById('toggleAll');
+      if (btn) btn.addEventListener('click', () => setAll(collapsed.size < total));
+      updateToggleAll(total);
+    }
+
+    // Reflect the current state on the single toggle button.
+    function updateToggleAll(total) {
+      const btn = document.getElementById('toggleAll');
+      if (!btn) return;
+      const allCollapsed = total > 0 && collapsed.size >= total;
+      btn.innerHTML = allCollapsed ? EXPAND_ICON : COLLAPSE_ICON;
+      const label = allCollapsed ? 'Expand all' : 'Collapse all';
+      btn.title = label;
+      btn.setAttribute('aria-label', label);
+    }
+
+    function setTheme(theme) {
+      document.body.classList.toggle('theme-light', theme === 'light');
+    }
+
+    window.SidekickDiff = { render, setTheme };
+  </script>
+</body>
+</html>

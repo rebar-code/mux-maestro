@@ -1,0 +1,9 @@
+{"timestamp":"2026-10-02T09:00:00.000Z","type":"session_meta","payload":{"session_id":"x1","id":"x1","cwd":"/work/site"}}
+{"timestamp":"2026-10-02T09:00:01.000Z","type":"turn_context","payload":{"turn_id":"t","cwd":"/work/site"}}
+{"timestamp":"2026-10-02T09:00:02.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"update /work/site/img/hero.png"}]}}
+{"timestamp":"2026-10-02T09:01:00.000Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","input":"const patch = \"*** Begin Patch\\n*** Update File: tasks/plan.html\\n@@\\n-a\\n+b\\n*** Add File: /work/site/new.md\\n+hi\\n*** Delete File: old.md\\n*** End Patch\";"}}
+{"timestamp":"2026-10-02T09:01:01.000Z","type":"response_item","payload":{"type":"custom_tool_call_output","output":"Success. Updated the following files:\nM tasks/plan.html"}}
+{"timestamp":"2026-10-02T09:02:00.000Z","type":"response_item","payload":{"type":"function_call","name":"apply_patch","arguments":"{\"input\":\"*** Begin Patch\\n*** Update File: src/a.ts\\n*** Move to: src/b.ts\\n@@\\n-x\\n+y\\n*** End Patch\"}"}}
+{"timestamp":"2026-10-02T09:03:00.000Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"command\":[\"bash\",\"-lc\",\"npx playwright screenshot http://localhost:5173 shots/home.png\"]}"}}
+{"timestamp":"2026-10-02T09:03:01.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","content":[{"type":"Text","text":"dup /work/site/shots/dup.png"}]}}}
+{"timestamp":"2026-10-02T09:04:00.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Done. Screenshot at shots/home.png."}]}}

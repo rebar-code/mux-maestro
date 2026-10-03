@@ -1,0 +1,30 @@
+# macOS / Xcode
+.DS_Store
+*.xcuserstate
+xcuserdata/
+DerivedData/
+build/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+
+# Swift
+.build/
+.swiftpm/
+
+# libghostty build inputs/outputs (built locally / in CI from pinned source)
+vendor/ghostty/
+GhosttyKit.xcframework
+zig-out/
+zig-cache/
+.zig-cache/
+.toolchain/
+
+# misc
+*.log
+/tmp/
+
+# Claude Code local worktrees / scratch
+.claude/
+
+# screenshots and pasted images dropped in the repo root
+/Screenshot*.png
+/pasted-*.png

@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <!-- Both themes are vendored; setTheme() toggles which is enabled (dark default). -->
+  <link id="theme-dark" rel="stylesheet" href="github-dark.min.css">
+  <link id="theme-light" rel="stylesheet" href="github.min.css" disabled>
+  <style>
+    :root { --bg: #0f1117; --muted: #71717a; --active: rgba(129,140,248,0.16); }
+    body.theme-light { --bg: #ffffff; --muted: #8c959f; --active: rgba(64,96,192,0.12); }
+    html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); }
+    #empty {
+      color: var(--muted); padding: 16px; height: 100%; box-sizing: border-box;
+      display: flex; align-items: center; justify-content: center; text-align: center;
+      font: 13px -apple-system, system-ui, sans-serif;
+    }
+    pre { margin: 0; }
+    pre code.hljs {
+      display: block; padding: 8px 0;
+      font: 12px ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+      background: var(--bg) !important;
+    }
+    /* highlightjs-line-numbers.js table layout. */
+    table.hljs-ln { border-collapse: collapse; width: 100%; }
+    .hljs-ln td { padding: 0; border: 0; }
+    .hljs-ln-numbers {
+      text-align: right; color: var(--muted); vertical-align: top;
+      padding: 0 12px 0 10px !important; user-select: none;
+      width: 1%; white-space: nowrap;
+    }
+    .hljs-ln-code { padding-left: 12px !important; white-space: pre; }
+    tr.preview-active td { background: var(--active); }
+  </style>
+</head>
+<body>
+  <div id="empty">Select a file to preview</div>
+  <pre id="pre" hidden><code id="code" class="hljs"></code></pre>
+
+  <script src="highlight.min.js"></script>
+  <script src="svelte.min.js"></script>
+  <script src="line-numbers.min.js"></script>
+  <script>
+    // Map a filename extension (or basename) to an hljs language; unknown → auto.
+    const LANGS = {
+      js: 'javascript', mjs: 'javascript', cjs: 'javascript', jsx: 'javascript',
+      ts: 'typescript', tsx: 'typescript', svelte: 'svelte',
+      html: 'xml', xml: 'xml', vue: 'xml', svg: 'xml',
+      css: 'css', scss: 'scss', sass: 'scss', less: 'less',
+      json: 'json', md: 'markdown', markdown: 'markdown',
+      py: 'python', rb: 'ruby', go: 'go', rs: 'rust', swift: 'swift',
+      sh: 'bash', bash: 'bash', zsh: 'bash', fish: 'bash',
+      yml: 'yaml', yaml: 'yaml', toml: 'ini', ini: 'ini', conf: 'ini',
+      c: 'c', h: 'c', cpp: 'cpp', cc: 'cpp', cxx: 'cpp', hpp: 'cpp',
+      java: 'java', kt: 'kotlin', kts: 'kotlin', php: 'php', sql: 'sql',
+      lua: 'lua', pl: 'perl', r: 'r', dart: 'dart', scala: 'scala',
+      makefile: 'makefile', dockerfile: 'dockerfile', gitignore: 'plaintext',
+    };
+
+    function langFor(filename) {
+      const base = (filename || '').split('/').pop().toLowerCase();
+      if (LANGS[base]) return LANGS[base];           // e.g. Dockerfile, Makefile
+      const ext = base.includes('.') ? base.split('.').pop() : '';
+      return LANGS[ext] || null;
+    }
+
+    // Render `code` for `filename`, syntax-highlighted, with line numbers; scroll
+    // to `line` (1-based, optional) and flag it.
+    function render(code, filename, line) {
+      const empty = document.getElementById('empty');
+      const pre = document.getElementById('pre');
+      const el = document.getElementById('code');
+      empty.hidden = true;
+      pre.hidden = false;
+
+      const lang = langFor(filename);
+      el.removeAttribute('data-highlighted');
+      el.className = 'hljs' + (lang && hljs.getLanguage(lang) ? ' language-' + lang : '');
+      el.textContent = code;
+      hljs.highlightElement(el);
+      try { hljs.lineNumbersBlock(el); } catch (e) {}
+
+      // Line numbering is applied asynchronously by the plugin; scroll once it's in.
+      const target = Math.max(1, line || 0);
+      if (line) {
+        setTimeout(function () {
+          const cell = el.querySelector('td.hljs-ln-numbers[data-line-number="' + target + '"]');
+          if (cell && cell.parentElement) {
+            cell.parentElement.classList.add('preview-active');
+            cell.parentElement.scrollIntoView({ block: 'center' });
+          }
+        }, 40);
+      } else {
+        window.scrollTo(0, 0);
+      }
+    }
+
+    function clear() {
+      document.getElementById('pre').hidden = true;
+      document.getElementById('empty').hidden = false;
+      document.getElementById('empty').textContent = 'Select a file to preview';
+    }
+
+    function message(text) {
+      document.getElementById('pre').hidden = true;
+      const empty = document.getElementById('empty');
+      empty.hidden = false;
+      empty.textContent = text;
+    }
+
+    function setTheme(theme) {
+      const dark = theme !== 'light';
+      document.body.classList.toggle('theme-light', !dark);
+      document.getElementById('theme-dark').disabled = !dark;
+      document.getElementById('theme-light').disabled = dark;
+    }
+
+    window.SidekickPreview = { render, clear, message, setTheme };
+  </script>
+</body>
+</html>

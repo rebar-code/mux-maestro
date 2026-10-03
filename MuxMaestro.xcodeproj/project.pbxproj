@@ -1,0 +1,1089 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A0000101 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000001 /* main.swift */; };
+		A0000102 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000002 /* AppDelegate.swift */; };
+		A0000103 /* GhosttyApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000003 /* GhosttyApp.swift */; };
+		A0000104 /* TerminalSurfaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000004 /* TerminalSurfaceView.swift */; };
+		A0000105 /* TerminalViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000005 /* TerminalViewController.swift */; };
+		A0000106 /* SidebarViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000006 /* SidebarViewController.swift */; };
+		A0000107 /* Ghostty+Input.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000007 /* Ghostty+Input.swift */; };
+		A0000108 /* TmuxModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000011 /* TmuxModel.swift */; };
+		A0000C02 /* TmuxColor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000C01 /* TmuxColor.swift */; };
+		A0000109 /* TmuxService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000012 /* TmuxService.swift */; };
+		A0000110 /* TmuxCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000014 /* TmuxCommands.swift */; };
+		A0000190 /* ClaudeSessionRecovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000090 /* ClaudeSessionRecovery.swift */; };
+		A0000192 /* CodexSessions.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000092 /* CodexSessions.swift */; };
+		A0000A10 /* SessionRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000A00 /* SessionRecord.swift */; };
+		A0000A11 /* AgentHookInstall.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000A01 /* AgentHookInstall.swift */; };
+		A0000A12 /* recovery in Resources */ = {isa = PBXBuildFile; fileRef = A0000A02 /* recovery */; };
+		A0000A20 /* SessionRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000A00 /* SessionRecord.swift */; };
+		A0000A21 /* SessionRecordTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000A03 /* SessionRecordTests.swift */; };
+		A0000A22 /* AgentHookInstall.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000A01 /* AgentHookInstall.swift */; };
+		A0000A23 /* AgentHookInstallTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000A04 /* AgentHookInstallTests.swift */; };
+		A000C111 /* AgentState.swift in Sources */ = {isa = PBXBuildFile; fileRef = A000C101 /* AgentState.swift */; };
+		A000C121 /* AgentState.swift in Sources */ = {isa = PBXBuildFile; fileRef = A000C101 /* AgentState.swift */; };
+		A00CA111 /* SidebarCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00CA101 /* SidebarCard.swift */; };
+		A00CA121 /* SidebarCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00CA101 /* SidebarCard.swift */; };
+		A0057011 /* HostStats.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0057001 /* HostStats.swift */; };
+		A0057021 /* HostStats.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0057001 /* HostStats.swift */; };
+		A0057012 /* HostStatsCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0057002 /* HostStatsCard.swift */; };
+		A0057023 /* HostStatsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0057003 /* HostStatsTests.swift */; };
+		A000C122 /* AgentStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A000C102 /* AgentStateTests.swift */; };
+		A00F6011 /* ManagerPaneDriver.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00F6001 /* ManagerPaneDriver.swift */; };
+		A00F6021 /* ManagerPaneDriver.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00F6001 /* ManagerPaneDriver.swift */; };
+		A00F6022 /* ManagerPaneDriverTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00F6002 /* ManagerPaneDriverTests.swift */; };
+		A000C123 /* ManagerHome.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000791 /* ManagerHome.swift */; };
+		A0000111 /* DetailViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000015 /* DetailViewController.swift */; };
+		A00001AF /* FindBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000A0 /* FindBar.swift */; };
+		A0000751 /* RightSidebarViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000750 /* RightSidebarViewController.swift */; };
+		A0000112 /* Prompts.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000016 /* Prompts.swift */; };
+		A0000113 /* SidebarDiff.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000018 /* SidebarDiff.swift */; };
+		A0000114 /* SshConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000023 /* SshConfig.swift */; };
+		A0000115 /* AddServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000025 /* AddServer.swift */; };
+		A0000116 /* ScratchpadTransfer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000027 /* ScratchpadTransfer.swift */; };
+		A0000903 /* BeamTransfer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000900 /* BeamTransfer.swift */; };
+		A0000904 /* BeamRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000901 /* BeamRunner.swift */; };
+		A0000905 /* BeamTransfer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000900 /* BeamTransfer.swift */; };
+		A0000906 /* BeamTransferTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000902 /* BeamTransferTests.swift */; };
+		A0000138 /* Settings.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000713 /* Settings.swift */; };
+		DF1A7E5C0B2E4D6F00000003 /* DefaultsMigration.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF1A7E5C0B2E4D6F00000001 /* DefaultsMigration.swift */; };
+		A00001A0 /* RemoteScanScheduler.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00007A0 /* RemoteScanScheduler.swift */; };
+		A0000D03 /* Worktrees.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000D01 /* Worktrees.swift */; };
+		C4B10005 /* DockerAttribution.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4B10001 /* DockerAttribution.swift */; };
+		C4B10006 /* WorktreeMetrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4B10002 /* WorktreeMetrics.swift */; };
+		C4B10007 /* WorktreeRowCell.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4B10003 /* WorktreeRowCell.swift */; };
+		C4B1E011 /* Running.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4B1E001 /* Running.swift */; };
+		C4B1E0A1 /* HostAddress.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4B1E0A3 /* HostAddress.swift */; };
+		C4B1E013 /* RunningViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4B1E003 /* RunningViewController.swift */; };
+		A0000F03 /* CloseWindowPrompt.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000F01 /* CloseWindowPrompt.swift */; };
+		A0000D08 /* WindowPRs.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000D06 /* WindowPRs.swift */; };
+		A00001B0 /* Diag.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00007B0 /* Diag.swift */; };
+		A0000301 /* TmuxModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000013 /* TmuxModelTests.swift */; };
+		A0000302 /* TmuxModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000011 /* TmuxModel.swift */; };
+		A0000C03 /* TmuxColor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000C01 /* TmuxColor.swift */; };
+		A0000303 /* TmuxCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000014 /* TmuxCommands.swift */; };
+		A0000304 /* TmuxCommandsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000017 /* TmuxCommandsTests.swift */; };
+		A0000390 /* ClaudeSessionRecovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000090 /* ClaudeSessionRecovery.swift */; };
+		A0000392 /* CodexSessions.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000092 /* CodexSessions.swift */; };
+		A0000391 /* ClaudeSessionRecoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000091 /* ClaudeSessionRecoveryTests.swift */; };
+		A0000393 /* CodexSessionsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000093 /* CodexSessionsTests.swift */; };
+		A0000305 /* SidebarDiff.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000018 /* SidebarDiff.swift */; };
+		A0000306 /* TmuxService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000012 /* TmuxService.swift */; };
+		A0000307 /* TmuxServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000019 /* TmuxServiceTests.swift */; };
+		A0000308 /* SidebarDiffTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000022 /* SidebarDiffTests.swift */; };
+		A0000309 /* SshConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000023 /* SshConfig.swift */; };
+		A0000310 /* SshConfigTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000024 /* SshConfigTests.swift */; };
+		A0000311 /* AddServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000025 /* AddServer.swift */; };
+		A0000312 /* AddServerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000026 /* AddServerTests.swift */; };
+		A0000313 /* ScratchpadTransfer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000027 /* ScratchpadTransfer.swift */; };
+		A0000314 /* ScratchpadTransferTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000028 /* ScratchpadTransferTests.swift */; };
+		A0000119 /* HerdrModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000401 /* HerdrModel.swift */; };
+		A0000120 /* HerdrService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000402 /* HerdrService.swift */; };
+		A0000317 /* HerdrModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000401 /* HerdrModel.swift */; };
+		A0000318 /* HerdrService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000402 /* HerdrService.swift */; };
+		A0000319 /* HerdrModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000403 /* HerdrModelTests.swift */; };
+		A0000320 /* HerdrServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000404 /* HerdrServiceTests.swift */; };
+		A0000121 /* GitDiff.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000501 /* GitDiff.swift */; };
+		A0000122 /* DiffViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000502 /* DiffViewController.swift */; };
+		A0000123 /* diff in Resources */ = {isa = PBXBuildFile; fileRef = A0000504 /* diff */; };
+		A0000124 /* MuxMaestro.icns in Resources */ = {isa = PBXBuildFile; fileRef = A0000505 /* MuxMaestro.icns */; };
+		A0000125 /* preview in Resources */ = {isa = PBXBuildFile; fileRef = A0000708 /* preview */; };
+		A0000126 /* beam in Resources */ = {isa = PBXBuildFile; fileRef = A0000509 /* beam */; };
+		A0000321 /* GitDiff.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000501 /* GitDiff.swift */; };
+		A0000322 /* GitDiffTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000503 /* GitDiffTests.swift */; };
+		A0000131 /* CodeSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000701 /* CodeSearch.swift */; };
+		A0000B10 /* PaneSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000B01 /* PaneSearch.swift */; };
+		A0000133 /* FileTree.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000703 /* FileTree.swift */; };
+		A0000134 /* TreeViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000704 /* TreeViewController.swift */; };
+		A0000135 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000709 /* Theme.swift */; };
+		A0000136 /* FuzzyMatch.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000710 /* FuzzyMatch.swift */; };
+		A0000137 /* FilePaletteViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000711 /* FilePaletteViewController.swift */; };
+		A0000139 /* SessionPaletteViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000715 /* SessionPaletteViewController.swift */; };
+		A0000153 /* HelpWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000725 /* HelpWindowController.swift */; };
+		A0000145 /* PullRequests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000720 /* PullRequests.swift */; };
+		A0000146 /* PullRequests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000720 /* PullRequests.swift */; };
+		B0PRS0000001 /* PRSessionSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0PRS0000000 /* PRSessionSearch.swift */; };
+		B0PRS0000002 /* PRSessionSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0PRS0000000 /* PRSessionSearch.swift */; };
+		B0PRS0000004 /* PRSessionSearchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0PRS0000003 /* PRSessionSearchTests.swift */; };
+		A0000148 /* GitCommit.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000722 /* GitCommit.swift */; };
+		A0000152 /* CommitPanelViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000724 /* CommitPanelViewController.swift */; };
+		A0000149 /* GitCommit.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000722 /* GitCommit.swift */; };
+		A0000151 /* GitCommitTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000723 /* GitCommitTests.swift */; };
+		A0000147 /* PullRequestsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000721 /* PullRequestsTests.swift */; };
+		A0000335 /* FuzzyMatch.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000710 /* FuzzyMatch.swift */; };
+		A0000336 /* FuzzyMatchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000712 /* FuzzyMatchTests.swift */; };
+		A0000331 /* CodeSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000701 /* CodeSearch.swift */; };
+		A0000332 /* CodeSearchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000705 /* CodeSearchTests.swift */; };
+		A0000B11 /* PaneSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000B01 /* PaneSearch.swift */; };
+		A0000B12 /* PaneSearchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000B02 /* PaneSearchTests.swift */; };
+		A0000333 /* FileTree.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000703 /* FileTree.swift */; };
+		A0000334 /* FileTreeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000706 /* FileTreeTests.swift */; };
+		A0000337 /* Settings.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000713 /* Settings.swift */; };
+		DF1A7E5C0B2E4D6F00000004 /* DefaultsMigration.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF1A7E5C0B2E4D6F00000001 /* DefaultsMigration.swift */; };
+		A00003A0 /* RemoteScanScheduler.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00007A0 /* RemoteScanScheduler.swift */; };
+		A00003B0 /* Diag.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00007B0 /* Diag.swift */; };
+		A00003A1 /* RemoteScanSchedulerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00007A1 /* RemoteScanSchedulerTests.swift */; };
+		A0000D04 /* Worktrees.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000D01 /* Worktrees.swift */; };
+		A0000D05 /* WorktreesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000D02 /* WorktreesTests.swift */; };
+		C4B10008 /* DockerAttribution.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4B10001 /* DockerAttribution.swift */; };
+		C4B10009 /* WorktreeMetrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4B10002 /* WorktreeMetrics.swift */; };
+		C4B1000A /* DockerAttributionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4B10004 /* DockerAttributionTests.swift */; };
+		C4B1000B /* WorktreeMetricsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4B1000C /* WorktreeMetricsTests.swift */; };
+		C4B1E021 /* Running.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4B1E001 /* Running.swift */; };
+		C4B1E0A2 /* HostAddress.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4B1E0A3 /* HostAddress.swift */; };
+		C4B1E024 /* RunningTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4B1E004 /* RunningTests.swift */; };
+		C4B1E0A5 /* HostAddressTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4B1E0A4 /* HostAddressTests.swift */; };
+		A0000F04 /* CloseWindowPrompt.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000F01 /* CloseWindowPrompt.swift */; };
+		A0000F05 /* CloseWindowPromptTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000F02 /* CloseWindowPromptTests.swift */; };
+		A0000D09 /* WindowPRs.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000D06 /* WindowPRs.swift */; };
+		A0000D0A /* WindowPRsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000D07 /* WindowPRsTests.swift */; };
+		A0000338 /* SettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000714 /* SettingsTests.swift */; };
+		DF1A7E5C0B2E4D6F00000005 /* DefaultsMigrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF1A7E5C0B2E4D6F00000002 /* DefaultsMigrationTests.swift */; };
+		A0000770 /* Favicon.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000760 /* Favicon.swift */; };
+		AF7A0103 /* ArtifactsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF7A0003 /* ArtifactsViewController.swift */; };
+		AF7A0201 /* Artifacts.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF7A0001 /* Artifacts.swift */; };
+		AF7A0101 /* Artifacts.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF7A0001 /* Artifacts.swift */; };
+		AF7A0102 /* ArtifactsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF7A0002 /* ArtifactsTests.swift */; };
+		A0000771 /* SessionMRU.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000761 /* SessionMRU.swift */; };
+		A00C4011 /* SessionSwitcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00C4001 /* SessionSwitcher.swift */; };
+		A00C4012 /* SessionSwitcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00C4001 /* SessionSwitcher.swift */; };
+		A00C4013 /* SessionSwitcherTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00C4002 /* SessionSwitcherTests.swift */; };
+		A0000772 /* SessionCyclerOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000762 /* SessionCyclerOverlay.swift */; };
+		A0000E30 /* PullRequestsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000E31 /* PullRequestsViewController.swift */; };
+		A0000780 /* Favicon.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000760 /* Favicon.swift */; };
+		A0000781 /* SessionMRU.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000761 /* SessionMRU.swift */; };
+		A0000782 /* FaviconTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000763 /* FaviconTests.swift */; };
+		A0000783 /* SessionMRUTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000764 /* SessionMRUTests.swift */; };
+		A0000794 /* ManagerStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000790 /* ManagerStore.swift */; };
+		A0000795 /* ManagerHome.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000791 /* ManagerHome.swift */; };
+		A0000796 /* manager in Resources */ = {isa = PBXBuildFile; fileRef = A0000792 /* manager */; };
+		A0000797 /* ManagerStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000790 /* ManagerStore.swift */; };
+		A0000798 /* ManagerStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000793 /* ManagerStoreTests.swift */; };
+		A000079C /* ManagerRailViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000799 /* ManagerRailViewController.swift */; };
+		A000079D /* ManagerController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A000079A /* ManagerController.swift */; };
+		A000079E /* ManagerToastOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = A000079B /* ManagerToastOverlay.swift */; };
+		B0D00011 /* BundledTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0D00001 /* BundledTools.swift */; };
+		B0D00012 /* SetupTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0D00002 /* SetupTools.swift */; };
+		B0D00013 /* SetupWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0D00003 /* SetupWindowController.swift */; };
+		B0D00014 /* tools in Resources */ = {isa = PBXBuildFile; fileRef = B0D00004 /* tools */; };
+		B0D00021 /* BundledTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0D00001 /* BundledTools.swift */; };
+		B0D00022 /* SetupTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0D00002 /* SetupTools.swift */; };
+		B0D00025 /* BundledToolsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0D00005 /* BundledToolsTests.swift */; };
+		B0D00026 /* SetupToolsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0D00006 /* SetupToolsTests.swift */; };
+		A0071E11 /* ThreadLinks.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0071E01 /* ThreadLinks.swift */; };
+		A0071E12 /* ThreadLinks.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0071E01 /* ThreadLinks.swift */; };
+		A0071E13 /* ThreadLinksTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0071E02 /* ThreadLinksTests.swift */; };
+		A11C0011 /* LinkRoute.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11C0001 /* LinkRoute.swift */; };
+		A11C0012 /* LinkRoute.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11C0001 /* LinkRoute.swift */; };
+		A11C0013 /* LinkRouteTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11C0002 /* LinkRouteTests.swift */; };
+		A0071E14 /* LinkLabel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0071E03 /* LinkLabel.swift */; };
+		A00C4D11 /* ChatMarkdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00C4D01 /* ChatMarkdown.swift */; };
+		A00C4D12 /* ChatMarkdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00C4D01 /* ChatMarkdown.swift */; };
+		A00C4D13 /* ChatMarkdownTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00C4D02 /* ChatMarkdownTests.swift */; };
+		A70A5711 /* ToastClick.swift in Sources */ = {isa = PBXBuildFile; fileRef = A70A5701 /* ToastClick.swift */; };
+		A70A5712 /* ToastClick.swift in Sources */ = {isa = PBXBuildFile; fileRef = A70A5701 /* ToastClick.swift */; };
+		A70A5713 /* ToastClickTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A70A5702 /* ToastClickTests.swift */; };
+		E1A00005 /* FluidAudio in Frameworks */ = {isa = PBXBuildFile; productRef = E1A00003 /* FluidAudio */; };
+		E1A00006 /* WhisperKit in Frameworks */ = {isa = PBXBuildFile; productRef = E1A00004 /* WhisperKit */; };
+		E1A00020 /* VoiceModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1A00010 /* VoiceModels.swift */; };
+		E1A00021 /* VoiceEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1A00011 /* VoiceEngine.swift */; };
+		E1A00022 /* MicCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1A00012 /* MicCapture.swift */; };
+		F1B0A011 /* VoiceController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1B0A001 /* VoiceController.swift */; };
+		F1B0A021 /* VoiceController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1B0A001 /* VoiceController.swift */; };
+		F1B0A022 /* VoiceControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1B0A002 /* VoiceControllerTests.swift */; };
+		F1B0A023 /* MicCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1A00012 /* MicCapture.swift */; };
+		E1A00023 /* VoiceSelfTest.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1A00013 /* VoiceSelfTest.swift */; };
+		E1A00024 /* Speechify.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1A00014 /* Speechify.swift */; };
+		E1A00025 /* VoiceModelStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1A00015 /* VoiceModelStore.swift */; };
+		E1A00030 /* Speechify.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1A00014 /* Speechify.swift */; };
+		E1A00031 /* VoiceModelStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1A00015 /* VoiceModelStore.swift */; };
+		E1A00032 /* SpeechifyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1A00016 /* SpeechifyTests.swift */; };
+		E1A00033 /* VoiceModelStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1A00017 /* VoiceModelStoreTests.swift */; };
+		E1A00040 /* voice in Resources */ = {isa = PBXBuildFile; fileRef = E1A00018 /* voice */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		A0000001 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
+		A0000002 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		A0000003 /* GhosttyApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyApp.swift; sourceTree = "<group>"; };
+		A0000004 /* TerminalSurfaceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalSurfaceView.swift; sourceTree = "<group>"; };
+		A0000005 /* TerminalViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalViewController.swift; sourceTree = "<group>"; };
+		A0000006 /* SidebarViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarViewController.swift; sourceTree = "<group>"; };
+		A0000007 /* Ghostty+Input.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Ghostty+Input.swift"; sourceTree = "<group>"; };
+		A0000008 /* MuxMaestro-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "MuxMaestro-Info.plist"; sourceTree = "<group>"; };
+		A0000009 /* MuxMaestro.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = MuxMaestro.entitlements; sourceTree = "<group>"; };
+		A0000010 /* GhosttyKit.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = GhosttyKit.xcframework; path = GhosttyKit.xcframework; sourceTree = SOURCE_ROOT; };
+		A0000011 /* TmuxModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TmuxModel.swift; sourceTree = "<group>"; };
+		A0000C01 /* TmuxColor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TmuxColor.swift; sourceTree = "<group>"; };
+		A0000012 /* TmuxService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TmuxService.swift; sourceTree = "<group>"; };
+		A0000013 /* TmuxModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TmuxModelTests.swift; sourceTree = "<group>"; };
+		A0000014 /* TmuxCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TmuxCommands.swift; sourceTree = "<group>"; };
+		A0000090 /* ClaudeSessionRecovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeSessionRecovery.swift; sourceTree = "<group>"; };
+		A0000092 /* CodexSessions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexSessions.swift; sourceTree = "<group>"; };
+		A0000A00 /* SessionRecord.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionRecord.swift; sourceTree = "<group>"; };
+		A0000A01 /* AgentHookInstall.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHookInstall.swift; sourceTree = "<group>"; };
+		A0000A02 /* recovery */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Resources/recovery; sourceTree = "<group>"; };
+		A0000A03 /* SessionRecordTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionRecordTests.swift; sourceTree = "<group>"; };
+		A0000A04 /* AgentHookInstallTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHookInstallTests.swift; sourceTree = "<group>"; };
+		A000C101 /* AgentState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentState.swift; sourceTree = "<group>"; };
+		A00CA101 /* SidebarCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarCard.swift; sourceTree = "<group>"; };
+		A0057001 /* HostStats.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStats.swift; sourceTree = "<group>"; };
+		A0057002 /* HostStatsCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStatsCard.swift; sourceTree = "<group>"; };
+		A0057003 /* HostStatsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStatsTests.swift; sourceTree = "<group>"; };
+		A000C102 /* AgentStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentStateTests.swift; sourceTree = "<group>"; };
+		A00F6001 /* ManagerPaneDriver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManagerPaneDriver.swift; sourceTree = "<group>"; };
+		A00F6002 /* ManagerPaneDriverTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManagerPaneDriverTests.swift; sourceTree = "<group>"; };
+		A0000091 /* ClaudeSessionRecoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeSessionRecoveryTests.swift; sourceTree = "<group>"; };
+		A0000093 /* CodexSessionsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexSessionsTests.swift; sourceTree = "<group>"; };
+		A0000015 /* DetailViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DetailViewController.swift; sourceTree = "<group>"; };
+		A00000A0 /* FindBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FindBar.swift; sourceTree = "<group>"; };
+		A0000750 /* RightSidebarViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RightSidebarViewController.swift; sourceTree = "<group>"; };
+		A0000016 /* Prompts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Prompts.swift; sourceTree = "<group>"; };
+		A0000017 /* TmuxCommandsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TmuxCommandsTests.swift; sourceTree = "<group>"; };
+		A0000018 /* SidebarDiff.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarDiff.swift; sourceTree = "<group>"; };
+		A0000019 /* TmuxServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TmuxServiceTests.swift; sourceTree = "<group>"; };
+		A0000022 /* SidebarDiffTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarDiffTests.swift; sourceTree = "<group>"; };
+		A0000023 /* SshConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SshConfig.swift; sourceTree = "<group>"; };
+		A0000024 /* SshConfigTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SshConfigTests.swift; sourceTree = "<group>"; };
+		A00007A1 /* RemoteScanSchedulerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteScanSchedulerTests.swift; sourceTree = "<group>"; };
+		A0000D02 /* WorktreesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorktreesTests.swift; sourceTree = "<group>"; };
+		C4B10004 /* DockerAttributionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DockerAttributionTests.swift; sourceTree = "<group>"; };
+		C4B1000C /* WorktreeMetricsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorktreeMetricsTests.swift; sourceTree = "<group>"; };
+		C4B1E004 /* RunningTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunningTests.swift; sourceTree = "<group>"; };
+		C4B1E0A4 /* HostAddressTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostAddressTests.swift; sourceTree = "<group>"; };
+		A0000F02 /* CloseWindowPromptTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloseWindowPromptTests.swift; sourceTree = "<group>"; };
+		A0000D07 /* WindowPRsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowPRsTests.swift; sourceTree = "<group>"; };
+		A0000025 /* AddServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddServer.swift; sourceTree = "<group>"; };
+		A0000026 /* AddServerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddServerTests.swift; sourceTree = "<group>"; };
+		A0000027 /* ScratchpadTransfer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScratchpadTransfer.swift; sourceTree = "<group>"; };
+		A0000028 /* ScratchpadTransferTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScratchpadTransferTests.swift; sourceTree = "<group>"; };
+		A0000900 /* BeamTransfer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BeamTransfer.swift; sourceTree = "<group>"; };
+		A0000901 /* BeamRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BeamRunner.swift; sourceTree = "<group>"; };
+		A0000902 /* BeamTransferTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BeamTransferTests.swift; sourceTree = "<group>"; };
+		A0000020 /* MuxMaestro.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MuxMaestro.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A0000021 /* MuxMaestroTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MuxMaestroTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A0000401 /* HerdrModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrModel.swift; sourceTree = "<group>"; };
+		A0000402 /* HerdrService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrService.swift; sourceTree = "<group>"; };
+		A0000403 /* HerdrModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrModelTests.swift; sourceTree = "<group>"; };
+		A0000404 /* HerdrServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrServiceTests.swift; sourceTree = "<group>"; };
+		A0000501 /* GitDiff.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitDiff.swift; sourceTree = "<group>"; };
+		A0000502 /* DiffViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiffViewController.swift; sourceTree = "<group>"; };
+		A0000503 /* GitDiffTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitDiffTests.swift; sourceTree = "<group>"; };
+		A0000504 /* diff */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Resources/diff; sourceTree = "<group>"; };
+		A0000708 /* preview */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Resources/preview; sourceTree = "<group>"; };
+		A0000509 /* beam */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Resources/beam; sourceTree = "<group>"; };
+		A0000505 /* MuxMaestro.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = Resources/MuxMaestro.icns; sourceTree = "<group>"; };
+		A0000701 /* CodeSearch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeSearch.swift; sourceTree = "<group>"; };
+		A0000B01 /* PaneSearch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneSearch.swift; sourceTree = "<group>"; };
+		A0000703 /* FileTree.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileTree.swift; sourceTree = "<group>"; };
+		A0000704 /* TreeViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TreeViewController.swift; sourceTree = "<group>"; };
+		A0000709 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
+		A0000710 /* FuzzyMatch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FuzzyMatch.swift; sourceTree = "<group>"; };
+		A0000711 /* FilePaletteViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilePaletteViewController.swift; sourceTree = "<group>"; };
+		A0000715 /* SessionPaletteViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionPaletteViewController.swift; sourceTree = "<group>"; };
+		A0000725 /* HelpWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HelpWindowController.swift; sourceTree = "<group>"; };
+		A0000720 /* PullRequests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PullRequests.swift; sourceTree = "<group>"; };
+		B0PRS0000000 /* PRSessionSearch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PRSessionSearch.swift; sourceTree = "<group>"; };
+		B0PRS0000003 /* PRSessionSearchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PRSessionSearchTests.swift; sourceTree = "<group>"; };
+		A0000722 /* GitCommit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitCommit.swift; sourceTree = "<group>"; };
+		A0000724 /* CommitPanelViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommitPanelViewController.swift; sourceTree = "<group>"; };
+		A0000723 /* GitCommitTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitCommitTests.swift; sourceTree = "<group>"; };
+		A0000721 /* PullRequestsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PullRequestsTests.swift; sourceTree = "<group>"; };
+		A0000712 /* FuzzyMatchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FuzzyMatchTests.swift; sourceTree = "<group>"; };
+		A0000705 /* CodeSearchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeSearchTests.swift; sourceTree = "<group>"; };
+		A0000B02 /* PaneSearchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneSearchTests.swift; sourceTree = "<group>"; };
+		A0000706 /* FileTreeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileTreeTests.swift; sourceTree = "<group>"; };
+		A0000713 /* Settings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Settings.swift; sourceTree = "<group>"; };
+		DF1A7E5C0B2E4D6F00000001 /* DefaultsMigration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DefaultsMigration.swift; sourceTree = "<group>"; };
+		A00007A0 /* RemoteScanScheduler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteScanScheduler.swift; sourceTree = "<group>"; };
+		A0000D01 /* Worktrees.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Worktrees.swift; sourceTree = "<group>"; };
+		C4B10001 /* DockerAttribution.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DockerAttribution.swift; sourceTree = "<group>"; };
+		C4B10002 /* WorktreeMetrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorktreeMetrics.swift; sourceTree = "<group>"; };
+		C4B10003 /* WorktreeRowCell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorktreeRowCell.swift; sourceTree = "<group>"; };
+		C4B1E001 /* Running.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Running.swift; sourceTree = "<group>"; };
+		C4B1E0A3 /* HostAddress.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostAddress.swift; sourceTree = "<group>"; };
+		C4B1E003 /* RunningViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunningViewController.swift; sourceTree = "<group>"; };
+		A0000F01 /* CloseWindowPrompt.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloseWindowPrompt.swift; sourceTree = "<group>"; };
+		A0000D06 /* WindowPRs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowPRs.swift; sourceTree = "<group>"; };
+		A00007B0 /* Diag.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Diag.swift; sourceTree = "<group>"; };
+		A0000714 /* SettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsTests.swift; sourceTree = "<group>"; };
+		DF1A7E5C0B2E4D6F00000002 /* DefaultsMigrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DefaultsMigrationTests.swift; sourceTree = "<group>"; };
+		A0000760 /* Favicon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Favicon.swift; sourceTree = "<group>"; };
+		AF7A0003 /* ArtifactsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArtifactsViewController.swift; sourceTree = "<group>"; };
+		AF7A0001 /* Artifacts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Artifacts.swift; sourceTree = "<group>"; };
+		AF7A0002 /* ArtifactsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArtifactsTests.swift; sourceTree = "<group>"; };
+		A0000761 /* SessionMRU.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionMRU.swift; sourceTree = "<group>"; };
+		A00C4001 /* SessionSwitcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionSwitcher.swift; sourceTree = "<group>"; };
+		A00C4002 /* SessionSwitcherTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionSwitcherTests.swift; sourceTree = "<group>"; };
+		A0000762 /* SessionCyclerOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionCyclerOverlay.swift; sourceTree = "<group>"; };
+		A0000E31 /* PullRequestsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PullRequestsViewController.swift; sourceTree = "<group>"; };
+		A0000763 /* FaviconTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FaviconTests.swift; sourceTree = "<group>"; };
+		A0000764 /* SessionMRUTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionMRUTests.swift; sourceTree = "<group>"; };
+		A0000790 /* ManagerStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManagerStore.swift; sourceTree = "<group>"; };
+		A0000791 /* ManagerHome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManagerHome.swift; sourceTree = "<group>"; };
+		A0000792 /* manager */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Resources/manager; sourceTree = "<group>"; };
+		A0000793 /* ManagerStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManagerStoreTests.swift; sourceTree = "<group>"; };
+		A0000799 /* ManagerRailViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManagerRailViewController.swift; sourceTree = "<group>"; };
+		A000079A /* ManagerController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManagerController.swift; sourceTree = "<group>"; };
+		A000079B /* ManagerToastOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManagerToastOverlay.swift; sourceTree = "<group>"; };
+		B0D00001 /* BundledTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BundledTools.swift; sourceTree = "<group>"; };
+		B0D00002 /* SetupTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupTools.swift; sourceTree = "<group>"; };
+		B0D00003 /* SetupWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupWindowController.swift; sourceTree = "<group>"; };
+		B0D00004 /* tools */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Resources/tools; sourceTree = "<group>"; };
+		B0D00005 /* BundledToolsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BundledToolsTests.swift; sourceTree = "<group>"; };
+		B0D00006 /* SetupToolsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupToolsTests.swift; sourceTree = "<group>"; };
+		A0071E01 /* ThreadLinks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadLinks.swift; sourceTree = "<group>"; };
+		A0071E02 /* ThreadLinksTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadLinksTests.swift; sourceTree = "<group>"; };
+		A11C0001 /* LinkRoute.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkRoute.swift; sourceTree = "<group>"; };
+		A11C0002 /* LinkRouteTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkRouteTests.swift; sourceTree = "<group>"; };
+		A0071E03 /* LinkLabel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkLabel.swift; sourceTree = "<group>"; };
+		A00C4D01 /* ChatMarkdown.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatMarkdown.swift; sourceTree = "<group>"; };
+		A00C4D02 /* ChatMarkdownTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatMarkdownTests.swift; sourceTree = "<group>"; };
+		A70A5701 /* ToastClick.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToastClick.swift; sourceTree = "<group>"; };
+		A70A5702 /* ToastClickTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToastClickTests.swift; sourceTree = "<group>"; };
+		E1A00010 /* VoiceModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceModels.swift; sourceTree = "<group>"; };
+		E1A00011 /* VoiceEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceEngine.swift; sourceTree = "<group>"; };
+		E1A00012 /* MicCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MicCapture.swift; sourceTree = "<group>"; };
+		E1A00013 /* VoiceSelfTest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceSelfTest.swift; sourceTree = "<group>"; };
+		E1A00014 /* Speechify.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Speechify.swift; sourceTree = "<group>"; };
+		F1B0A001 /* VoiceController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceController.swift; sourceTree = "<group>"; };
+		F1B0A002 /* VoiceControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceControllerTests.swift; sourceTree = "<group>"; };
+		E1A00015 /* VoiceModelStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceModelStore.swift; sourceTree = "<group>"; };
+		E1A00016 /* SpeechifyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechifyTests.swift; sourceTree = "<group>"; };
+		E1A00017 /* VoiceModelStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceModelStoreTests.swift; sourceTree = "<group>"; };
+		E1A00018 /* voice */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Resources/voice; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A0000040 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E1A00005 /* FluidAudio in Frameworks */,
+				E1A00006 /* WhisperKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A0000050 = {
+			isa = PBXGroup;
+			children = (
+				A0000051 /* app */,
+				A0000053 /* tests */,
+				A0000010 /* GhosttyKit.xcframework */,
+				A0000052 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A0000051 /* app */ = {
+			isa = PBXGroup;
+			children = (
+				A0000001 /* main.swift */,
+				A0000002 /* AppDelegate.swift */,
+				A0000003 /* GhosttyApp.swift */,
+				A0000004 /* TerminalSurfaceView.swift */,
+				A0000005 /* TerminalViewController.swift */,
+				A0000006 /* SidebarViewController.swift */,
+				A0000007 /* Ghostty+Input.swift */,
+				A0000011 /* TmuxModel.swift */,
+				A0000C01 /* TmuxColor.swift */,
+				A0000012 /* TmuxService.swift */,
+				A0000720 /* PullRequests.swift */,
+				B0PRS0000000 /* PRSessionSearch.swift */,
+				A0000722 /* GitCommit.swift */,
+				A0000724 /* CommitPanelViewController.swift */,
+				A0000014 /* TmuxCommands.swift */,
+				A0000090 /* ClaudeSessionRecovery.swift */,
+				A0000092 /* CodexSessions.swift */,
+				A0000A00 /* SessionRecord.swift */,
+				A0000A01 /* AgentHookInstall.swift */,
+				A000C101 /* AgentState.swift */,
+				A00CA101 /* SidebarCard.swift */,
+				A0057001 /* HostStats.swift */,
+				A0057002 /* HostStatsCard.swift */,
+				A0000015 /* DetailViewController.swift */,
+				A00000A0 /* FindBar.swift */,
+				A0000750 /* RightSidebarViewController.swift */,
+				A0000016 /* Prompts.swift */,
+				A0000713 /* Settings.swift */,
+				DF1A7E5C0B2E4D6F00000001 /* DefaultsMigration.swift */,
+				A00007A0 /* RemoteScanScheduler.swift */,
+				A0000D01 /* Worktrees.swift */,
+				C4B10001 /* DockerAttribution.swift */,
+				C4B10002 /* WorktreeMetrics.swift */,
+				C4B10003 /* WorktreeRowCell.swift */,
+				C4B1E001 /* Running.swift */,
+				C4B1E0A3 /* HostAddress.swift */,
+				C4B1E003 /* RunningViewController.swift */,
+				A0000F01 /* CloseWindowPrompt.swift */,
+				A0000D06 /* WindowPRs.swift */,
+				A00007B0 /* Diag.swift */,
+				A0000018 /* SidebarDiff.swift */,
+				A0000023 /* SshConfig.swift */,
+				A0000025 /* AddServer.swift */,
+				A0000027 /* ScratchpadTransfer.swift */,
+				A0000900 /* BeamTransfer.swift */,
+				A0000901 /* BeamRunner.swift */,
+				A0000401 /* HerdrModel.swift */,
+				A0000402 /* HerdrService.swift */,
+				A0000501 /* GitDiff.swift */,
+				A0000502 /* DiffViewController.swift */,
+				A0000701 /* CodeSearch.swift */,
+				A0000B01 /* PaneSearch.swift */,
+				A0000703 /* FileTree.swift */,
+				A0000704 /* TreeViewController.swift */,
+				A0000709 /* Theme.swift */,
+				A0000710 /* FuzzyMatch.swift */,
+				A0000711 /* FilePaletteViewController.swift */,
+				A0000715 /* SessionPaletteViewController.swift */,
+				A0000725 /* HelpWindowController.swift */,
+				A0000760 /* Favicon.swift */,
+				AF7A0003 /* ArtifactsViewController.swift */,
+				AF7A0001 /* Artifacts.swift */,
+				A0000761 /* SessionMRU.swift */,
+				A00C4001 /* SessionSwitcher.swift */,
+				A0000762 /* SessionCyclerOverlay.swift */,
+				A0000E31 /* PullRequestsViewController.swift */,
+				A0000790 /* ManagerStore.swift */,
+				A00F6001 /* ManagerPaneDriver.swift */,
+				A0000791 /* ManagerHome.swift */,
+				A0000799 /* ManagerRailViewController.swift */,
+				A000079A /* ManagerController.swift */,
+				A000079B /* ManagerToastOverlay.swift */,
+				B0D00001 /* BundledTools.swift */,
+				B0D00002 /* SetupTools.swift */,
+				B0D00003 /* SetupWindowController.swift */,
+				A0071E01 /* ThreadLinks.swift */,
+				A11C0001 /* LinkRoute.swift */,
+				A0071E03 /* LinkLabel.swift */,
+				A00C4D01 /* ChatMarkdown.swift */,
+				A70A5701 /* ToastClick.swift */,
+				E1A00010 /* VoiceModels.swift */,
+				E1A00011 /* VoiceEngine.swift */,
+				E1A00012 /* MicCapture.swift */,
+				E1A00013 /* VoiceSelfTest.swift */,
+				E1A00014 /* Speechify.swift */,
+				F1B0A001 /* VoiceController.swift */,
+				E1A00015 /* VoiceModelStore.swift */,
+				A0000504 /* diff */,
+				A0000792 /* manager */,
+				A0000708 /* preview */,
+				A0000509 /* beam */,
+				A0000A02 /* recovery */,
+				B0D00004 /* tools */,
+				E1A00018 /* voice */,
+				A0000505 /* MuxMaestro.icns */,
+				A0000008 /* MuxMaestro-Info.plist */,
+				A0000009 /* MuxMaestro.entitlements */,
+			);
+			name = app;
+			path = app/MuxMaestro;
+			sourceTree = "<group>";
+		};
+		A0000053 /* tests */ = {
+			isa = PBXGroup;
+			children = (
+				A0000013 /* TmuxModelTests.swift */,
+				A0000017 /* TmuxCommandsTests.swift */,
+				A0000091 /* ClaudeSessionRecoveryTests.swift */,
+				A0000093 /* CodexSessionsTests.swift */,
+				A0000A03 /* SessionRecordTests.swift */,
+				A0000A04 /* AgentHookInstallTests.swift */,
+				A000C102 /* AgentStateTests.swift */,
+				A00F6002 /* ManagerPaneDriverTests.swift */,
+				A0000019 /* TmuxServiceTests.swift */,
+				A0000721 /* PullRequestsTests.swift */,
+				B0PRS0000003 /* PRSessionSearchTests.swift */,
+				A0000723 /* GitCommitTests.swift */,
+				A0000022 /* SidebarDiffTests.swift */,
+				A0000024 /* SshConfigTests.swift */,
+				A00007A1 /* RemoteScanSchedulerTests.swift */,
+				A0000D02 /* WorktreesTests.swift */,
+				C4B10004 /* DockerAttributionTests.swift */,
+				C4B1000C /* WorktreeMetricsTests.swift */,
+				C4B1E004 /* RunningTests.swift */,
+				A0057003 /* HostStatsTests.swift */,
+				C4B1E0A4 /* HostAddressTests.swift */,
+				A0000F02 /* CloseWindowPromptTests.swift */,
+				A0000D07 /* WindowPRsTests.swift */,
+				A0000714 /* SettingsTests.swift */,
+				DF1A7E5C0B2E4D6F00000002 /* DefaultsMigrationTests.swift */,
+				A0000026 /* AddServerTests.swift */,
+				A0000028 /* ScratchpadTransferTests.swift */,
+				A0000902 /* BeamTransferTests.swift */,
+				A0000403 /* HerdrModelTests.swift */,
+				A0000404 /* HerdrServiceTests.swift */,
+				A0000503 /* GitDiffTests.swift */,
+				A0000705 /* CodeSearchTests.swift */,
+				A0000B02 /* PaneSearchTests.swift */,
+				A0000706 /* FileTreeTests.swift */,
+				A0000712 /* FuzzyMatchTests.swift */,
+				A0000763 /* FaviconTests.swift */,
+				AF7A0002 /* ArtifactsTests.swift */,
+				A0000764 /* SessionMRUTests.swift */,
+				A00C4002 /* SessionSwitcherTests.swift */,
+				A0000793 /* ManagerStoreTests.swift */,
+				B0D00005 /* BundledToolsTests.swift */,
+				B0D00006 /* SetupToolsTests.swift */,
+				A0071E02 /* ThreadLinksTests.swift */,
+				A11C0002 /* LinkRouteTests.swift */,
+				A00C4D02 /* ChatMarkdownTests.swift */,
+				A70A5702 /* ToastClickTests.swift */,
+				E1A00016 /* SpeechifyTests.swift */,
+				F1B0A002 /* VoiceControllerTests.swift */,
+				E1A00017 /* VoiceModelStoreTests.swift */,
+			);
+			name = tests;
+			path = tests;
+			sourceTree = "<group>";
+		};
+		A0000052 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A0000020 /* MuxMaestro.app */,
+				A0000021 /* MuxMaestroTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A0000030 /* MuxMaestro */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A0000033 /* Build configuration list for PBXNativeTarget "MuxMaestro" */;
+			buildPhases = (
+				A0000031 /* Sources */,
+				A0000040 /* Frameworks */,
+				A0000032 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = MuxMaestro;
+			packageProductDependencies = (
+				E1A00003 /* FluidAudio */,
+				E1A00004 /* WhisperKit */,
+			);
+			productName = MuxMaestro;
+			productReference = A0000020 /* MuxMaestro.app */;
+			productType = "com.apple.product-type.application";
+		};
+		A0000035 /* MuxMaestroTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A0000036 /* Build configuration list for PBXNativeTarget "MuxMaestroTests" */;
+			buildPhases = (
+				A0000034 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = MuxMaestroTests;
+			productName = MuxMaestroTests;
+			productReference = A0000021 /* MuxMaestroTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A0000060 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1620;
+				LastUpgradeCheck = 1620;
+				TargetAttributes = {
+					A0000030 = {
+						CreatedOnToolsVersion = 16.2;
+					};
+					A0000035 = {
+						CreatedOnToolsVersion = 16.2;
+					};
+				};
+			};
+			buildConfigurationList = A0000063 /* Build configuration list for PBXProject "MuxMaestro" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = A0000050;
+			packageReferences = (
+				E1A00001 /* XCRemoteSwiftPackageReference "FluidAudio" */,
+				E1A00002 /* XCRemoteSwiftPackageReference "argmax-oss-swift" */,
+			);
+			productRefGroup = A0000052 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A0000030 /* MuxMaestro */,
+				A0000035 /* MuxMaestroTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A0000032 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A0000123 /* diff in Resources */,
+				A0000124 /* MuxMaestro.icns in Resources */,
+				A0000125 /* preview in Resources */,
+				A0000796 /* manager in Resources */,
+				A0000126 /* beam in Resources */,
+				A0000A12 /* recovery in Resources */,
+				B0D00014 /* tools in Resources */,
+				E1A00040 /* voice in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A0000031 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AF7A0103 /* ArtifactsViewController.swift in Sources */,
+				AF7A0101 /* Artifacts.swift in Sources */,
+				A0000101 /* main.swift in Sources */,
+				A0000102 /* AppDelegate.swift in Sources */,
+				A0000103 /* GhosttyApp.swift in Sources */,
+				A0000104 /* TerminalSurfaceView.swift in Sources */,
+				A0000105 /* TerminalViewController.swift in Sources */,
+				A0000106 /* SidebarViewController.swift in Sources */,
+				A0000107 /* Ghostty+Input.swift in Sources */,
+				A0000108 /* TmuxModel.swift in Sources */,
+				A0000C02 /* TmuxColor.swift in Sources */,
+				A0000109 /* TmuxService.swift in Sources */,
+				A0000110 /* TmuxCommands.swift in Sources */,
+				A0000190 /* ClaudeSessionRecovery.swift in Sources */,
+				A0000192 /* CodexSessions.swift in Sources */,
+				A0000A10 /* SessionRecord.swift in Sources */,
+				A0000A11 /* AgentHookInstall.swift in Sources */,
+				A000C111 /* AgentState.swift in Sources */,
+				A00CA111 /* SidebarCard.swift in Sources */,
+				A0057011 /* HostStats.swift in Sources */,
+				A0057012 /* HostStatsCard.swift in Sources */,
+				A00F6011 /* ManagerPaneDriver.swift in Sources */,
+				A0000111 /* DetailViewController.swift in Sources */,
+				A00001AF /* FindBar.swift in Sources */,
+				A0000751 /* RightSidebarViewController.swift in Sources */,
+				A0000112 /* Prompts.swift in Sources */,
+				A0000138 /* Settings.swift in Sources */,
+				DF1A7E5C0B2E4D6F00000003 /* DefaultsMigration.swift in Sources */,
+				A00001A0 /* RemoteScanScheduler.swift in Sources */,
+				A0000D03 /* Worktrees.swift in Sources */,
+				C4B10005 /* DockerAttribution.swift in Sources */,
+				C4B10006 /* WorktreeMetrics.swift in Sources */,
+				C4B10007 /* WorktreeRowCell.swift in Sources */,
+				C4B1E011 /* Running.swift in Sources */,
+				C4B1E0A1 /* HostAddress.swift in Sources */,
+				C4B1E013 /* RunningViewController.swift in Sources */,
+				A0000F03 /* CloseWindowPrompt.swift in Sources */,
+				A0000D08 /* WindowPRs.swift in Sources */,
+				A00001B0 /* Diag.swift in Sources */,
+				A0000113 /* SidebarDiff.swift in Sources */,
+				A0000114 /* SshConfig.swift in Sources */,
+				A0000115 /* AddServer.swift in Sources */,
+				A0000116 /* ScratchpadTransfer.swift in Sources */,
+				A0000903 /* BeamTransfer.swift in Sources */,
+				A0000904 /* BeamRunner.swift in Sources */,
+				A0000119 /* HerdrModel.swift in Sources */,
+				A0000120 /* HerdrService.swift in Sources */,
+				A0000121 /* GitDiff.swift in Sources */,
+				A0000122 /* DiffViewController.swift in Sources */,
+				A0000131 /* CodeSearch.swift in Sources */,
+				A0000B10 /* PaneSearch.swift in Sources */,
+				A0000133 /* FileTree.swift in Sources */,
+				A0000134 /* TreeViewController.swift in Sources */,
+				A0000135 /* Theme.swift in Sources */,
+				A0000136 /* FuzzyMatch.swift in Sources */,
+				A0000137 /* FilePaletteViewController.swift in Sources */,
+				A0000139 /* SessionPaletteViewController.swift in Sources */,
+				A0000153 /* HelpWindowController.swift in Sources */,
+				A0000145 /* PullRequests.swift in Sources */,
+				B0PRS0000001 /* PRSessionSearch.swift in Sources */,
+				A0000148 /* GitCommit.swift in Sources */,
+				A0000152 /* CommitPanelViewController.swift in Sources */,
+				A0000770 /* Favicon.swift in Sources */,
+				A0000771 /* SessionMRU.swift in Sources */,
+				A00C4011 /* SessionSwitcher.swift in Sources */,
+				A0000772 /* SessionCyclerOverlay.swift in Sources */,
+				A0000E30 /* PullRequestsViewController.swift in Sources */,
+				A0000794 /* ManagerStore.swift in Sources */,
+				A0000795 /* ManagerHome.swift in Sources */,
+				A000079C /* ManagerRailViewController.swift in Sources */,
+				A000079D /* ManagerController.swift in Sources */,
+				A000079E /* ManagerToastOverlay.swift in Sources */,
+				B0D00011 /* BundledTools.swift in Sources */,
+				B0D00012 /* SetupTools.swift in Sources */,
+				B0D00013 /* SetupWindowController.swift in Sources */,
+				A0071E11 /* ThreadLinks.swift in Sources */,
+				A11C0011 /* LinkRoute.swift in Sources */,
+				A0071E14 /* LinkLabel.swift in Sources */,
+				A00C4D11 /* ChatMarkdown.swift in Sources */,
+				A70A5711 /* ToastClick.swift in Sources */,
+				E1A00020 /* VoiceModels.swift in Sources */,
+				E1A00021 /* VoiceEngine.swift in Sources */,
+				E1A00022 /* MicCapture.swift in Sources */,
+				F1B0A011 /* VoiceController.swift in Sources */,
+				E1A00023 /* VoiceSelfTest.swift in Sources */,
+				E1A00024 /* Speechify.swift in Sources */,
+				E1A00025 /* VoiceModelStore.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A0000034 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AF7A0201 /* Artifacts.swift in Sources */,
+				AF7A0102 /* ArtifactsTests.swift in Sources */,
+				A0000301 /* TmuxModelTests.swift in Sources */,
+				A0000302 /* TmuxModel.swift in Sources */,
+				A0000C03 /* TmuxColor.swift in Sources */,
+				A0000303 /* TmuxCommands.swift in Sources */,
+				A0000304 /* TmuxCommandsTests.swift in Sources */,
+				A0000390 /* ClaudeSessionRecovery.swift in Sources */,
+				A0000392 /* CodexSessions.swift in Sources */,
+				A0000391 /* ClaudeSessionRecoveryTests.swift in Sources */,
+				A0000393 /* CodexSessionsTests.swift in Sources */,
+				A0000A20 /* SessionRecord.swift in Sources */,
+				A0000A21 /* SessionRecordTests.swift in Sources */,
+				A0000A22 /* AgentHookInstall.swift in Sources */,
+				A0000A23 /* AgentHookInstallTests.swift in Sources */,
+				A000C121 /* AgentState.swift in Sources */,
+				A00CA121 /* SidebarCard.swift in Sources */,
+				A0057021 /* HostStats.swift in Sources */,
+				A0057023 /* HostStatsTests.swift in Sources */,
+				A000C122 /* AgentStateTests.swift in Sources */,
+				A000C123 /* ManagerHome.swift in Sources */,
+				A00F6021 /* ManagerPaneDriver.swift in Sources */,
+				A00F6022 /* ManagerPaneDriverTests.swift in Sources */,
+				A0000305 /* SidebarDiff.swift in Sources */,
+				A0000306 /* TmuxService.swift in Sources */,
+				A0000307 /* TmuxServiceTests.swift in Sources */,
+				A0000146 /* PullRequests.swift in Sources */,
+				B0PRS0000002 /* PRSessionSearch.swift in Sources */,
+				B0PRS0000004 /* PRSessionSearchTests.swift in Sources */,
+				A0000147 /* PullRequestsTests.swift in Sources */,
+				A0000149 /* GitCommit.swift in Sources */,
+				A0000151 /* GitCommitTests.swift in Sources */,
+				A0000308 /* SidebarDiffTests.swift in Sources */,
+				A0000309 /* SshConfig.swift in Sources */,
+				A0000310 /* SshConfigTests.swift in Sources */,
+				A00003A1 /* RemoteScanSchedulerTests.swift in Sources */,
+				A0000D04 /* Worktrees.swift in Sources */,
+				A0000D05 /* WorktreesTests.swift in Sources */,
+				C4B10008 /* DockerAttribution.swift in Sources */,
+				C4B10009 /* WorktreeMetrics.swift in Sources */,
+				C4B1000A /* DockerAttributionTests.swift in Sources */,
+				C4B1000B /* WorktreeMetricsTests.swift in Sources */,
+				C4B1E021 /* Running.swift in Sources */,
+				C4B1E0A2 /* HostAddress.swift in Sources */,
+				C4B1E024 /* RunningTests.swift in Sources */,
+				C4B1E0A5 /* HostAddressTests.swift in Sources */,
+				A0000F04 /* CloseWindowPrompt.swift in Sources */,
+				A0000F05 /* CloseWindowPromptTests.swift in Sources */,
+				A0000D09 /* WindowPRs.swift in Sources */,
+				A0000D0A /* WindowPRsTests.swift in Sources */,
+				A0000337 /* Settings.swift in Sources */,
+				DF1A7E5C0B2E4D6F00000004 /* DefaultsMigration.swift in Sources */,
+				A00003A0 /* RemoteScanScheduler.swift in Sources */,
+				A00003B0 /* Diag.swift in Sources */,
+				A0000338 /* SettingsTests.swift in Sources */,
+				DF1A7E5C0B2E4D6F00000005 /* DefaultsMigrationTests.swift in Sources */,
+				A0000311 /* AddServer.swift in Sources */,
+				A0000312 /* AddServerTests.swift in Sources */,
+				A0000313 /* ScratchpadTransfer.swift in Sources */,
+				A0000314 /* ScratchpadTransferTests.swift in Sources */,
+				A0000905 /* BeamTransfer.swift in Sources */,
+				A0000906 /* BeamTransferTests.swift in Sources */,
+				A0000317 /* HerdrModel.swift in Sources */,
+				A0000318 /* HerdrService.swift in Sources */,
+				A0000319 /* HerdrModelTests.swift in Sources */,
+				A0000320 /* HerdrServiceTests.swift in Sources */,
+				A0000321 /* GitDiff.swift in Sources */,
+				A0000322 /* GitDiffTests.swift in Sources */,
+				A0000331 /* CodeSearch.swift in Sources */,
+				A0000332 /* CodeSearchTests.swift in Sources */,
+				A0000B11 /* PaneSearch.swift in Sources */,
+				A0000B12 /* PaneSearchTests.swift in Sources */,
+				A0000333 /* FileTree.swift in Sources */,
+				A0000334 /* FileTreeTests.swift in Sources */,
+				A0000335 /* FuzzyMatch.swift in Sources */,
+				A0000336 /* FuzzyMatchTests.swift in Sources */,
+				A0000780 /* Favicon.swift in Sources */,
+				A0000781 /* SessionMRU.swift in Sources */,
+				A00C4012 /* SessionSwitcher.swift in Sources */,
+				A00C4013 /* SessionSwitcherTests.swift in Sources */,
+				A0000782 /* FaviconTests.swift in Sources */,
+				A0000783 /* SessionMRUTests.swift in Sources */,
+				A0000797 /* ManagerStore.swift in Sources */,
+				A0000798 /* ManagerStoreTests.swift in Sources */,
+				B0D00021 /* BundledTools.swift in Sources */,
+				B0D00022 /* SetupTools.swift in Sources */,
+				B0D00025 /* BundledToolsTests.swift in Sources */,
+				B0D00026 /* SetupToolsTests.swift in Sources */,
+				A0071E12 /* ThreadLinks.swift in Sources */,
+				A0071E13 /* ThreadLinksTests.swift in Sources */,
+				A11C0012 /* LinkRoute.swift in Sources */,
+				A11C0013 /* LinkRouteTests.swift in Sources */,
+				A00C4D12 /* ChatMarkdown.swift in Sources */,
+				A00C4D13 /* ChatMarkdownTests.swift in Sources */,
+				A70A5712 /* ToastClick.swift in Sources */,
+				A70A5713 /* ToastClickTests.swift in Sources */,
+				E1A00030 /* Speechify.swift in Sources */,
+				E1A00031 /* VoiceModelStore.swift in Sources */,
+				E1A00032 /* SpeechifyTests.swift in Sources */,
+				F1B0A021 /* VoiceController.swift in Sources */,
+				F1B0A022 /* VoiceControllerTests.swift in Sources */,
+				F1B0A023 /* MicCapture.swift in Sources */,
+				E1A00033 /* VoiceModelStoreTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		A0000070 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = arm64;
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		A0000071 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = arm64;
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+			};
+			name = Release;
+		};
+		A0000072 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = arm64;
+				ASSETCATALOG_COMPILER_APPICON_NAME = "";
+				CODE_SIGN_ENTITLEMENTS = "app/MuxMaestro/MuxMaestro.entitlements";
+				CODE_SIGN_IDENTITY = "$(MM_CODE_SIGN_IDENTITY)";
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_HARDENED_RUNTIME = NO;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)",
+				);
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "app/MuxMaestro/MuxMaestro-Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/GhosttyKit.xcframework/macos-arm64",
+				);
+				MARKETING_VERSION = 0.1.0;
+				MM_CODE_SIGN_IDENTITY = "-";
+				OTHER_LDFLAGS = (
+					"-lghostty-fat",
+					"-lstdc++",
+					"-lsqlite3",
+					"-framework",
+					Carbon,
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = is.rebar.MuxMaestro;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_INCLUDE_PATHS = "$(SRCROOT)/GhosttyKit.xcframework/macos-arm64/Headers";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		A0000073 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = arm64;
+				ASSETCATALOG_COMPILER_APPICON_NAME = "";
+				CODE_SIGN_ENTITLEMENTS = "app/MuxMaestro/MuxMaestro.entitlements";
+				CODE_SIGN_IDENTITY = "$(MM_CODE_SIGN_IDENTITY)";
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_HARDENED_RUNTIME = NO;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)",
+				);
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "app/MuxMaestro/MuxMaestro-Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/GhosttyKit.xcframework/macos-arm64",
+				);
+				MARKETING_VERSION = 0.1.0;
+				MM_CODE_SIGN_IDENTITY = "-";
+				OTHER_LDFLAGS = (
+					"-lghostty-fat",
+					"-lstdc++",
+					"-lsqlite3",
+					"-framework",
+					Carbon,
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = is.rebar.MuxMaestro;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_INCLUDE_PATHS = "$(SRCROOT)/GhosttyKit.xcframework/macos-arm64/Headers";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		A0000080 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = arm64;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				OTHER_LDFLAGS = (
+					"-lsqlite3",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = is.rebar.MuxMaestroTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		A0000081 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = arm64;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				OTHER_LDFLAGS = (
+					"-lsqlite3",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = is.rebar.MuxMaestroTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A0000063 /* Build configuration list for PBXProject "MuxMaestro" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A0000070 /* Debug */,
+				A0000071 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A0000033 /* Build configuration list for PBXNativeTarget "MuxMaestro" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A0000072 /* Debug */,
+				A0000073 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A0000036 /* Build configuration list for PBXNativeTarget "MuxMaestroTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A0000080 /* Debug */,
+				A0000081 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		E1A00001 /* XCRemoteSwiftPackageReference "FluidAudio" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/FluidInference/FluidAudio.git";
+			requirement = {
+				kind = exactVersion;
+				version = 0.15.6;
+			};
+		};
+		E1A00002 /* XCRemoteSwiftPackageReference "argmax-oss-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/argmaxinc/argmax-oss-swift.git";
+			requirement = {
+				kind = exactVersion;
+				version = 1.1.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		E1A00003 /* FluidAudio */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = E1A00001 /* XCRemoteSwiftPackageReference "FluidAudio" */;
+			productName = FluidAudio;
+		};
+		E1A00004 /* WhisperKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = E1A00002 /* XCRemoteSwiftPackageReference "argmax-oss-swift" */;
+			productName = WhisperKit;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = A0000060 /* Project object */;
+}
