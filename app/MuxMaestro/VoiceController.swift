@@ -35,6 +35,18 @@ protocol VoiceSpeech: AnyObject {
     func transcribe(_ samples: [Float]) async throws -> String
     func speak(_ text: AsyncStream<String>) async throws
     func stopSpeaking() async
+    /// Synthesize a reply as it streams in and hand over each sentence's audio
+    /// with its text, in order, instead of playing it. The phone plays it.
+    func synthesize(
+        _ text: AsyncStream<String>, onAudio: @escaping (SpeechAudio, String) -> Void
+    ) async throws
+}
+
+/// Synthesized speech: mono floats and their rate.
+struct SpeechAudio: Equatable {
+    let samples: [Float]
+    let sampleRate: Double
+    var seconds: Double { Double(samples.count) / sampleRate }
 }
 
 /// Push-to-talk: one press starts a take, the next ends it. The take goes

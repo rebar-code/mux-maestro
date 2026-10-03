@@ -81,6 +81,12 @@ enum MobileHTTP {
     static let maxHeaderBytes = 32_768
     static let maxBodyBytes = 1_048_576
 
+    /// The largest body a request to `path` may carry. Only a voice take, which
+    /// is audio, gets more than `maxBodyBytes`.
+    static func bodyLimit(method: String, path: String) -> Int {
+        method == "POST" && path == "/api/voice" ? MobileVoice.maxBodyBytes : maxBodyBytes
+    }
+
     enum Parsed: Equatable {
         /// More bytes are needed.
         case incomplete
@@ -120,7 +126,10 @@ enum MobileHTTP {
         var length = 0
         if let raw = headers["content-length"] {
             guard let n = Int(raw), n >= 0 else { return .invalid(400) }
-            guard n <= maxBodyBytes else { return .invalid(413) }
+            let limit = bodyLimit(
+                method: String(requestLine[0]),
+                path: String(requestLine[1].split(separator: "?", maxSplits: 1).first ?? ""))
+            guard n <= limit else { return .invalid(413) }
             length = n
         }
         let bodyStart = headBytes + terminator.count
@@ -164,6 +173,12 @@ enum MobileRoute: Equatable {
     /// One manager turn. The reply streams back.
     case managerText
     case managerDismiss
+    /// One voice take: audio in; transcript, reply and audio stream back.
+    case voice
+    /// Read the target's last reply again.
+    case voiceReplay
+    /// A take has started: load the models while the human talks.
+    case voiceWarm
     /// A file of the static bundle, as a path relative to its root.
     case asset(String)
     case methodNotAllowed
@@ -201,6 +216,7 @@ struct MobileConfig: Equatable {
     /// Nothing is on unless its switch was turned on.
     var capabilities: Set<MobileCapability> = []
     var grouping = MobileGrouping.recent
+    var voice = MobileVoiceDefaults()
 
     func allows(_ capability: MobileCapability) -> Bool { capabilities.contains(capability) }
 
@@ -211,6 +227,7 @@ struct MobileConfig: Equatable {
                 ($0.rawValue, allows($0))
             }),
             "grouping": grouping.rawValue,
+            "voice": voice.json,
         ]
         return (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]))
             ?? Data("{}".utf8)
@@ -279,6 +296,12 @@ enum MobileAPI {
             (route, method) = (.managerText, "POST")
         case 3 where segments[1] == "manager" && segments[2] == "dismiss":
             (route, method) = (.managerDismiss, "POST")
+        case 2 where segments[1] == "voice":
+            (route, method) = (.voice, "POST")
+        case 3 where segments[1] == "voice" && segments[2] == "replay":
+            (route, method) = (.voiceReplay, "POST")
+        case 3 where segments[1] == "voice" && segments[2] == "warm":
+            (route, method) = (.voiceWarm, "POST")
         case 4 where segments[1] == "threads" && segments[3] == "chat":
             route = .chat(id: segments[2], after: request.query["after"].flatMap(UInt64.init))
         case 4 where segments[1] == "threads" && segments[3] == "screen":

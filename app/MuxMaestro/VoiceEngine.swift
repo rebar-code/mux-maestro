@@ -58,29 +58,47 @@ actor VoiceEngine {
     /// The load in flight, shared by every caller that needs the models.
     private var loading: Task<Void, Error>?
 
-    var isLoaded: Bool { whisper != nil && kokoro != nil }
+    /// Which models a call needs. A take that is not read back never loads Kokoro.
+    struct Models: OptionSet {
+        let rawValue: Int
+        static let whisper = Models(rawValue: 1)
+        static let kokoro = Models(rawValue: 2)
+        static let all: Models = [.whisper, .kokoro]
+    }
+
+    var isLoaded: Bool { has(.all) }
+
+    private func has(_ models: Models) -> Bool {
+        (!models.contains(.whisper) || whisper != nil) && (!models.contains(.kokoro) || kokoro != nil)
+    }
 
     // MARK: Lifecycle
 
-    /// Load both engines if they are not resident. Throws `modelsNotReady`
-    /// until `VoiceModels` has finished its download. Callers that arrive while
-    /// a load is running wait for it: the actor is re-entrant across the load's
-    /// awaits, and a second load would hold both models twice.
-    func loadIfNeeded() async throws {
+    /// Load the engines `models` names (both by default) if they are not
+    /// resident. Throws `modelsNotReady` until `VoiceModels` has finished its
+    /// download. Callers that arrive while a load is running wait for it: the
+    /// actor is re-entrant across the load's awaits, and a second load would
+    /// hold a model twice. A waiter that needs more than that load brought
+    /// then loads the rest.
+    func loadIfNeeded(_ models: Models = .all) async throws {
         touch()
-        guard !isLoaded else { return }
-        if let loading { return try await loading.value }
-        let task = Task { try await self.load() }
-        loading = task
-        defer { loading = nil }
-        try await task.value
+        while !has(models) {
+            if let loading {
+                try await loading.value
+                continue
+            }
+            let task = Task { try await self.load(models) }
+            loading = task
+            defer { loading = nil }
+            try await task.value
+        }
     }
 
-    private func load() async throws {
+    private func load(_ models: Models) async throws {
         let missing = VoiceModelStore.missing(in: VoiceModelStore.directory)
         guard missing.isEmpty else { throw EngineError.modelsNotReady(missing) }
 
-        if whisper == nil {
+        if models.contains(.whisper), whisper == nil {
             let t0 = Date()
             let config = WhisperKitConfig(
                 downloadBase: VoiceModelStore.supportDirectory,
@@ -89,7 +107,7 @@ actor VoiceEngine {
             whisper = try await WhisperKit(config)
             Diag.log("voice", "whisper loaded \(Self.ms(since: t0))")
         }
-        if kokoro == nil {
+        if models.contains(.kokoro), kokoro == nil {
             let t0 = Date()
             let manager = KokoroAneManager(
                 defaultVoice: VoiceModelStore.kokoroVoice,
@@ -129,7 +147,7 @@ actor VoiceEngine {
     }
 
     private func releaseIfIdle(since mark: Int) async {
-        guard generation == mark, isLoaded else { return }
+        guard generation == mark, whisper != nil || kokoro != nil else { return }
         await release()
     }
 
@@ -137,7 +155,7 @@ actor VoiceEngine {
 
     /// Transcribe mono float samples at `sampleRate`.
     func transcribe(_ samples: [Float]) async throws -> String {
-        try await loadIfNeeded()
+        try await loadIfNeeded(.whisper)
         guard let whisper else { throw EngineError.notLoaded }
         guard Double(samples.count) >= Self.sampleRate * Self.minimumClip else { throw EngineError.tooShort }
         let t0 = Date()
@@ -175,18 +193,46 @@ actor VoiceEngine {
     func speak(_ deltas: AsyncStream<String>) async throws -> SpeakReport {
         try await loadIfNeeded()
         let run = SpeakRun(player: player)
+        try await chunks(of: deltas, started: { run.started }) { chunk in
+            try await run.add(chunk, synthesize: self.synthesize)
+        }
+        return try await run.finish()
+    }
+
+    /// Synthesize a reply as it streams in, cut the way `speak` cuts it, and
+    /// hand each chunk's samples and text to `onAudio` in order. Nothing plays
+    /// on this Mac: the phone that asked plays them.
+    func synthesize(
+        _ deltas: AsyncStream<String>, onAudio: @escaping (SpeechAudio, String) -> Void
+    ) async throws {
+        try await loadIfNeeded(.kokoro)
+        var started = false
+        try await chunks(of: deltas, started: { started }) { chunk in
+            let clean = Speechify.clean(chunk)
+            guard !clean.isEmpty else { return }
+            try Task.checkCancellation()
+            started = true
+            onAudio(try await self.synthesize(clean), clean)
+        }
+    }
+
+    /// Cut a streaming reply into speakable chunks: sentences as soon as they
+    /// are complete, fenced code skipped, then whatever is left at the end.
+    private func chunks(
+        of deltas: AsyncStream<String>, started: () -> Bool,
+        _ each: (String) async throws -> Void
+    ) async throws {
         let fence = FenceFilter()
         var buffer = ""
         for await delta in deltas {
             buffer += fence.feed(delta)
-            let (chunks, rest) = SpeechChunker.drain(buffer, started: run.started)
+            let (chunks, rest) = SpeechChunker.drain(buffer, started: started())
             buffer = rest
             for chunk in chunks {
-                try await run.add(chunk, synthesize: synthesize)
+                try await each(chunk)
             }
         }
-        try await run.add(buffer + fence.flush(), synthesize: synthesize)
-        return try await run.finish()
+        try await each(buffer + fence.flush())
     }
 
     /// Cut playback short. Synthesis already in flight finishes and is dropped.
@@ -208,12 +254,6 @@ actor VoiceEngine {
     private static func ms(since t0: Date) -> String {
         String(format: "%.0fms", Date().timeIntervalSince(t0) * 1000)
     }
-}
-
-struct SpeechAudio {
-    let samples: [Float]
-    let sampleRate: Double
-    var seconds: Double { Double(samples.count) / sampleRate }
 }
 
 /// One `speak` call: cleans each chunk, synthesizes it, and queues it behind
@@ -365,5 +405,11 @@ final class EngineSpeech: VoiceSpeech {
 
     func stopSpeaking() async {
         await VoiceEngine.shared.stopSpeaking()
+    }
+
+    func synthesize(
+        _ text: AsyncStream<String>, onAudio: @escaping (SpeechAudio, String) -> Void
+    ) async throws {
+        try await VoiceEngine.shared.synthesize(text, onAudio: onAudio)
     }
 }
