@@ -415,6 +415,7 @@
 		font-weight: 600;
 		font-size: 14px;
 		white-space: nowrap;
+		min-width: 104px;
 	}
 
 	.pill.send {

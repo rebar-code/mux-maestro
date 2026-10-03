@@ -35,7 +35,7 @@
 		data-orb
 		onclick={() => voice.primary(target, sink)}
 	>
-		<span>{face.icon}</span>
+		<span class="icon {kind}">{face.icon}</span>
 	</button>
 {:else}
 	<button
@@ -43,7 +43,8 @@
 		type="button"
 		{disabled}
 		data-primary={kind}
-		onclick={() => voice.primary(target, sink)}>{face.icon} {face.label}</button
+		onclick={() => voice.primary(target, sink)}
+		><span class="icon {kind}">{face.icon}</span> {face.label}</button
 	>
 {/if}
 
@@ -59,6 +60,13 @@
 		font-weight: 600;
 		font-size: 14px;
 		white-space: nowrap;
+		/* As wide as its longest label, so the text box beside it never moves. */
+		min-width: 104px;
+	}
+
+	/* The two bars of the pause glyph, told apart. */
+	.icon.pause {
+		letter-spacing: 0.12em;
 	}
 
 	.pill.recording {
