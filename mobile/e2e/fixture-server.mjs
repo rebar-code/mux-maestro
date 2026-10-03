@@ -230,8 +230,7 @@ const configBody = () => ({
 function screen(t) {
 	const last =
 		(chats[t.id] ?? []).filter((m) => m.role === 'assistant').at(-1)?.text ?? `${t.session} $ `;
-	// A pane is wider than a phone: the terminal view has to scroll sideways.
-	const box = '─'.repeat(96);
+	const box = '─'.repeat(52);
 	const tail =
 		t.status === 'waiting'
 			? [
@@ -247,11 +246,13 @@ function screen(t) {
 				]
 			: [
 					`╭${box}╮`,
-					`│ >${' '.repeat(94)}│`,
+					`│ >${' '.repeat(50)}│`,
 					`╰${box}╯`,
 					t.status === 'busy' ? '  ✻ Working… (esc to interrupt)' : '  ? for shortcuts'
 				];
-	return [`⏺ ${last}`, '', ...tail, ''].join('\n');
+	// One line wider than a phone: the terminal view has to scroll sideways.
+	const wide = `  ⎿  Read ${t.cwd}/tests/checkout.spec.ts (212 lines) · Edit tests/checkout.spec.ts (+3 −1) · 2 files changed`;
+	return [`⏺ ${last.slice(0, 50)}`, wide, '', ...tail, ''].join('\n');
 }
 
 const send = (res, status, body, type = 'application/json') => {

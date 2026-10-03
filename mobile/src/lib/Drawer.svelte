@@ -168,8 +168,7 @@
 		display: flex;
 		align-items: center;
 		gap: 7px;
-		min-height: 33px;
-		padding: 9px 8px 0 14px;
+		padding: 13px 8px 4px 14px;
 		font-size: 13px;
 		color: #b5b5b5;
 	}
@@ -197,7 +196,8 @@
 	.add {
 		color: var(--accent);
 		font-size: 16px;
-		margin: -10px 0;
+		/* 44pt of touch area around a 30 x 28pt glyph box. */
+		margin: -8px -7px;
 	}
 
 	.skrow {

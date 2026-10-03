@@ -75,8 +75,9 @@ button:disabled {
 	display: flex;
 	align-items: center;
 	gap: 8px;
-	padding: calc(4px + env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) 4px
+	padding: env(safe-area-inset-top) max(8px, env(safe-area-inset-right)) 0
 		max(8px, env(safe-area-inset-left));
+	min-height: calc(var(--hit) + env(safe-area-inset-top));
 	border-bottom: 1px solid var(--border);
 	background: var(--bar);
 	flex: none;
@@ -98,9 +99,15 @@ button:disabled {
 	background: var(--surface);
 }
 
+/* The touch area is 44pt; the glyph sits where a 34pt button would put it. */
+.tbar .tb {
+	margin: -1px -5px;
+}
+
 .tbar .title {
 	flex: 1;
 	min-width: 0;
+	padding: 6px 0;
 }
 
 .tbar .title b {
@@ -176,6 +183,14 @@ button:disabled {
 	border-radius: 7px;
 	font-size: 13px;
 	color: var(--muted);
+}
+
+/* 44pt of touch area, kept clear of the control above. */
+.seg button.grow::after {
+	top: -3px;
+	bottom: -12px;
+	height: auto;
+	transform: none;
 }
 
 .seg button.on {

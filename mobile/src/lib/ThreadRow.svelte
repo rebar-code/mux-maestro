@@ -14,7 +14,7 @@
 </script>
 
 <a
-	class="row"
+	class="row grow"
 	class:sel={selected}
 	class:sleep={thread.idleStage === 'dozing'}
 	style:border-left-color={thread.hostColor}
@@ -41,8 +41,8 @@
 <style>
 	.row {
 		display: flex;
+		position: relative;
 		gap: 11px;
-		min-height: var(--hit);
 		margin-left: 10px;
 		padding: 8px 14px 8px 24px;
 		border-left: 3px solid transparent;
@@ -57,7 +57,6 @@
 	.main {
 		flex: 1;
 		min-width: 0;
-		align-self: center;
 	}
 
 	.l1 {

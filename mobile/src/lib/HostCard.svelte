@@ -71,7 +71,8 @@
 	.add {
 		color: var(--accent);
 		font-size: 17px;
-		margin: -8px 0;
+		/* The glyph lines up with the ＋ on the session heads above. */
+		margin: -8px -20px -8px -10px;
 	}
 
 	.bar {
@@ -89,10 +90,13 @@
 	}
 
 	.stats {
-		display: flex;
-		flex-wrap: wrap;
+		/* Two fixed rows of two, so every card is the same height. */
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		grid-auto-rows: 16px;
 		gap: 4px 12px;
-		min-height: 16px;
+		min-height: 36px;
+		white-space: nowrap;
 		font-size: 12px;
 		color: var(--muted);
 	}
