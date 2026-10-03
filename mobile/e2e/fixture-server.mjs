@@ -7,7 +7,8 @@
 // /__fixture/grouping?value=, /__fixture/deny?on=1, /__fixture/rotate?value=, /__fixture/drop,
 // /__fixture/capability?name=&on=, /__fixture/manager-status?value=,
 // /__fixture/mac-turn?text=&reply=, /__fixture/voice?mode=&speaker=&heard=&delay=,
-// /__fixture/voice-takes
+// /__fixture/voice-takes, /__fixture/replies, /__fixture/prompt?id=&pid=&kind=,
+// /__fixture/upload-max?value=, /__fixture/status?id=&value=
 //
 // Every /api/ request needs the header `X-MuxMaestro-Token: demo-token`.
 import { createServer } from 'node:http';
@@ -125,8 +126,51 @@ const CHATS = {
 // Why each waiting thread waits, as the manager's "Needs you" list says it.
 const REASONS = { 'localhost:1': 'Permission · Bash', 'devbox:2': 'Question' };
 
+// What each waiting pane asks. A thread made to wait later asks the first one.
+const PERMISSION = {
+	kind: 'permission',
+	title: 'Bash command',
+	detail: 'pnpm exec playwright test tests/checkout.spec.ts',
+	question: 'Do you want to proceed?',
+	options: [
+		{ n: 1, label: 'Yes' },
+		{ n: 2, label: 'Yes, and don’t ask again for pnpm exec' },
+		{ n: 3, label: 'No, and tell Claude what to do differently' }
+	]
+};
+const QUESTION = {
+	kind: 'question',
+	title: '',
+	detail: '',
+	question: 'Which rule should a plan downgrade use?',
+	options: [
+		{ n: 1, label: 'Credit the unused days' },
+		{ n: 2, label: 'No credit until renewal' },
+		{ n: 3, label: 'Type something else' }
+	]
+};
+const PROMPTS = { 'localhost:1': PERMISSION, 'devbox:2': QUESTION };
+
+const COMMANDS = [
+	{ name: 'clear', description: 'Start a new conversation', source: 'builtin' },
+	{ name: 'compact', description: 'Summarize the conversation so far', source: 'builtin' },
+	{ name: 'commit', description: 'Create a git commit', source: 'skill' },
+	{ name: 'code-review', description: 'Review the current diff', source: 'skill' },
+	{ name: 'deploy-staging', description: 'Deploy this branch to staging', source: 'command' },
+	{ name: 'review', description: 'Review a pull request', source: 'builtin' },
+	{ name: 'security-review', description: 'Check the pending changes', source: 'builtin' }
+];
+
+const KEY_NAMES = /^(Enter|Escape|Up|Down|Left|Right|Tab|BTab|C-[a-z]|[1-9])$/;
+// The Mac pastes text into a terminal: no control characters but newline and tab.
+// eslint-disable-next-line no-control-regex
+const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/;
+const TEXT_MAX = 8192;
+
 const DEMO_TOKEN = 'demo-token';
 let started, threads, chats, grouping, deny, token, capabilities, manager, voice;
+// Per thread id: the prompt on the pane. And everything the phone wrote.
+let prompts, replies, uploadMax, promptSeq;
 const streams = new Set();
 
 function reset() {
@@ -134,7 +178,11 @@ function reset() {
 	grouping = 'recent';
 	deny = false;
 	token = DEMO_TOKEN;
-	capabilities = { manager: true, voice: false };
+	capabilities = { manager: true, voice: false, replies: false, keyBar: false, upload: false };
+	prompts = {};
+	promptSeq = 0;
+	uploadMax = 10485760;
+	replies = { texts: [], keys: [], answers: [], uploads: [], commandFetches: 0 };
 	// The Mac's voice defaults, what the next take is heard as, how long the
 	// Mac "thinks" before it has the transcript, and every take it was sent.
 	voice = { mode: 'manual', speaker: true, heard: 'What needs me?', delay: 300, takes: [] };
@@ -268,8 +316,9 @@ const configBody = () => ({
 		access: true,
 		manager: capabilities.manager,
 		voice: capabilities.voice,
-		replies: false,
-		upload: false,
+		replies: capabilities.replies,
+		keyBar: capabilities.keyBar,
+		upload: capabilities.upload,
 		sessionActions: false,
 		kill: false,
 		artifacts: false,
@@ -279,8 +328,132 @@ const configBody = () => ({
 		liveTerminal: false
 	},
 	grouping,
-	voice: { mode: voice.mode, speaker: voice.speaker, maxSeconds: 120 }
+	voice: { mode: voice.mode, speaker: voice.speaker, maxSeconds: 120 },
+	upload: { maxBytes: uploadMax }
 });
+
+const nowSeconds = () => Math.floor(Date.now() / 1000);
+
+/** The prompt on a waiting thread's pane, made the first time it is asked for. */
+function promptOf(thread) {
+	if (thread.status !== 'waiting') return null;
+	if (prompts[thread.id] === undefined) {
+		promptSeq += 1;
+		prompts[thread.id] = {
+			id: `p${promptSeq}-${thread.window}`,
+			...(PROMPTS[thread.id] ?? PERMISSION)
+		};
+	}
+	return prompts[thread.id];
+}
+
+function setStatus(thread, status) {
+	Object.assign(thread, { status, since: nowSeconds(), idleStage: 'awake' });
+	if (status !== 'waiting') delete prompts[thread.id];
+	push('threads', threadsBody());
+	if (capabilities.manager) push('manager', managerLive());
+}
+
+const chatRow = (thread, role, text) => {
+	const rows = chats[thread.id];
+	if (rows) rows.push({ n: rows.length, role, text });
+};
+
+/** The pane's 409 while it cannot take free text, or `null`. */
+function refusedBy(thread) {
+	if (thread.status === 'busy')
+		return { error: 'busy', message: `${thread.name} is running a turn` };
+	if (thread.status === 'waiting')
+		return { error: 'waiting', message: `${thread.name} is waiting on a prompt` };
+	return null;
+}
+
+const threadReply = (text) => `Done: ${text}. 2 files changed, tests pass.`;
+
+/** One turn of a demo thread: busy, the reply word by word, then idle. */
+function runThreadTurn(thread, text, onDelta = () => {}, onEnd = () => {}) {
+	chatRow(thread, 'user', text);
+	thread.lastPrompt = { text, at: nowSeconds() };
+	setStatus(thread, 'busy');
+	const reply = threadReply(text);
+	const words = reply.split(/(?<= )/);
+	const mine = threads;
+	const step = () => {
+		// A reset between two words: the turn belongs to the test before.
+		if (threads !== mine) return onEnd(reply);
+		const word = words.shift();
+		if (word === undefined) {
+			chatRow(thread, 'assistant', reply);
+			setStatus(thread, 'idle');
+			return onEnd(reply);
+		}
+		onDelta(word);
+		setTimeout(step, 40);
+	};
+	setTimeout(step, 250);
+}
+
+function replyApi(req, res, url, thread, route, body) {
+	const needs = route === 'key' ? 'keyBar' : route === 'upload' ? 'upload' : 'replies';
+	if (!capabilities[needs]) return send(res, 403, { error: 'disabled' });
+	const reads = route === 'prompt' || route === 'commands';
+	if (req.method !== (reads ? 'GET' : 'POST'))
+		return send(res, 405, { error: 'method_not_allowed' });
+	if (!thread) return send(res, 404, { error: 'not_found' });
+	if (route === 'prompt') return send(res, 200, { prompt: promptOf(thread) });
+	if (route === 'commands') {
+		replies.commandFetches += 1;
+		return send(res, 200, { commands: COMMANDS });
+	}
+	if (route === 'upload') {
+		const name = url.searchParams.get('name');
+		if (!name || name.includes('/') || body.length === 0)
+			return send(res, 400, { error: 'bad_request' });
+		if (body.length > uploadMax) return send(res, 413, { error: 'too_large' });
+		const refused = refusedBy(thread);
+		if (refused) return send(res, 409, refused);
+		replies.uploads.push({
+			thread: thread.id,
+			name,
+			bytes: body.length,
+			type: req.headers['content-type'] ?? null,
+			text: body.length <= 256 ? body.toString('utf8') : null
+		});
+		return send(res, 200, { ok: true, path: `${thread.cwd}/${name}`, pasted: true });
+	}
+	let json = {};
+	try {
+		json = JSON.parse(String(body));
+	} catch {
+		// Not JSON: the checks below answer 400.
+	}
+	if (route === 'key') {
+		if (typeof json.key !== 'string' || !KEY_NAMES.test(json.key))
+			return send(res, 400, { error: 'bad_key' });
+		replies.keys.push({ thread: thread.id, key: json.key });
+		return send(res, 200, { ok: true });
+	}
+	if (route === 'answer') {
+		if (typeof json.prompt !== 'string' || !Number.isInteger(json.option))
+			return send(res, 400, { error: 'bad_request' });
+		const prompt = promptOf(thread);
+		if (!prompt || prompt.id !== json.prompt) return send(res, 409, { error: 'stale' });
+		if (!prompt.options.some((option) => option.n === json.option))
+			return send(res, 400, { error: 'bad_request' });
+		replies.answers.push({ thread: thread.id, prompt: json.prompt, option: json.option });
+		setStatus(thread, 'busy');
+		return send(res, 200, { ok: true });
+	}
+	// text
+	const text = typeof json.text === 'string' ? json.text.trim() : '';
+	if (!text || CONTROL.test(text)) return send(res, 400, { error: 'bad_request' });
+	if (Buffer.byteLength(text) > TEXT_MAX) return send(res, 413, { error: 'too_large' });
+	const refused = refusedBy(thread);
+	if (refused) return send(res, 409, refused);
+	replies.texts.push({ thread: thread.id, text });
+	runThreadTurn(thread, text);
+	return send(res, 200, { ok: true });
+}
 
 const managerLive = () => ({
 	needsYou: threads
@@ -374,11 +547,8 @@ function managerApi(req, res, path, body) {
 	}
 	if (path !== '/api/manager/text') return send(res, 404, { error: 'not_found' });
 	const text = typeof json.text === 'string' ? json.text.trim() : '';
-	// The Mac pastes the text into a terminal: no control characters but newline and tab.
-	// eslint-disable-next-line no-control-regex
-	if (!text || /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/.test(text))
-		return send(res, 400, { error: 'bad_request' });
-	if (Buffer.byteLength(text) > 8192) return send(res, 413, { error: 'too_large' });
+	if (!text || CONTROL.test(text)) return send(res, 400, { error: 'bad_request' });
+	if (Buffer.byteLength(text) > TEXT_MAX) return send(res, 413, { error: 'too_large' });
 	if (manager.turn) return send(res, 409, { error: 'busy', message: 'A turn is running' });
 	if (manager.status === 'waiting')
 		return send(res, 409, { error: 'waiting', message: 'Manager is waiting on a prompt' });
@@ -448,12 +618,10 @@ function voiceApi(req, res, url, body) {
 	if (path === '/api/voice/warm') return send(res, 200, { ok: true });
 	if (path !== '/api/voice' && path !== '/api/voice/replay')
 		return send(res, 404, { error: 'not_found' });
-	if (url.searchParams.get('target') !== 'manager')
-		return send(res, 400, {
-			error: 'unsupported_target',
-			message: 'Voice goes to the manager only'
-		});
-	if (!capabilities.manager) return send(res, 403, { error: 'disabled' });
+	const target = url.searchParams.get('target');
+	const thread = threads.find((t) => t.id === target);
+	if (target !== 'manager' && !thread) return send(res, 404, { error: 'not_found' });
+	if (!capabilities[thread ? 'replies' : 'manager']) return send(res, 403, { error: 'disabled' });
 	const stream = () =>
 		res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' });
 	const event = (name, data) => res.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
@@ -463,7 +631,8 @@ function voiceApi(req, res, url, body) {
 			.forEach((text, seq) => event('audio', { seq, text, wav: clip(0.9) }));
 
 	if (path === '/api/voice/replay') {
-		const reply = manager.chat.findLast((message) => message.role === 'assistant')?.text;
+		const said = thread ? (chats[thread.id] ?? []) : manager.chat;
+		const reply = said.findLast((message) => message.role === 'assistant')?.text;
 		if (!reply) return send(res, 404, { error: 'nothing', message: 'Nothing to replay' });
 		stream();
 		speak(reply);
@@ -474,9 +643,13 @@ function voiceApi(req, res, url, body) {
 	const take = describeTake(body, url);
 	if (body.length > 4194304) return send(res, 413, { error: 'too_long' });
 	if (!take.riff) return send(res, 400, { error: 'bad_audio', message: 'Not a WAV recording' });
-	if (manager.turn) return send(res, 409, { error: 'busy', message: 'A turn is running' });
-	if (manager.status === 'waiting')
-		return send(res, 409, { error: 'waiting', message: 'Manager is waiting on a prompt' });
+	const refused = thread && refusedBy(thread);
+	if (refused) return send(res, 409, refused);
+	if (!thread) {
+		if (manager.turn) return send(res, 409, { error: 'busy', message: 'A turn is running' });
+		if (manager.status === 'waiting')
+			return send(res, 409, { error: 'waiting', message: 'Manager is waiting on a prompt' });
+	}
 	voice.takes.push(take);
 	stream();
 	const { heard, delay } = voice;
@@ -488,6 +661,19 @@ function voiceApi(req, res, url, body) {
 			return res.end();
 		}
 		event('transcript', { text: heard });
+		if (thread) {
+			replies.texts.push({ thread: thread.id, text: heard, spoken: true });
+			return runThreadTurn(
+				thread,
+				heard,
+				(word) => event('delta', { text: word }),
+				(reply) => {
+					if (take.speaker) speak(reply);
+					event('end', { outcome: 'done', reply, message: null });
+					res.end();
+				}
+			);
+		}
 		const reply = managerReply();
 		runTurn(
 			heard,
@@ -506,25 +692,23 @@ function screen(t) {
 	const last =
 		(chats[t.id] ?? []).filter((m) => m.role === 'assistant').at(-1)?.text ?? `${t.session} $ `;
 	const box = '─'.repeat(52);
-	const tail =
-		t.status === 'waiting'
-			? [
-					`╭${box}╮`,
-					'│ Bash command',
-					'│',
-					'│   pnpm exec playwright test tests/checkout.spec.ts',
-					'│',
-					'│ ❯ 1. Yes',
-					'│   2. Yes, and don’t ask again for pnpm exec',
-					'│   3. No, tell Claude what to do',
-					`╰${box}╯`
-				]
-			: [
-					`╭${box}╮`,
-					`│ >${' '.repeat(50)}│`,
-					`╰${box}╯`,
-					t.status === 'busy' ? '  ✻ Working… (esc to interrupt)' : '  ? for shortcuts'
-				];
+	const asked = promptOf(t);
+	const tail = asked
+		? [
+				`╭${box}╮`,
+				`│ ${asked.title || 'Question'}`,
+				'│',
+				`│   ${asked.detail || asked.question}`,
+				'│',
+				...asked.options.map((o, i) => `│ ${i === 0 ? '❯' : ' '} ${o.n}. ${o.label}`),
+				`╰${box}╯`
+			]
+		: [
+				`╭${box}╮`,
+				`│ >${' '.repeat(50)}│`,
+				`╰${box}╯`,
+				t.status === 'busy' ? '  ✻ Working… (esc to interrupt)' : '  ? for shortcuts'
+			];
 	// One line wider than a phone: the terminal view has to scroll sideways.
 	const wide = `  ⎿  Read ${t.cwd}/tests/checkout.spec.ts (212 lines) · Edit tests/checkout.spec.ts (+3 −1) · 2 files changed`;
 	return [`⏺ ${last.slice(0, 50)}`, wide, '', ...tail, ''].join('\n');
@@ -563,8 +747,11 @@ function api(req, res, url, body) {
 			res.write(`event: manager\ndata: ${JSON.stringify(managerLive())}\n\n`);
 		return;
 	}
-	const match = /^\/api\/threads\/([^/]+)\/(chat|screen)$/.exec(path);
+	const match =
+		/^\/api\/threads\/([^/]+)\/(chat|screen|text|key|prompt|answer|commands|upload)$/.exec(path);
 	const thread = match && threads.find((t) => t.id === decodeURIComponent(match[1]));
+	if (match && match[2] !== 'chat' && match[2] !== 'screen')
+		return replyApi(req, res, url, thread, match[2], body);
 	if (!thread) return send(res, 404, { error: 'not_found' });
 	if (match[2] === 'screen') return send(res, 200, { text: screen(thread) });
 	const all = chats[thread.id];
@@ -595,6 +782,33 @@ function hook(res, url) {
 			if (!thread) return send(res, 404, { error: 'not_found' });
 			Object.assign(thread, { status: 'waiting', since: now, idleStage: 'awake' });
 			break;
+		case '/__fixture/status':
+			// Put a thread in a state, as the pane's own work would.
+			if (!thread) return send(res, 404, { error: 'not_found' });
+			Object.assign(thread, {
+				status: url.searchParams.get('value') ?? 'idle',
+				since: now,
+				idleStage: 'awake'
+			});
+			if (thread.status !== 'waiting') delete prompts[thread.id];
+			break;
+		case '/__fixture/prompt':
+			// The pane moved on to another prompt while the phone showed the first.
+			if (!thread) return send(res, 404, { error: 'not_found' });
+			promptSeq += 1;
+			prompts[thread.id] = {
+				id: url.searchParams.get('pid') ?? `p${promptSeq}-${thread.window}`,
+				...(url.searchParams.get('kind') === 'question' ? QUESTION : PERMISSION)
+			};
+			if (url.searchParams.get('quiet') === '1') return send(res, 200, { ok: true });
+			Object.assign(thread, { status: 'waiting', since: now, idleStage: 'awake' });
+			break;
+		case '/__fixture/upload-max':
+			uploadMax = Number(url.searchParams.get('value') ?? 10485760);
+			push('config', configBody());
+			break;
+		case '/__fixture/replies':
+			return send(res, 200, replies);
 		case '/__fixture/say':
 			if (!thread || !chats[thread.id]) return send(res, 404, { error: 'not_found' });
 			chats[thread.id].push({

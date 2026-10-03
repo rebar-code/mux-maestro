@@ -1,3 +1,4 @@
+import { untrack } from 'svelte';
 import { ApiError } from './api';
 import { live } from './live.svelte';
 import type { VoiceEnd, VoiceMode } from './types';
@@ -11,7 +12,7 @@ export type VoiceStatus = 'idle' | 'recording' | 'thinking' | 'speaking';
 /** Where a take goes: `manager`, or a thread's id. */
 export type VoiceTarget = string;
 
-/** Where a target draws its turn. The manager home has one; a thread will. */
+/** Where a target draws its turn: the manager home, or an open thread. */
 export interface VoiceSink {
 	/** The Mac heard `prompt` and handed it to the target. */
 	begin(prompt: string): void;
@@ -80,7 +81,7 @@ class Voice {
 	private capture: Capture | null = null;
 	private abort: AbortController | null = null;
 	/** The bar Auto listens for: the last one that opened the mic. */
-	private bound: { target: VoiceTarget; sink: VoiceSink } | null = null;
+	private bound = $state.raw<{ target: VoiceTarget; sink: VoiceSink } | null>(null);
 	/** The turn in flight has begun at its target. */
 	private sink: VoiceSink | null = null;
 	private armAt = 0;
@@ -421,6 +422,28 @@ class Voice {
 			await this.openMic();
 		}
 	};
+
+	/**
+	 * Attachment for `target`'s bar. A bar that goes away takes its take with
+	 * it, so Auto never sends speech to a target that is not on screen. A bar
+	 * that appears while Auto already listens takes over the listening.
+	 */
+	bar(target: VoiceTarget, sink: VoiceSink): () => () => void {
+		return () => {
+			untrack(() => {
+				if (this.stream && this.mode === 'auto' && !this.micMuted && !this.inFlight)
+					this.bound = { target, sink };
+			});
+			return () => {
+				if (this.bound?.target !== target) return;
+				this.bound = null;
+				if (this.target === target && this.status === 'recording') {
+					this.capture?.discard();
+					this.rest();
+				}
+			};
+		};
+	}
 
 	/** Attachment: the first tap anywhere on the page unlocks the speaker. */
 	unlockOnTap = (): (() => void) => {

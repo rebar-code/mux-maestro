@@ -1,0 +1,746 @@
+import { mkdirSync } from 'node:fs';
+import { expect, test, type APIResponse, type Locator, type Page } from '@playwright/test';
+import { fakeMic, forget, pairingLink, reset, threadPath, TOKEN_HEADER } from './helpers';
+
+/** Idle, local, with a chat. */
+const IDLE = 'localhost:7';
+const BUSY = 'localhost:3';
+/** Waits on a permission prompt; has a chat. */
+const PERMISSION = 'localhost:1';
+/** Waits on a question; remote, so it shows the terminal. */
+const QUESTION = 'devbox:2';
+
+type Capability = 'replies' | 'keyBar' | 'upload' | 'voice';
+
+interface Replies {
+	texts: { thread: string; text: string; spoken?: boolean }[];
+	keys: { thread: string; key: string }[];
+	answers: { thread: string; prompt: string; option: number }[];
+	uploads: { thread: string; name: string; bytes: number; type: string | null; text: string }[];
+	commandFetches: number;
+}
+
+const WRITE = { ...TOKEN_HEADER, 'X-MuxMaestro': '1' };
+
+const box = (page: Page): Locator => page.getByRole('textbox', { name: 'Reply' });
+const sendButton = (page: Page): Locator => page.getByRole('button', { name: '↑ Send' });
+const note = (page: Page): Locator => page.locator('[data-note]');
+const keybar = (page: Page): Locator => page.locator('[data-keybar]');
+const key = (page: Page, name: string): Locator =>
+	keybar(page).getByRole('button', { name, exact: true });
+const slash = (page: Page): Locator => page.locator('[data-slash]');
+const card = (page: Page): Locator => page.locator('[data-prompt]');
+const nextBar = (page: Page): Locator => page.locator('[data-next]');
+
+async function received(page: Page): Promise<Replies> {
+	return (await (await page.request.post('/__fixture/replies')).json()) as Replies;
+}
+
+/** Open a thread with these features switched on at the Mac. */
+async function open(page: Page, id: string, on: Capability[], hooks: string[] = []): Promise<void> {
+	await reset(page);
+	for (const name of on) await page.request.post(`/__fixture/capability?name=${name}&on=1`);
+	for (const hook of hooks) await page.request.post(hook);
+	await forget(page);
+	await page.goto(pairingLink(threadPath(id)));
+	await expect(page.locator('.tbar .title b')).toBeVisible();
+}
+
+/** Screenshots are taken only when SHOTS names a directory outside the repo. */
+async function shot(page: Page, name: string): Promise<void> {
+	const dir = process.env.SHOTS;
+	if (!dir) return;
+	mkdirSync(dir, { recursive: true });
+	// Let the last transition and the fonts settle.
+	await page.waitForTimeout(250);
+	await page.screenshot({ path: `${dir}/${name}.png` });
+}
+
+test('a reply is sent, shows in the chat, and the box clears', async ({ page }) => {
+	await open(page, IDLE, ['replies', 'keyBar']);
+	await expect(box(page)).toHaveAttribute('enterkeyhint', 'send');
+	await expect(box(page)).toHaveAttribute('placeholder', 'Reply');
+	await expect(sendButton(page)).toBeDisabled();
+	await shot(page, 'composer');
+
+	await box(page).fill('ship it');
+	const sent = page.waitForRequest((request) => request.url().endsWith('/text'));
+	await sendButton(page).click();
+	const request = await sent;
+	expect(request.method()).toBe('POST');
+	expect(new URL(request.url()).pathname).toBe('/api/threads/localhost%3A7/text');
+	expect(request.headers()['x-muxmaestro']).toBe('1');
+	expect(request.headers()['x-muxmaestro-token']).toBe('demo-token');
+	expect(request.postDataJSON()).toEqual({ text: 'ship it' });
+
+	await expect(box(page)).toHaveValue('');
+	await expect(page.locator('.u').last()).toHaveText('ship it');
+	await expect(page.locator('.a').last()).toHaveText('Done: ship it. 2 files changed, tests pass.');
+	expect((await received(page)).texts).toEqual([{ thread: IDLE, text: 'ship it' }]);
+
+	// Enter sends too.
+	await expect(page.locator('.tbar .title span')).toContainText('idle');
+	await box(page).fill('and open a PR');
+	await box(page).press('Enter');
+	await expect(page.locator('.u').last()).toHaveText('and open a PR');
+	await expect(box(page)).toHaveValue('');
+});
+
+test('a busy thread takes typing but not Send', async ({ page }) => {
+	await open(page, BUSY, ['replies']);
+	await box(page).fill('one more thing');
+	await expect(box(page)).toHaveValue('one more thing');
+	await expect(sendButton(page)).toBeDisabled();
+	await box(page).press('Enter');
+	await page.waitForTimeout(300);
+	expect((await received(page)).texts).toEqual([]);
+	await expect(box(page)).toHaveValue('one more thing');
+
+	// It goes idle: Send works, with the text still there.
+	await page.request.post(`/__fixture/status?id=${BUSY}&value=idle`);
+	await expect(sendButton(page)).toBeEnabled();
+});
+
+test('a refused reply keeps its text and says why', async ({ page }) => {
+	await open(page, IDLE, ['replies']);
+	// The pane started a turn the phone has not heard of yet.
+	await page.route('**/api/threads/*/text', (route) =>
+		route.fulfill({ status: 409, json: { error: 'busy', message: 'dark-mode is running a turn' } })
+	);
+	await box(page).fill('ship it');
+	await sendButton(page).click();
+	await expect(note(page)).toHaveText('dark-mode is running a turn');
+	await expect(box(page)).toHaveValue('ship it');
+
+	await page.unroute('**/api/threads/*/text');
+	await page.route('**/api/threads/*/text', (route) =>
+		route.fulfill({ status: 413, json: { error: 'too_large' } })
+	);
+	await sendButton(page).click();
+	await expect(note(page)).toHaveText('Too long');
+	await expect(box(page)).toHaveValue('ship it');
+	// Typing clears the line.
+	await box(page).pressSequentially('!');
+	await expect(note(page)).toHaveCount(0);
+});
+
+test('the fixture refuses what the Mac refuses', async ({ page }) => {
+	await reset(page);
+	const origin = new URL(test.info().project.use.baseURL ?? '').origin;
+	const post = (
+		path: string,
+		data: unknown,
+		headers: Record<string, string> = WRITE,
+		id = IDLE
+	): Promise<APIResponse> =>
+		page.request.post(`/api/threads/${encodeURIComponent(id)}/${path}`, {
+			data,
+			headers: { ...headers, origin }
+		});
+	const error = async (response: APIResponse): Promise<unknown> => [
+		response.status(),
+		((await response.json()) as { error: string }).error
+	];
+
+	// Off until the Mac switches them on.
+	expect(await error(await post('text', { text: 'hi' }))).toEqual([403, 'disabled']);
+	expect(await error(await post('key', { key: 'Enter' }))).toEqual([403, 'disabled']);
+	expect(await error(await post('upload?name=a.txt', 'x'))).toEqual([403, 'disabled']);
+	for (const name of ['replies', 'keyBar', 'upload'])
+		await page.request.post(`/__fixture/capability?name=${name}&on=1`);
+
+	expect(await error(await post('text', { text: 'hi' }, {}))).toEqual([401, 'unpaired']);
+	expect(await error(await post('text', { text: 'hi' }, TOKEN_HEADER))).toEqual([403, 'forbidden']);
+	expect(await error(await post('text', { text: '  ' }))).toEqual([400, 'bad_request']);
+	expect(await error(await post('text', { text: 'a\u001bb' }))).toEqual([400, 'bad_request']);
+	expect(await error(await post('text', { text: 'x'.repeat(8193) }))).toEqual([413, 'too_large']);
+	expect((await post('text', { text: 'x'.repeat(8192) })).status()).toBe(200);
+	// The turn that just started makes the pane busy.
+	expect(await error(await post('text', { text: 'again' }))).toEqual([409, 'busy']);
+	expect(await error(await post('upload?name=a.txt', 'x'))).toEqual([409, 'busy']);
+
+	for (const bad of ['F1', 'enter', 'C-A', '0', 'a', ''])
+		expect(await error(await post('key', { key: bad }))).toEqual([400, 'bad_key']);
+	for (const good of ['Enter', 'BTab', 'C-z', '9'])
+		expect((await post('key', { key: good })).status()).toBe(200);
+
+	const other = (path: string, data: unknown): Promise<APIResponse> =>
+		post(path, data, WRITE, PERMISSION);
+	expect(await error(await other('text', { text: 'hi' }))).toEqual([409, 'waiting']);
+	expect(await error(await other('answer', { prompt: 'nope', option: 1 }))).toEqual([409, 'stale']);
+	expect(await error(await other('answer', { prompt: 'nope' }))).toEqual([400, 'bad_request']);
+	expect(await error(await post('text', { text: 'hi' }, WRITE, 'none:1'))).toEqual([
+		404,
+		'not_found'
+	]);
+
+	await page.request.post('/__fixture/upload-max?value=4');
+	await page.request.post(`/__fixture/status?id=${IDLE}&value=idle`);
+	expect(await error(await post('upload?name=a.txt', 'too many bytes'))).toEqual([
+		413,
+		'too_large'
+	]);
+});
+
+test('key bar: keys go to the pane, text keys go to the box', async ({ page }) => {
+	await open(page, IDLE, ['replies', 'keyBar']);
+	await expect(keybar(page).locator('.keys button')).toHaveText([
+		'Esc',
+		'Tab',
+		'Sh+Tab',
+		'Ctrl',
+		'Ctrl+C',
+		'←',
+		'↓',
+		'↑',
+		'→',
+		'⏎',
+		'/',
+		'~',
+		'|',
+		'-'
+	]);
+
+	// Every key has a name, a 44pt touch area, and 8pt to the next one.
+	const sizes = await keybar(page)
+		.locator('.keys')
+		.evaluate((keys) => {
+			const buttons = [...keys.querySelectorAll('button')];
+			return buttons.map((button, index) => {
+				keys.scrollLeft = Math.max(0, button.offsetLeft - 20);
+				const rect = button.getBoundingClientRect();
+				const x = rect.left + rect.width / 2;
+				const y = rect.top + rect.height / 2;
+				const next = buttons[index + 1]?.getBoundingClientRect();
+				return {
+					label: button.getAttribute('aria-label'),
+					width: rect.width,
+					top: document.elementFromPoint(x, y - 21) === button,
+					bottom: document.elementFromPoint(x, y + 21) === button,
+					gap: next ? next.left - rect.right : 8
+				};
+			});
+		});
+	for (const size of sizes) {
+		expect(size.label, JSON.stringify(size)).toBeTruthy();
+		expect(size.width, JSON.stringify(size)).toBeGreaterThanOrEqual(44);
+		expect(size.top && size.bottom, JSON.stringify(size)).toBe(true);
+		expect(size.gap, JSON.stringify(size)).toBeGreaterThanOrEqual(8);
+	}
+	await keybar(page)
+		.locator('.keys')
+		.evaluate((keys) => (keys.scrollLeft = 0));
+	const hide = page.getByRole('button', { name: 'Hide keyboard' });
+	const hideBox = await hide.boundingBox();
+	expect(hideBox?.width).toBeGreaterThanOrEqual(44);
+	expect(hideBox?.height).toBeGreaterThanOrEqual(44);
+
+	// A tap on a key leaves the focus in the box, so the keyboard stays up.
+	await box(page).tap();
+	await expect(box(page)).toBeFocused();
+	await key(page, 'Escape').tap();
+	await key(page, 'Tab').tap();
+	await key(page, 'Shift Tab').tap();
+	await key(page, 'Control C').tap();
+	await expect(box(page)).toBeFocused();
+	await expect.poll(async () => (await received(page)).keys.length).toBe(4);
+
+	const moveTo = (name: string): Promise<void> =>
+		keybar(page)
+			.locator('.keys')
+			.evaluate((keys, label) => {
+				const button = keys.querySelector<HTMLElement>(`[aria-label="${label}"]`);
+				keys.scrollLeft = Math.max(0, (button?.offsetLeft ?? 0) - 20);
+			}, name);
+	for (const name of ['Left', 'Down', 'Up', 'Right', 'Enter']) {
+		await moveTo(name);
+		await key(page, name).tap();
+		// One at a time: the pane gets them in the order they were tapped.
+		await expect.poll(async () => (await received(page)).keys.at(-1)?.key).toBe(name);
+	}
+	expect((await received(page)).keys).toEqual(
+		['Escape', 'Tab', 'BTab', 'C-c', 'Left', 'Down', 'Up', 'Right', 'Enter'].map((name) => ({
+			thread: IDLE,
+			key: name
+		}))
+	);
+
+	// The text keys type at the caret; nothing is sent.
+	await box(page).fill('ab');
+	await box(page).evaluate((input: HTMLInputElement) => input.setSelectionRange(1, 1));
+	for (const name of ['Tilde', 'Pipe', 'Dash']) {
+		await moveTo(name);
+		await key(page, name).tap();
+	}
+	await expect(box(page)).toHaveValue('a~|-b');
+	await expect(box(page)).toBeFocused();
+	await box(page).fill('');
+	await moveTo('Slash');
+	await key(page, 'Slash').tap();
+	await expect(box(page)).toHaveValue('/');
+	await expect(slash(page)).toBeVisible();
+	expect((await received(page)).keys).toHaveLength(9);
+
+	await hide.tap();
+	await expect(box(page)).not.toBeFocused();
+});
+
+test('Ctrl is sticky: the next letter is a control key', async ({ page }) => {
+	await open(page, IDLE, ['replies', 'keyBar']);
+	const ctrl = key(page, 'Control');
+	await expect(ctrl).toHaveAttribute('aria-pressed', 'false');
+	await ctrl.tap();
+	await expect(ctrl).toHaveAttribute('aria-pressed', 'true');
+	await expect(ctrl).toHaveCSS('background-color', 'rgb(50, 145, 255)');
+	// The letter comes from the keyboard: the box has the focus.
+	await expect(box(page)).toBeFocused();
+	await shot(page, 'keybar-ctrl');
+
+	// Not a letter: it is text, and Ctrl waits on.
+	await page.keyboard.type('1');
+	await expect(box(page)).toHaveValue('1');
+	await expect(ctrl).toHaveAttribute('aria-pressed', 'true');
+
+	await page.keyboard.type('r');
+	await expect(ctrl).toHaveAttribute('aria-pressed', 'false');
+	await expect(box(page)).toHaveValue('1');
+	await expect
+		.poll(async () => (await received(page)).keys)
+		.toEqual([{ thread: IDLE, key: 'C-r' }]);
+
+	// Off again: letters are text.
+	await page.keyboard.type('r');
+	await expect(box(page)).toHaveValue('1r');
+
+	// A second tap switches it off without sending anything.
+	await ctrl.tap();
+	await expect(ctrl).toHaveAttribute('aria-pressed', 'true');
+	await ctrl.tap();
+	await expect(ctrl).toHaveAttribute('aria-pressed', 'false');
+	await page.keyboard.type('D');
+	await expect(box(page)).toHaveValue('1rD');
+	expect((await received(page)).keys).toHaveLength(1);
+
+	await ctrl.tap();
+	await page.keyboard.type('D');
+	await expect.poll(async () => (await received(page)).keys.at(-1)?.key).toBe('C-d');
+});
+
+test('the bar rides on the on-screen keyboard', async ({ page }) => {
+	await open(page, IDLE, ['replies', 'keyBar']);
+	const dock = page.locator('[data-dock]');
+	const before = await dock.boundingBox();
+	// The keyboard covers the page without resizing it: only the visual viewport shrinks.
+	await page.evaluate(() => {
+		const viewport = window.visualViewport as VisualViewport;
+		Object.defineProperty(viewport, 'height', { configurable: true, get: () => 508 });
+		viewport.dispatchEvent(new Event('resize'));
+	});
+	await expect(dock).toHaveAttribute('data-kb', '');
+	const composer = await page.locator('[data-compose]').boundingBox();
+	const bar = await keybar(page).boundingBox();
+	expect((composer?.y ?? 0) + (composer?.height ?? 0)).toBeLessThanOrEqual(508);
+	expect((bar?.y ?? 0) + (bar?.height ?? 0)).toBeLessThanOrEqual(composer?.y ?? 0);
+	// The chat above still ends on screen, above the bar.
+	const chat = await page.locator('[data-view="chat"]').boundingBox();
+	expect((chat?.y ?? 0) + (chat?.height ?? 0)).toBeLessThanOrEqual(bar?.y ?? 0);
+
+	await page.evaluate(() => {
+		const viewport = window.visualViewport as VisualViewport;
+		Object.defineProperty(viewport, 'height', { configurable: true, get: () => 844 });
+		viewport.dispatchEvent(new Event('resize'));
+	});
+	await expect(dock).not.toHaveAttribute('data-kb', '');
+	expect(await dock.boundingBox()).toEqual(before);
+});
+
+test('slash: the list filters as you type and a tap fills the box', async ({ page }) => {
+	await open(page, IDLE, ['replies', 'keyBar']);
+	await expect(slash(page)).toHaveCount(0);
+	await box(page).tap();
+	await page.keyboard.type('/');
+	await expect(slash(page).getByRole('option')).toHaveCount(7);
+	await page.keyboard.type('co');
+	await expect(slash(page).locator('b')).toHaveText(['/compact', '/commit', '/code-review']);
+	await expect(slash(page).getByRole('option').nth(1)).toContainText('Create a git commit');
+	for (const row of await slash(page).getByRole('option').all())
+		expect((await row.boundingBox())?.height).toBeGreaterThanOrEqual(44);
+	// Above the key bar, which is above the box.
+	const list = await slash(page).boundingBox();
+	const bar = await keybar(page).boundingBox();
+	expect((list?.y ?? 0) + (list?.height ?? 0)).toBeLessThanOrEqual(bar?.y ?? 0);
+	await shot(page, 'slash');
+
+	// A name in the middle matches too, after the ones that start with it.
+	await box(page).fill('/review');
+	await expect(slash(page).locator('b')).toHaveText([
+		'/review',
+		'/code-review',
+		'/security-review'
+	]);
+
+	await box(page).fill('/com');
+	await slash(page).getByRole('option', { name: '/commit' }).tap();
+	await expect(box(page)).toHaveValue('/commit ');
+	await expect(box(page)).toBeFocused();
+	await expect(slash(page)).toHaveCount(0);
+
+	// Asked for once per thread, however often the list opens.
+	await box(page).fill('/');
+	await expect(slash(page)).toBeVisible();
+	await box(page).fill('/zz');
+	await expect(slash(page)).toHaveCount(0);
+	expect((await received(page)).commandFetches).toBe(1);
+});
+
+test('a permission card is answered with its first option', async ({ page }) => {
+	await open(page, PERMISSION, ['replies', 'keyBar']);
+	await expect(card(page)).toHaveAttribute('data-kind', 'permission');
+	await expect(card(page).locator('h3')).toHaveText('Bash command');
+	await expect(card(page).locator('h3')).toHaveCSS('color', 'rgb(248, 81, 73)');
+	await expect(card(page).locator('pre')).toHaveText(
+		'pnpm exec playwright test tests/checkout.spec.ts'
+	);
+	await expect(card(page).locator('.q')).toHaveText('Do you want to proceed?');
+	const options = card(page).getByRole('button');
+	await expect(options).toHaveCount(3);
+	await expect(options.nth(0)).toHaveText(/Yes\s*1/);
+	await expect(options.nth(2)).toHaveText(/No, and tell Claude what to do differently\s*3/);
+	// Only the first one of a permission card has the accent.
+	await expect(options.nth(0)).toHaveCSS('background-color', 'rgb(50, 145, 255)');
+	await expect(options.nth(1)).not.toHaveCSS('background-color', 'rgb(50, 145, 255)');
+	for (const option of await options.all())
+		expect((await option.boundingBox())?.height).toBeGreaterThanOrEqual(44);
+	// The card is the end of the chat, and it is on screen.
+	await expect(card(page)).toBeInViewport({ ratio: 1 });
+	// The thread itself needs you: no Next bar. Free text is refused while it waits.
+	await expect(nextBar(page)).toHaveCount(0);
+	await box(page).fill('x');
+	await expect(sendButton(page)).toBeDisabled();
+	await box(page).fill('');
+	await shot(page, 'permission-card');
+
+	const sent = page.waitForRequest((request) => request.url().endsWith('/answer'));
+	await options.nth(0).tap();
+	const request = await sent;
+	expect(request.headers()['x-muxmaestro']).toBe('1');
+	const body = request.postDataJSON() as { prompt: string; option: number };
+	expect(body.option).toBe(1);
+
+	await expect(card(page)).toHaveCount(0);
+	await expect(page.locator('.tbar .title span')).toContainText('running');
+	expect((await received(page)).answers).toEqual([
+		{ thread: PERMISSION, prompt: body.prompt, option: 1 }
+	]);
+});
+
+test('a question card shows in the terminal view and is answered', async ({ page }) => {
+	await open(page, QUESTION, ['replies', 'keyBar']);
+	await expect(card(page)).toHaveAttribute('data-kind', 'question');
+	await expect(card(page).locator('.q')).toHaveText('Which rule should a plan downgrade use?');
+	await expect(card(page).locator('pre')).toHaveCount(0);
+	// The Mac sent no heading for it.
+	await expect(card(page).locator('h3')).toHaveText('Question');
+	const options = card(page).getByRole('button');
+	await expect(options).toHaveText([
+		/Credit the unused days\s*1/,
+		/No credit until renewal\s*2/,
+		/Type something else\s*3/
+	]);
+	// No accent on a question.
+	await expect(options.nth(0)).not.toHaveCSS('background-color', 'rgb(50, 145, 255)');
+	await card(page).scrollIntoViewIfNeeded();
+	await shot(page, 'question-card');
+
+	await options.nth(1).tap();
+	await expect(card(page)).toHaveCount(0);
+	expect((await received(page)).answers).toMatchObject([{ thread: QUESTION, option: 2 }]);
+});
+
+test('buttons are off while an answer is in flight', async ({ page }) => {
+	await open(page, PERMISSION, ['replies']);
+	let release: () => void = () => {};
+	const held = new Promise<void>((done) => (release = done));
+	await page.route('**/api/threads/*/answer', async (route) => {
+		await held;
+		await route.continue();
+	});
+	const options = card(page).getByRole('button');
+	await options.nth(1).tap();
+	for (const option of await options.all()) await expect(option).toBeDisabled();
+	await expect(options.nth(1)).toHaveAttribute('aria-busy', 'true');
+	release();
+	await expect(card(page)).toHaveCount(0);
+	expect((await received(page)).answers).toMatchObject([{ option: 2 }]);
+});
+
+test('a stale card is replaced, and nothing is sent again', async ({ page }) => {
+	await open(page, PERMISSION, ['replies']);
+	await expect(card(page)).toHaveAttribute('data-kind', 'permission');
+	const first = await card(page).getAttribute('data-prompt');
+	// The pane moved on, and the phone has not been told.
+	await page.request.post(`/__fixture/prompt?id=${PERMISSION}&pid=q-next&kind=question&quiet=1`);
+
+	let answers = 0;
+	page.on('request', (request) => {
+		if (request.url().endsWith('/answer')) answers += 1;
+	});
+	const refused = page.waitForResponse((response) => response.url().endsWith('/answer'));
+	await card(page).getByRole('button').nth(0).tap();
+	expect((await refused).status()).toBe(409);
+
+	await expect(card(page)).toHaveAttribute('data-prompt', 'q-next');
+	await expect(card(page)).toHaveAttribute('data-kind', 'question');
+	expect(first).not.toBe('q-next');
+	await page.waitForTimeout(400);
+	expect(answers).toBe(1);
+	expect((await received(page)).answers).toEqual([]);
+
+	// The new card is answered as itself.
+	await card(page).getByRole('button').nth(2).tap();
+	await expect(card(page)).toHaveCount(0);
+	expect((await received(page)).answers).toEqual([
+		{ thread: PERMISSION, prompt: 'q-next', option: 3 }
+	]);
+});
+
+test('a thread that starts to wait gets its card, and loses it after', async ({ page }) => {
+	await open(page, IDLE, ['replies']);
+	await expect(card(page)).toHaveCount(0);
+	await page.request.post(`/__fixture/wait?id=${IDLE}`);
+	await expect(card(page)).toHaveAttribute('data-kind', 'permission');
+	await expect(card(page)).toBeInViewport({ ratio: 1 });
+	// Answered on the Mac: the card goes with the status.
+	await page.request.post(`/__fixture/status?id=${IDLE}&value=busy`);
+	await expect(card(page)).toHaveCount(0);
+});
+
+test('a file is attached; one that is too big is not sent', async ({ page }) => {
+	await open(page, IDLE, ['replies', 'keyBar', 'upload']);
+	const attach = page.getByRole('button', { name: 'Attach' });
+	const size = await attach.evaluate((button) => {
+		const rect = button.getBoundingClientRect();
+		const x = rect.left + rect.width / 2;
+		const y = rect.top + rect.height / 2;
+		return (
+			document.elementFromPoint(x, y - 21) === button &&
+			document.elementFromPoint(x - 21, y) === button
+		);
+	});
+	expect(size).toBe(true);
+	const picker = page.locator('[data-attach-input]');
+	// No `capture`: the phone offers the library, the camera and files.
+	expect(await picker.getAttribute('capture')).toBeNull();
+	expect(await picker.getAttribute('accept')).toBeNull();
+
+	const sent = page.waitForRequest((request) => request.url().includes('/upload?'));
+	await picker.setInputFiles({
+		name: 'release notes.txt',
+		mimeType: 'text/plain',
+		buffer: Buffer.from('ship the fix')
+	});
+	const request = await sent;
+	expect(new URL(request.url()).search).toBe('?name=release%20notes.txt');
+	expect(request.headers()['content-type']).toBe('application/octet-stream');
+	expect(request.headers()['x-muxmaestro']).toBe('1');
+	expect(request.headers()['x-muxmaestro-token']).toBe('demo-token');
+	await expect(note(page)).toHaveText('Attached');
+	await expect(attach).toBeEnabled();
+	expect((await received(page)).uploads).toEqual([
+		{
+			thread: IDLE,
+			name: 'release notes.txt',
+			bytes: 12,
+			type: 'application/octet-stream',
+			text: 'ship the fix'
+		}
+	]);
+	await shot(page, 'upload');
+
+	// Over the Mac's limit: refused on the phone, nothing is posted.
+	await page.request.post('/__fixture/upload-max?value=8');
+	await page.waitForTimeout(200);
+	await picker.setInputFiles({
+		name: 'big.txt',
+		mimeType: 'text/plain',
+		buffer: Buffer.from('more than eight bytes')
+	});
+	await expect(note(page)).toHaveText('Too big');
+	expect((await received(page)).uploads).toHaveLength(1);
+});
+
+test('the attach button shows an upload in flight, and is off while the pane is busy', async ({
+	page
+}) => {
+	await open(page, IDLE, ['replies', 'upload']);
+	const attach = page.getByRole('button', { name: 'Attach' });
+	let release: () => void = () => {};
+	const held = new Promise<void>((done) => (release = done));
+	await page.route('**/api/threads/*/upload?*', async (route) => {
+		await held;
+		await route.continue();
+	});
+	await page.locator('[data-attach-input]').setInputFiles({
+		name: 'photo.png',
+		mimeType: 'image/png',
+		buffer: Buffer.from([137, 80, 78, 71])
+	});
+	await expect(attach).toBeDisabled();
+	await expect(attach).toHaveAttribute('aria-busy', 'true');
+	release();
+	await expect(note(page)).toHaveText('Attached');
+	await expect(attach).toBeEnabled();
+
+	await page.request.post(`/__fixture/status?id=${IDLE}&value=busy`);
+	await expect(attach).toBeDisabled();
+});
+
+test('Next opens the thread that has waited longest', async ({ page }) => {
+	await open(page, IDLE, ['replies', 'keyBar']);
+	await expect(nextBar(page)).toHaveText(/Next\s+billing · proration\s*›/);
+	expect((await nextBar(page).boundingBox())?.height).toBeGreaterThanOrEqual(44);
+	const bar = await keybar(page).boundingBox();
+	const next = await nextBar(page).boundingBox();
+	expect((next?.y ?? 0) + (next?.height ?? 0)).toBeLessThanOrEqual(bar?.y ?? 0);
+	await shot(page, 'next-bar');
+
+	await nextBar(page).tap();
+	await expect(page).toHaveURL(/\/t\/devbox(:|%3A)2$/);
+	await expect(page.locator('.tbar .title b')).toHaveText('billing · proration');
+	// This one waits itself: there is no bar, there is its card.
+	await expect(nextBar(page)).toHaveCount(0);
+	await expect(card(page)).toHaveAttribute('data-kind', 'question');
+
+	// Answered: the bar names the other one.
+	await card(page).getByRole('button').nth(0).tap();
+	await expect(nextBar(page)).toHaveText(/Next\s+acme-app · checkout-fix/);
+});
+
+test('with the features off, the thread shows none of this', async ({ page }) => {
+	await open(page, PERMISSION, []);
+	await expect(page.locator('.u').first()).toBeVisible();
+	await page.waitForTimeout(400);
+	await expect(page.locator('[data-dock]')).toHaveCount(0);
+	await expect(box(page)).toHaveCount(0);
+	await expect(keybar(page)).toHaveCount(0);
+	await expect(card(page)).toHaveCount(0);
+	await expect(nextBar(page)).toHaveCount(0);
+	await expect(page.getByRole('button', { name: 'Attach' })).toHaveCount(0);
+	await expect(page.locator('[data-voicebar]')).toHaveCount(0);
+
+	// Each switch shows only its own controls, as soon as the Mac flips it.
+	await page.request.post('/__fixture/capability?name=keyBar&on=1');
+	await expect(keybar(page)).toBeVisible();
+	await expect(box(page)).toHaveCount(0);
+	await expect(card(page)).toHaveCount(0);
+	// With no text box there is nothing to type into: only the pane's keys.
+	await expect(keybar(page).locator('.keys button')).toHaveCount(9);
+	await expect(page.getByRole('button', { name: 'Hide keyboard' })).toHaveCount(0);
+
+	// Upload and voice both need a reply box to sit in.
+	await page.request.post('/__fixture/capability?name=upload&on=1');
+	await page.request.post('/__fixture/capability?name=voice&on=1');
+	await page.waitForTimeout(300);
+	await expect(page.getByRole('button', { name: 'Attach' })).toHaveCount(0);
+	await expect(page.locator('[data-voicebar]')).toHaveCount(0);
+
+	await page.request.post('/__fixture/capability?name=replies&on=1');
+	await expect(box(page)).toBeVisible();
+	await expect(card(page)).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Attach' })).toBeVisible();
+	await expect(page.locator('[data-voicebar]')).toBeVisible();
+	await expect(keybar(page).locator('.keys button')).toHaveCount(14);
+
+	await page.request.post('/__fixture/capability?name=upload&on=0');
+	await expect(page.getByRole('button', { name: 'Attach' })).toHaveCount(0);
+	await page.request.post('/__fixture/capability?name=voice&on=0');
+	await expect(page.locator('[data-voicebar]')).toHaveCount(0);
+	await page.request.post('/__fixture/capability?name=keyBar&on=0');
+	await expect(keybar(page)).toHaveCount(0);
+	await expect(box(page)).toBeVisible();
+	await page.request.post('/__fixture/capability?name=replies&on=0');
+	await expect(page.locator('[data-dock]')).toHaveCount(0);
+	await expect(card(page)).toHaveCount(0);
+});
+
+test('nothing moves when the live data lands', async ({ page }) => {
+	await open(page, IDLE, ['replies', 'keyBar', 'upload']);
+	const places = async (): Promise<unknown> => [
+		await box(page).boundingBox(),
+		await keybar(page).boundingBox(),
+		await nextBar(page).boundingBox()
+	];
+	const before = await places();
+	// The same lists again, and a new line in the chat.
+	await page.request.post(`/__fixture/say?id=${IDLE}&text=One%20more%20line`);
+	await expect(page.locator('.a').last()).toHaveText('One more line');
+	expect(await places()).toEqual(before);
+	// Typing swaps nothing in the box's row.
+	await box(page).fill('hello');
+	expect(await places()).toEqual(before);
+});
+
+test('voice into a thread: the take shows as your line and the reply streams in', async ({
+	page
+}) => {
+	await fakeMic(page);
+	await open(
+		page,
+		IDLE,
+		['replies', 'keyBar', 'voice'],
+		['/__fixture/voice?heard=run%20the%20contrast%20audit&delay=300']
+	);
+	const primary = page.locator('[data-primary]');
+	const status = page.locator('[data-voice-status]');
+	await expect(primary).toHaveText('🎙 Talk');
+	await expect(status).toHaveText('Start talking');
+	const boxBefore = await box(page).boundingBox();
+
+	await primary.click();
+	await expect(primary).toHaveText('↑ Submit');
+	await page.evaluate(() => window.__mic.speak(true));
+	await page.waitForTimeout(600);
+	await page.evaluate(() => window.__mic.speak(false));
+	// The button changed; the text box did not move.
+	expect(await box(page).boundingBox()).toEqual(boxBefore);
+
+	const sent = page.waitForRequest((request) => request.url().includes('/api/voice?'));
+	await primary.click();
+	const request = await sent;
+	expect(new URL(request.url()).search).toBe('?target=localhost%3A7&speaker=1');
+	expect(request.headers()['x-muxmaestro']).toBe('1');
+	expect(request.headers()['content-type']).toBe('audio/wav');
+
+	await expect(status).toHaveText('Thinking…');
+	await expect(page.locator('.u').last()).toHaveText('run the contrast audit');
+	await shot(page, 'thread-voice');
+	await expect(page.locator('.a').last()).toHaveText(
+		'Done: run the contrast audit. 2 files changed, tests pass.'
+	);
+	await expect(status).toHaveText('Start talking', { timeout: 8000 });
+	// Drawn once: the live lines gave way to the chat's own.
+	await expect(page.locator('.u', { hasText: 'run the contrast audit' })).toHaveCount(1);
+	await expect(page.locator('.a', { hasText: 'Done: run the contrast audit' })).toHaveCount(1);
+	await expect(page.locator('[data-live]')).toHaveCount(0);
+	expect((await received(page)).texts).toEqual([
+		{ thread: IDLE, text: 'run the contrast audit', spoken: true }
+	]);
+
+	// With text in the box the button sends it.
+	await box(page).fill('thanks');
+	await expect(sendButton(page)).toBeEnabled();
+});
+
+test('a take into a busy thread is refused before it starts', async ({ page }) => {
+	await fakeMic(page);
+	await open(page, BUSY, ['replies', 'voice']);
+	const primary = page.locator('[data-primary]');
+	await primary.click();
+	await page.evaluate(() => window.__mic.speak(true));
+	await page.waitForTimeout(500);
+	await page.evaluate(() => window.__mic.speak(false));
+	await primary.click();
+	await expect(page.locator('[data-voice-status]')).toHaveText('search is running a turn');
+	await expect(primary).toHaveText('🎙 Talk');
+	expect((await received(page)).texts).toEqual([]);
+});

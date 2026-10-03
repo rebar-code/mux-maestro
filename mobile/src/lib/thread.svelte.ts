@@ -87,7 +87,7 @@ export class ThreadFeed {
 	}
 
 	/** Apply `change`; stay at the end if the reader was there (or on first load). */
-	private async keepEnd(mode: Mode, force: boolean, change: () => void): Promise<void> {
+	async keepEnd(mode: Mode, force: boolean, change: () => void): Promise<void> {
 		const before = this.scrollers[mode];
 		const atEnd =
 			force || !before || before.scrollHeight - before.scrollTop - before.clientHeight < STICK;

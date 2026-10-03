@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import { forget, pairingLink, reset } from './helpers';
+import { fakeMic, forget, pairingLink, reset } from './helpers';
 
 interface Take {
 	riff: boolean;
@@ -10,14 +10,6 @@ interface Take {
 	rms: number;
 	target: string;
 	speaker: boolean;
-}
-
-declare global {
-	interface Window {
-		__mic: { opened: number; speak: (on: boolean) => void };
-		/** Reply clips that started to play. */
-		__clips: number;
-	}
 }
 
 const status = (page: Page): Locator => page.locator('[data-voice-status]');
@@ -50,35 +42,7 @@ async function say(page: Page, ms: number): Promise<void> {
  * is "speech" while `speak(true)` and silence otherwise. No real device.
  */
 async function open(page: Page, hooks: string[] = []): Promise<void> {
-	await page.addInitScript(() => {
-		let gain: GainNode | null = null;
-		window.__mic = {
-			opened: 0,
-			speak: (on) => {
-				if (gain) gain.gain.value = on ? 0.5 : 0;
-			}
-		};
-		navigator.mediaDevices.getUserMedia = async () => {
-			window.__mic.opened += 1;
-			const context = new AudioContext();
-			await context.resume();
-			const tone = context.createOscillator();
-			tone.frequency.value = 220;
-			gain = context.createGain();
-			gain.gain.value = 0;
-			const out = context.createMediaStreamDestination();
-			tone.connect(gain).connect(out);
-			tone.start();
-			return out.stream;
-		};
-		// A reply clip is longer than the cue that follows a take.
-		window.__clips = 0;
-		const start = AudioBufferSourceNode.prototype.start;
-		AudioBufferSourceNode.prototype.start = function (...args) {
-			if ((this.buffer?.duration ?? 0) > 0.5) window.__clips += 1;
-			return start.apply(this, args);
-		};
-	});
+	await fakeMic(page);
 	await reset(page);
 	await page.request.post('/__fixture/capability?name=voice&on=1');
 	for (const hook of hooks) await page.request.post(hook);

@@ -2,6 +2,50 @@ import { expect, type Locator, type Page } from '@playwright/test';
 
 export const WIDTH = 390;
 
+declare global {
+	interface Window {
+		__mic: { opened: number; speak: (on: boolean) => void };
+		/** Reply clips that started to play. */
+		__clips: number;
+	}
+}
+
+/**
+ * Give the page a microphone the test controls: a tone that is "speech" while
+ * `window.__mic.speak(true)` and silence otherwise. No real device.
+ */
+export async function fakeMic(page: Page): Promise<void> {
+	await page.addInitScript(() => {
+		let gain: GainNode | null = null;
+		window.__mic = {
+			opened: 0,
+			speak: (on) => {
+				if (gain) gain.gain.value = on ? 0.5 : 0;
+			}
+		};
+		navigator.mediaDevices.getUserMedia = async () => {
+			window.__mic.opened += 1;
+			const context = new AudioContext();
+			await context.resume();
+			const tone = context.createOscillator();
+			tone.frequency.value = 220;
+			gain = context.createGain();
+			gain.gain.value = 0;
+			const out = context.createMediaStreamDestination();
+			tone.connect(gain).connect(out);
+			tone.start();
+			return out.stream;
+		};
+		// A reply clip is longer than the cue that follows a take.
+		window.__clips = 0;
+		const start = AudioBufferSourceNode.prototype.start;
+		AudioBufferSourceNode.prototype.start = function (...args) {
+			if ((this.buffer?.duration ?? 0) > 0.5) window.__clips += 1;
+			return start.apply(this, args);
+		};
+	});
+}
+
 export async function reset(page: Page): Promise<void> {
 	await page.request.post('/__fixture/reset');
 }

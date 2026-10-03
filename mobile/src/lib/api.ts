@@ -1,6 +1,15 @@
 import { tokenFrom, withoutPair } from './pairing';
 import { frameParser, type Frame } from './sse';
-import type { ChatPage, Config, Host, ManagerHome, Thread, TurnEnd } from './types';
+import type {
+	ChatPage,
+	Command,
+	Config,
+	Host,
+	ManagerHome,
+	Prompt,
+	Thread,
+	TurnEnd
+} from './types';
 
 const TOKEN_KEY = 'mm.token';
 const TOKEN_HEADER = 'X-MuxMaestro-Token';
@@ -83,15 +92,19 @@ async function failure(response: Response): Promise<ApiError> {
 	}
 }
 
+/** What a write sends: JSON, or bytes of a named type (or nothing). */
+type Write = { json: unknown } | { bytes: BodyInit | null; type?: string };
+
 /** Every API call goes through here, so every one carries the pairing token. */
 async function request(
 	path: string,
 	accept: string,
 	as?: string,
 	signal?: AbortSignal,
-	write?: unknown
+	write?: Write
 ): Promise<Response> {
 	const sent = as ?? token;
+	const type = write && ('json' in write ? 'application/json' : write.type);
 	const response = await fetch(path, {
 		cache: 'no-store',
 		headers: {
@@ -99,9 +112,12 @@ async function request(
 			...(sent ? { [TOKEN_HEADER]: sent } : {}),
 			// The server refuses a write without this header, and a page on
 			// another origin cannot send it.
-			...(write === undefined ? {} : { 'content-type': 'application/json', 'x-muxmaestro': '1' })
+			...(write ? { 'x-muxmaestro': '1' } : {}),
+			...(type ? { 'content-type': type } : {})
 		},
-		...(write === undefined ? {} : { method: 'POST', body: JSON.stringify(write) }),
+		...(write
+			? { method: 'POST', body: 'json' in write ? JSON.stringify(write.json) : write.bytes }
+			: {}),
 		signal
 	});
 	if (!response.ok) throw await failure(response);
@@ -112,29 +128,19 @@ async function request(
  * A write whose body is a recording, or nothing. It carries the token and the
  * write header like every other write; the answer is an event stream.
  */
-export async function postAudio(
+export function postAudio(
 	path: string,
 	audio: ArrayBuffer | null,
 	signal?: AbortSignal
 ): Promise<Response> {
-	const response = await fetch(path, {
-		method: 'POST',
-		cache: 'no-store',
-		headers: {
-			accept: 'text/event-stream',
-			...(token ? { [TOKEN_HEADER]: token } : {}),
-			'x-muxmaestro': '1',
-			...(audio ? { 'content-type': 'audio/wav' } : {})
-		},
-		body: audio,
-		signal
+	return request(path, 'text/event-stream', undefined, signal, {
+		bytes: audio,
+		...(audio ? { type: 'audio/wav' } : {})
 	});
-	if (!response.ok) throw await failure(response);
-	return response;
 }
 
 function post(path: string, body: unknown, accept = 'application/json'): Promise<Response> {
-	return request(path, accept, undefined, undefined, body);
+	return request(path, accept, undefined, undefined, { json: body });
 }
 
 async function get<T>(path: string, as?: string): Promise<T> {
@@ -182,6 +188,42 @@ export async function fetchScreen(id: string): Promise<string> {
 /** `as`: ask with this token, not the stored one (to test a token before keeping it). */
 export function fetchConfig(as?: string): Promise<Config> {
 	return get<Config>('/api/config', as);
+}
+
+/** Type `text` into the thread's pane and submit it. */
+export async function sendText(id: string, text: string): Promise<void> {
+	await post(`${threadPath(id)}/text`, { text });
+}
+
+/** Press one key in the thread's pane. `key` is a name from `reply.ts`. */
+export async function sendKey(id: string, key: string): Promise<void> {
+	await post(`${threadPath(id)}/key`, { key });
+}
+
+/** What the thread's pane asks now, or `null`. */
+export async function fetchPrompt(id: string): Promise<Prompt | null> {
+	return (await get<{ prompt: Prompt | null }>(`${threadPath(id)}/prompt`)).prompt;
+}
+
+/** Pick option `option` of the prompt `prompt`. A prompt that changed answers 409 `stale`. */
+export async function answerPrompt(id: string, prompt: string, option: number): Promise<void> {
+	await post(`${threadPath(id)}/answer`, { prompt, option });
+}
+
+export async function fetchCommands(id: string): Promise<Command[]> {
+	return (await get<{ commands: Command[] }>(`${threadPath(id)}/commands`)).commands;
+}
+
+/** Put `file` in the thread's directory. Resolves to the path it got on the Mac. */
+export async function uploadFile(id: string, file: File): Promise<string> {
+	const response = await request(
+		`${threadPath(id)}/upload?name=${encodeURIComponent(file.name)}`,
+		'application/json',
+		undefined,
+		undefined,
+		{ bytes: file, type: 'application/octet-stream' }
+	);
+	return ((await response.json()) as { path: string }).path;
 }
 
 export function fetchManager(): Promise<ManagerHome> {

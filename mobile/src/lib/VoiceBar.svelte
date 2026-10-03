@@ -1,13 +1,19 @@
 <script lang="ts">
 	import { voice, type VoiceSink, type VoiceTarget } from './voice.svelte';
 
-	/** The bar of one target: the manager, or (later) a thread. */
+	/** The bar of one target: the manager, or a thread. */
 	const { target, sink }: { target: VoiceTarget; sink: VoiceSink } = $props();
 
 	const status = $derived(voice.statusOf(target));
 </script>
 
-<div class="vbar" data-voicebar data-status={status} {@attach voice.unlockOnTap}>
+<div
+	class="vbar"
+	data-voicebar
+	data-status={status}
+	{@attach voice.unlockOnTap}
+	{@attach voice.bar(target, sink)}
+>
 	<div class="vstat {status}" class:paused={voice.paused} role="status" data-voice-status>
 		<span class="wave" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
 		{voice.note ?? voice.label(target)}

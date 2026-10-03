@@ -1,9 +1,20 @@
 <script lang="ts">
+	import AttachButton from './AttachButton.svelte';
+	import Composer from './Composer.svelte';
 	import { dotClass, statusLabel } from './format';
 	import { pages, pullToRefresh, ui } from './gestures.svelte';
-	import { live } from './live.svelte';
+	import KeyBar from './KeyBar.svelte';
+	import { overKeyboard } from './keyboard';
+	import { can, live } from './live.svelte';
+	import NextBar from './NextBar.svelte';
+	import PromptCard from './PromptCard.svelte';
 	import PullIndicator from './PullIndicator.svelte';
+	import { liveLines, nextWaiting } from './reply';
+	import { Reply } from './reply.svelte';
+	import SlashList from './SlashList.svelte';
 	import { ThreadFeed, type Mode } from './thread.svelte';
+	import { voice } from './voice.svelte';
+	import VoiceBar from './VoiceBar.svelte';
 
 	const { id }: { id: string } = $props();
 
@@ -22,6 +33,27 @@
 	const mode: Mode = $derived(canChat && !terminal ? 'chat' : 'terminal');
 	const closed = $derived((live.threads !== null && !thread) || feed.gone);
 	const color = $derived(thread?.hostColor ?? '#2a2a2a');
+
+	// svelte-ignore state_referenced_locally
+	const reply = new Reply(id, {
+		refresh: () => feed.load(mode),
+		stick: (change) => feed.keepEnd(mode, false, change)
+	});
+
+	const repliesOn = $derived(can('replies'));
+	const keysOn = $derived(can('keyBar'));
+	// A take goes to the thread as a reply, so voice needs that switch too.
+	const voiceOn = $derived(repliesOn && can('voice'));
+	const docked = $derived(!closed && (repliesOn || keysOn));
+	const next = $derived(repliesOn ? nextWaiting(live.threads ?? [], id) : null);
+	const card = $derived(repliesOn && thread?.status === 'waiting' ? reply.prompt : null);
+	const spoken = $derived(liveLines(feed.messages ?? [], reply.turn));
+
+	function send(): void {
+		// A typed reply takes over: a reply that is still being read stops.
+		if (voiceOn) voice.skip();
+		void reply.send();
+	}
 
 	function selectTab(index: number): void {
 		// The first tab is also a switch: a tap while it is showing flips the
@@ -80,7 +112,7 @@
 	>
 </div>
 
-<div class="pager" {@attach pages(TAB_KEYS)} {@attach feed.watch(mode)}>
+<div class="pager" class:docked {@attach pages(TAB_KEYS)} {@attach feed.watch(mode)}>
 	<div
 		class="track"
 		class:anim={!ui.dragging}
@@ -114,6 +146,13 @@
 										<div class="tool"><b>{message.tool}</b> {message.text}</div>
 									{/if}
 								{/each}
+								{#if reply.turn}
+									{#if spoken.prompt}<div class="u" data-live>{reply.turn.prompt}</div>{/if}
+									{#if spoken.reply}<div class="a" data-live>{reply.turn.reply}</div>{/if}
+								{/if}
+							{/if}
+							{#if card}
+								<PromptCard prompt={card} answering={reply.answering} onanswer={reply.answer} />
 							{/if}
 						</div>
 					</div>
@@ -133,7 +172,12 @@
 								{/each}
 							</div>
 						{:else}
-							<pre class="screen mono" data-hscroll>{feed.screen}</pre>
+							<pre class="screen mono" class:carded={card !== null} data-hscroll>{feed.screen}</pre>
+						{/if}
+						{#if card}
+							<div class="chat">
+								<PromptCard prompt={card} answering={reply.answering} onanswer={reply.answer} />
+							</div>
 						{/if}
 					</div>
 				{/if}
@@ -141,6 +185,38 @@
 		{/each}
 	</div>
 </div>
+
+{#if docked}
+	<div class="dock" data-dock {@attach overKeyboard} {@attach repliesOn && reply.watch}>
+		{#if next}<NextBar thread={next} />{/if}
+		{#if repliesOn && reply.matches.length}
+			<SlashList commands={reply.matches} onpick={reply.pick} />
+		{/if}
+		{#if keysOn}<KeyBar {reply} composer={repliesOn} />{/if}
+		{#if voiceOn}<VoiceBar target={id} sink={reply.voice} />{/if}
+		{#if repliesOn}
+			<Composer
+				bind:value={reply.draft}
+				box={reply.box}
+				label="Reply"
+				target={id}
+				sink={reply.voice}
+				{voiceOn}
+				blocked={reply.blocked || reply.sending}
+				note={reply.note}
+				onsend={send}
+				oninput={reply.typed}
+				onbeforeinput={reply.beforeInput}
+			>
+				{#snippet leading()}
+					{#if can('upload')}
+						<AttachButton busy={reply.uploading} disabled={reply.blocked} onpick={reply.upload} />
+					{/if}
+				{/snippet}
+			</Composer>
+		{/if}
+	</div>
+{/if}
 
 <style>
 	.thread {
@@ -213,6 +289,19 @@
 		padding: 10px 14px calc(16px + env(safe-area-inset-bottom));
 	}
 
+	/* The bar below keeps clear of the home indicator. */
+	.docked .chat,
+	.docked .screen {
+		padding-bottom: 16px;
+	}
+
+	.dock {
+		flex: none;
+		display: flex;
+		flex-direction: column;
+		padding-bottom: var(--kb, 0px);
+	}
+
 	.u {
 		align-self: flex-end;
 		max-width: 86%;
@@ -256,6 +345,11 @@
 		/* Moved by the gesture controller, so it can hand over to the drawer at its edge. */
 		overflow-x: hidden;
 		min-height: 100%;
+	}
+
+	/* The card under it has to be on screen. */
+	.screen.carded {
+		min-height: 0;
 	}
 
 	.empty {

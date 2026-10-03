@@ -2,6 +2,7 @@
 	import { resolve } from '$app/paths';
 	import { age } from '$lib/format';
 	import { pullToRefresh, swipeAway, ui } from '$lib/gestures.svelte';
+	import Composer from '$lib/Composer.svelte';
 	import { counts } from '$lib/group';
 	import { can, live } from '$lib/live.svelte';
 	import { needsYouCards } from '$lib/manager';
@@ -21,14 +22,12 @@
 	const voiceOn = $derived(managerOn && can('voice'));
 	const waiting = $derived(needsYouCards(live.threads ?? [], managerOn ? manager.needsYou : []));
 	const review = $derived(managerOn ? manager.review : []);
-	const canSend = $derived(manager.draft.trim() !== '');
 
 	async function reload(): Promise<void> {
 		await Promise.all([live.refresh(), managerOn ? manager.load() : null]);
 	}
 
-	function submit(event: SubmitEvent): void {
-		event.preventDefault();
+	function send(): void {
 		// A typed turn takes over: a reply that is still being read stops.
 		if (voiceOn) voice.skip();
 		void manager.send();
@@ -153,24 +152,15 @@
 	{#if voiceOn}
 		<VoiceBar target="manager" sink={manager.voice} />
 	{/if}
-	<form class="compose" class:bare={!voiceOn} onsubmit={submit}>
-		<input
-			bind:value={manager.draft}
-			placeholder="Ask the manager"
-			aria-label="Ask the manager"
-			enterkeyhint="send"
-			autocomplete="off"
-			autocapitalize="sentences"
-		/>
-		<!-- Typing is always there: with text in the box the button sends it. -->
-		{#if canSend || !voiceOn}
-			<button class="pill send grow" type="submit" disabled={!canSend || manager.busy}
-				>↑ Send</button
-			>
-		{:else}
-			<TalkButton target="manager" sink={manager.voice} />
-		{/if}
-	</form>
+	<Composer
+		bind:value={manager.draft}
+		label="Ask the manager"
+		target="manager"
+		sink={manager.voice}
+		{voiceOn}
+		blocked={manager.busy}
+		onsend={send}
+	/>
 {/if}
 
 <style>
@@ -366,60 +356,5 @@
 
 	.end {
 		height: 24px;
-	}
-
-	.compose {
-		flex: none;
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		margin: 0;
-		padding: 6px max(10px, env(safe-area-inset-right)) calc(10px + env(safe-area-inset-bottom))
-			max(10px, env(safe-area-inset-left));
-		background: var(--bar);
-	}
-
-	/* With no voice bar above it, the text box draws the top edge itself. */
-	.compose.bare {
-		padding-top: 8px;
-		border-top: 1px solid var(--border);
-	}
-
-	.compose input {
-		flex: 1;
-		min-width: 0;
-		min-height: var(--hit);
-		padding: 10px 14px;
-		border-radius: 22px;
-		border: 1px solid var(--border);
-		background: var(--surface);
-		color: var(--text);
-		/* 16px: a smaller box makes iOS zoom the page on focus. */
-		font: inherit;
-		font-size: 16px;
-		outline: none;
-	}
-
-	.compose input:focus-visible {
-		border-color: var(--accent);
-	}
-
-	.pill {
-		position: relative;
-		flex: none;
-		height: 40px;
-		padding: 0 16px;
-		border-radius: 20px;
-		background: #fff;
-		color: #000;
-		font-weight: 600;
-		font-size: 14px;
-		white-space: nowrap;
-		min-width: 104px;
-	}
-
-	.pill.send {
-		background: var(--accent);
-		color: #fff;
 	}
 </style>
