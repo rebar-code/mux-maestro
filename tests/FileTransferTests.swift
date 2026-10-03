@@ -153,6 +153,20 @@ final class FileTransferTests: XCTestCase {
         XCTAssertEqual(args2.last, "buildbox:'~;rm.html'")
     }
 
+    // MARK: captureScrollbackArgv
+
+    func testCaptureScrollbackArgvAsksForHistoryAndColourAndKeepsWrapping() {
+        XCTAssertEqual(
+            FileTransfer.captureScrollbackArgv(target: "%12", lines: 2000),
+            ["capture-pane", "-p", "-e", "-S", "-2000", "-t", "%12"])
+        // No -J: lines keep the pane's own wrapping.
+        XCTAssertFalse(FileTransfer.captureScrollbackArgv(target: "%12", lines: 5).contains("-J"))
+        // A negative count can never turn into a positive start line.
+        XCTAssertEqual(FileTransfer.captureScrollbackArgv(target: "%1", lines: -5)[4], "-0")
+        // The plain capture its other callers use is unchanged.
+        XCTAssertEqual(FileTransfer.capturePaneArgv(target: "%12"), ["capture-pane", "-p", "-t", "%12"])
+    }
+
     // MARK: capturePaneArgv
 
     func testCapturePaneArgv() {

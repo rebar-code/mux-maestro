@@ -114,7 +114,8 @@ const LABELS: Record<string, string> = {
 	bad_key: 'Key not allowed',
 	stale: 'Prompt changed',
 	no_input: 'No input box',
-	not_sent: 'Not sent'
+	not_sent: 'Not sent',
+	unseen: 'Open the terminal to answer'
 };
 
 /** What the Mac said when it refused a write. `ApiError` is one. */

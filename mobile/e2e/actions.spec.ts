@@ -369,7 +369,9 @@ test.describe('find', () => {
 		// Closing find gives the live pane back.
 		await page.getByRole('button', { name: 'Close find' }).click();
 		await expect(text).toHaveCount(0);
-		await expect(page.locator('pre.screen')).toContainText('I need to run the spec');
+		await expect(page.locator('[data-view="terminal"] [data-lines]')).toContainText(
+			'I need to run the spec'
+		);
 	});
 
 	test('a find the Mac refuses as busy is asked again', async ({ page }) => {

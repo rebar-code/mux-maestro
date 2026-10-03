@@ -110,6 +110,7 @@ async function request(
 	accept: string,
 	as?: string,
 	signal?: AbortSignal,
+	extra: Record<string, string> = {},
 	write?: Write
 ): Promise<Response> {
 	const sent = as ?? token;
@@ -118,6 +119,7 @@ async function request(
 		cache: 'no-store',
 		headers: {
 			accept,
+			...extra,
 			...(sent ? { [TOKEN_HEADER]: sent } : {}),
 			// The server refuses a write without this header, and a page on
 			// another origin cannot send it.
@@ -129,6 +131,8 @@ async function request(
 			: {}),
 		signal
 	});
+	// "Not modified": the answer to a request that named what it already has.
+	if (response.status === 304) return response;
 	if (!response.ok) throw await failure(response);
 	return response;
 }
@@ -142,14 +146,21 @@ export function postAudio(
 	audio: ArrayBuffer | null,
 	signal?: AbortSignal
 ): Promise<Response> {
-	return request(path, 'text/event-stream', undefined, signal, {
-		bytes: audio,
-		...(audio ? { type: 'audio/wav' } : {})
-	});
+	return request(
+		path,
+		'text/event-stream',
+		undefined,
+		signal,
+		{},
+		{
+			bytes: audio,
+			...(audio ? { type: 'audio/wav' } : {})
+		}
+	);
 }
 
 function post(path: string, body: unknown, accept = 'application/json'): Promise<Response> {
-	return request(path, accept, undefined, undefined, { json: body });
+	return request(path, accept, undefined, undefined, {}, { json: body });
 }
 
 async function get<T>(path: string, as?: string, signal?: AbortSignal): Promise<T> {
@@ -190,8 +201,40 @@ export function fetchChat(id: string, after?: number): Promise<ChatPage> {
 	return get<ChatPage>(`${threadPath(id)}/chat${after === undefined ? '' : `?after=${after}`}`);
 }
 
-export async function fetchScreen(id: string): Promise<string> {
-	return (await get<{ text: string }>(`${threadPath(id)}/screen`)).text;
+export interface ScreenPage {
+	/** Scrollback and screen, with the terminal's colour codes. */
+	text: string;
+	/** How many lines the server was asked for, after its own limits. */
+	lines: number;
+	/** The most lines it will ever send. */
+	max: number;
+	etag: string | null;
+}
+
+/**
+ * The pane's text. `lines`: how many to ask for (left out, the server picks).
+ * `etag`: the tag of the text already held; null comes back when it has not changed.
+ */
+export async function fetchScreen(
+	id: string,
+	lines?: number,
+	etag?: string | null
+): Promise<ScreenPage | null> {
+	const response = await request(
+		`${threadPath(id)}/screen${lines === undefined ? '' : `?lines=${lines}`}`,
+		'application/json',
+		undefined,
+		undefined,
+		etag ? { 'If-None-Match': etag } : {}
+	);
+	if (response.status === 304) return null;
+	const body = (await response.json()) as { text: string; lines?: number; max?: number };
+	return {
+		text: body.text,
+		lines: body.lines ?? 0,
+		max: body.max ?? 0,
+		etag: response.headers.get('ETag')
+	};
 }
 
 /** `as`: ask with this token, not the stored one (to test a token before keeping it). */
@@ -239,6 +282,7 @@ export async function uploadFile(id: string, file: File): Promise<{ pasted: bool
 		'application/json',
 		undefined,
 		undefined,
+		{},
 		{ bytes: file, type: 'application/octet-stream' }
 	);
 	return { pasted: ((await response.json()) as { pasted?: boolean }).pasted !== false };
