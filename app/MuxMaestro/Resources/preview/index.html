@@ -14,6 +14,8 @@
       display: flex; align-items: center; justify-content: center; text-align: center;
       font: 13px -apple-system, system-ui, sans-serif;
     }
+    /* `display: flex` above would otherwise beat the `hidden` attribute. */
+    #empty[hidden] { display: none; }
     pre { margin: 0; }
     pre code.hljs {
       display: block; padding: 8px 0;

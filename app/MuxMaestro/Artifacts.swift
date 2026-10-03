@@ -13,6 +13,50 @@ struct Artifact: Equatable {
 
     var name: String { (path as NSString).lastPathComponent }
     var parentDir: String { (path as NSString).deletingLastPathComponent }
+
+    /// The panel renders these instead of showing their source.
+    var isMarkdown: Bool {
+        ["md", "markdown", "mdx"].contains((path as NSString).pathExtension.lowercased())
+    }
+
+    /// The panel shows these with syntax highlighting. HTML is left out: Quick
+    /// Look draws the page, which says more than its source.
+    var isCode: Bool {
+        let base = name.lowercased()
+        return Self.codeNames.contains(base)
+            || Self.codeExtensions.contains((base as NSString).pathExtension)
+    }
+
+    /// The languages `Resources/preview/index.html` maps to a grammar.
+    private static let codeExtensions: Set<String> = [
+        "js", "mjs", "cjs", "jsx", "ts", "tsx", "svelte", "vue", "xml",
+        "css", "scss", "sass", "less", "json",
+        "py", "rb", "go", "rs", "swift", "sh", "bash", "zsh", "fish",
+        "yml", "yaml", "toml", "ini", "conf",
+        "c", "h", "cpp", "cc", "cxx", "hpp",
+        "java", "kt", "kts", "php", "sql", "lua", "pl", "r", "dart", "scala",
+    ]
+    private static let codeNames: Set<String> = ["makefile", "dockerfile"]
+}
+
+/// A markdown artifact's text, made ready for the renderer.
+enum ArtifactMarkdown {
+    /// Larger markdown and code files keep the Quick Look preview.
+    static let maxBytes = 1_000_000
+
+    /// `text` with `\n` line endings and its YAML front matter as a fenced
+    /// block. Left as is, markdown reads the closing `---` as a heading
+    /// underline and draws the keys as one big title.
+    static func source(from text: String) -> String {
+        let normalized = text.replacingOccurrences(of: "\r\n", with: "\n")
+        var lines = normalized.components(separatedBy: "\n")
+        guard lines.first == "---",
+              let close = lines.dropFirst().firstIndex(of: "---"), close > 1
+        else { return normalized }
+        lines[0] = "```"
+        lines[close] = "```"
+        return lines.joined(separator: "\n")
+    }
 }
 
 /// What a transcript says, before any disk check. `made` holds the paths an

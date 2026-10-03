@@ -1,6 +1,7 @@
 import Cocoa
 import Quartz
 import QuickLookThumbnailing
+import WebKit
 
 /// What the Artifacts panel shows for the current selection.
 enum ArtifactsState: Equatable {
@@ -30,8 +31,10 @@ protocol ArtifactsPaneDelegate: AnyObject {
 }
 
 /// The right sidebar's Artifacts item: what the selected pane's agent made.
-/// Images as a thumbnail grid, files as rows, and a Quick Look preview of the
-/// selection below. Click previews; Space opens the Quick Look panel; arrows
+/// Images as a thumbnail grid, files as rows, and a preview of the selection
+/// below: markdown rendered, code highlighted, anything else by Quick Look.
+/// Click previews; Space
+/// opens the Quick Look panel; arrows
 /// step; double-click opens. Local servers and links are rows that open in
 /// the browser on click; right-click copies.
 final class ArtifactsViewController: NSViewController {
@@ -49,7 +52,26 @@ final class ArtifactsViewController: NSViewController {
     private let scroll = NSScrollView()
     private let split = NSSplitView()
     private let emptyLabel = NSTextField(labelWithString: "")
+    private let previewPane = NSView()
     private var preview: QLPreviewView?
+    private let markdownScroll = NSScrollView()
+    /// The text view does not own its storage, so this holds it.
+    private let markdownStorage = NSTextStorage()
+    private var markdownText: NSTextView?
+    /// Code, in the tree preview's highlight.js page. Loaded on first use.
+    private lazy var codeView = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
+    private var codeLoading = false
+    private var codeReady = false
+    private var codePending: (() -> Void)?
+    /// The markdown or code artifact shown or loading. Nil while Quick Look
+    /// previews.
+    private var textShown: Artifact?
+    private enum Viewer { case quickLook, markdown, code }
+
+    /// The highlight.js page. A stored property so the panel selftest, which
+    /// has no app bundle, can point it at the source tree.
+    static var codePreviewIndexURL = Bundle.main.url(
+        forResource: "index", withExtension: "html", subdirectory: "preview")
     private var lastWidth: CGFloat = 0
 
     private var thumbnails: [String: NSImage] = [:]
@@ -99,12 +121,14 @@ final class ArtifactsViewController: NSViewController {
         split.autosaveName = "SidekickArtifactsSplit"
         split.translatesAutoresizingMaskIntoConstraints = false
         split.addArrangedSubview(scroll)
+        split.addArrangedSubview(previewPane)
         if let ql = QLPreviewView(frame: .zero, style: .compact) {
             ql.shouldCloseWithWindow = false
             ql.autostarts = true
-            split.addArrangedSubview(ql)
+            fill(previewPane, with: ql)
             preview = ql
         }
+        buildMarkdownView()
         container.addSubview(split)
 
         emptyLabel.font = .systemFont(ofSize: 11)
@@ -142,9 +166,9 @@ final class ArtifactsViewController: NSViewController {
         // nothing. Give it the lower ~45% once there is room, and stop once it
         // has a height (after that the divider is the user's). Placed after
         // this layout pass: a divider set mid-layout lands in the wrong place.
-        if !didPlaceDivider, let preview, split.bounds.height > 200 {
+        if !didPlaceDivider, split.bounds.height > 200 {
             didPlaceDivider = true
-            if preview.frame.height < 1 {
+            if previewPane.frame.height < 1 {
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
                     self.split.setPosition(self.split.bounds.height * 0.55, ofDividerAt: 0)
@@ -286,11 +310,137 @@ final class ArtifactsViewController: NSViewController {
     }
 
     private func updatePreview() {
-        let item = selectedArtifact.flatMap { $0.exists ? URL(fileURLWithPath: $0.path) as NSURL : nil }
-        if (preview?.previewItem as? NSURL) != item { preview?.previewItem = item }
+        let selected = selectedArtifact.flatMap { $0.exists ? $0 : nil }
+        if let selected, selected.isMarkdown {
+            showMarkdown(selected)
+        } else if let selected, selected.isCode, Self.codePreviewIndexURL != nil {
+            showCode(selected)
+        } else {
+            textShown = nil
+            showQuickLook(selected)
+        }
         if QLPreviewPanel.sharedPreviewPanelExists(), QLPreviewPanel.shared().isVisible {
             QLPreviewPanel.shared().reloadData()
         }
+    }
+
+    private func showQuickLook(_ a: Artifact?) {
+        show(.quickLook)
+        let item = a.map { URL(fileURLWithPath: $0.path) as NSURL }
+        if (preview?.previewItem as? NSURL) != item { preview?.previewItem = item }
+    }
+
+    private func show(_ viewer: Viewer) {
+        if viewer != .quickLook { preview?.previewItem = nil }
+        preview?.isHidden = viewer != .quickLook
+        markdownScroll.isHidden = viewer != .markdown
+        if codeLoading { codeView.isHidden = viewer != .code }
+    }
+
+    /// The UTF-8 text of a file small enough to render; nil keeps Quick Look.
+    private static func text(at path: String) -> String? {
+        let url = URL(fileURLWithPath: path)
+        guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+              size <= ArtifactMarkdown.maxBytes,
+              let data = try? Data(contentsOf: url)
+        else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    // MARK: Markdown preview
+
+    private func fill(_ pane: NSView, with child: NSView) {
+        child.translatesAutoresizingMaskIntoConstraints = false
+        pane.addSubview(child)
+        NSLayoutConstraint.activate([
+            child.topAnchor.constraint(equalTo: pane.topAnchor),
+            child.bottomAnchor.constraint(equalTo: pane.bottomAnchor),
+            child.leadingAnchor.constraint(equalTo: pane.leadingAnchor),
+            child.trailingAnchor.constraint(equalTo: pane.trailingAnchor),
+        ])
+    }
+
+    private func buildMarkdownView() {
+        // TextKit 1, built by hand: it draws the text blocks `ChatMarkdown`
+        // uses for code fences.
+        let layout = NSLayoutManager()
+        markdownStorage.addLayoutManager(layout)
+        let container = NSTextContainer(size: NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
+        container.widthTracksTextView = true
+        layout.addTextContainer(container)
+
+        let text = NSTextView(frame: .zero, textContainer: container)
+        text.isEditable = false
+        text.isSelectable = true
+        text.backgroundColor = SidebarPalette.bg
+        text.textContainerInset = NSSize(width: 8, height: 8)
+        text.isVerticallyResizable = true
+        text.isHorizontallyResizable = false
+        text.autoresizingMask = [.width]
+        text.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        text.linkTextAttributes = [
+            .foregroundColor: SidebarPalette.accent,
+            .underlineStyle: NSUnderlineStyle.single.rawValue,
+            .cursor: NSCursor.pointingHand,
+        ]
+        text.delegate = self
+        markdownText = text
+
+        markdownScroll.documentView = text
+        markdownScroll.hasVerticalScroller = true
+        markdownScroll.drawsBackground = true
+        markdownScroll.backgroundColor = SidebarPalette.bg
+        markdownScroll.isHidden = true
+        fill(previewPane, with: markdownScroll)
+    }
+
+    private static var markdownStyle: ChatMarkdown.Style {
+        ChatMarkdown.Style(
+            font: .systemFont(ofSize: 12),
+            color: SidebarPalette.text,
+            muted: SidebarPalette.muted,
+            link: SidebarPalette.accent,
+            codeBackground: SidebarPalette.card)
+    }
+
+    /// Render `a` off the main thread and swap it in. A file that is too large
+    /// or is not UTF-8 keeps the Quick Look preview.
+    private func showMarkdown(_ a: Artifact) {
+        guard textShown != a else { return }
+        // The same file, written again: keep the reader's place.
+        let keepScroll = textShown?.path == a.path && !markdownScroll.isHidden
+        textShown = a
+        let style = Self.markdownStyle
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let rendered = Self.renderMarkdown(at: a.path, style: style)
+            DispatchQueue.main.async {
+                guard let self, self.textShown == a else { return }
+                guard let rendered, let text = self.markdownText else { self.showQuickLook(a); return }
+                let origin = keepScroll ? self.markdownScroll.contentView.bounds.origin : .zero
+                self.markdownStorage.setAttributedString(rendered)
+                self.show(.markdown)
+                if let container = text.textContainer { text.layoutManager?.ensureLayout(for: container) }
+                text.scroll(origin)
+            }
+        }
+    }
+
+    private static func renderMarkdown(at path: String, style: ChatMarkdown.Style) -> NSAttributedString? {
+        let url = URL(fileURLWithPath: path)
+        guard let text = text(at: path) else { return nil }
+        let rendered = NSMutableAttributedString(
+            attributedString: ChatMarkdown.render(ArtifactMarkdown.source(from: text), style: style))
+        // `ChatMarkdown` marks links for `LinkLabel`; a text view opens `.link`.
+        // A relative link resolves against the file. An in-page anchor has
+        // nowhere to go.
+        let whole = NSRange(location: 0, length: rendered.length)
+        rendered.enumerateAttribute(.muxLink, in: whole) { value, range, _ in
+            guard let link = value as? String, !link.hasPrefix("#"),
+                  let target = URL(string: link, relativeTo: url)?.absoluteURL
+            else { return }
+            rendered.addAttribute(.link, value: target, range: range)
+        }
+        return rendered
     }
 
     private func activateSelected() {
@@ -370,6 +520,81 @@ final class ArtifactsViewController: NSViewController {
     override func endPreviewPanelControl(_ panel: QLPreviewPanel!) {
         panel.dataSource = nil
         panel.delegate = nil
+    }
+
+    // MARK: Code preview
+
+    /// Read `a` off the main thread and highlight it. A file that is too large
+    /// or is not UTF-8 keeps the Quick Look preview.
+    private func showCode(_ a: Artifact) {
+        guard textShown != a else { return }
+        let keepScroll = textShown?.path == a.path && codeLoading && !codeView.isHidden
+        textShown = a
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let code = Self.text(at: a.path)
+            DispatchQueue.main.async {
+                guard let self, self.textShown == a else { return }
+                guard let code else { self.showQuickLook(a); return }
+                self.loadCodeView()
+                self.show(.code)
+                // The page scrolls to the top on render; the same file, written
+                // again, keeps the reader's place.
+                let render = "SidekickPreview.render(\(Self.jsString(code)), \(Self.jsString(a.name)), null)"
+                let script = keepScroll
+                    ? "(function () { var y = window.scrollY; \(render); window.scrollTo(0, y); })()"
+                    : render
+                self.runCode { [weak self] in
+                    self?.codeView.evaluateJavaScript(script, completionHandler: nil)
+                }
+            }
+        }
+    }
+
+    private func loadCodeView() {
+        guard !codeLoading, let index = Self.codePreviewIndexURL else { return }
+        codeLoading = true
+        codeView.navigationDelegate = self
+        // No white flash before the page paints its own background.
+        codeView.setValue(false, forKey: "drawsBackground")
+        fill(previewPane, with: codeView)
+        codeView.loadFileURL(index, allowingReadAccessTo: index.deletingLastPathComponent())
+    }
+
+    /// Run a page action now, or hold the newest one until the page has loaded.
+    private func runCode(_ action: @escaping () -> Void) {
+        if codeReady { action() } else { codePending = action }
+    }
+
+    private static func jsString(_ s: String) -> String {
+        (try? JSONEncoder().encode(s)).flatMap { String(data: $0, encoding: .utf8) } ?? "\"\""
+    }
+
+    /// `#rrggbb` for the page's CSS.
+    private static func cssHex(_ color: NSColor) -> String {
+        guard let c = color.usingColorSpace(.sRGB) else { return "#0a0a0a" }
+        return String(
+            format: "#%02x%02x%02x",
+            Int((c.redComponent * 255).rounded()), Int((c.greenComponent * 255).rounded()),
+            Int((c.blueComponent * 255).rounded()))
+    }
+}
+
+extension ArtifactsViewController: WKNavigationDelegate {
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        codeReady = true
+        // The page's own dark background is the tree's; this panel has its own.
+        webView.evaluateJavaScript(
+            "document.documentElement.style.setProperty('--bg', '\(Self.cssHex(SidebarPalette.bg))')",
+            completionHandler: nil)
+        if let codePending { self.codePending = nil; codePending() }
+    }
+}
+
+extension ArtifactsViewController: NSTextViewDelegate {
+    func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+        guard let url = link as? URL else { return false }
+        delegate?.artifactsPaneDidOpenURL(url.absoluteString)
+        return true
     }
 }
 

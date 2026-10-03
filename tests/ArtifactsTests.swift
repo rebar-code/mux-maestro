@@ -318,4 +318,55 @@ final class ArtifactWebTests: XCTestCase {
         m.ingest(line: #"{"type":"assistant","timestamp":"2026-10-02T11:00:00Z","message":{"content":[{"type":"text","text":"again https://a.com/x"}]}}"#)
         XCTAssertEqual(m.urls, ["https://a.com/x": date("2026-10-02T11:00:00Z")])
     }
+
+    // MARK: Markdown preview
+
+    func testMarkdownArtifactsAreKnownByExtension() {
+        func artifact(_ path: String) -> Artifact {
+            Artifact(kind: .file, path: path, at: date("2026-10-02T10:00:00Z"), exists: true)
+        }
+        XCTAssertTrue(artifact("/work/repo/README.md").isMarkdown)
+        XCTAssertTrue(artifact("/work/repo/docs/Plan.MARKDOWN").isMarkdown)
+        XCTAssertTrue(artifact("/work/repo/post.mdx").isMarkdown)
+        XCTAssertFalse(artifact("/work/repo/src/chart.swift").isMarkdown)
+        XCTAssertFalse(artifact("/work/repo/md").isMarkdown)
+    }
+
+    func testCodeArtifactsAreKnownByExtensionOrName() {
+        func artifact(_ path: String) -> Artifact {
+            Artifact(kind: .file, path: path, at: date("2026-10-02T10:00:00Z"), exists: true)
+        }
+        for path in ["/work/repo/src/chart.swift", "/work/repo/src/lib/cart.ts",
+                     "/work/repo/src/routes/+page.svelte", "/work/repo/Config.YAML",
+                     "/work/repo/Makefile", "/work/repo/Dockerfile"] {
+            XCTAssertTrue(artifact(path).isCode, path)
+        }
+        // Markdown renders, HTML and documents stay with Quick Look.
+        for path in ["/work/repo/README.md", "/work/repo/report.html", "/work/repo/out/data.csv",
+                     "/work/repo/notes.txt", "/work/repo/spec.pdf", "/work/repo/swift"] {
+            XCTAssertFalse(artifact(path).isCode, path)
+        }
+    }
+
+    func testMarkdownSourceFencesFrontMatter() {
+        let text = "---\nname: demo\ntags: [a, b]\n---\n\n# Title\n\nBody\n"
+        XCTAssertEqual(
+            ArtifactMarkdown.source(from: text),
+            "```\nname: demo\ntags: [a, b]\n```\n\n# Title\n\nBody\n")
+    }
+
+    func testMarkdownSourceLeavesOtherTextAlone() {
+        // A rule at the top that never closes is not front matter.
+        let rule = "---\n\n# Title\n"
+        XCTAssertEqual(ArtifactMarkdown.source(from: rule), rule)
+        let plain = "# Title\n\n---\n\nBody\n"
+        XCTAssertEqual(ArtifactMarkdown.source(from: plain), plain)
+        XCTAssertEqual(ArtifactMarkdown.source(from: ""), "")
+    }
+
+    func testMarkdownSourceNormalizesWindowsLineEndings() {
+        XCTAssertEqual(
+            ArtifactMarkdown.source(from: "---\r\nname: demo\r\n---\r\n# Title\r\n"),
+            "```\nname: demo\n```\n# Title\n")
+    }
 }

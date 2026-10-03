@@ -3,8 +3,8 @@
 # artifacts-panel-selftest.sh — renders the REAL ArtifactsViewController at
 # sidebar width, fed by the real ArtifactTranscriptReader over a transcript and
 # real files in a temp dir, writes PNG snapshots, and drives selection, the
-# Quick Look preview, arrow keys and ↩ through AppKit. `make test` never
-# compiles AppKit views. Exit 0 = every expectation held.
+# Quick Look, markdown and code previews, arrow keys and ↩ through AppKit.
+# `make test` never compiles AppKit views. Exit 0 = every expectation held.
 #
 # Usage:  scripts/artifacts-panel-selftest.sh [out-dir]
 # Requires: Xcode (swiftc). An accessory process: it shows a window for a few
