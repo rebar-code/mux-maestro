@@ -1,5 +1,6 @@
 import Cocoa
 import Quartz
+import WebKit
 
 // Renders the REAL ArtifactsViewController at sidebar width, fed by the real
 // ArtifactTranscriptReader + ArtifactScanner.resolve over a Claude transcript
@@ -88,7 +89,28 @@ try! """
 let files = [
     "src/routes/checkout/+page.svelte": "<script lang=\"ts\">\n  let { data } = $props();\n</script>\n\n<h1>Checkout</h1>\n",
     "src/lib/cart.ts": "export function total(items: { price: number; qty: number }[]): number {\n  return items.reduce((s, i) => s + i.price * i.qty, 0);\n}\n",
-    "README.md": "# acme-app\n\nCheckout flow and revenue chart.\n",
+    "README.md": """
+    ---
+    title: acme-app
+    ---
+
+    # acme-app
+
+    Checkout flow and **revenue chart**. See the [load docs](https://svelte.dev/docs/kit/load).
+
+    ## Run
+
+    1. Install with `pnpm install`
+    2. Start the dev server
+
+    ```sh
+    pnpm dev --port 5173
+    ```
+
+    - [x] cart total
+    - [ ] receipts
+
+    """,
     "tasks/plan.md": "# Checkout plan\n\n- [x] cart total\n- [x] page\n",
 ]
 for (path, text) in files { try! text.write(toFile: "\(root)/\(path)", atomically: true, encoding: .utf8) }
@@ -156,6 +178,9 @@ let window = NSWindow(
     contentRect: NSRect(x: screen.frame.minX + 80, y: screen.frame.minY + 80, width: size.width, height: size.height),
     styleMask: [.borderless], backing: .buffered, defer: false)
 window.appearance = NSAppearance(named: .darkAqua)
+// No app bundle here: the highlight.js page comes from the source tree.
+ArtifactsViewController.codePreviewIndexURL = URL(
+    fileURLWithPath: FileManager.default.currentDirectoryPath + "/app/MuxMaestro/Resources/preview/index.html")
 let vc = ArtifactsViewController()
 vc.delegate = recorder
 window.contentViewController = vc
@@ -244,8 +269,59 @@ key(125, String(UnicodeScalar(NSDownArrowFunctionKey)!))
 let afterDown = vc.selectedArtifact
 expect("↓ reaches the Files rows", afterDown?.kind == .file, "\(afterDown?.name ?? "nil")")
 pump(1.5)
-expect("the preview follows the keys", (ql?.previewItem as? NSURL)?.path == afterDown?.path)
-shoot(window, "artifacts-file-selected")
+// Code is syntax-highlighted.
+expect("the preview follows the keys to the Svelte page", afterDown?.name == "+page.svelte", "\(afterDown?.name ?? "nil")")
+let markdown = all(NSTextView.self, in: vc.view).first
+let web = all(WKWebView.self, in: vc.view).first
+var highlighted = ""
+web?.evaluateJavaScript(
+    "document.getElementById('code').className + '|' + document.querySelectorAll('#code [class^=hljs-]').length + '|' + getComputedStyle(document.getElementById('empty')).display + '|' + document.getElementById('code').textContent"
+) { value, _ in highlighted = value as? String ?? "" }
+pump(0.5)
+let parts = highlighted.components(separatedBy: "|")
+expect("code replaces Quick Look and markdown",
+       web?.isHidden == false && ql?.isHidden == true && markdown?.enclosingScrollView?.isHidden == true)
+expect("code is highlighted in its language",
+       parts.count >= 4 && parts[0].contains("language-svelte") && (Int(parts[1]) ?? 0) > 3 && parts[3].contains("Checkout"),
+       String(highlighted.prefix(60)))
+expect("the page's empty state gives way to the code", parts.count >= 4 && parts[2] == "none", parts.count >= 4 ? parts[2] : "")
+shoot(window, "artifacts-code-selected")
+
+// Markdown is rendered, not shown as source.
+key(126, String(UnicodeScalar(NSUpArrowFunctionKey)!))
+pump(1.0)
+let shown = markdown?.string ?? ""
+expect("↑ steps to README.md", vc.selectedArtifact?.name == "README.md", "\(vc.selectedArtifact?.name ?? "nil")")
+expect("markdown replaces Quick Look and code",
+       ql?.isHidden == true && markdown?.enclosingScrollView?.isHidden == false && web?.isHidden == true)
+expect("markdown is rendered: no heading, emphasis or fence markers",
+       shown.contains("acme-app") && !shown.contains("# ") && !shown.contains("**") && !shown.contains("```"))
+expect("front matter is a code block, not a heading", shown.hasPrefix("title: acme-app\n"))
+var headingFont: NSFont?
+var linkTarget: URL?
+if let storage = markdown?.textStorage {
+    let ns = storage.string as NSString
+    headingFont = storage.attribute(.font, at: ns.range(of: "acme-app\n", options: .backwards).location, effectiveRange: nil) as? NSFont
+    linkTarget = storage.attribute(.link, at: ns.range(of: "load docs").location, effectiveRange: nil) as? URL
+}
+expect("a heading is bold and larger", headingFont.map { $0.fontDescriptor.symbolicTraits.contains(.bold) && $0.pointSize > 12 } == true,
+       "\(headingFont?.pointSize ?? 0)")
+expect("a link keeps its target", linkTarget?.absoluteString == "https://svelte.dev/docs/kit/load", "\(String(describing: linkTarget))")
+shoot(window, "artifacts-markdown-selected")
+
+// Anything else stays with Quick Look.
+func select(_ path: IndexPath) {
+    collection.deselectAll(nil)
+    collection.selectItems(at: [path], scrollPosition: [])
+    collection.delegate?.collectionView?(collection, didSelectItemsAt: [path])
+    pump(0.5)
+}
+select(IndexPath(item: 0, section: 0))
+expect("an image goes back to Quick Look",
+       ql?.isHidden == false && markdown?.enclosingScrollView?.isHidden == true && web?.isHidden == true
+       && (ql?.previewItem as? NSURL)?.path == "\(root)/out/revenue-chart.png")
+select(IndexPath(item: 1, section: 1))
+expect("…and the Svelte page back to code", vc.selectedArtifact == afterDown && web?.isHidden == false)
 
 recorder.log = []
 key(36, "\r")
