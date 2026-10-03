@@ -89,13 +89,21 @@ final class PhoneLink {
     private let lock = NSLock()
     private var current = State.off
     /// What `tailscale serve` publishes for us, while it does. Confined to `queue`.
-    private var served: (port: Int, identity: MobileIdentity)?
+    private var served: (port: Int, identity: MobileIdentity)? {
+        didSet {
+            lock.lock()
+            listedOwnPort = served?.port
+            lock.unlock()
+        }
+    }
     /// The idle-sleep assertion held while the server is on. Confined to `queue`.
     private var awake: NSObjectProtocol?
     /// The dev-server ports this app published, by port. Confined to `queue`.
     private var mapped: [Int: MobilePortMapping] = [:]
     /// The same, for readers on other queues. Guarded by `lock`.
     private var listed: [MobilePortMapping] = []
+    /// The port the phone server is published on, for the same readers.
+    private var listedOwnPort: Int?
 
     /// Called with each new state, through `notify` (the main queue in the app).
     var onChange: ((State) -> Void)?
@@ -335,6 +343,18 @@ final class PhoneLink {
         queue.async {
             self.unmap(MobileServing.stale(Array(self.mapped.values), gone: gone, now: self.now()))
         }
+    }
+
+    /// The sweep the app runs with each new tree: close what is stale, and
+    /// what `MobileServing.gone` finds for `snapshot`. `running` is what a
+    /// thread's pane runs now, or nil when the pane cannot be asked.
+    func sweep(snapshot: MobileSnapshot, running: (MobileThread) -> RunningSet?) {
+        lock.lock()
+        let (open, ownPort) = (listed, listedOwnPort)
+        lock.unlock()
+        // `running` belongs to the caller's thread, so it is asked here.
+        sweepMappings(gone: MobileServing.gone(
+            open, snapshot: snapshot, running: running, ownPort: ownPort))
     }
 
     private func unmap(_ closing: [Int]) {

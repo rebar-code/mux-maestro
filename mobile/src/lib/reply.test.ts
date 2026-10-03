@@ -14,6 +14,7 @@ import {
 	refusalLabel,
 	slashQuery,
 	textRefusal,
+	type QueuedKey,
 	type Refusal
 } from './reply';
 import type { ChatMessage, Command, Thread } from './types';
@@ -115,18 +116,33 @@ describe('ctrlReduce', () => {
 
 describe('queueKey', () => {
 	it('keeps the order and drops what does not fit', () => {
-		let queue: string[] = [];
-		for (const key of ['Up', 'Up', 'Enter']) queue = queueKey(queue, key);
-		expect(queue).toEqual(['Up', 'Up', 'Enter']);
-		for (let i = 0; i < 20; i += 1) queue = queueKey(queue, 'Down');
+		let queue: QueuedKey[] = [];
+		for (const key of ['Up', 'Up', 'Enter']) queue = queueKey(queue, key, null);
+		expect(queue.map((entry) => entry.key)).toEqual(['Up', 'Up', 'Enter']);
+		for (let i = 0; i < 20; i += 1) queue = queueKey(queue, 'Down', null);
 		expect(queue).toHaveLength(KEY_QUEUE_MAX);
-		expect(queue.slice(0, 3)).toEqual(['Up', 'Up', 'Enter']);
+		expect(queue.slice(0, 3).map((entry) => entry.key)).toEqual(['Up', 'Up', 'Enter']);
 	});
 
 	it('does not change the queue it was given', () => {
-		const queue = ['Up'];
-		expect(queueKey(queue, 'Down')).toEqual(['Up', 'Down']);
-		expect(queue).toEqual(['Up']);
+		const queue: QueuedKey[] = [{ key: 'Up', prompt: null }];
+		expect(queueKey(queue, 'Down', null)).toHaveLength(2);
+		expect(queue).toHaveLength(1);
+	});
+
+	it('stores with each key the prompt id given at the tap', () => {
+		// Down is tapped on card "a"; the card then becomes "b"; Enter is tapped
+		// before the phone has seen "b", so it still names "a".
+		let queue = queueKey([], 'Down', 'a');
+		queue = queueKey(queue, 'Enter', 'a');
+		queue = queueKey(queue, 'Enter', 'b');
+		queue = queueKey(queue, 'Escape', null);
+		expect(queue).toEqual([
+			{ key: 'Down', prompt: 'a' },
+			{ key: 'Enter', prompt: 'a' },
+			{ key: 'Enter', prompt: 'b' },
+			{ key: 'Escape', prompt: null }
+		]);
 	});
 });
 

@@ -4,8 +4,10 @@ import {
 	framedHtml,
 	hasThumb,
 	imageAddress,
+	imageUrl,
 	inlineArtifacts,
 	isViewable,
+	savedBlob,
 	SAVED_TYPE
 } from './artifacts';
 import type { ArtifactFile, ChatMessage } from './types';
@@ -157,5 +159,69 @@ describe('imageAddress', () => {
 
 	it('saves every file as plain bytes', () => {
 		expect(SAVED_TYPE).toBe('application/octet-stream');
+	});
+});
+
+describe('no blob address for a type that can run script', () => {
+	// A `blob:` address is in the app's origin. A browser that opens one of
+	// these as a page runs it there; no policy stops that. The type is the guard.
+	const SCRIPTABLE = [
+		'text/html',
+		'TEXT/HTML; charset=utf-8',
+		'application/xhtml+xml',
+		'text/xml',
+		'application/xml',
+		'application/rss+xml',
+		'image/svg+xml',
+		'image/svg+xml; charset=utf-8',
+		' Image/SVG+XML ',
+		'application/pdf',
+		'text/javascript',
+		'application/octet-stream',
+		'text/plain',
+		'image/x-unknown',
+		''
+	];
+	const dangerous = /html|xml|svg|pdf|script/i;
+
+	it('imageUrl never hands such a blob to createObjectURL', async () => {
+		for (const type of SCRIPTABLE) {
+			const made: Blob[] = [];
+			const url = await imageUrl(
+				new Blob(['<svg xmlns="http://www.w3.org/2000/svg"/>'], { type }),
+				(blob) => {
+					made.push(blob);
+					return 'blob:made';
+				}
+			).catch(() => null);
+			expect(made, type).toEqual([]);
+			if (url !== null) expect(url, type).toMatch(/^data:image\/svg\+xml;base64,/);
+		}
+	});
+
+	it('imageUrl gives a picture a blob of its own exact type, whatever the parameters', async () => {
+		for (const [type, exact] of [
+			['image/png', 'image/png'],
+			['image/jpeg; charset=binary', 'image/jpeg'],
+			['IMAGE/WEBP', 'image/webp'],
+			['image/gif', 'image/gif']
+		]) {
+			const made: Blob[] = [];
+			const url = await imageUrl(new Blob(['x'], { type }), (blob) => {
+				made.push(blob);
+				return 'blob:made';
+			});
+			expect(url).toBe('blob:made');
+			expect(made.map((blob) => blob.type)).toEqual([exact]);
+			expect(made[0].type).not.toMatch(dangerous);
+		}
+	});
+
+	it('a saved file is plain bytes, whatever it was', async () => {
+		for (const type of SCRIPTABLE) {
+			const saved = savedBlob(new Blob(['<script>1</script>'], { type }));
+			expect(saved.type, type).toBe('application/octet-stream');
+			expect(await saved.text()).toBe('<script>1</script>');
+		}
 	});
 });

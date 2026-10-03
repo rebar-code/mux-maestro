@@ -420,6 +420,62 @@ final class PhoneLinkTests: XCTestCase {
         }
     }
 
+    /// What the app does with each new tree: one call with the tree and a way
+    /// to ask what a pane runs. No port list is worked out by the caller.
+    func testTheSweepWithATreeClosesAStoppedServerAndAThreadThatLeft() throws {
+        let (link, own) = try linkOn()
+        let drain = { _ = link.isKeepingAwake }
+        XCTAssertEqual(open(link, 5173), .ok)
+        XCTAssertEqual(open(link, 6006), .ok)
+        func tree(_ panes: [String]) -> MobileSnapshot {
+            MobileSnapshot.build([MobileHostInput(
+                host: .local, colorHex: "#3291ff", reachability: .reachable, stats: nil,
+                sessions: [TmuxSession(name: "acme-app", attached: true, windows: panes.enumerated().map {
+                    TmuxWindow(index: $0.offset + 1, name: "w", active: true, panes: [
+                        TmuxPane(id: $0.element, index: 0, command: "zsh", title: "", active: true),
+                    ])
+                })])])
+        }
+        func runs(_ ports: [Int], known: Bool = true) -> RunningSet {
+            RunningSet(
+                known: known,
+                resources: ports.map {
+                    RunningResource(
+                        kind: .server(port: $0), host: Running.localHostName, paneID: "%12",
+                        label: "acme-app", tooltip: "", url: "http://localhost:\($0)", pid: 4242)
+                },
+                unknowns: known ? [] : ["ports not checked yet on localhost"])
+        }
+
+        // Both servers run: nothing closes. The same when the scan has no answer yet.
+        link.sweep(snapshot: tree(["%12"])) { _ in runs([5173, 6006]) }
+        link.sweep(snapshot: tree(["%12"])) { _ in runs([], known: false) }
+        drain()
+        XCTAssertEqual(link.mappings.map(\.port), [5173, 6006])
+
+        // The server on 6006 stopped.
+        link.sweep(snapshot: tree(["%12"])) { _ in runs([5173]) }
+        drain()
+        XCTAssertEqual(link.mappings.map(\.port), [5173])
+        XCTAssertEqual(serves(own: own).last, ["serve", "--https=6006", "off"])
+
+        // The phone server's own port among a thread's servers changes nothing.
+        link.sweep(snapshot: tree(["%12"])) { _ in runs([5173, own]) }
+        drain()
+        XCTAssertEqual(link.mappings.map(\.port), [5173])
+
+        // The thread left the tree: its mapping goes, and its pane is not asked.
+        var asked = 0
+        link.sweep(snapshot: tree(["%13"])) { _ in
+            asked += 1
+            return runs([5173])
+        }
+        drain()
+        XCTAssertEqual(link.mappings, [])
+        XCTAssertEqual(serves(own: own).last, ["serve", "--https=5173", "off"])
+        XCTAssertEqual(asked, 0)
+    }
+
     func testTheSwitchGoingOffAStoppedServerAndHalfAnHourEachCloseAMapping() throws {
         let (link, own) = try linkOn()
         // Read through the link's queue, so what was asked before has run.

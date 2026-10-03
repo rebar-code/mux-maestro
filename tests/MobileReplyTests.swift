@@ -3,7 +3,21 @@ import XCTest
 /// A thread's pane, scripted: it records every tmux call and every copy, and
 /// types nothing anywhere. Shared by the server tests.
 final class FakePane {
+    /// Where the terminal cursor is.
+    enum Cursor: Equatable {
+        /// In the input box, as a live agent keeps it; on the last line with
+        /// text when the screen shows no box.
+        case inBox
+        /// On the last line with text: a shell, a question, a pager.
+        case lastLine
+        case row(Int)
+        /// It cannot be read.
+        case unknown
+    }
+
     private let lock = NSLock()
+    private var _cursor = Cursor.inBox
+    private var _cursorAfterPaste: Cursor?
     private var _calls: [(args: [String], stdin: String?)] = []
     private var _saves: [(path: String, data: Data)] = []
     private var _status: AttentionStatus?
@@ -44,6 +58,33 @@ final class FakePane {
         get { locked { _screen } }
         set { locked { _screen = newValue } }
     }
+    var cursor: Cursor {
+        get { locked { _cursor } }
+        set { locked { _cursor = newValue } }
+    }
+    var cursorAfterPaste: Cursor? {
+        get { locked { _cursorAfterPaste } }
+        set { locked { _cursorAfterPaste = newValue } }
+    }
+
+    /// The row `cursor` means on the screen as it is now.
+    private var cursorRow: Int? {
+        let (cursor, screen) = locked { (_cursor, _screen) }
+        let lines = (screen ?? "").split(separator: "\n", omittingEmptySubsequences: false)
+        let last = lines.lastIndex { !$0.allSatisfy(\.isWhitespace) }
+        switch cursor {
+        case .unknown: return nil
+        case .row(let row): return row
+        case .lastLine: return last
+        case .inBox:
+            let rules = lines.indices.filter { index in
+                let line = lines[index].trimmingCharacters(in: CharacterSet(charactersIn: "│ "))
+                return !line.isEmpty && line.unicodeScalars.allSatisfy { (0x2500...0x257F).contains($0.value) }
+            }
+            return rules.count >= 2 ? rules[rules.count - 2] + 1 : last
+        }
+    }
+
     /// What the pane shows once text is in the input box.
     var screenAfterPaste: String? {
         get { locked { _screenAfterPaste } }
@@ -74,6 +115,7 @@ final class FakePane {
                     if args.first == "paste-buffer" {
                         if let after = _statusAfterPaste { _status = after }
                         if let after = _screenAfterPaste { _screen = after }
+                        if let after = _cursorAfterPaste { _cursor = after }
                     }
                     return ""
                 }
@@ -94,7 +136,8 @@ final class FakePane {
                     _existing.insert(path)
                     return .saved
                 }
-            })
+            },
+            cursorRow: { [self] in cursorRow })
     }
 
     /// The four calls of one sent text, with the buffer's name left out.
@@ -126,6 +169,27 @@ enum DemoPrompt {
               ? for shortcuts
             """
     }
+
+    /// Codex asking whether to trust a folder, as it draws it: no box, the
+    /// cursor mark is `›`, and a hint line under the choices.
+    static let codexTrust = """
+
+          Folder access
+          /Users/me/acme-app
+
+          Trust this folder? Codex can read, edit, and run files here, subject to your permission
+          settings. Continue only if you trust these files. Your trust decision will be saved.
+
+        › 1. Trust and continue
+          2. Back to Agent Command Center
+
+          enter continue · esc back
+        """
+
+    /// The permission prompt with the cursor moved to its third choice.
+    static let permissionOnThird = permission
+        .replacingOccurrences(of: "❯ 1. Yes ", with: "  1. Yes ")
+        .replacingOccurrences(of: "  3. No,", with: "❯ 3. No,")
 
     /// A prompt with no numbered choices.
     static let yesNo = """
@@ -277,7 +341,23 @@ final class MobileReplyTests: XCTestCase {
 
     /// The id `GET …/prompt` would hand the phone for this pane.
     private func shownID(_ state: MobilePaneState, _ pane: FakePane) -> String? {
-        MobileReply.promptBody(state: state, screen: pane.screen, io: pane.io)["id"] as? String
+        MobileReply.promptBody(state: state, io: pane.io)["id"] as? String
+    }
+
+    /// `text` as a pane's screen, with the cursor where `cursor` says.
+    private func seen(
+        _ text: String, pasted: String = "", cursor: FakePane.Cursor = .inBox,
+        after: MobileScreen.Anchor? = nil
+    ) -> MobileScreen {
+        let pane = FakePane()
+        pane.screen = text
+        pane.cursor = cursor
+        return MobileScreen(text, cursorRow: pane.io.cursorRow(), pasted: pasted, after: after)
+    }
+
+    /// The prompt `GET …/prompt` would show for `screen`.
+    private func shown(_ state: MobilePaneState?, _ screen: String?, io: MobilePaneIO? = nil) -> MobilePrompt? {
+        MobileReply.prompt(state: state, seen: screen.map { seen($0, cursor: .lastLine) }, io: io ?? FakePane().io)
     }
 
     private func body(_ response: MobileResponse) -> String {
@@ -371,7 +451,7 @@ final class MobileReplyTests: XCTestCase {
         let pane = FakePane()
         pane.screen = DemoPrompt.yesNo
         let waiting = state(.waiting, since: 100)
-        let shown = MobileReply.promptBody(state: waiting, screen: DemoPrompt.yesNo, io: pane.io)
+        let shown = MobileReply.promptBody(state: waiting, io: pane.io)
         XCTAssertTrue(shown["prompt"] is NSNull)
         let id = try XCTUnwrap(shown["id"] as? String)
         XCTAssertEqual(
@@ -391,7 +471,7 @@ final class MobileReplyTests: XCTestCase {
         XCTAssertEqual(pane.argv.count, 1)
         // A pane that waits on nothing has no id, and a key needs none.
         XCTAssertTrue(
-            MobileReply.promptBody(state: state(.idle), screen: DemoPrompt.idle, io: pane.io)["id"] is NSNull)
+            MobileReply.promptBody(state: state(.idle), io: FakePane().io)["id"] is NSNull)
         XCTAssertTrue(MobileReply.answers("Enter"))
         XCTAssertTrue(MobileReply.answers("7"))
         for key in ["Escape", "Up", "Down", "Left", "Right", "Tab", "BTab", "C-c"] {
@@ -549,9 +629,9 @@ final class MobileReplyTests: XCTestCase {
                     .status, 200)
         }
         // The agent's own footer under the box is fine: hints and a status line.
-        let footer = MobileScreen(DemoPrompt.idle + "\n  ⏵⏵ accept edits on\n  main · 12% context")
+        let footer = seen(DemoPrompt.idle + "\n  ⏵⏵ accept edits on\n  main · 12% context")
         XCTAssertTrue(footer.inputBox)
-        XCTAssertTrue(MobileScreen("╭──────╮\n│ > hello │\n╰──────╯\n  ? for shortcuts").inputBox)
+        XCTAssertTrue(seen("╭──────╮\n│ > hello │\n╰──────╯\n  ? for shortcuts").inputBox)
     }
 
     func testOurOwnNumberedListInTheInputBoxIsNotAPrompt() {
@@ -573,13 +653,15 @@ final class MobileReplyTests: XCTestCase {
               2. No
             ────────────────────
             """
+        // Where the input box was before the paste: the same two rows.
+        let box = MobileScreen.Anchor(top: 0, bottom: 3)
         for text in [
             "Yes or No?", "1. Yes or 2. No", "No\nYes", "1. Yes", "2. No\n1. Yes", "x 1. Yes\n2. No",
             // The reply holds the option lines among others: the box would show them all.
             "pick one:\n1. Yes\n2. No", "1. Yes\n2. No\nwhich?", "1. Yes\n\n2. No",
         ] {
-            XCTAssertNotNil(MobileScreen(yesNo, pasted: text).prompt, text)
-            XCTAssertFalse(MobileScreen(yesNo, pasted: text).inputBox, text)
+            XCTAssertNotNil(seen(yesNo, pasted: text, after: box).prompt, text)
+            XCTAssertFalse(seen(yesNo, pasted: text, after: box).inputBox, text)
             let pane = FakePane()
             pane.screenAfterPaste = yesNo
             let response = MobileReply.send(
@@ -588,12 +670,21 @@ final class MobileReplyTests: XCTestCase {
             XCTAssertFalse(pane.argv.contains { $0.contains("Enter") }, text)
         }
         // The box holds the text and nothing else, row for row: that is the text.
-        XCTAssertNil(MobileScreen(DemoPrompt.input("pick one:\n1. Yes\n2. No"), pasted: "pick one:\n1. Yes\n2. No").prompt)
-        XCTAssertNil(MobileScreen(yesNo, pasted: "1. Yes\n2. No").prompt)
+        XCTAssertNil(seen(DemoPrompt.input("pick one:\n1. Yes\n2. No"), pasted: "pick one:\n1. Yes\n2. No").prompt)
+        // A list of ours in the box that was there before the paste.
+        XCTAssertNil(seen(yesNo, pasted: "1. Yes\n2. No", after: box).prompt)
+        XCTAssertTrue(seen(yesNo, pasted: "1. Yes\n2. No", after: box).inputBox)
+        // The same lines with no box known from before, in a box somewhere
+        // else, or with the cursor away from them, are a prompt.
+        XCTAssertNotNil(seen(yesNo, pasted: "1. Yes\n2. No").prompt)
+        XCTAssertNotNil(
+            seen(yesNo, pasted: "1. Yes\n2. No", after: MobileScreen.Anchor(top: 7, bottom: 9)).prompt)
+        XCTAssertNotNil(seen(yesNo, pasted: "1. Yes\n2. No", cursor: .unknown, after: box).prompt)
+        XCTAssertNotNil(seen("x\n" + yesNo, pasted: "1. Yes\n2. No", cursor: .row(0), after: box).prompt)
         // The same lines outside an input box are a prompt whatever was pasted.
-        XCTAssertNotNil(MobileScreen(DemoPrompt.question, pasted: "1. Redis\n2. In memory\n3. Type something.").prompt)
+        XCTAssertNotNil(seen(DemoPrompt.question, pasted: "1. Redis\n2. In memory\n3. Type something.").prompt)
         // A box that is not the last thing on screen is no box, so no echo.
-        XCTAssertNotNil(MobileScreen(yesNo + "\n$ ", pasted: "1. Yes\n2. No").prompt)
+        XCTAssertNotNil(seen(yesNo + "\n$ ", pasted: "1. Yes\n2. No").prompt)
         XCTAssertTrue(MobileScreen.isEcho(["❯ 1. Yes", "2. No"], of: " 1. Yes \n2. No"))
         XCTAssertFalse(MobileScreen.isEcho(["❯ 1. Yes", "2. No"], of: "1. Yes\n\n2. No"))
         XCTAssertFalse(MobileScreen.isEcho(["❯ 1. Yes", "2. No"], of: ""))
@@ -604,10 +695,17 @@ final class MobileReplyTests: XCTestCase {
     func testAPromptAboveADeadInputBoxIsStillAPrompt() {
         // Above a live box a numbered list is scrollback. Above a box with a
         // shell under it, nothing says the list is old.
-        XCTAssertNil(MobileScreen(DemoPrompt.permission + "\n" + DemoPrompt.idle).prompt)
-        let stale = MobileScreen(DemoPrompt.permission + "\n" + DemoPrompt.idle + "\n$ ")
+        XCTAssertNil(seen(DemoPrompt.permission + "\n" + DemoPrompt.idle).prompt)
+        let stale = seen(DemoPrompt.permission + "\n" + DemoPrompt.idle + "\n$ ")
         XCTAssertNotNil(stale.prompt)
         XCTAssertFalse(stale.inputBox)
+        // The box is last on screen, but the cursor is not in it: it is not
+        // known to be live, so the list above it is not known to be old.
+        for cursor in [FakePane.Cursor.row(9), .unknown, .lastLine] {
+            let unsure = seen(DemoPrompt.permission + "\n" + DemoPrompt.idle, cursor: cursor)
+            XCTAssertNotNil(unsure.prompt, "\(cursor)")
+            XCTAssertFalse(unsure.inputBox, "\(cursor)")
+        }
     }
 
     func testAFailedPasteIsAnErrorAndSendsNoEnter() {
@@ -654,7 +752,7 @@ final class MobileReplyTests: XCTestCase {
     // MARK: prompts
 
     func testReadsAPermissionPromptFromTheScreen() throws {
-        let prompt = try XCTUnwrap(MobileScreen(DemoPrompt.permission).prompt)
+        let prompt = try XCTUnwrap(seen(DemoPrompt.permission).prompt)
         XCTAssertEqual(prompt.kind, .permission)
         XCTAssertEqual(prompt.title, "Bash command")
         XCTAssertEqual(
@@ -666,28 +764,75 @@ final class MobileReplyTests: XCTestCase {
             .init(n: 3, label: "No, and tell Claude what to do differently"),
         ])
         XCTAssertFalse(prompt.truncated)
-        XCTAssertFalse(MobileScreen(DemoPrompt.permission).inputBox)
+        XCTAssertFalse(seen(DemoPrompt.permission).inputBox)
         XCTAssertEqual(prompt.json["id"] as? String, prompt.id)
         XCTAssertEqual(prompt.json["truncated"] as? Bool, false)
         XCTAssertEqual((prompt.json["options"] as? [[String: Any]])?.count, 3)
     }
 
     func testReadsAQuestionWhoseOptionsCarryDescriptions() throws {
-        let prompt = try XCTUnwrap(MobileScreen(DemoPrompt.question).prompt)
+        let prompt = try XCTUnwrap(seen(DemoPrompt.question).prompt)
         XCTAssertEqual(prompt.kind, .question)
         XCTAssertEqual(prompt.question, "Which store should the cache use?")
         XCTAssertEqual(prompt.options.map(\.label), ["Redis", "In memory", "Type something."])
         XCTAssertEqual(prompt.options.map(\.n), [1, 2, 3])
     }
 
-    func testTheCursorMayBeOnAnyChoice() throws {
-        let moved = DemoPrompt.permission
-            .replacingOccurrences(of: "❯ 1. Yes ", with: "  1. Yes ")
-            .replacingOccurrences(of: "  3. No,", with: "❯ 3. No,")
-        let prompt = try XCTUnwrap(MobileScreen(moved).prompt)
-        XCTAssertEqual(prompt.options.map(\.n), [1, 2, 3])
-        // The same prompt, wherever the cursor is.
-        XCTAssertEqual(prompt.id, MobileScreen(DemoPrompt.permission).prompt?.id)
+    func testTheSelectedRowIsPartOfWhatThePhoneShows() throws {
+        let first = try XCTUnwrap(seen(DemoPrompt.permission).prompt)
+        let moved = try XCTUnwrap(seen(DemoPrompt.permissionOnThird).prompt)
+        XCTAssertEqual(moved.options.map(\.n), [1, 2, 3])
+        XCTAssertEqual(first.selected, 1)
+        XCTAssertEqual(moved.selected, 3)
+        XCTAssertEqual(moved.json["selected"] as? Int, 3)
+        // The same words, so the pane's counter does not move; but Enter
+        // takes another row, so it is another id.
+        XCTAssertEqual(first.key, moved.key)
+        XCTAssertNotEqual(first.id, moved.id)
+    }
+
+    func testReadsCodexsPromptAsItDrawsIt() throws {
+        let prompt = try XCTUnwrap(seen(DemoPrompt.codexTrust, cursor: .lastLine).prompt)
+        XCTAssertEqual(prompt.options, [
+            .init(n: 1, label: "Trust and continue"), .init(n: 2, label: "Back to Agent Command Center"),
+        ])
+        XCTAssertEqual(prompt.selected, 1)
+        XCTAssertTrue(prompt.question.hasSuffix("Your trust decision will be saved."))
+        XCTAssertFalse(seen(DemoPrompt.codexTrust, cursor: .lastLine).inputBox)
+    }
+
+    func testAnUnverifiedPaneTakesEnterOnlyInAVerifiedBoxOrForANamedPrompt() {
+        for unverified in [state(.unknown), state(.idle, remote: true), state(.busy, remote: true)] {
+            // A remote pane whose old status says it is not waiting, on a
+            // question with no numbered choices: nothing names it.
+            for screen in [DemoPrompt.yesNo, "Overwrite config.json? [y/N] ", DemoPrompt.idle + "\n$ "] {
+                let pane = FakePane()
+                pane.screen = screen
+                pane.cursor = .lastLine
+                for key in ["Enter", "1", "9"] {
+                    let refused = MobileReply.press(
+                        key, prompt: nil, target: "%12", io: pane.io, state: unverified)
+                    XCTAssertEqual(refused.status, 409, screen)
+                    XCTAssertEqual(
+                        body(refused), #"{"error":"no_input","message":"Thread shows no input box"}"#, screen)
+                }
+                // Keys that answer nothing stay.
+                XCTAssertEqual(
+                    MobileReply.press("Escape", prompt: nil, target: "%12", io: pane.io, state: unverified)
+                        .status, 200)
+                XCTAssertEqual(pane.argv.map(\.last), ["Escape"])
+            }
+            let idle = FakePane()
+            XCTAssertEqual(
+                MobileReply.press("Enter", prompt: nil, target: "%12", io: idle.io, state: unverified).status,
+                200)
+        }
+        // A first-hand status is trusted here: this Mac's hooks say it waits on nothing.
+        let local = FakePane()
+        local.screen = "$ "
+        XCTAssertEqual(
+            MobileReply.press("Enter", prompt: nil, target: "%12", io: local.io, state: state(.busy)).status,
+            200)
     }
 
     func testAScreenWithoutALivePromptHasNone() {
@@ -704,17 +849,17 @@ final class MobileReplyTests: XCTestCase {
             // An answered prompt in the scrollback, above the input box.
             DemoPrompt.permission + "\n" + DemoPrompt.idle,
         ] {
-            XCTAssertNil(MobileScreen(screen).prompt, screen)
+            XCTAssertNil(seen(screen).prompt, screen)
         }
-        XCTAssertTrue(MobileScreen(DemoPrompt.idle).inputBox)
-        XCTAssertTrue(MobileScreen(DemoPrompt.permission + "\n" + DemoPrompt.idle).inputBox)
-        XCTAssertTrue(MobileScreen("╭──────╮\n│ > hello │\n╰──────╯").inputBox)
+        XCTAssertTrue(seen(DemoPrompt.idle).inputBox)
+        XCTAssertTrue(seen(DemoPrompt.permission + "\n" + DemoPrompt.idle).inputBox)
+        XCTAssertTrue(seen("╭──────╮\n│ > hello │\n╰──────╯").inputBox)
         for screen in ["$ ", "> not in a box", "────\nplain text\n────", DemoPrompt.yesNo] {
-            XCTAssertFalse(MobileScreen(screen).inputBox, screen)
+            XCTAssertFalse(seen(screen).inputBox, screen)
         }
         // A list someone typed into the box on the Mac is not ours: it counts
         // as a prompt, and nothing is typed over it.
-        let typed = MobileScreen(DemoPrompt.input("1. one\n2. two"))
+        let typed = seen(DemoPrompt.input("1. one\n2. two"))
         XCTAssertNotNil(typed.prompt)
         XCTAssertFalse(typed.inputBox)
     }
@@ -730,7 +875,7 @@ final class MobileReplyTests: XCTestCase {
               2. No
             ╰──────────────╯
             """
-        let prompt = try XCTUnwrap(MobileScreen(boxed).prompt)
+        let prompt = try XCTUnwrap(seen(boxed).prompt)
         XCTAssertTrue(prompt.truncated)
         XCTAssertEqual(prompt.title, "Bash command")
         XCTAssertTrue(prompt.detail.hasPrefix("step-1 --flag"))
@@ -741,7 +886,7 @@ final class MobileReplyTests: XCTestCase {
         // of the command, so it is not shown as a title.
         let headless = (1...80).map { "line \($0)" }.joined(separator: "\n")
             + "\nDo you want to proceed?\n❯ 1. Yes\n  2. No"
-        let cut = try XCTUnwrap(MobileScreen(headless).prompt)
+        let cut = try XCTUnwrap(seen(headless).prompt)
         XCTAssertTrue(cut.truncated)
         XCTAssertEqual(cut.title, "")
         XCTAssertEqual(cut.question, "Do you want to proceed?")
@@ -750,18 +895,17 @@ final class MobileReplyTests: XCTestCase {
     func testAnotherPromptHasAnotherId() throws {
         let waiting = state(.waiting, since: 100)
         let io = FakePane().io
-        let first = try XCTUnwrap(MobileReply.prompt(state: waiting, screen: DemoPrompt.permission, io: io))
-        let second = try XCTUnwrap(MobileReply.prompt(
-            state: waiting,
-            screen: DemoPrompt.permission.replacingOccurrences(of: "deploy/web", with: "deploy/api"), io: io))
+        let first = try XCTUnwrap(shown(waiting, DemoPrompt.permission))
+        let second = try XCTUnwrap(shown(
+            waiting, DemoPrompt.permission.replacingOccurrences(of: "deploy/web", with: "deploy/api")))
         XCTAssertNotEqual(first.id, second.id)
-        XCTAssertNotEqual(first.id, MobileReply.prompt(state: waiting, screen: DemoPrompt.question, io: io)?.id)
+        XCTAssertNotEqual(first.id, shown(waiting, DemoPrompt.question)?.id)
         // The same words asked again later are another prompt.
         let again = try XCTUnwrap(
-            MobileReply.prompt(state: state(.waiting, since: 160), screen: DemoPrompt.permission, io: io))
+            shown(state(.waiting, since: 160), DemoPrompt.permission))
         XCTAssertNotEqual(first.id, again.id)
         XCTAssertEqual(
-            first.id, MobileReply.prompt(state: waiting, screen: DemoPrompt.permission, io: io)?.id)
+            first.id, shown(waiting, DemoPrompt.permission)?.id)
         XCTAssertEqual(first.key, again.key)
     }
 
@@ -776,9 +920,9 @@ final class MobileReplyTests: XCTestCase {
             return counter
         }
         let waiting = state(.waiting, remote: true)
-        let first = try XCTUnwrap(MobileReply.prompt(state: waiting, screen: DemoPrompt.permission, io: io))
+        let first = try XCTUnwrap(shown(waiting, DemoPrompt.permission, io: io))
         // Read again while it is still there: the same prompt.
-        XCTAssertEqual(first.id, MobileReply.prompt(state: waiting, screen: DemoPrompt.permission, io: io)?.id)
+        XCTAssertEqual(first.id, shown(waiting, DemoPrompt.permission, io: io)?.id)
         // Answered: the counter is told, and the same words are a new prompt.
         var answering = FakePane()
         answering.screen = DemoPrompt.permission
@@ -788,7 +932,7 @@ final class MobileReplyTests: XCTestCase {
             MobileReply.answer(prompt: first.id, option: 1, target: "%12", io: answerIO, state: waiting).status,
             200)
         XCTAssertNil(seen)
-        let second = try XCTUnwrap(MobileReply.prompt(state: waiting, screen: DemoPrompt.permission, io: io))
+        let second = try XCTUnwrap(shown(waiting, DemoPrompt.permission, io: io))
         XCTAssertNotEqual(first.id, second.id)
         XCTAssertEqual(first.key, second.key)
         // Enter on the card's prompt answers it too; an arrow does not.
@@ -807,20 +951,21 @@ final class MobileReplyTests: XCTestCase {
     func testThePromptIsWhatTheScreenShowsWhateverTheStatusSays() {
         let io = FakePane().io
         for status in [AttentionStatus.waiting, .unknown, .idle, .busy] {
-            XCTAssertNotNil(MobileReply.prompt(state: state(status), screen: DemoPrompt.permission, io: io))
+            XCTAssertNotNil(shown(state(status), DemoPrompt.permission))
         }
-        XCTAssertNil(MobileReply.prompt(state: nil, screen: DemoPrompt.permission, io: io))
-        XCTAssertNil(MobileReply.prompt(state: state(.waiting), screen: nil, io: io))
+        XCTAssertNil(shown(nil, DemoPrompt.permission))
+        XCTAssertNil(shown(state(.waiting), nil))
         // An old prompt above the input box of a pane that moved on is none.
         XCTAssertNil(MobileReply.prompt(
-            state: state(.idle), screen: DemoPrompt.permission + "\n" + DemoPrompt.idle, io: io))
+            state: state(.idle), seen: seen(DemoPrompt.permission + "\n" + DemoPrompt.idle),
+            io: FakePane().io))
     }
 
     func testAnAnswerIsTheDigitOfAChoiceOnThePaneNow() throws {
         let pane = FakePane()
         pane.screen = DemoPrompt.permission
         let waiting = state(.waiting, since: 100)
-        let id = try XCTUnwrap(MobileReply.prompt(state: waiting, screen: DemoPrompt.permission, io: pane.io)).id
+        let id = try XCTUnwrap(shown(waiting, DemoPrompt.permission, io: pane.io)).id
         XCTAssertEqual(
             MobileReply.answer(prompt: id, option: 2, target: "%12", io: pane.io, state: waiting).status, 200)
         XCTAssertEqual(pane.argv, [["send-keys", "-t", "%12", "2"]])
