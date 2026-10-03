@@ -1,4 +1,8 @@
 <script lang="ts">
+	import ArtifactInline from './ArtifactInline.svelte';
+	import { inlineArtifacts } from './artifacts';
+	import { ARTIFACTS, Artifacts } from './artifacts.svelte';
+	import ArtifactsPage from './ArtifactsPage.svelte';
 	import AttachButton from './AttachButton.svelte';
 	import Composer from './Composer.svelte';
 	import { Find } from './find.svelte';
@@ -14,18 +18,31 @@
 	import PullIndicator from './PullIndicator.svelte';
 	import { liveLines, nextWaiting } from './reply';
 	import { Reply } from './reply.svelte';
+	import ServeConfirm from './ServeConfirm.svelte';
+	import { SERVERS, Servers } from './servers.svelte';
+	import ServersPage from './ServersPage.svelte';
 	import SlashList from './SlashList.svelte';
 	import { ThreadFeed, type Mode } from './thread.svelte';
+	import type { ArtifactFile } from './types';
 	import { voice } from './voice.svelte';
 	import VoiceBar from './VoiceBar.svelte';
 
 	const { id }: { id: string } = $props();
 
 	const PULL = 'thread';
-	// The pages of this view, left to right. A later tab is one more entry here
-	// and one more `{:else if}` in the pager below.
-	const TABS = [{ key: 'main' }] as const;
-	const TAB_KEYS = TABS.map((tab) => tab.key);
+	const MAIN = 'main';
+	// The pages of this view, left to right. A tab whose feature is off on the
+	// Mac is not there at all. Joined, so the same tabs are the same value and
+	// a config that says nothing new does not send the pager back to Chat.
+	const tabNames = $derived(
+		[
+			MAIN,
+			...(can('artifacts') ? [ARTIFACTS] : []),
+			...(can('localServers') ? [SERVERS] : [])
+		].join(' ')
+	);
+	const tabs = $derived(tabNames.split(' '));
+	const LABELS: Record<string, string> = { [ARTIFACTS]: 'Artifacts', [SERVERS]: 'Servers' };
 
 	// svelte-ignore state_referenced_locally
 	const feed = new ThreadFeed(id);
@@ -35,6 +52,28 @@
 	let terminal = $state(false);
 	const mode: Mode = $derived(canChat && !terminal ? 'chat' : 'terminal');
 	const closed = $derived((live.threads !== null && !thread) || feed.gone);
+
+	// svelte-ignore state_referenced_locally
+	const artifacts = new Artifacts(id);
+	// svelte-ignore state_referenced_locally
+	const servers = new Servers(id);
+	/** The files to draw in the chat, under the message that names each. */
+	const inline = $derived(
+		can('artifacts') && feed.messages && artifacts.list
+			? inlineArtifacts(feed.messages, artifacts.list.files)
+			: null
+	);
+
+	function landed(index: number): void {
+		artifacts.landed(index);
+		servers.landed(index);
+	}
+
+	/** A tap on a file in the chat: the Artifacts tab slides in with it open. */
+	function openInline(file: ArtifactFile): void {
+		artifacts.show(file, 'chat');
+		ui.goTo(tabs.indexOf(ARTIFACTS));
+	}
 	const color = $derived(thread?.hostColor ?? '#2a2a2a');
 
 	// svelte-ignore state_referenced_locally
@@ -118,40 +157,62 @@
 
 <div class="tabs">
 	<div class="seg" role="tablist">
-		{#each TABS as tab, index (tab.key)}
-			<button
-				class="grow"
-				class:on={ui.index === index}
-				role="tab"
-				aria-selected={ui.index === index}
-				aria-label={canChat ? `${mode === 'chat' ? 'Chat' : 'Terminal'}, switch` : 'Terminal'}
-				data-tab={tab.key}
-				data-mode={mode}
-				onclick={() => selectTab(index)}
-			>
-				{mode === 'chat' ? 'Chat' : 'Terminal'}
-				{#if canChat}<span class="swap">⇄</span>{/if}
-			</button>
+		{#each tabs as tab, index (tab)}
+			{#if tab === MAIN}
+				<button
+					class="grow"
+					class:on={ui.index === index}
+					role="tab"
+					aria-selected={ui.index === index}
+					aria-label={canChat ? `${mode === 'chat' ? 'Chat' : 'Terminal'}, switch` : 'Terminal'}
+					data-tab={tab}
+					data-mode={mode}
+					onclick={() => selectTab(index)}
+				>
+					{mode === 'chat' ? 'Chat' : 'Terminal'}
+					{#if canChat}<span class="swap">⇄</span>{/if}
+				</button>
+			{:else}
+				<button
+					class="grow"
+					class:on={ui.index === index}
+					role="tab"
+					aria-selected={ui.index === index}
+					data-tab={tab}
+					onclick={() => selectTab(index)}>{LABELS[tab]}</button
+				>
+			{/if}
 		{/each}
 	</div>
 	<button
 		class="tb"
 		aria-label="Refresh"
 		disabled={ui.refreshing !== null}
-		onclick={() => ui.refresh(PULL)}>↻</button
+		onclick={() => ui.refresh(ui.index === 0 ? PULL : tabs[ui.index])}>↻</button
 	>
 </div>
 
-<div class="pager" class:docked {@attach pages(TAB_KEYS)} {@attach feed.watch(mode)}>
+<div
+	class="pager"
+	class:docked
+	{@attach pages(tabs, landed)}
+	{@attach feed.watch(mode)}
+	{@attach can('artifacts') && artifacts.watch}
+	{@attach can('localServers') && servers.watch}
+>
 	<div
 		class="track"
 		class:anim={!ui.dragging}
 		style:transform="translate3d(calc({-ui.index * 100}% + {ui.dragX}px), 0, 0)"
 	>
-		{#each TABS as tab, index (tab.key)}
-			<section class="page" inert={ui.index !== index} data-page={tab.key}>
+		{#each tabs as tab, index (tab)}
+			<section class="page" inert={ui.index !== index} data-page={tab}>
 				{#if closed}
 					<div class="empty">Closed</div>
+				{:else if tab === ARTIFACTS}
+					<ArtifactsPage {artifacts} />
+				{:else if tab === SERVERS}
+					<ServersPage {servers} />
 				{:else if mode === 'chat'}
 					<div
 						class="scroll"
@@ -183,6 +244,9 @@
 									{:else}
 										<div class="tool"><b>{message.tool}</b> {@render body()}</div>
 									{/if}
+									{#each inline?.get(message.n) ?? [] as file (file.id)}
+										<ArtifactInline {file} {artifacts} onopen={openInline} />
+									{/each}
 								{/each}
 								{#if reply.turn}
 									{#if spoken.prompt}<div class="u" data-live>{reply.turn.prompt}</div>{/if}
@@ -235,6 +299,8 @@
 		{/each}
 	</div>
 </div>
+
+<ServeConfirm {servers} />
 
 {#if docked}
 	<div class="dock" data-dock {@attach overKeyboard} {@attach reply.watch}>
@@ -311,7 +377,8 @@
 	.pager {
 		flex: 1;
 		min-height: 0;
-		overflow: hidden;
+		/* `clip`, not `hidden`: the row of pages must never scroll by itself. */
+		overflow: clip;
 	}
 
 	.track {
@@ -324,12 +391,20 @@
 		transition: transform 0.26s var(--ease);
 	}
 
+	/* A mouse that drags the page must not select the text it passes over. */
+	.track:not(.anim) {
+		-webkit-user-select: none;
+		user-select: none;
+	}
+
 	.page {
 		flex: 0 0 100%;
 		min-width: 0;
 		display: flex;
 		flex-direction: column;
 		height: 100%;
+		/* An open file lies over its page. */
+		position: relative;
 	}
 
 	.chat {

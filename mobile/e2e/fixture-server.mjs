@@ -10,13 +10,17 @@
 // /__fixture/voice-takes, /__fixture/replies, /__fixture/prompt?id=&pid=&kind=,
 // /__fixture/upload-max?value=, /__fixture/status?id=&value=, /__fixture/panes?id=&value=,
 // /__fixture/prompt also takes truncated=1, bare=1 (an id with no choices), quiet=1,
-// /__fixture/not-sent?cleared=&reason=, /__fixture/no-input?id=&on=, /__fixture/pasted?on=
+// /__fixture/not-sent?cleared=&reason=, /__fixture/no-input?id=&on=, /__fixture/pasted?on=,
+// /__fixture/serve-fails?code=, /__fixture/mappings (what the phone asked to publish),
+// /__fixture/tailnet?name= (publish under that name, for screenshots)
 //
 // Every /api/ request needs the header `X-MuxMaestro-Token: demo-token`.
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { crc32, deflateSync } from 'node:zlib';
 
 const ROOT = resolve(
 	fileURLToPath(new URL('.', import.meta.url)),
@@ -125,6 +129,318 @@ const CHATS = {
 	]
 };
 
+// The thread with artifacts and servers.
+const MAKER = 'localhost:6';
+CHATS[MAKER] = [
+	['user', 'rotate expired push tokens nightly, and show the last run on the settings page'],
+	[
+		'assistant',
+		'The job is in place. I will add the last run to the settings page and write the plan down.'
+	],
+	['tool', 'PLAN.md', 'Write'],
+	['tool', 'src/jobs/rotate-tokens.ts', 'Edit'],
+	['assistant', 'Edited. The page is up on the dev server at localhost:5173.'],
+	['tool', 'pnpm exec playwright screenshot localhost:5173/settings', 'Bash'],
+	['assistant', 'Here is the page after the change: settings-after.png'],
+	['tool', 'pnpm exec vitest run --coverage', 'Bash'],
+	['assistant', 'Coverage is in coverage/index.html. Docs: https://example.com/docs/push-tokens'],
+	// Enough rows after the files that the chat scrolls.
+	...Array.from({ length: 14 }, (_, i) => [
+		i % 2 ? 'assistant' : 'tool',
+		i % 2 ? `Run ${(i + 1) / 2} of 7 passed.` : 'pnpm exec vitest run src/jobs',
+		...(i % 2 ? [] : ['Bash'])
+	])
+];
+
+/** A PNG of `width` × `height`: a white page with a few grey rows, like a settings screen. */
+function png(width, height) {
+	const row = 1 + width * 3;
+	const raw = Buffer.alloc(row * height, 0xff);
+	const fill = (x0, y0, w, h, [r, g, b]) => {
+		for (let y = y0; y < y0 + h; y += 1) {
+			raw[y * row] = 0;
+			for (let x = x0; x < x0 + w; x += 1) raw.set([r, g, b], y * row + 1 + x * 3);
+		}
+	};
+	for (let y = 0; y < height; y += 1) raw[y * row] = 0;
+	fill(0, 0, width, 56, [17, 17, 17]);
+	fill(24, 20, 140, 16, [237, 237, 237]);
+	for (let i = 0; i < 4; i += 1) {
+		fill(24, 92 + i * 64, width - 200, 14, [40, 40, 40]);
+		fill(width - 120, 88 + i * 64, 96, 22, i === 1 ? [50, 145, 255] : [220, 220, 220]);
+		fill(24, 132 + i * 64, width - 48, 1, [232, 232, 232]);
+	}
+	const chunk = (type, data) => {
+		const body = Buffer.concat([Buffer.from(type), data]);
+		const out = Buffer.alloc(body.length + 8);
+		out.writeUInt32BE(data.length, 0);
+		body.copy(out, 4);
+		out.writeUInt32BE(crc32(body), out.length - 4);
+		return out;
+	};
+	const head = Buffer.alloc(13);
+	head.writeUInt32BE(width, 0);
+	head.writeUInt32BE(height, 4);
+	head.set([8, 2, 0, 0, 0], 8);
+	return Buffer.concat([
+		Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+		chunk('IHDR', head),
+		chunk('IDAT', deflateSync(raw)),
+		chunk('IEND', Buffer.alloc(0))
+	]);
+}
+
+const PLAN = `---
+owner: me
+---
+
+# Plan
+
+Rotate push tokens that expired, every night.
+
+- Add \`rotateExpired()\` to the nightly job
+- Show the last run on the settings page
+- Run the spec 20 times
+
+\`\`\`ts
+export async function rotateExpired(now: Date): Promise<number> {
+	const expired = await tokens.where('expiresAt', '<', now);
+	return (await Promise.all(expired.map(rotate))).length;
+}
+\`\`\`
+
+<script>document.title = 'markdown script ran'</script>
+
+[Docs](https://example.com/docs/push-tokens)
+`;
+
+// The script must not run on the phone: the frame is sandboxed.
+const COVERAGE = `<!doctype html><html><head><title>Coverage</title><style>
+body{font:15px -apple-system,system-ui,sans-serif;margin:0;padding:26px 20px;color:#111;background:#fff}
+h2{margin:0 0 18px;font-size:24px}.ln{display:flex;justify-content:space-between;padding:12px 0;border-bottom:1px solid #e8e8e8}
+</style></head><body><h2>Coverage</h2>
+<div class="ln"><span>src/jobs</span><span>94%</span></div>
+<div class="ln"><span>src/settings</span><span>88%</span></div>
+<div class="ln"><span>src/push</span><span>71%</span></div>
+<p id="probe">Generated nightly</p>
+<script>
+document.getElementById('probe').textContent = 'script ran';
+parent.postMessage('artifact-script-ran', '*');
+fetch('/api/config').then(() => parent.postMessage('artifact-fetched', '*'));
+</script>
+<img src="/icon-192.png" alt="">
+</body></html>`;
+
+const JOB = `import { tokens } from '../push/store';
+
+/** Rotate every push token that expired before \`now\`. */
+export async function rotateExpired(now: Date): Promise<number> {
+	const expired = await tokens.where('expiresAt', '<', now);
+	const rotated = await Promise.all(expired.map((token) => tokens.rotate(token.id, { reason: 'expired', at: now })));
+	return rotated.length;
+}
+`;
+
+const ROOT_DIR = '/Users/me/code/mobile';
+const artifactId = (path) => createHash('sha256').update(path).digest('hex').slice(0, 32);
+// [name, dir, kind, mime, age in seconds, bytes]
+const FILES = [
+	['settings-after.png', '/tmp', 'image', 'image/png', 180, png(780, 520)],
+	[
+		'index.html',
+		`${ROOT_DIR}/coverage`,
+		'html',
+		'text/html; charset=utf-8',
+		120,
+		Buffer.from(COVERAGE)
+	],
+	['PLAN.md', ROOT_DIR, 'markdown', 'text/plain; charset=utf-8', 720, Buffer.from(PLAN)],
+	[
+		'rotate-tokens.ts',
+		`${ROOT_DIR}/src/jobs`,
+		'code',
+		'text/plain; charset=utf-8',
+		660,
+		Buffer.from(JOB)
+	],
+	['old-notes.txt', ROOT_DIR, 'text', 'text/plain; charset=utf-8', 4000, null]
+].map(([name, dir, kind, mime, age, bytes]) => ({
+	id: artifactId(`${dir}/${name}`),
+	name,
+	dir,
+	kind,
+	mime,
+	age,
+	bytes
+}));
+
+const artifactsBody = (thread) =>
+	thread.id !== MAKER
+		? { files: [], links: [], remote: !thread.local }
+		: {
+				files: [...FILES]
+					.sort((a, b) => a.age - b.age)
+					.map(({ bytes, age, ...file }) => ({
+						...file,
+						size: bytes ? bytes.length : null,
+						at: started - age,
+						exists: bytes !== null
+					})),
+				links: [
+					{
+						url: 'https://example.com/docs/push-tokens',
+						host: 'example.com',
+						path: '/docs/push-tokens',
+						at: started - 60
+					}
+				],
+				remote: false
+			};
+
+// What the thread runs: [port, mappable].
+const link = (label, port, open = true) => ({ label, port, open, mappable: open });
+const runningBody = (thread) =>
+	thread.id !== MAKER
+		? { known: true, unknowns: [], servers: [], stacks: [], containers: [] }
+		: {
+				known: false,
+				unknowns: ['Docker unavailable on devbox'],
+				servers: [
+					{
+						key: 'localhost|server|5173',
+						label: 'mobile',
+						host: 'localhost',
+						local: true,
+						port: 5173,
+						https: true,
+						mappable: true
+					},
+					{
+						key: 'localhost|server|6006',
+						label: 'storybook',
+						host: 'localhost',
+						local: true,
+						port: 6006,
+						https: false,
+						mappable: true
+					}
+				],
+				stacks: [
+					{
+						key: 'localhost|container|mobile',
+						label: 'mobile',
+						host: 'localhost',
+						local: true,
+						count: 10,
+						links: [
+							link('Studio', 54323),
+							link('API', 54321),
+							link('DB', 54322, false),
+							link('Mail', 54324)
+						]
+					}
+				],
+				containers: [
+					{
+						key: 'localhost|container|acme-redis',
+						label: 'acme-redis',
+						host: 'localhost',
+						local: true,
+						count: 1,
+						links: [link('', 6379)]
+					},
+					{
+						key: 'devbox|container|mailpit',
+						label: 'mailpit',
+						host: 'devbox',
+						local: false,
+						count: 1,
+						links: [{ label: '', port: 8025, open: true, mappable: false }]
+					}
+				]
+			};
+const MAX_MAPPINGS = 5;
+const runningPorts = (thread) => {
+	const running = runningBody(thread);
+	return new Map(
+		[
+			...running.servers.map((s) => [s.port, s.mappable && s.label]),
+			...[...running.stacks, ...running.containers].flatMap((c) =>
+				c.links.map((l) => [l.port, l.mappable && (l.label ? `${c.label} ${l.label}` : c.label)])
+			)
+		].filter(([, label]) => label)
+	);
+};
+
+function serversApi(req, res, path, body) {
+	if (!capabilities.localServers) return send(res, 403, { error: 'disabled' });
+	const list = () => ({
+		mappings: [...mappings].sort((a, b) => a.port - b.port),
+		max: MAX_MAPPINGS
+	});
+	if (path === '/api/servers')
+		return req.method === 'GET'
+			? send(res, 200, list())
+			: send(res, 405, { error: 'method_not_allowed' });
+	if (req.method !== 'POST') return send(res, 405, { error: 'method_not_allowed' });
+	let ask;
+	try {
+		ask = JSON.parse(body);
+	} catch {
+		return send(res, 400, { error: 'bad_request' });
+	}
+	if (!Number.isInteger(ask?.port) || ask.port < 0 || ask.port > 65535)
+		return send(res, 400, { error: 'bad_request' });
+	if (path === '/api/servers/close') {
+		const before = mappings.length;
+		mappings = mappings.filter((m) => m.port !== ask.port);
+		return mappings.length < before
+			? send(res, 200, { ok: true })
+			: send(res, 404, { error: 'not_found' });
+	}
+	if (path !== '/api/servers/open') return send(res, 404, { error: 'not_found' });
+	const thread = threads.find((t) => t.id === ask.thread);
+	if (!thread) return send(res, 404, { error: 'not_found' });
+	const label = runningPorts(thread).get(ask.port);
+	if (!label) return send(res, 404, { error: 'not_running' });
+	if (ask.port === PORT || ask.port < 1024) return send(res, 403, { error: 'refused' });
+	if (serveFails) {
+		const code = serveFails;
+		serveFails = null;
+		tailnet = null;
+		return send(res, code === 'unavailable' ? 503 : 409, {
+			error: code,
+			message:
+				code === 'taken' ? `Tailscale already serves port ${ask.port}` : 'tailscale serve failed'
+		});
+	}
+	// Without a name, the address is a page of the fixture, so a test can open it.
+	const url = tailnet
+		? `https://${tailnet}:${ask.port}/`
+		: `http://127.0.0.1:${PORT}/__mapped/${ask.port}/`;
+	if (!mappings.some((m) => m.port === ask.port)) {
+		if (mappings.length >= MAX_MAPPINGS)
+			return send(res, 409, { error: 'limit', message: `${MAX_MAPPINGS} ports are open already` });
+		mappings.push({ port: ask.port, url, thread: thread.id, label });
+	}
+	return send(res, 200, { port: ask.port, url });
+}
+
+function fileApi(res, url, thread) {
+	const file = thread.id === MAKER && FILES.find((f) => f.id === url.searchParams.get('id'));
+	if (!file || !file.bytes) return send(res, 404, { error: 'not_found' });
+	res.writeHead(200, {
+		'content-type': file.mime,
+		'cache-control': 'no-store',
+		'x-content-type-options': 'nosniff',
+		'content-security-policy':
+			"sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:",
+		'content-disposition': 'attachment',
+		'cross-origin-resource-policy': 'same-origin'
+	});
+	res.end(file.bytes);
+}
+
 // Why each waiting thread waits, as the manager's "Needs you" list says it.
 const REASONS = { 'localhost:1': 'Permission · Bash', 'devbox:2': 'Question' };
 
@@ -177,6 +493,8 @@ let started, threads, chats, grouping, deny, token, capabilities, manager, voice
 let prompts, replies, uploadMax, promptSeq, notSent, noInput, pasted, keyLocks;
 // Makes one thread row; set by `reset`, used again for a new window or session.
 let makeThread;
+// The ports published on the tailnet, and how the next publish is refused.
+let mappings, serveFails, tailnet;
 const streams = new Set();
 
 function reset() {
@@ -192,8 +510,12 @@ function reset() {
 		upload: false,
 		sessionActions: false,
 		kill: false,
-		find: false
+		find: false,
+		artifacts: false,
+		localServers: false
 	};
+	mappings = [];
+	serveFails = null;
 	prompts = {};
 	// How the next text is refused after its paste, the panes with no input
 	// box, whether an upload's path reaches the pane, and the keys in flight.
@@ -352,8 +674,8 @@ const configBody = () => ({
 		sessionActions: capabilities.sessionActions,
 		kill: capabilities.kill,
 		find: capabilities.find,
-		artifacts: false,
-		localServers: false,
+		artifacts: capabilities.artifacts,
+		localServers: capabilities.localServers,
 		stopServers: false,
 		notifications: false,
 		liveTerminal: false
@@ -987,6 +1309,18 @@ function api(req, res, url, body) {
 		return;
 	}
 	if (path.startsWith('/api/tmux/')) return tmuxApi(req, res, path, String(body));
+	if (path === '/api/servers' || path.startsWith('/api/servers/'))
+		return serversApi(req, res, path, String(body));
+	const made = /^\/api\/threads\/([^/]+)\/(artifacts|file|running)$/.exec(path);
+	if (made) {
+		if (!capabilities[made[2] === 'running' ? 'localServers' : 'artifacts'])
+			return send(res, 403, { error: 'disabled' });
+		if (req.method !== 'GET') return send(res, 405, { error: 'method_not_allowed' });
+		const thread = threads.find((t) => t.id === decodeURIComponent(made[1]));
+		if (!thread) return send(res, 404, { error: 'not_found' });
+		if (made[2] === 'file') return fileApi(res, url, thread);
+		return send(res, 200, made[2] === 'running' ? runningBody(thread) : artifactsBody(thread));
+	}
 	const dirs = /^\/api\/hosts\/([^/]+)\/dirs$/.exec(path);
 	if (dirs) {
 		if (!capabilities.sessionActions) return send(res, 403, { error: 'disabled' });
@@ -1112,6 +1446,14 @@ function hook(res, url) {
 			capabilities[url.searchParams.get('name')] = url.searchParams.get('on') === '1';
 			push('config', configBody());
 			break;
+		case '/__fixture/serve-fails':
+			serveFails = url.searchParams.get('code');
+			break;
+		case '/__fixture/tailnet':
+			tailnet = url.searchParams.get('name');
+			break;
+		case '/__fixture/mappings':
+			return send(res, 200, { mappings });
 		case '/__fixture/manager-status':
 			manager.status = url.searchParams.get('value') ?? 'idle';
 			break;
@@ -1167,6 +1509,14 @@ createServer((req, res) => {
 		req.on('end', () => api(req, res, url, Buffer.concat(chunks)));
 		return;
 	}
+	// What a published dev server answers: a page of its own, on another path.
+	if (url.pathname.startsWith('/__mapped/'))
+		return send(
+			res,
+			200,
+			`<!doctype html><title>dev server</title><h1>Port ${url.pathname.split('/')[2]}</h1>`,
+			'text/html'
+		);
 	if (url.pathname.startsWith('/__fixture/'))
 		return req.method === 'POST' ? hook(res, url) : send(res, 405, { error: 'method' });
 	return asset(res, url);
