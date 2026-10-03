@@ -20,6 +20,9 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
 
     private let toggle = NSSwitch()
     private let status = NSTextField(labelWithString: "Off")
+    /// Why the last start failed, on its own line: the status column is too
+    /// narrow for it, and a switch that turns itself off must say why.
+    private let failure = NSTextField(wrappingLabelWithString: "")
     private let port = NSTextField(string: "")
     private let grouping = NSPopUpButton()
     private let keepAwake = NSSwitch()
@@ -144,7 +147,12 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
         qr.setAccessibilityLabel("QR code that pairs a phone")
         qr.translatesAutoresizingMaskIntoConstraints = false
 
-        let stack = NSStackView(views: [header, grid, urlRow, qr, buttonRow])
+        failure.font = .systemFont(ofSize: 12)
+        failure.textColor = theme.red
+        failure.isSelectable = true
+        failure.setAccessibilityLabel("Phone access error")
+
+        let stack = NSStackView(views: [header, grid, failure, urlRow, qr, buttonRow])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 8
@@ -159,6 +167,7 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
             stack.trailingAnchor.constraint(equalTo: trailingAnchor),
             stack.bottomAnchor.constraint(equalTo: bottomAnchor),
             grid.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            failure.widthAnchor.constraint(equalTo: stack.widthAnchor),
             urlRow.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor),
             qr.widthAnchor.constraint(equalToConstant: Self.qrSize),
             qr.heightAnchor.constraint(equalToConstant: Self.qrSize),
@@ -200,19 +209,23 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
             toggle.state = .on
             link = address
             pairing = pairingLink
-        case .failed(let reason):
-            status.stringValue = reason
+        case .failed:
+            status.stringValue = "Failed"
             status.textColor = theme.red
             toggle.state = .off
         }
-        status.toolTip = status.stringValue
+        var reason = ""
+        if case .failed(let why) = state { reason = why }
+        let failureChanged = failure.stringValue != reason
+        failure.stringValue = reason
+        failure.isHidden = reason.isEmpty
         url.stringValue = link ?? ""
         if link == nil { pairing = "" }
         qr.image = link == nil ? nil : Self.qrImage(pairing, side: Self.qrSize)
         let hidden = link == nil
-        guard urlRow.isHidden != hidden else { return }
+        let linkChanged = urlRow.isHidden != hidden
         for view in [urlRow, qr, buttonRow] as [NSView] { view.isHidden = hidden }
-        onResize?()
+        if linkChanged || failureChanged { onResize?() }
     }
 
     @objc private func toggled() {
