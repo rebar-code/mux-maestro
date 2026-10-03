@@ -170,9 +170,17 @@ final class PhoneLink {
               let identity = MobileTailnet.identity(statusJSON: status)
         else { return set(.failed("Tailscale is not signed in")) }
         let wanted = port()
-        if let serving = runner.run(tailscale, MobileTailnet.serveStatusArgv),
-           MobileTailnet.portTaken(serveStatusJSON: serving, port: wanted) {
-            return set(.failed("Tailscale already serves port \(wanted)"))
+        if let serving = runner.run(tailscale, MobileTailnet.serveStatusArgv) {
+            if MobileTailnet.portTaken(serveStatusJSON: serving, port: wanted) {
+                return set(.failed("Tailscale already serves port \(wanted)"))
+            }
+            // A killed app (a crash, `pkill`, a reinstall) leaves its mapping
+            // behind. While Tailscale holds the port for that mapping, the
+            // loopback listener cannot bind it, so every later start failed
+            // with "Port N is in use". Take our own leftover away first.
+            if MobileTailnet.servesOurs(serveStatusJSON: serving, port: wanted) {
+                _ = runner.runCapturing(tailscale, MobileTailnet.serveOffArgv(port: wanted))
+            }
         }
         // Without a stored token nothing could pair, so nothing is published.
         var stored = tokens.load()

@@ -155,6 +155,28 @@ final class PhoneLinkTests: XCTestCase {
         XCTAssertEqual(tailscale.calls.filter { $0.last == "off" }.count, 1)
     }
 
+    /// Bug: Phone access switched itself back off after a relaunch. A killed app
+    /// leaves its `tailscale serve` mapping behind, and while that mapping
+    /// exists the loopback listener cannot bind the port ("Port N is in use").
+    /// Our own leftover must be removed before the listener starts.
+    func testOurOwnLeftoverMappingIsRemovedBeforeTheListenerStarts() throws {
+        tailscale.serving = """
+            {"Web":{"devmac.example.ts.net:0":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:0"}}}}}
+            """
+        let link = link()
+        link.turnOn()
+        settle(link)
+        guard case .on(let url, _) = link.state else { return XCTFail("\(link.state)") }
+        let port = try XCTUnwrap(URL(string: url)?.port)
+        XCTAssertEqual(tailscale.calls, [
+            ["status", "--json"],
+            ["serve", "status", "--json"],
+            ["serve", "--https=0", "off"],
+            ["serve", "--bg", "--https=\(port)", "http://127.0.0.1:\(port)"],
+        ])
+        link.shutdown()
+    }
+
     func testNoTailscaleOrNoLoginFailsBeforeAnythingListens() {
         let missing = link(tailscalePath: nil)
         missing.turnOn()
