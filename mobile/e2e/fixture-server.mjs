@@ -8,7 +8,9 @@
 // /__fixture/capability?name=&on=, /__fixture/manager-status?value=,
 // /__fixture/mac-turn?text=&reply=, /__fixture/voice?mode=&speaker=&heard=&delay=,
 // /__fixture/voice-takes, /__fixture/replies, /__fixture/prompt?id=&pid=&kind=,
-// /__fixture/upload-max?value=, /__fixture/status?id=&value=
+// /__fixture/upload-max?value=, /__fixture/status?id=&value=,
+// /__fixture/prompt also takes truncated=1, bare=1 (an id with no choices), quiet=1,
+// /__fixture/not-sent?cleared=&reason=, /__fixture/no-input?id=&on=, /__fixture/pasted?on=
 //
 // Every /api/ request needs the header `X-MuxMaestro-Token: demo-token`.
 import { createServer } from 'node:http';
@@ -149,6 +151,8 @@ const QUESTION = {
 		{ n: 3, label: 'Type something else' }
 	]
 };
+const LONG_COMMAND =
+	'kubectl rollout restart deploy/web -n staging && kubectl rollout status deploy/web -n staging --timeout=120s && kubectl get pods -n staging -l app=web -o wide';
 const PROMPTS = { 'localhost:1': PERMISSION, 'devbox:2': QUESTION };
 
 const COMMANDS = [
@@ -170,7 +174,7 @@ const TEXT_MAX = 8192;
 const DEMO_TOKEN = 'demo-token';
 let started, threads, chats, grouping, deny, token, capabilities, manager, voice;
 // Per thread id: the prompt on the pane. And everything the phone wrote.
-let prompts, replies, uploadMax, promptSeq;
+let prompts, replies, uploadMax, promptSeq, notSent, noInput, pasted, keyLocks;
 const streams = new Set();
 
 function reset() {
@@ -180,9 +184,15 @@ function reset() {
 	token = DEMO_TOKEN;
 	capabilities = { manager: true, voice: false, replies: false, keyBar: false, upload: false };
 	prompts = {};
+	// How the next text is refused after its paste, the panes with no input
+	// box, whether an upload's path reaches the pane, and the keys in flight.
+	notSent = null;
+	noInput = new Set();
+	pasted = true;
+	keyLocks = new Set();
 	promptSeq = 0;
 	uploadMax = 10485760;
-	replies = { texts: [], keys: [], answers: [], uploads: [], commandFetches: 0 };
+	replies = { texts: [], keys: [], answers: [], uploads: [], left: [], commandFetches: 0 };
 	// The Mac's voice defaults, what the next take is heard as, how long the
 	// Mac "thinks" before it has the transcript, and every take it was sent.
 	voice = { mode: 'manual', speaker: true, heard: 'What needs me?', delay: 300, takes: [] };
@@ -336,15 +346,28 @@ const nowSeconds = () => Math.floor(Date.now() / 1000);
 
 /** The prompt on a waiting thread's pane, made the first time it is asked for. */
 function promptOf(thread) {
-	if (thread.status !== 'waiting') return null;
+	// A pane can show a prompt while its status says nothing of it.
 	if (prompts[thread.id] === undefined) {
+		if (thread.status !== 'waiting') return null;
 		promptSeq += 1;
 		prompts[thread.id] = {
 			id: `p${promptSeq}-${thread.window}`,
-			...(PROMPTS[thread.id] ?? PERMISSION)
+			...(PROMPTS[thread.id] ?? PERMISSION),
+			truncated: false
 		};
 	}
 	return prompts[thread.id];
+}
+
+/** The body of `GET /prompt`: an id alone when the pane shows no readable choices. */
+function promptBody(thread) {
+	const asked = promptOf(thread);
+	if (!asked) return { prompt: null, id: null };
+	// `bare` and `full` are the fixture's own notes.
+	const prompt = { ...asked };
+	delete prompt.bare;
+	delete prompt.full;
+	return { prompt: asked.bare ? null : prompt, id: asked.id };
 }
 
 function setStatus(thread, status) {
@@ -363,8 +386,9 @@ const chatRow = (thread, role, text) => {
 function refusedBy(thread) {
 	if (thread.status === 'busy')
 		return { error: 'busy', message: `${thread.name} is running a turn` };
-	if (thread.status === 'waiting')
+	if (thread.status === 'waiting' || promptOf(thread))
 		return { error: 'waiting', message: `${thread.name} is waiting on a prompt` };
+	if (noInput.has(thread.id)) return { error: 'no_input', message: 'Thread shows no input box' };
 	return null;
 }
 
@@ -395,12 +419,15 @@ function runThreadTurn(thread, text, onDelta = () => {}, onEnd = () => {}) {
 
 function replyApi(req, res, url, thread, route, body) {
 	const needs = route === 'key' ? 'keyBar' : route === 'upload' ? 'upload' : 'replies';
-	if (!capabilities[needs]) return send(res, 403, { error: 'disabled' });
+	// The key bar names the prompt in its keys, so it may read the prompt too.
+	const allowed =
+		route === 'prompt' ? capabilities.replies || capabilities.keyBar : capabilities[needs];
+	if (!allowed) return send(res, 403, { error: 'disabled' });
 	const reads = route === 'prompt' || route === 'commands';
 	if (req.method !== (reads ? 'GET' : 'POST'))
 		return send(res, 405, { error: 'method_not_allowed' });
 	if (!thread) return send(res, 404, { error: 'not_found' });
-	if (route === 'prompt') return send(res, 200, { prompt: promptOf(thread) });
+	if (route === 'prompt') return send(res, 200, promptBody(thread));
 	if (route === 'commands') {
 		replies.commandFetches += 1;
 		return send(res, 200, { commands: COMMANDS });
@@ -419,7 +446,7 @@ function replyApi(req, res, url, thread, route, body) {
 			type: req.headers['content-type'] ?? null,
 			text: body.length <= 256 ? body.toString('utf8') : null
 		});
-		return send(res, 200, { ok: true, path: `${thread.cwd}/${name}`, pasted: true });
+		return send(res, 200, { ok: true, path: `${thread.cwd}/${name}`, pasted });
 	}
 	let json = {};
 	try {
@@ -430,8 +457,25 @@ function replyApi(req, res, url, thread, route, body) {
 	if (route === 'key') {
 		if (typeof json.key !== 'string' || !KEY_NAMES.test(json.key))
 			return send(res, 400, { error: 'bad_key' });
-		replies.keys.push({ thread: thread.id, key: json.key });
-		return send(res, 200, { ok: true });
+		if (json.prompt !== undefined && typeof json.prompt !== 'string')
+			return send(res, 400, { error: 'bad_request' });
+		// One write to a thread at a time: a second key while one is in flight is refused.
+		if (keyLocks.has(thread.id))
+			return send(res, 409, { error: 'busy', message: `${thread.name} is taking a key` });
+		// The pane waits on a prompt the phone did not name: the key could answer the wrong one.
+		const asked = promptOf(thread);
+		if (asked && asked.id !== json.prompt) return send(res, 409, { error: 'stale' });
+		keyLocks.add(thread.id);
+		const locks = keyLocks;
+		return void setTimeout(() => {
+			locks.delete(thread.id);
+			replies.keys.push({
+				thread: thread.id,
+				key: json.key,
+				...(json.prompt === undefined ? {} : { prompt: json.prompt })
+			});
+			send(res, 200, { ok: true });
+		}, 30);
 	}
 	if (route === 'answer') {
 		if (typeof json.prompt !== 'string' || !Number.isInteger(json.option))
@@ -450,6 +494,18 @@ function replyApi(req, res, url, thread, route, body) {
 	if (Buffer.byteLength(text) > TEXT_MAX) return send(res, 413, { error: 'too_large' });
 	const refused = refusedBy(thread);
 	if (refused) return send(res, 409, refused);
+	if (notSent) {
+		// Pasted, not submitted. The Mac tried to take it out of the input box again.
+		const { cleared, reason } = notSent;
+		notSent = null;
+		if (!cleared) replies.left.push({ thread: thread.id, text });
+		return send(res, 409, {
+			error: 'not_sent',
+			reason,
+			message: `${thread.name} did not take the reply`,
+			cleared
+		});
+	}
 	replies.texts.push({ thread: thread.id, text });
 	runThreadTurn(thread, text);
 	return send(res, 200, { ok: true });
@@ -700,7 +756,7 @@ function screen(t) {
 				`╭${box}╮`,
 				`│ ${asked.title || 'Question'}`,
 				'│',
-				`│   ${asked.detail || asked.question}`,
+				`│   ${asked.full ?? (asked.detail || asked.question)}`,
 				'│',
 				...asked.options.map((o, i) => `│ ${i === 0 ? '❯' : ' '} ${o.n}. ${o.label}`),
 				`╰${box}╯`
@@ -800,8 +856,15 @@ function hook(res, url) {
 			promptSeq += 1;
 			prompts[thread.id] = {
 				id: url.searchParams.get('pid') ?? `p${promptSeq}-${thread.window}`,
-				...(url.searchParams.get('kind') === 'question' ? QUESTION : PERMISSION)
+				...(url.searchParams.get('kind') === 'question' ? QUESTION : PERMISSION),
+				truncated: url.searchParams.get('truncated') === '1',
+				...(url.searchParams.get('bare') === '1' ? { bare: true } : {})
 			};
+			if (prompts[thread.id].truncated) {
+				// The card gets the start of the command; the terminal has all of it.
+				prompts[thread.id].full = LONG_COMMAND;
+				prompts[thread.id].detail = LONG_COMMAND.slice(0, 88);
+			}
 			if (url.searchParams.get('quiet') === '1') return send(res, 200, { ok: true });
 			Object.assign(thread, { status: 'waiting', since: now, idleStage: 'awake' });
 			break;
@@ -809,6 +872,20 @@ function hook(res, url) {
 			uploadMax = Number(url.searchParams.get('value') ?? 10485760);
 			push('config', configBody());
 			break;
+		case '/__fixture/not-sent':
+			notSent = {
+				cleared: url.searchParams.get('cleared') === '1',
+				reason: url.searchParams.get('reason') ?? 'busy'
+			};
+			return send(res, 200, { ok: true });
+		case '/__fixture/no-input':
+			if (!thread) return send(res, 404, { error: 'not_found' });
+			if (url.searchParams.get('on') === '0') noInput.delete(thread.id);
+			else noInput.add(thread.id);
+			return send(res, 200, { ok: true });
+		case '/__fixture/pasted':
+			pasted = url.searchParams.get('on') !== '0';
+			return send(res, 200, { ok: true });
 		case '/__fixture/replies':
 			return send(res, 200, replies);
 		case '/__fixture/say':

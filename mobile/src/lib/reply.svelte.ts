@@ -10,17 +10,21 @@ import {
 } from './api';
 import { live } from './live.svelte';
 import {
+	CTRL_MS,
 	ctrlReduce,
 	filterCommands,
+	needsPrompt,
+	queueKey,
 	refusalLabel,
 	slashQuery,
+	textRefusal,
 	type BarKey,
 	type LiveTurn
 } from './reply';
 import type { Command, Prompt } from './types';
 import type { VoiceSink } from './voice.svelte';
 
-/** How often a waiting thread is asked for its prompt again. */
+/** How often a thread that waits, or shows a prompt, is asked for its prompt again. */
 const POLL_MS = 3000;
 /** How long an answered prompt stays hidden if the pane still shows it. */
 const ANSWERED_MS = 10_000;
@@ -67,10 +71,12 @@ export class Reply {
 	draft = $state('');
 	note = $state<Note | null>(null);
 	sending = $state(false);
-	/** Sticky Ctrl is on: the next letter typed is a control key. */
+	/** Sticky Ctrl is on: the next key typed is its key. */
 	ctrl = $state(false);
-	/** What the pane asks, while the thread waits. */
+	/** What the pane asks. It can ask while the thread's status says nothing of it. */
 	prompt = $state.raw<Prompt | null>(null);
+	/** Names what the pane waits on, also when there are no choices to draw. */
+	private promptId: string | null = null;
 	/** The option an answer in flight picked. */
 	answering = $state<number | null>(null);
 	uploading = $state(false);
@@ -83,6 +89,7 @@ export class Reply {
 		this.input = node;
 		return () => {
 			if (this.input === node) this.input = null;
+			this.setCtrl(false);
 		};
 	};
 
@@ -96,10 +103,15 @@ export class Reply {
 	/** The pane takes no free text now. Keys and answers still go. */
 	readonly blocked: boolean = $derived.by(() => {
 		const status = live.byId(this.id)?.status;
-		return status === 'busy' || status === 'waiting';
+		return status === 'busy' || status === 'waiting' || this.prompt !== null;
 	});
 
-	private seenSince: number | null | undefined;
+	/** The thread's status and its time, as last seen. */
+	private seen: string | undefined;
+	private ctrlTimer: ReturnType<typeof setTimeout> | undefined;
+	/** Key presses that wait for the one in flight. */
+	private keys: string[] = [];
+	private pressing = false;
 	private loadingPrompt = false;
 	private answered: { id: string; at: number } | null = null;
 
@@ -120,8 +132,13 @@ export class Reply {
 			this.draft = '';
 			void this.host.refresh();
 		} catch (error) {
-			// The text stays in the box, to send again.
-			this.note = refusal(error, 'text');
+			live.fail(error);
+			const refused = error instanceof ApiError ? error : null;
+			const { note, keepDraft } = textRefusal(refused);
+			this.note = { text: note, bad: true };
+			// What the pane still holds must not be sent a second time.
+			if (!keepDraft && this.draft.trim() === text) this.draft = '';
+			this.recheck(error);
 		} finally {
 			this.sending = false;
 		}
@@ -156,26 +173,53 @@ export class Reply {
 
 	// MARK: keys
 
-	key = async (name: string): Promise<void> => {
+	/**
+	 * Press a key in the pane. A thread takes one write at a time, so the
+	 * presses go one by one, in the order they were tapped.
+	 */
+	key = (name: string): void => {
+		this.keys = queueKey(this.keys, name);
+		void this.press();
+	};
+
+	private async press(): Promise<void> {
+		if (this.pressing) return;
+		this.pressing = true;
 		try {
-			await sendKey(this.id, name);
-			this.note = null;
+			for (let name = this.keys.shift(); name !== undefined; name = this.keys.shift()) {
+				await sendKey(this.id, name, this.promptId);
+				this.note = null;
+			}
 			void this.host.refresh();
 		} catch (error) {
+			// The pane is not where these keys were aimed: none of the rest goes.
+			this.keys = [];
 			this.note = refusal(error, 'key');
+			this.recheck(error);
+		} finally {
+			this.pressing = false;
 		}
-	};
+	}
+
+	private setCtrl(on: boolean): void {
+		clearTimeout(this.ctrlTimer);
+		this.ctrl = on;
+		// It does not wait for its key for ever.
+		if (on) this.ctrlTimer = setTimeout(() => (this.ctrl = false), CTRL_MS);
+	}
 
 	/** A key of the key bar was tapped. */
 	tap = (key: BarKey): void => {
-		if (key.send) return void this.key(key.send);
 		const input = this.input;
 		if (key.ctrl) {
-			this.ctrl = ctrlReduce(this.ctrl, { type: 'toggle' }).on;
+			this.setCtrl(ctrlReduce(this.ctrl, { type: 'toggle' }).on);
 			// The letter comes from the keyboard.
 			if (this.ctrl) input?.focus();
 			return;
 		}
+		// Ctrl holds for one key, whichever it is.
+		this.setCtrl(false);
+		if (key.send) return this.key(key.send);
 		if (!key.insert) return;
 		if (input) {
 			input.focus();
@@ -192,26 +236,29 @@ export class Reply {
 		this.typed();
 	};
 
-	/** The text box is about to take input: with Ctrl on, a letter is a key. */
+	/** The text box is about to change: with Ctrl on, a letter is a key. */
 	beforeInput = (event: InputEvent): void => {
-		if (!this.ctrl || !event.inputType.startsWith('insert')) return;
-		const next = ctrlReduce(true, { type: 'input', data: event.data });
-		this.ctrl = next.on;
+		if (!this.ctrl) return;
+		const typed = event.inputType.startsWith('insert') ? event.data : null;
+		const next = ctrlReduce(true, { type: 'input', data: typed });
+		this.setCtrl(next.on);
 		if (!next.key) return;
 		event.preventDefault();
-		void this.key(next.key);
+		this.key(next.key);
 	};
 
 	// MARK: prompts
 
-	/** Attachment: keep the prompt card current while the thread waits. */
+	/** Attachment: keep the prompt card current. */
 	watch = (): (() => void) =>
 		untrack(() => {
 			const sync = (): void => this.sync();
 			sync();
 			const off = live.onThreads(sync);
 			const timer = setInterval(() => {
-				if (document.visibilityState === 'visible' && this.waiting) void this.loadPrompt();
+				if (document.visibilityState !== 'visible') return;
+				// A prompt that shows is asked for again, to see it go.
+				if (this.waiting || this.promptId !== null) void this.loadPrompt();
 			}, POLL_MS);
 			return () => {
 				off();
@@ -223,28 +270,29 @@ export class Reply {
 		return live.byId(this.id)?.status === 'waiting';
 	}
 
-	/** The thread list changed. */
+	/** The thread list changed: a new status or time can mean a new prompt, or none. */
 	private sync(): void {
 		const thread = live.byId(this.id);
-		if (thread?.status !== 'waiting') {
-			this.seenSince = undefined;
-			this.answered = null;
-			if (this.prompt) this.prompt = null;
-			return;
-		}
-		if (this.seenSince === thread.since) return;
-		// A new wait: what was answered before is not this prompt.
-		if (this.seenSince !== undefined) this.answered = null;
-		this.seenSince = thread.since;
+		const seen = `${thread?.status} ${thread?.since}`;
+		if (seen === this.seen) return;
+		// What was answered before is not what the pane asks now.
+		if (this.seen !== undefined) this.answered = null;
+		this.seen = seen;
 		void this.loadPrompt();
+	}
+
+	/** After a refusal that says the pane waits on something: show what. */
+	private recheck(error: unknown): void {
+		if (needsPrompt(error instanceof ApiError ? error : null)) void this.loadPrompt();
 	}
 
 	private async loadPrompt(): Promise<void> {
 		if (this.loadingPrompt) return;
 		this.loadingPrompt = true;
 		try {
-			let prompt = await fetchPrompt(this.id);
-			if (!this.waiting) prompt = null;
+			const state = await fetchPrompt(this.id);
+			this.promptId = state.id;
+			let prompt = state.prompt;
 			const answered = this.answered;
 			if (prompt && answered?.id === prompt.id && Date.now() - answered.at < ANSWERED_MS)
 				prompt = null;
@@ -266,6 +314,7 @@ export class Reply {
 			await answerPrompt(this.id, prompt.id, option);
 			this.answered = { id: prompt.id, at: Date.now() };
 			this.prompt = null;
+			this.promptId = null;
 			void this.host.refresh();
 		} catch (error) {
 			if (error instanceof ApiError && error.code === 'stale') {
@@ -291,11 +340,15 @@ export class Reply {
 		this.uploading = true;
 		this.note = null;
 		try {
-			await uploadFile(this.id, file);
-			this.note = { text: 'Attached', bad: false };
+			const { pasted } = await uploadFile(this.id, file);
+			// Saved either way; without the paste the pane does not name it.
+			this.note = pasted
+				? { text: 'Attached', bad: false }
+				: { text: 'Saved, not pasted', bad: true };
 			void this.host.refresh();
 		} catch (error) {
 			this.note = refusal(error, 'file');
+			this.recheck(error);
 		} finally {
 			this.uploading = false;
 		}

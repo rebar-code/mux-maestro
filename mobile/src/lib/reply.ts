@@ -49,16 +49,26 @@ export interface CtrlState {
 }
 
 /**
- * Sticky Ctrl. A tap switches it on or off. While it is on, the next letter
- * typed is not text: it becomes `C-<letter>` and Ctrl switches off. Anything
- * else that is typed stays text and leaves Ctrl on.
+ * Sticky Ctrl. A tap switches it on or off. It holds for one key: a letter
+ * typed next is not text, it becomes `C-<letter>`; anything else is handled
+ * as it always is. Either way Ctrl switches off.
  */
 export function ctrlReduce(on: boolean, event: CtrlEvent): CtrlState {
 	if (event.type === 'toggle') return { on: !on, key: null };
 	if (!on) return { on: false, key: null };
 	const letter = event.data?.toLowerCase() ?? '';
-	if (/^[a-z]$/.test(letter)) return { on: false, key: `C-${letter}` };
-	return { on: true, key: null };
+	return { on: false, key: /^[a-z]$/.test(letter) ? `C-${letter}` : null };
+}
+
+/** How long sticky Ctrl waits for its key before it switches off by itself. */
+export const CTRL_MS = 5000;
+
+/** The key presses that wait their turn: a thread takes one write at a time. */
+export const KEY_QUEUE_MAX = 8;
+
+/** `queue` with `key` at its end. A full queue drops the key. */
+export function queueKey(queue: readonly string[], key: string): string[] {
+	return queue.length >= KEY_QUEUE_MAX ? [...queue] : [...queue, key];
 }
 
 /**
@@ -102,12 +112,47 @@ const LABELS: Record<string, string> = {
 	not_found: 'Closed',
 	unavailable: 'Not available',
 	bad_key: 'Key not allowed',
-	stale: 'The prompt changed'
+	stale: 'Prompt changed',
+	no_input: 'No input box',
+	not_sent: 'Not sent'
 };
+
+/** What the Mac said when it refused a write. `ApiError` is one. */
+export interface Refusal {
+	status: number;
+	code: string | null;
+	detail: string | null;
+	reason?: string | null;
+	cleared?: boolean | null;
+}
+
+/**
+ * The pane may show a prompt the phone has not drawn: it refused because it
+ * waits, or because the prompt the phone named is not the one it shows.
+ */
+export function needsPrompt(refusal: Refusal | null): boolean {
+	if (refusal?.status !== 409) return false;
+	return (
+		refusal.code === 'waiting' ||
+		refusal.code === 'stale' ||
+		(refusal.code === 'not_sent' && refusal.reason === 'waiting')
+	);
+}
+
+/**
+ * What a refused reply leaves on the phone. A text the Mac pasted and could
+ * not take out again is still in the pane: the box is emptied, so Send cannot
+ * submit it twice. Every other refusal keeps the draft, to send again.
+ */
+export function textRefusal(refusal: Refusal | null): { note: string; keepDraft: boolean } {
+	if (refusal?.code === 'not_sent' && refusal.cleared === false)
+		return { note: 'Left in the pane', keepDraft: false };
+	return { note: refusalLabel(refusal, 'text'), keepDraft: true };
+}
 
 /** The status line for a write the Mac refused: its sentence, or a short label. */
 export function refusalLabel(
-	refusal: { status: number; code: string | null; detail: string | null } | null,
+	refusal: Refusal | null,
 	what: 'text' | 'file' | 'key' | 'answer' = 'text'
 ): string {
 	if (!refusal) return 'No answer';

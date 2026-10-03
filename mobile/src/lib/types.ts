@@ -107,6 +107,15 @@ export interface Prompt {
 	detail: string;
 	question: string;
 	options: PromptOption[];
+	/** The pane shows more of the detail than the Mac sent. */
+	truncated?: boolean;
+}
+
+/** The answer of `GET /prompt`. */
+export interface PromptState {
+	prompt: Prompt | null;
+	/** Names what the pane waits on, also when it has no readable choices. */
+	id: string | null;
 }
 
 /** A slash command of a thread. `name` has no leading slash. */

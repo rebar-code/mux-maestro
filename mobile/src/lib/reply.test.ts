@@ -2,13 +2,19 @@ import { describe, expect, it } from 'vitest';
 import {
 	BAR_KEYS,
 	barKeys,
+	CTRL_MS,
 	ctrlReduce,
 	filterCommands,
 	isKeyName,
+	KEY_QUEUE_MAX,
 	liveLines,
+	needsPrompt,
 	nextWaiting,
+	queueKey,
 	refusalLabel,
-	slashQuery
+	slashQuery,
+	textRefusal,
+	type Refusal
 } from './reply';
 import type { ChatMessage, Command, Thread } from './types';
 
@@ -93,13 +99,84 @@ describe('ctrlReduce', () => {
 		expect(ctrlReduce(true, { type: 'input', data: 'D' })).toEqual({ on: false, key: 'C-d' });
 	});
 
-	it('leaves other input as text and stays on', () => {
+	it('switches off after one key of any other kind, and sends nothing', () => {
 		for (const data of ['1', ' ', 'ab', '/', 'é', null])
-			expect(ctrlReduce(true, { type: 'input', data })).toEqual({ on: true, key: null });
+			expect(ctrlReduce(true, { type: 'input', data })).toEqual({ on: false, key: null });
+	});
+
+	it('gives up after five seconds', () => {
+		expect(CTRL_MS).toBe(5000);
 	});
 
 	it('does nothing while off', () => {
 		expect(ctrlReduce(false, { type: 'input', data: 'c' })).toEqual({ on: false, key: null });
+	});
+});
+
+describe('queueKey', () => {
+	it('keeps the order and drops what does not fit', () => {
+		let queue: string[] = [];
+		for (const key of ['Up', 'Up', 'Enter']) queue = queueKey(queue, key);
+		expect(queue).toEqual(['Up', 'Up', 'Enter']);
+		for (let i = 0; i < 20; i += 1) queue = queueKey(queue, 'Down');
+		expect(queue).toHaveLength(KEY_QUEUE_MAX);
+		expect(queue.slice(0, 3)).toEqual(['Up', 'Up', 'Enter']);
+	});
+
+	it('does not change the queue it was given', () => {
+		const queue = ['Up'];
+		expect(queueKey(queue, 'Down')).toEqual(['Up', 'Down']);
+		expect(queue).toEqual(['Up']);
+	});
+});
+
+describe('refused replies', () => {
+	const refused = (code: string, more: Partial<Refusal> = {}): Refusal => ({
+		status: 409,
+		code,
+		detail: null,
+		...more
+	});
+
+	it('keeps the draft when the pane gave the text back', () => {
+		expect(
+			textRefusal(refused('not_sent', { cleared: true, detail: 'The pane started a turn' }))
+		).toEqual({ note: 'The pane started a turn', keepDraft: true });
+		expect(textRefusal(refused('not_sent', { cleared: true }))).toEqual({
+			note: 'Not sent',
+			keepDraft: true
+		});
+	});
+
+	it('empties the box when the text is still in the pane', () => {
+		expect(
+			textRefusal(refused('not_sent', { cleared: false, detail: 'The pane started a turn' }))
+		).toEqual({ note: 'Left in the pane', keepDraft: false });
+	});
+
+	it('keeps the draft on every other refusal', () => {
+		expect(textRefusal(refused('no_input', { detail: 'Thread shows no input box' }))).toEqual({
+			note: 'Thread shows no input box',
+			keepDraft: true
+		});
+		expect(textRefusal(refused('no_input'))).toEqual({ note: 'No input box', keepDraft: true });
+		expect(textRefusal(refused('busy'))).toEqual({ note: 'Busy', keepDraft: true });
+		expect(textRefusal(null)).toEqual({ note: 'No answer', keepDraft: true });
+	});
+
+	it('asks for the prompt again when the pane waits on one', () => {
+		expect(needsPrompt(refused('waiting'))).toBe(true);
+		expect(needsPrompt(refused('stale'))).toBe(true);
+		expect(needsPrompt(refused('not_sent', { reason: 'waiting' }))).toBe(true);
+		expect(needsPrompt(refused('not_sent', { reason: 'busy' }))).toBe(false);
+		expect(needsPrompt(refused('busy'))).toBe(false);
+		expect(needsPrompt(refused('no_input'))).toBe(false);
+		expect(needsPrompt({ status: 400, code: 'stale', detail: null })).toBe(false);
+		expect(needsPrompt(null)).toBe(false);
+	});
+
+	it('labels a stale key', () => {
+		expect(refusalLabel(refused('stale'), 'key')).toBe('Prompt changed');
 	});
 });
 

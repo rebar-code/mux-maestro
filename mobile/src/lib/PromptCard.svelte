@@ -4,12 +4,15 @@
 	const {
 		prompt,
 		answering,
-		onanswer
+		onanswer,
+		onterminal
 	}: {
 		prompt: Prompt;
 		/** The option an answer in flight picked. */
 		answering: number | null;
 		onanswer: (option: number) => void;
+		/** Open the pane's own text. Not given when it is already showing. */
+		onterminal?: () => void;
 	} = $props();
 
 	const permission = $derived(prompt.kind === 'permission');
@@ -19,7 +22,10 @@
 
 <div class="card" data-prompt={prompt.id} data-kind={prompt.kind}>
 	{#if title}<h3>{title}</h3>{/if}
-	{#if prompt.detail}<pre class="mono">{prompt.detail}</pre>{/if}
+	{#if prompt.detail || prompt.truncated}
+		<pre class="mono">{prompt.detail}{#if prompt.truncated}<span class="more" data-more>…</span
+				>{/if}</pre>
+	{/if}
 	{#if prompt.question}<p class="q">{prompt.question}</p>{/if}
 	<div class="opts">
 		{#each prompt.options as option, index (option.n)}
@@ -34,6 +40,9 @@
 				<span class="k" aria-hidden="true">{option.n}</span>
 			</button>
 		{/each}
+		{#if prompt.truncated && onterminal}
+			<button type="button" class="term" onclick={onterminal}>Show terminal</button>
+		{/if}
 	</div>
 </div>
 
@@ -94,6 +103,16 @@
 
 	button:not(:disabled):active {
 		filter: brightness(1.4);
+	}
+
+	.more {
+		color: var(--muted);
+	}
+
+	button.term {
+		justify-content: center;
+		background: none;
+		color: var(--muted);
 	}
 
 	.label {
