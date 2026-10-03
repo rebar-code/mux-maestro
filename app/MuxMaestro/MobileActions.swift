@@ -7,15 +7,19 @@ import Foundation
 // The rules, in one place:
 // - An action is a case of `MobileAction`. Nothing else reaches tmux.
 // - A target is looked up in the live tree. The phone names a thread, or a
-//   host and a session; what goes to tmux is the tree's own pane id or session
-//   name, never a string the phone sent.
+//   host and a session; what goes to tmux is the tree's own pane id, never a
+//   string the phone sent. A pane id is never used again by a tmux server, so
+//   a request that is sent twice cannot reach a newer session of the same name.
+// - tmux reads an argument that ends in `;` as the end of one command and the
+//   start of the next. No argument built here can end in one.
 // - A name passes `MobileActions.name`. It is one argv item of its own.
 // - A new session starts in a directory from `MobileActions.dirs`, or at home.
-// - A kill needs `"confirm": true`.
+// - A kill needs `"confirm": true`, and names its session by a thread.
 // - The manager's own session takes no action.
 
-/// One tmux call on a host. nil when it failed.
-typealias MobileTmux = (_ args: [String]) -> String?
+/// One tmux call on a host: whether it exited 0, and what it printed (its
+/// errors too). nil when the host has no tmux to call.
+typealias MobileTmux = (_ args: [String]) -> (ok: Bool, output: String)?
 
 /// Every action the phone may ask for: the last segment of `/api/tmux/<action>`.
 enum MobileAction: String, CaseIterable {
@@ -38,6 +42,11 @@ enum MobileAction: String, CaseIterable {
 
 enum MobileActions {
     static let maxNameLength = 64
+    /// The same cap in bytes: one character can be many bytes long.
+    static let maxNameBytes = 128
+    static let failed = "tmux did not run the action"
+    /// The home directory on a remote host: its shell expands it.
+    static let remoteHome = "~"
     /// The most directories a host offers for a new session.
     static let maxDirs = 50
     static let unreachable = "Could not reach tmux"
@@ -78,7 +87,8 @@ enum MobileActions {
     static func name(_ raw: Any?) -> String? {
         guard let raw = raw as? String else { return nil }
         let name = raw.trimmingCharacters(in: .whitespaces)
-        guard !name.isEmpty, name.count <= maxNameLength, !name.hasPrefix("-") else { return nil }
+        guard !name.isEmpty, name.count <= maxNameLength, name.utf8.count <= maxNameBytes,
+              !name.hasPrefix("-") else { return nil }
         for scalar in name.unicodeScalars {
             if scalar.isASCII {
                 guard CharacterSet.alphanumerics.contains(scalar) || asciiPunctuation.contains(scalar)
@@ -86,7 +96,9 @@ enum MobileActions {
                 continue
             }
             switch scalar.properties.generalCategory {
-            case .control, .lineSeparator, .paragraphSeparator, .surrogate, .privateUse, .unassigned:
+            case .control, .lineSeparator, .paragraphSeparator, .surrogate, .privateUse, .unassigned,
+                 .spaceSeparator:
+                // The only space in a name is the ASCII one.
                 return nil
             case .format:
                 // The joiner inside an emoji; every other format character
@@ -101,9 +113,11 @@ enum MobileActions {
 
     // MARK: Targets
 
-    /// A path from the live tree that can be a tmux `-c` argument.
-    private static func path(_ raw: String) -> String? {
-        guard raw.hasPrefix("/"), !raw.contains("\n"),
+    /// A path from the live tree that can be a tmux `-c` argument. tmux
+    /// expands `#{…}` in that argument, so a path with a `#` is left out, and
+    /// so is one that ends in `;`.
+    static func path(_ raw: String) -> String? {
+        guard raw.hasPrefix("/"), !raw.contains("\n"), !raw.contains("#"), !raw.hasSuffix(";"),
               raw.unicodeScalars.allSatisfy(MobileManager.isText) else { return nil }
         return raw
     }
@@ -147,21 +161,27 @@ enum MobileActions {
         return thread
     }
 
-    /// The session `fields` names, as a thread or as a host and a session
-    /// name, with a directory of its own.
+    /// The session `fields` names, as one of its threads or as a host and a
+    /// session name: a thread of it from the live tree. Every value read from
+    /// the result is the tree's own. The phone's name only finds the row: two
+    /// strings that compare equal can still differ in their bytes.
     private static func session(
-        _ fields: [String: Any], snapshot: MobileSnapshot
-    ) throws -> (host: Host, name: String, cwd: String?) {
-        if fields["thread"] != nil {
-            let thread = try thread(fields, snapshot: snapshot)
-            return (thread.host, thread.session, path(thread.cwd))
+        _ fields: [String: Any], snapshot: MobileSnapshot, byThreadOnly: Bool = false
+    ) throws -> MobileThread {
+        let found: MobileThread
+        if fields["thread"] != nil || byThreadOnly {
+            found = try thread(fields, snapshot: snapshot)
+        } else {
+            let host = try host(fields, snapshot: snapshot)
+            guard let name = fields["session"] as? String else { throw Refusal(400, "bad_request") }
+            guard !isManager(host, name) else { throw Refusal(403, "protected") }
+            guard let first = snapshot.threads.first(where: { $0.host == host && $0.session == name })
+            else { throw Refusal(404, "not_found") }
+            found = try thread(["thread": first.id], snapshot: snapshot)
         }
-        let host = try host(fields, snapshot: snapshot)
-        guard let name = fields["session"] as? String else { throw Refusal(400, "bad_request") }
-        guard !isManager(host, name) else { throw Refusal(403, "protected") }
-        guard let first = snapshot.threads.first(where: { $0.host == host && $0.session == name })
-        else { throw Refusal(404, "not_found") }
-        return (host, name, path(first.cwd))
+        // A name that ends in `;` would end the tmux command where it stands.
+        guard !found.session.hasSuffix(";") else { throw Refusal(404, "not_found") }
+        return found
     }
 
     private static func confirmed(_ fields: [String: Any]) throws {
@@ -174,8 +194,10 @@ enum MobileActions {
     // MARK: Actions
 
     /// Check `action` against the live tree and build its tmux command.
+    /// `home` is this Mac's home directory.
     static func plan(
-        _ action: MobileAction, fields: [String: Any], snapshot: MobileSnapshot
+        _ action: MobileAction, fields: [String: Any], snapshot: MobileSnapshot,
+        home: String = NSHomeDirectory()
     ) throws -> Call {
         switch action {
         case .newSession:
@@ -198,23 +220,28 @@ enum MobileActions {
             }
             let unique = TmuxCommands.uniqueSessionName(
                 wanted, existing: sessionNames(on: host, snapshot: snapshot))
+            // No directory is the home directory. Without `-c`, tmux starts
+            // the session where its server was started.
+            let start = dir ?? (host.isLocal ? path(home) : remoteHome)
             return Call(
-                host: host, argv: TmuxCommands.newSession(name: unique, dir: dir), made: .session(unique))
+                host: host, argv: TmuxCommands.newSession(name: unique, dir: start), made: .session(unique))
         case .newWindow:
             let target = try session(fields, snapshot: snapshot)
-            // `=` pins the session to an exact name.
+            // `=` pins the session to an exact name, and the `:` after it is
+            // the argument's last character.
             return Call(
                 host: target.host,
-                argv: TmuxCommands.newWindow(session: "=\(target.name)", cwd: target.cwd, printTarget: true),
+                argv: TmuxCommands.newWindow(
+                    session: "=\(target.session)", cwd: path(target.cwd), printTarget: true),
                 made: .window)
         case .renameSession:
             let target = try session(fields, snapshot: snapshot)
             guard let new = name(fields["name"]) else { throw Refusal(400, "bad_name") }
-            guard new == target.name
+            guard new == target.session
                 || !sessionNames(on: target.host, snapshot: snapshot).contains(new)
             else { throw Refusal(409, "exists") }
-            return Call(
-                host: target.host, argv: TmuxCommands.renameSession(from: "=\(target.name)", to: new))
+            // The pane id names its session.
+            return Call(host: target.host, argv: TmuxCommands.renameSession(from: target.pane, to: new))
         case .renameWindow:
             let thread = try thread(fields, snapshot: snapshot)
             guard let new = name(fields["name"]) else { throw Refusal(400, "bad_name") }
@@ -222,9 +249,11 @@ enum MobileActions {
             // renumbers windows, as an index does.
             return Call(host: thread.host, argv: TmuxCommands.renameWindow(target: thread.pane, to: new))
         case .killSession:
-            let target = try session(fields, snapshot: snapshot)
+            // By a thread only: a name could be a newer session's by the time
+            // a request that was sent twice arrives.
+            let target = try session(fields, snapshot: snapshot, byThreadOnly: true)
             try confirmed(fields)
-            return Call(host: target.host, argv: TmuxCommands.killSession(name: target.name))
+            return Call(host: target.host, argv: TmuxCommands.killSession(holding: target.pane))
         case .killWindow:
             let thread = try thread(fields, snapshot: snapshot)
             try confirmed(fields)
@@ -242,28 +271,39 @@ enum MobileActions {
     /// Run one action. `tmux` gives the runner for a host, nil where there is
     /// none. Blocks on the tmux call.
     static func perform(
-        _ action: MobileAction, body: Data, snapshot: MobileSnapshot, tmux: (Host) -> MobileTmux?
+        _ action: MobileAction, body: Data, snapshot: MobileSnapshot, home: String = NSHomeDirectory(),
+        tmux: (Host) -> MobileTmux?
     ) -> MobileResponse {
         guard let fields = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] else {
             return .error(400, "bad_request")
         }
         let call: Call
         do {
-            call = try plan(action, fields: fields, snapshot: snapshot)
+            call = try plan(action, fields: fields, snapshot: snapshot, home: home)
         } catch let refusal as Refusal {
             return refusal.response
         } catch {
             return .error(400, "bad_request")
         }
-        guard let run = tmux(call.host), let output = run(call.argv) else {
+        guard let run = tmux(call.host), let ran = run(call.argv) else {
             return .error(503, "unavailable", message: unreachable)
         }
         var result: [String: Any] = ["ok": true]
+        guard ran.ok else {
+            // The target went between the tree and the call. For a kill that
+            // is the goal, reached; for anything else there is nothing to act on.
+            guard TmuxCommands.killReachedGoalDespiteError(ran.output) else {
+                return .error(409, "failed", message: failed)
+            }
+            guard action.isKill else { return .error(404, "not_found") }
+            result["gone"] = true
+            return .json(result)
+        }
         switch call.made {
         case .nothing:
             break
         case .window:
-            if let created = TmuxCommands.parseCreatedPane(output) {
+            if let created = TmuxCommands.parseCreatedPane(ran.output) {
                 result["thread"] = MobileSnapshot.threadID(host: call.host, pane: created.pane)
             }
         case .session(let name):
@@ -272,7 +312,6 @@ enum MobileActions {
         return .json(result)
     }
 }
-
 // MARK: - Find
 
 /// Find in one thread's scrollback: `PaneSearch` over that pane alone.
@@ -282,6 +321,7 @@ enum MobileFind {
     static let maxMatches = 200
     /// The most scrollback text one answer carries; older lines are left out.
     static let maxTextBytes = 524_288
+    static let busy = "Another find is running"
 
     /// The text to look for, or nil: empty, too long, or not plain text. It
     /// is matched as it is, never as a pattern.
@@ -331,9 +371,15 @@ enum MobileFind {
 
     /// Search the thread's pane. Blocks on the tmux call.
     static func search(thread: MobileThread, query: String, tmux: MobileTmux?) -> MobileResponse {
-        guard let tmux, let capture = tmux(PaneSearch.captureArgv(panes: [thread.pane])) else {
+        guard let ran = tmux?(PaneSearch.captureArgv(panes: [thread.pane])) else {
             return .error(503, "unavailable", message: MobileActions.unreachable)
         }
-        return .json(result(query: query, capture: capture, thread: thread))
+        guard ran.ok else {
+            // The pane went between the tree and the capture.
+            return TmuxCommands.killReachedGoalDespiteError(ran.output)
+                ? .error(404, "not_found")
+                : .error(503, "unavailable", message: MobileActions.unreachable)
+        }
+        return .json(result(query: query, capture: ran.output, thread: thread))
     }
 }

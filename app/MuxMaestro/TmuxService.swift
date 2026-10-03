@@ -1885,10 +1885,14 @@ final class TmuxService {
             })
     }
 
-    /// One tmux call on this host, for the phone's session actions and find.
-    /// Blocking; call off the main thread.
-    func phoneTmux(_ args: [String]) -> String? {
-        tmux(args)
+    /// One tmux call on this host, for the phone's session actions and find:
+    /// whether it exited 0, and its output with its errors, so a target that
+    /// is already gone can be told from a host that did not answer. nil when
+    /// the host has no tmux to call. Blocking; call off the main thread.
+    func phoneTmux(_ args: [String]) -> (ok: Bool, output: String)? {
+        guard let (path, full) = transport.command(forTmux: args) else { return nil }
+        let (ok, text) = runner.runCapturing(path, full)
+        return (ok, text)
     }
 
     /// Drop a local file onto a session on this host: resolve the session's cwd,

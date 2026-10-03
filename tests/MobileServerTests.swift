@@ -116,12 +116,28 @@ final class MobileServerTests: XCTestCase {
     // MARK: client
 
     /// Send `raw` and read until `done` says the reply is whole (or 5 s pass).
+    ///
+    /// A connection that never opens is tried again. Each exchange uses a new
+    /// local port, and with many test runs on one machine the system can have
+    /// none free for a moment (`connectx` fails with "Address already in use").
+    /// Nothing was sent then, so asking again cannot repeat a write.
     private func exchange(_ raw: String, until done: @escaping (String) -> Bool) -> String {
+        for _ in 0..<20 {
+            if let reply = attempt(raw, until: done) { return reply }
+            Thread.sleep(forTimeInterval: 0.25)
+        }
+        return ""
+    }
+
+    /// One try. nil when the connection did not open.
+    private func attempt(_ raw: String, until done: @escaping (String) -> Bool) -> String? {
         let connection = NWConnection(
             host: "127.0.0.1", port: NWEndpoint.Port(rawValue: UInt16(port))!, using: .tcp)
         let queue = DispatchQueue(label: "mobile-server-tests")
         let finished = DispatchSemaphore(value: 0)
         var received = Data()
+        var opened = false
+        var unopened = false
         func read() {
             connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { data, _, complete, error in
                 if let data { received.append(data) }
@@ -132,12 +148,25 @@ final class MobileServerTests: XCTestCase {
                 }
             }
         }
+        connection.stateUpdateHandler = { state in
+            switch state {
+            case .ready:
+                opened = true
+            case .waiting, .failed:
+                // Not connected, and it never was: no byte of the request left.
+                guard !opened, !unopened else { return }
+                unopened = true
+                finished.signal()
+            default:
+                break
+            }
+        }
         connection.start(queue: queue)
         connection.send(content: Data(raw.utf8), completion: .contentProcessed { _ in })
         read()
         _ = finished.wait(timeout: .now() + 5)
         connection.cancel()
-        return queue.sync { String(decoding: received, as: UTF8.self) }
+        return queue.sync { unopened && received.isEmpty ? nil : String(decoding: received, as: UTF8.self) }
     }
 
     private func whole(_ text: String) -> Bool {
@@ -1117,7 +1146,7 @@ final class MobileServerTests: XCTestCase {
             ("/api/tmux/zoom-pane", #"{"thread":"localhost:12"}"#),
             ("/api/tmux/kill-pane", #"{"thread":"localhost:12","confirm":true}"#),
             ("/api/tmux/kill-window", #"{"thread":"localhost:12","confirm":true}"#),
-            ("/api/tmux/kill-session", #"{"host":"localhost","session":"acme-app","confirm":true}"#),
+            ("/api/tmux/kill-session", #"{"thread":"localhost:12","confirm":true}"#),
         ]
     }
 
@@ -1209,7 +1238,7 @@ final class MobileServerTests: XCTestCase {
                 XCTAssertEqual(post("/api/tmux/\(action)", json: body).status, 404, "\(action) \(id)")
             }
         }
-        let bySession = ["new-window", "rename-session", "kill-session"]
+        let bySession = ["new-window", "rename-session"]
         for (host, session) in [("localhost", "gone"), ("devbox", "acme-app"), ("localhost", "acme")] {
             for action in bySession {
                 let body = #"{"host":"\#(host)","session":"\#(session)","name":"x","confirm":true}"#
@@ -1244,8 +1273,7 @@ final class MobileServerTests: XCTestCase {
         let kills: [(String, String, [String])] = [
             ("/api/tmux/kill-pane", #""thread":"localhost:12""#, ["kill-pane", "-t", "%12"]),
             ("/api/tmux/kill-window", #""thread":"localhost:13""#, ["kill-window", "-t", "%13"]),
-            ("/api/tmux/kill-session", #""host":"localhost","session":"acme-app""#,
-             ["kill-session", "-t", "=acme-app"]),
+            ("/api/tmux/kill-session", #""thread":"localhost:12""#, ["kill-session", "-t", "%12"]),
         ]
         for (path, target, _) in kills {
             for body in ["{\(target)}", "{\(target),\"confirm\":false}", "{\(target),\"confirm\":\"true\"}"] {
@@ -1282,8 +1310,57 @@ final class MobileServerTests: XCTestCase {
         XCTAssertEqual(refused.status, 400)
         XCTAssertEqual(refused.body, #"{"error":"bad_dir"}"#)
         XCTAssertEqual(tmux.argv.count, before)
-        tmux.failing = true
+        // No directory: this Mac's home, from the server's own settings.
+        XCTAssertEqual(post("/api/tmux/new-session", json: #"{"host":"localhost"}"#).status, 200)
+        XCTAssertEqual(tmux.argv.last, ["new-session", "-d", "-s", "session", "-c", home.path])
+        tmux.missing = true
         XCTAssertEqual(post("/api/tmux/zoom-pane", json: #"{"thread":"localhost:12"}"#).status, 503)
+    }
+
+    func testAStaleKillIsDoneAndAnyOtherTmuxErrorIsA409() {
+        actionsOn()
+        tmux.failing = true
+        tmux.failure = "can't find pane: %12"
+        let gone = post("/api/tmux/kill-window", json: #"{"thread":"localhost:12","confirm":true}"#)
+        XCTAssertEqual(gone.status, 200)
+        XCTAssertEqual(gone.body, #"{"gone":true,"ok":true}"#)
+        // The tree is loaded again, so the phone drops the row.
+        XCTAssertEqual(changes.count, 1)
+        XCTAssertEqual(post("/api/tmux/zoom-pane", json: #"{"thread":"localhost:12"}"#).status, 404)
+
+        tmux.failure = "server exited unexpectedly"
+        let failed = post("/api/tmux/kill-window", json: #"{"thread":"localhost:12","confirm":true}"#)
+        XCTAssertEqual(failed.status, 409)
+        XCTAssertTrue(failed.body.contains(#""error":"failed""#), failed.body)
+        XCTAssertEqual(changes.count, 1)
+    }
+
+    func testOnlySoManyFindsRunAtOnce() {
+        restart(limits: MobileServer.Limits(maxFinds: 1))
+        actionsOn()
+        tmux.output = "\(PaneSearch.marker)%12\n$ make test\nok\n"
+        let gate = DispatchSemaphore(value: 0)
+        tmux.gate = gate
+        let first = expectation(description: "first find answered")
+        var status = 0
+        DispatchQueue.global().async {
+            status = self.get(Self.find).status
+            first.fulfill()
+        }
+        // The first find is inside tmux now.
+        let deadline = Date().addingTimeInterval(5)
+        while tmux.argv.count < 1, Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
+        XCTAssertEqual(tmux.argv.count, 1)
+        let second = get(Self.find)
+        XCTAssertEqual(second.status, 409)
+        XCTAssertTrue(second.body.contains(#""error":"busy""#), second.body)
+        XCTAssertEqual(tmux.argv.count, 1)
+
+        tmux.gate = nil
+        gate.signal()
+        wait(for: [first], timeout: 5)
+        XCTAssertEqual(status, 200)
+        XCTAssertEqual(get(Self.find).status, 200)
     }
 
     func testFindSearchesTheThreadsPaneAndRefusesABadQuery() throws {

@@ -4,7 +4,8 @@ import type { ActionTarget, Thread } from './types';
 /** What a long press was on. */
 export type MenuTarget =
 	| { kind: 'thread'; thread: Thread }
-	| { kind: 'session'; host: string; session: string }
+	/** `thread`: any thread of the session. It is how the Mac is told which session. */
+	| { kind: 'session'; host: string; session: string; thread: string }
 	| { kind: 'host'; host: string };
 
 export type ItemKey =
@@ -55,10 +56,14 @@ export function currentName(target: MenuTarget): string {
 	return target.kind === 'session' ? target.session : '';
 }
 
-/** What the Mac is told the action is done to. */
+/**
+ * What the Mac is told the action is done to: always a thread. A session is
+ * named by one of its threads, so a request that arrives late cannot reach a
+ * newer session that took the same name.
+ */
 export function actionTarget(target: MenuTarget): ActionTarget | null {
 	if (target.kind === 'thread') return { thread: target.thread.id };
-	if (target.kind === 'session') return { host: target.host, session: target.session };
+	if (target.kind === 'session') return { thread: target.thread };
 	return null;
 }
 
@@ -119,5 +124,6 @@ export function refusalText(code: string | null, detail: string | null): string 
 	if (code === 'not_found') return 'No longer there';
 	if (code === 'disabled') return 'Switched off on the Mac';
 	if (code === 'protected') return 'Not allowed';
+	if (code === 'bad_dir') return 'Directory not offered';
 	return 'Failed';
 }

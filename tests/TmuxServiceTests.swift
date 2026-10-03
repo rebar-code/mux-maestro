@@ -781,6 +781,31 @@ final class TmuxServiceTests: XCTestCase {
             statusProvider: StaticStatusProvider())
     }
 
+    func testAPhoneActionOnARemoteHostGoesThroughSshWithEachArgumentQuoted() {
+        let runner = FakeRunner()
+        let service = TmuxService(
+            host: Host(name: "devbox", sshAlias: "devbox"),
+            transport: SshTmuxTransport(host: "devbox", moshPath: nil),
+            runner: runner, statusProvider: StaticStatusProvider())
+        let ran = service.phoneTmux(["rename-window", "-t", "%3", "deploy fix"])
+        XCTAssertEqual(ran?.ok, true)
+        XCTAssertEqual(runner.calls.count, 1)
+        XCTAssertEqual(runner.calls[0].path, Ssh.sshPath)
+        let args = runner.calls[0].args
+        XCTAssertTrue(args.contains("devbox"))
+        // ssh joins the remote command and the remote shell reads it again:
+        // each tmux argument is one quoted word, so a space stays in the name.
+        let remote = args.joined(separator: " ")
+        for word in ["rename-window", "-t", "%3", "deploy fix"] {
+            XCTAssertTrue(remote.contains(Ssh.shellQuote(word)), word)
+        }
+        XCTAssertTrue(remote.hasSuffix(Ssh.shellQuote("deploy fix")))
+
+        // A call that exits non-zero is a failure, not "no tmux".
+        runner.defaultResponse = nil
+        XCTAssertEqual(service.phoneTmux(["kill-window", "-t", "%3"])?.ok, false)
+    }
+
     func testRemoteAttachUsesMoshWhenRequestedAndAvailable() {
         let cmd = remoteMoshService("/opt/homebrew/bin/mosh")
             .attachCommand(session: "api", useMosh: true)!

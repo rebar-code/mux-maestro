@@ -1,9 +1,10 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
+	import type { MenuTarget } from './actions';
 	import { menu } from './actions.svelte';
 	import { pullToRefresh, ui } from './gestures.svelte';
-	import { counts, GROUPINGS, sections } from './group';
+	import { counts, GROUPINGS, sections, type SessionGroup } from './group';
 	import HostCard from './HostCard.svelte';
 	import { can, live } from './live.svelte';
 	import { longPress } from './longpress';
@@ -16,6 +17,13 @@
 	const waiting = $derived(live.threads ? counts(live.threads).waiting : 0);
 	const openId = $derived(page.route.id === '/t/[id]' ? page.params.id : null);
 	const closed = $derived(ui.drawer === 0 && !ui.dragging);
+
+	const sessionTarget = (session: SessionGroup): MenuTarget => ({
+		kind: 'session',
+		host: session.host,
+		session: session.name,
+		thread: session.threads[0].id
+	});
 </script>
 
 <aside
@@ -80,10 +88,7 @@
 					<div
 						class="shead"
 						data-session={session.key}
-						{@attach can('sessionActions') &&
-							longPress(() =>
-								menu.open({ kind: 'session', host: session.host, session: session.name })
-							)}
+						{@attach can('sessionActions') && longPress(() => menu.open(sessionTarget(session)))}
 					>
 						<b>{session.name}</b>
 						<span
@@ -98,9 +103,7 @@
 							aria-disabled={!can('sessionActions')}
 							aria-label="New window in {session.name}"
 							data-no-hold
-							onclick={() =>
-								menu.newWindow({ kind: 'session', host: session.host, session: session.name })}
-							>＋</button
+							onclick={() => menu.newWindow(sessionTarget(session))}>＋</button
 						>
 					</div>
 					{#each session.threads as thread (thread.id)}

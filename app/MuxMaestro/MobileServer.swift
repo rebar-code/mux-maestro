@@ -68,6 +68,10 @@ final class MobileServer {
         /// A turn stream with nothing to say gets a comment line this often,
         /// so the phone can tell a quiet turn from a dead connection.
         var turnPing: TimeInterval = 15
+        /// Finds that may run at once. Each one captures a pane's scrollback,
+        /// and every phone comes in through the same proxy, so the bound is
+        /// on the server and not on one caller.
+        var maxFinds = 2
     }
 
     enum StartError: Error, Equatable {
@@ -127,6 +131,8 @@ final class MobileServer {
     /// Threads with a write on its way to their pane. One at a time per
     /// thread: a paste and its Enter are not interleaved with another's.
     private var writing = Set<String>()
+    /// Finds that are capturing a pane now.
+    private var finds = 0
     /// The last `manager` event's state, without the reply text: a reply
     /// grows by `manager-delta` events, not by sending the board again.
     private var managerKey = MobileManager.liveJSON(
@@ -611,7 +617,8 @@ final class MobileServer {
             let snapshot = snapshot
             reply(to: client) { [sources] in
                 let response = MobileActions.perform(
-                    action, body: request.body, snapshot: snapshot, tmux: sources.tmux)
+                    action, body: request.body, snapshot: snapshot, home: sources.home,
+                    tmux: sources.tmux)
                 if response.status == 200 { sources.changed() }
                 return response
             }
@@ -627,8 +634,20 @@ final class MobileServer {
             guard let thread = snapshot.thread(id: id) else {
                 return send(.error(404, "not_found"), to: client, head: head)
             }
-            reply(to: client) { [sources] in
-                MobileFind.search(thread: thread, query: query, tmux: sources.tmux(thread.host))
+            guard finds < limits.maxFinds else {
+                return send(.error(409, "busy", message: MobileFind.busy), to: client, head: head)
+            }
+            finds += 1
+            work.async { [weak self, weak client, sources] in
+                let response = MobileFind.search(
+                    thread: thread, query: query, tmux: sources.tmux(thread.host))
+                self?.queue.async {
+                    guard let self else { return }
+                    // Counted down whether or not the phone still listens.
+                    self.finds -= 1
+                    guard let client, self.clients[ObjectIdentifier(client)] != nil else { return }
+                    self.send(response, to: client, head: false)
+                }
             }
         }
     }

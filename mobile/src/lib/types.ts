@@ -202,8 +202,10 @@ export type TmuxAction =
 	| 'kill-pane'
 	| 'zoom-pane';
 
-/** What an action is done to: a thread, or a session by its host and name. */
-export type ActionTarget = { thread: string } | { host: string; session: string };
+/** What an action is done to: a thread, or the session that holds it. */
+export interface ActionTarget {
+	thread: string;
+}
 
 /** A start and an end offset in a string. */
 export type Range = [number, number];

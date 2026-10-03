@@ -106,6 +106,13 @@ enum TmuxCommands {
         ["kill-session", "-t", "=\(name)"]
     }
 
+    /// Kill the session that holds `pane` (a pane id like `%12`). A pane id is
+    /// never used again by a tmux server, so a kill that arrives late cannot
+    /// reach a newer session that took the same name.
+    static func killSession(holding pane: String) -> [String] {
+        ["kill-session", "-t", pane]
+    }
+
     /// Whether a destructive command that exited non-zero actually reached its goal:
     /// tmux prints "can't find session/window/pane: <t>" when the target is already
     /// gone, or "no server running…" when the whole server is down — both mean the

@@ -8,7 +8,7 @@
 // /__fixture/capability?name=&on=, /__fixture/manager-status?value=,
 // /__fixture/mac-turn?text=&reply=, /__fixture/voice?mode=&speaker=&heard=&delay=,
 // /__fixture/voice-takes, /__fixture/replies, /__fixture/prompt?id=&pid=&kind=,
-// /__fixture/upload-max?value=, /__fixture/status?id=&value=, /__fixture/panes?id=&value=,
+// /__fixture/upload-max?value=, /__fixture/status?id=&value=, /__fixture/panes?id=&value=, /__fixture/find-busy?value=,
 // /__fixture/prompt also takes truncated=1, bare=1 (an id with no choices), quiet=1,
 // /__fixture/not-sent?cleared=&reason=, /__fixture/no-input?id=&on=, /__fixture/pasted?on=
 //
@@ -177,6 +177,8 @@ let started, threads, chats, grouping, deny, token, capabilities, manager, voice
 let prompts, replies, uploadMax, promptSeq, notSent, noInput, pasted, keyLocks;
 // Makes one thread row; set by `reset`, used again for a new window or session.
 let makeThread;
+// How many finds the Mac refuses as busy before it answers one.
+let findBusy;
 const streams = new Set();
 
 function reset() {
@@ -202,6 +204,7 @@ function reset() {
 	pasted = true;
 	keyLocks = new Set();
 	promptSeq = 0;
+	findBusy = 0;
 	uploadMax = 10485760;
 	replies = {
 		texts: [],
@@ -842,7 +845,12 @@ function tmuxApi(req, res, path, body) {
 	let thread = null;
 	let host = null;
 	let session = null;
-	if (byThread || (action !== 'new-session' && fields.thread !== undefined)) {
+	// A session is killed by one of its threads, never by its name.
+	if (
+		byThread ||
+		action === 'kill-session' ||
+		(action !== 'new-session' && fields.thread !== undefined)
+	) {
 		if (typeof fields.thread !== 'string') return send(res, 400, { error: 'bad_request' });
 		thread = threads.find((t) => t.id === fields.thread);
 		if (!thread) return send(res, 404, { error: 'not_found' });
@@ -878,7 +886,8 @@ function tmuxApi(req, res, path, body) {
 		const base = name;
 		for (let n = 2; taken(name); n += 1) name = `${base}-${n}`;
 		const made = makeThread(next, name, 'zsh', host, 'idle', '', 0, 'awake');
-		Object.assign(made, { command: 'zsh', chat: false, ...(dir ? { cwd: dir } : {}) });
+		const home = host === 'localhost' ? '/Users/me' : '/home/me';
+		Object.assign(made, { command: 'zsh', chat: false, cwd: dir ?? home });
 		threads.push(made);
 		result.session = name;
 	} else if (action === 'new-window') {
@@ -932,6 +941,10 @@ const FIND_MAX_MATCHES = 200;
 /** Find in a pane's scrollback: plain text, no case until the query has an uppercase letter. */
 function findApi(res, url, thread) {
 	if (!capabilities.find) return send(res, 403, { error: 'disabled' });
+	if (findBusy > 0) {
+		findBusy -= 1;
+		return send(res, 409, { error: 'busy', message: 'Another find is running' });
+	}
 	if (!thread) return send(res, 404, { error: 'not_found' });
 	const query = (url.searchParams.get('q') ?? '').trim();
 	if (!query || [...query].length > FIND_MAX_QUERY || CONTROL.test(query) || /[\n\t]/.test(query))
@@ -1042,6 +1055,9 @@ function hook(res, url) {
 			});
 			if (thread.status !== 'waiting') delete prompts[thread.id];
 			break;
+		case '/__fixture/find-busy':
+			findBusy = Number(url.searchParams.get('value') ?? 1);
+			return send(res, 200, { ok: true });
 		case '/__fixture/panes':
 			// The window was split: it holds this many threads now.
 			if (!thread) return send(res, 404, { error: 'not_found' });
