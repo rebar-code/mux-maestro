@@ -77,8 +77,8 @@ final class MobileServer {
         port: Int, identity: MobileIdentity,
         completion: @escaping (Result<Int, StartError>) -> Void
     ) {
-        queue.async {
-            self.stopNow()
+        queue.async { [self] in
+            stopNow()
             guard let nwPort = NWEndpoint.Port(rawValue: UInt16(clamping: port)),
                   (0...65535).contains(port)
             else { return completion(.failure(.badPort)) }
@@ -282,7 +282,9 @@ final class MobileServer {
             }
             reply(to: client) { [sources] in
                 guard let text = sources.screen(thread) else { return .error(503, "unavailable") }
-                return .json(["text": text])
+                // A pane is mostly empty rows below its prompt; the phone needs none of them.
+                let end = text.lastIndex { !$0.isNewline && !$0.isWhitespace }
+                return .json(["text": end.map { String(text[...$0]) } ?? ""])
             }
         case .asset(let path):
             send(asset(path), to: client, head: head)
