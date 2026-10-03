@@ -251,14 +251,15 @@ struct ArtifactWebItem: Equatable {
 extension ArtifactScanner {
     /// `http(s)` URLs in free text. A URL ends at whitespace, a quote, `<>`, a
     /// backtick, or a `)`/`]` that closes Markdown; trailing sentence
-    /// punctuation is not part of it.
+    /// punctuation and Markdown emphasis are not part of it. The brackets of
+    /// an IPv6 host (`http://[::1]:3000`) do not end it.
     static func urls(in text: String) -> [String] {
         guard text.contains("http") else { return [] }
         let range = NSRange(text.startIndex..., in: text)
         return urlRegex.matches(in: text, range: range).compactMap { match in
             guard let r = Range(match.range, in: text) else { return nil }
             var url = String(text[r])
-            while let last = url.last, ".,;:!?'".contains(last) { url.removeLast() }
+            while let last = url.last, ".,;:!?'*".contains(last) { url.removeLast() }
             // A wildcard host (`https://*.example.com`) is a pattern, not a link.
             guard let host = URLComponents(string: url)?.host, !host.isEmpty,
                   !host.contains("*") else { return nil }
@@ -267,7 +268,7 @@ extension ArtifactScanner {
     }
 
     private static let urlRegex = try! NSRegularExpression(
-        pattern: #"https?://[^\s<>"'`)\]]+"#, options: [.caseInsensitive])
+        pattern: #"https?://(?:\[[0-9a-f:.]+\])?[^\s<>"'`)\]]*"#, options: [.caseInsensitive])
 
     /// Loopback, the unspecified address, and mDNS / `.localhost` names.
     static func isLocalHost(_ host: String) -> Bool {
@@ -278,8 +279,9 @@ extension ArtifactScanner {
 
     /// Split the agent's URLs into local servers and links. One server row per
     /// port: it opens the page the agent named most recently on that port, or
-    /// Running's URL when the agent never named it. Live first, then by port.
-    /// Links: every other URL, newest first.
+    /// Running's URL when the agent never named it. When Running saw the
+    /// server speak https, the named page opens over https too. Live first,
+    /// then by port. Links: every other URL, newest first.
     static func web(
         urls: [String: Date], running: [ArtifactRunningServer], runningKnown: Bool
     ) -> (servers: [ArtifactWebItem], links: [ArtifactWebItem]) {
@@ -299,7 +301,12 @@ extension ArtifactScanner {
         let livePorts = Set(running.map(\.port))
         var servers: [(port: Int, item: ArtifactWebItem)] = []
         for server in running {
-            let url = named[server.port]?.url ?? server.url ?? "http://localhost:\(server.port)/"
+            var url = named[server.port]?.url ?? server.url ?? "http://localhost:\(server.port)/"
+            if server.url?.lowercased().hasPrefix("https://") == true,
+               var c = URLComponents(string: url), c.scheme?.lowercased() == "http" {
+                c.scheme = "https"
+                url = c.string ?? url
+            }
             servers.append((server.port, item(url, at: named[server.port]?.at, live: true)))
         }
         for (port, mention) in named where !livePorts.contains(port) {

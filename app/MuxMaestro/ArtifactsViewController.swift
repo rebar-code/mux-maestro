@@ -83,6 +83,10 @@ final class ArtifactsViewController: NSViewController {
         collection.onClick = { [weak self] path in
             if let web = self?.web(at: path) { self?.delegate?.artifactsPaneDidOpenURL(web.url) }
         }
+        // A server or link already opened on the first click of a double-click.
+        collection.onDoubleClick = { [weak self] path in
+            if self?.web(at: path) == nil { self?.activateSelected() }
+        }
         collection.menuFor = { [weak self] path in self?.copyMenu(for: path) }
 
         scroll.documentView = collection
@@ -464,13 +468,14 @@ extension ArtifactsViewController: QLPreviewPanelDataSource, QLPreviewPanelDeleg
 
 // MARK: - Views
 
-/// Reports ↩ (activate), Space (Quick Look) and double-click. Arrow keys keep
+/// Reports ↩ (activate), Space (Quick Look), click and double-click. Arrow keys keep
 /// the collection view's own stepping.
 final class ArtifactCollectionView: NSCollectionView {
     var onActivate: (() -> Void)?
     var onSpace: (() -> Void)?
     /// A single click on an item (servers and links open on it).
     var onClick: ((IndexPath) -> Void)?
+    var onDoubleClick: ((IndexPath) -> Void)?
     var menuFor: ((IndexPath) -> NSMenu?)?
 
     override func keyDown(with event: NSEvent) {
@@ -485,7 +490,7 @@ final class ArtifactCollectionView: NSCollectionView {
         super.mouseDown(with: event)
         let point = convert(event.locationInWindow, from: nil)
         guard let path = indexPathForItem(at: point) else { return }
-        if event.clickCount == 1 { onClick?(path) } else if event.clickCount == 2 { onActivate?() }
+        if event.clickCount == 1 { onClick?(path) } else if event.clickCount == 2 { onDoubleClick?(path) }
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {

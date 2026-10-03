@@ -292,8 +292,8 @@ let webRows = { (section: Int) in (0..<collection.numberOfItems(inSection: secti
 collection.scrollToItems(at: [IndexPath(item: 0, section: 3)], scrollPosition: .bottom)
 pump(2.0)  // favicons
 let servers = webRows(2), links = webRows(3)
-expect("servers: live 5173 (opens the page the agent named), live 6006, dead 4173",
-       servers.map(\.url) == ["http://localhost:5173/checkout", "http://localhost:6006/", "http://localhost:4173/"]
+expect("servers: live 5173 (opens the page the agent named, over https), live 6006, dead 4173",
+       servers.map(\.url) == ["https://localhost:5173/checkout","http://localhost:6006/", "http://localhost:4173/"]
            && servers.map(\.live) == [true, true, false], "\(servers.map { "\($0.url) \(String(describing: $0.live))" })")
 expect("links: the agent's two, newest first, trailing dash/punctuation trimmed",
        Set(links.map(\.url)) == ["https://svelte.dev/docs/kit/load", "https://github.com/sveltejs/kit/pull/12345"],
@@ -319,6 +319,10 @@ app.postEvent(mouse(.leftMouseUp, at: linkPoint), atStart: false)
 window.sendEvent(mouse(.leftMouseDown, at: linkPoint))
 pump(0.3)
 expect("clicking a link opens it in the browser", recorder.log == ["browse \(links[0].url)"], "\(recorder.log)")
+app.postEvent(mouse(.leftMouseUp, at: linkPoint, clicks: 2), atStart: false)
+window.sendEvent(mouse(.leftMouseDown, at: linkPoint, clicks: 2))
+pump(0.3)
+expect("a double-click opens it once, not twice", recorder.log.count == 1, "\(recorder.log)")
 
 let rightClick = NSEvent.mouseEvent(
     with: .rightMouseDown, location: linkPoint, modifierFlags: [],

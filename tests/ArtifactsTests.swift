@@ -256,9 +256,20 @@ final class ArtifactWebTests: XCTestCase {
          "https://github.com/acme/site/pull/12": date("2026-10-02T10:04:00Z")]
     }
 
+    func testURLsKeepIPv6HostsAndDropMarkdownEmphasis() {
+        XCTAssertEqual(
+            ArtifactScanner.urls(in: "Up at **http://localhost:5173/** and http://[::1]:3000/app. Not https:// alone."),
+            ["http://localhost:5173/", "http://[::1]:3000/app"])
+        let web = ArtifactScanner.web(
+            urls: ["http://[::1]:3000/app": date("2026-10-02T10:00:00Z")], running: [], runningKnown: true)
+        XCTAssertEqual(web.servers.map(\.host), ["[::1]:3000"])
+        XCTAssertTrue(web.links.isEmpty)
+    }
+
     /// A running server on a port the agent named merges into one live row
-    /// that opens the page the agent named. A named port with nothing on it is
-    /// dead. A running server the agent never named still lists, live.
+    /// that opens the page the agent named, over https when that is what the
+    /// server speaks. A named port with nothing on it is dead. A running
+    /// server the agent never named still lists, live.
     func testServersMergeRunningWithMentionedPorts() {
         let web = ArtifactScanner.web(
             urls: urls,
@@ -266,7 +277,9 @@ final class ArtifactWebTests: XCTestCase {
                       ArtifactRunningServer(port: 8080, url: "http://localhost:8080/")],
             runningKnown: true)
         XCTAssertEqual(web.servers.map(\.url),
-                       ["http://localhost:5173/checkout", "http://localhost:8080/", "http://localhost:3000/"])
+                       ["https://localhost:5173/checkout", "http://localhost:8080/", "http://localhost:3000/"])
+        XCTAssertEqual(web.servers.map(\.host), ["localhost:5173", "localhost:8080", "localhost:3000"])
+        XCTAssertEqual(web.servers.map(\.path), ["/checkout", "", ""])
         XCTAssertEqual(web.servers.map(\.live), [true, true, false])
         XCTAssertEqual(web.links.map(\.url),
                        ["https://github.com/acme/site/pull/12", "https://svelte.dev/docs/kit/load"])
@@ -278,6 +291,25 @@ final class ArtifactWebTests: XCTestCase {
     func testUnknownRunningStateIsNotDead() {
         let web = ArtifactScanner.web(urls: urls, running: [], runningKnown: false)
         XCTAssertEqual(web.servers.map(\.live), [nil, nil])
+    }
+
+    /// Two pages on one port are one server row: the page named last. A URL
+    /// with no port counts as 80 or 443. A running server with no URL opens
+    /// its bare origin.
+    func testOneServerRowPerPort() {
+        let web = ArtifactScanner.web(
+            urls: ["http://localhost:5173/": date("2026-10-02T10:01:00Z"),
+                   "http://127.0.0.1:5173/cart?step=2": date("2026-10-02T10:05:00Z"),
+                   "https://app.localhost/login": date("2026-10-02T10:02:00Z")],
+            running: [ArtifactRunningServer(port: 9000, url: nil)],
+            runningKnown: true)
+        XCTAssertEqual(web.servers.map(\.url),
+                       ["http://localhost:9000/", "https://app.localhost/login", "http://127.0.0.1:5173/cart?step=2"])
+        XCTAssertEqual(web.servers.map(\.path), ["", "/login", "/cart?step=2"])
+        XCTAssertEqual(web.servers.map(\.live), [true, false, false])
+        XCTAssertEqual(web.servers.map(\.at),
+                       [nil, date("2026-10-02T10:02:00Z"), date("2026-10-02T10:05:00Z")])
+        XCTAssertTrue(web.links.isEmpty)
     }
 
     func testRepeatedLinksDedupeToTheNewestMention() {
