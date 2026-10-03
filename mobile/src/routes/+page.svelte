@@ -77,7 +77,6 @@
 	.item {
 		display: flex;
 		gap: 10px;
-		min-height: var(--hit);
 		margin: 0 14px 8px;
 		padding: 11px 12px;
 		border-radius: 12px;
@@ -99,6 +98,7 @@
 
 	.body {
 		min-width: 0;
+		font-size: 13px;
 	}
 
 	.item b {

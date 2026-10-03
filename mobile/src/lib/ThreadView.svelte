@@ -225,6 +225,7 @@
 
 	.a {
 		max-width: 94%;
+		padding-bottom: 6px;
 		color: #e2e2e2;
 		white-space: pre-wrap;
 		overflow-wrap: anywhere;

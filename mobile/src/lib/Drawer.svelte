@@ -27,7 +27,7 @@
 >
 	<div class="dtop">
 		<a
-			class="mrow"
+			class="mrow grow"
 			class:sel={page.route.id === '/'}
 			href={resolve('/')}
 			onclick={() => ui.closeDrawer()}
@@ -139,13 +139,18 @@
 		flex: 1;
 		display: flex;
 		align-items: center;
+		position: relative;
 		justify-content: space-between;
-		min-height: var(--hit);
 		padding: 9px 12px;
 		border-radius: 10px;
 		background: var(--mgr);
 		border: 1px solid #2b2b3d;
 		font-weight: 600;
+	}
+
+	/* Its 44pt touch area must not make the top row taller than the Manager row. */
+	.dtop .tb {
+		margin: -2px 0;
 	}
 
 	.mrow.sel {
