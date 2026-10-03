@@ -86,7 +86,7 @@ final class PhoneLinkTests: XCTestCase {
         ports = MemoryPorts()
         published = []
         server = MobileServer(staticRoot: nil, sources: MobileServer.Sources(
-            screen: { _ in nil }, transcript: { _ in nil }))
+            screen: { _, _ in nil }, transcript: { _ in nil }))
         states = []
     }
 
@@ -564,7 +564,7 @@ final class PhoneLinkTests: XCTestCase {
         server = MobileServer(
             staticRoot: nil,
             sources: MobileServer.Sources(
-                screen: { _ in nil }, transcript: { _ in nil }, running: { _ in running }),
+                screen: { _, _ in nil }, transcript: { _ in nil }, running: { _ in running }),
             serving: MobileServer.Serving(
                 open: { port, https, thread, label in
                     box.link?.openMapping(port: port, https: https, thread: thread, label: label)

@@ -75,8 +75,11 @@ export class Reply {
 	ctrl = $state(false);
 	/** What the pane asks. It can ask while the thread's status says nothing of it. */
 	prompt = $state.raw<Prompt | null>(null);
-	/** Names what the pane waits on, also when there are no choices to draw. */
-	private promptId: string | null = null;
+	/**
+	 * Names what the pane waits on, also when there are no choices to draw. A
+	 * card is on screen for it, and the keys carry it: never an id with no card.
+	 */
+	promptId = $state<string | null>(null);
 	/** The option an answer in flight picked. */
 	answering = $state<number | null>(null);
 	uploading = $state(false);
@@ -103,7 +106,7 @@ export class Reply {
 	/** The pane takes no free text now. Keys and answers still go. */
 	readonly blocked: boolean = $derived.by(() => {
 		const status = live.byId(this.id)?.status;
-		return status === 'busy' || status === 'waiting' || this.prompt !== null;
+		return status === 'busy' || status === 'waiting' || this.promptId !== null;
 	});
 
 	/** The thread's status and its time, as last seen. */
@@ -291,13 +294,16 @@ export class Reply {
 		this.loadingPrompt = true;
 		try {
 			const state = await fetchPrompt(this.id);
-			this.promptId = state.id;
-			let prompt = state.prompt;
 			const answered = this.answered;
-			if (prompt && answered?.id === prompt.id && Date.now() - answered.at < ANSWERED_MS)
-				prompt = null;
-			if (JSON.stringify(prompt) !== JSON.stringify(this.prompt))
-				await this.host.stick(() => (this.prompt = prompt));
+			// Just answered here: the pane has not moved on yet.
+			const gone = answered?.id === state.id && Date.now() - answered.at < ANSWERED_MS;
+			const id = gone ? null : state.id;
+			const prompt = gone ? null : state.prompt;
+			if (id !== this.promptId || JSON.stringify(prompt) !== JSON.stringify(this.prompt))
+				await this.host.stick(() => {
+					this.promptId = id;
+					this.prompt = prompt;
+				});
 		} catch (error) {
 			live.fail(error);
 		} finally {

@@ -145,9 +145,8 @@ test('the + on a session row adds a window and opens it', async ({ page }) => {
 	await expect(page).toHaveURL(/\/t\/localhost(:|%3A)\d+$/);
 	await expect(page.locator('.tbar .title b')).toHaveText('docs-site · zsh');
 	await expect(sheet(page)).toBeHidden();
-	expect(await actions(page)).toEqual([
-		{ action: 'new-window', host: 'localhost', session: 'docs-site' }
-	]);
+	// The session is named by one of its threads.
+	expect(await actions(page)).toEqual([{ action: 'new-window', thread: 'localhost:3' }]);
 	await shot(page, 'new-window');
 });
 
@@ -244,6 +243,18 @@ test('killing the open thread leaves it', async ({ page }) => {
 	await sheet(page).getByRole('button', { name: 'Kill', exact: true }).click();
 	await expect(page).toHaveURL(/\/$/);
 	await expect(session(page, 'localhost/docs-site')).toHaveCount(0);
+	const sent = await actions(page);
+	expect(sent).toHaveLength(1);
+	expect(sent[0]).toMatchObject({ action: 'kill-session', confirm: true });
+	expect(String(sent[0].thread)).toMatch(/^localhost:\d+$/);
+	expect(sent[0]).not.toHaveProperty('session');
+
+	// The Mac takes no session name for a kill.
+	const byName = await page.request.post('/api/tmux/kill-session', {
+		headers: { ...TOKEN_HEADER, 'x-muxmaestro': '1', origin: new URL(page.url()).origin },
+		data: { host: 'localhost', session: 'acme-app', confirm: true }
+	});
+	expect(byName.status()).toBe(400);
 });
 
 test('the + on a host card starts a session in a directory the Mac offers', async ({ page }) => {
@@ -358,7 +369,17 @@ test.describe('find', () => {
 		// Closing find gives the live pane back.
 		await page.getByRole('button', { name: 'Close find' }).click();
 		await expect(text).toHaveCount(0);
-		await expect(page.locator('pre.screen')).toContainText('I need to run the spec');
+		await expect(page.locator('[data-view="terminal"] [data-lines]')).toContainText(
+			'I need to run the spec'
+		);
+	});
+
+	test('a find the Mac refuses as busy is asked again', async ({ page }) => {
+		await page.getByRole('tab').click();
+		await page.request.post('/__fixture/find-busy?value=2');
+		await page.getByRole('button', { name: 'Find' }).click();
+		await page.getByRole('searchbox', { name: 'Find in session' }).fill('tax line');
+		await expect(count(page)).toHaveText('6/6');
 	});
 
 	test('switching the view searches the other one', async ({ page }) => {

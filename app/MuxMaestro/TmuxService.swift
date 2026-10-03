@@ -895,6 +895,7 @@ final class TmuxService {
         }
 
         let sessionRows = TmuxModel.dedupeGroups(TmuxModel.parseSessions(sessOut))
+        let sessionIds = TmuxModel.parseSessionIds(sessOut)
 
         // Two server-wide queries, not one per session and one per window. A failed
         // query yields no windows/panes rather than dropping the session itself —
@@ -912,7 +913,8 @@ final class TmuxService {
                     TmuxModel.paneKey(session: row.name, window: windows[i].index)] ?? []
             }
             sessions.append(TmuxSession(
-                name: row.name, attached: row.attached, windows: windows, activity: row.activity))
+                name: row.name, attached: row.attached, id: sessionIds[row.name] ?? "",
+                windows: windows, activity: row.activity))
         }
         // One status read, parsed three ways — `statuses()`, `activity()` and
         // `paneStatuses()` each used to spawn their own `sessions.py` (~200ms apiece).
@@ -1863,6 +1865,13 @@ final class TmuxService {
         return tmux(FileTransfer.capturePaneArgv(target: target))
     }
 
+    /// Capture a pane's last `lines` lines of scrollback plus its screen, with
+    /// colour escapes. For the phone's terminal view. Nil if the capture failed.
+    func captureScrollback(target: String, lines: Int) -> String? {
+        guard transport.command(forTmux: []) != nil else { return nil }
+        return tmux(FileTransfer.captureScrollbackArgv(target: target, lines: lines))
+    }
+
     // MARK: Phone replies
 
     /// What the phone server may do to a pane on this host. Each call runs one
@@ -1885,10 +1894,21 @@ final class TmuxService {
             })
     }
 
-    /// One tmux call on this host, for the phone's session actions and find.
-    /// Blocking; call off the main thread.
-    func phoneTmux(_ args: [String]) -> String? {
-        tmux(args)
+    /// One tmux call on this host, for the phone's session actions and find:
+    /// whether it exited 0, and its output with its errors, so a target that
+    /// is already gone can be told from a host that did not answer. nil when
+    /// the host has no tmux to call. Blocking; call off the main thread.
+    func phoneTmux(_ args: [String]) -> (ok: Bool, output: String)? {
+        guard let (path, full) = transport.command(forTmux: args) else { return nil }
+        let (ok, text) = runner.runCapturing(path, full)
+        // A call to a remote host fails when tmux refuses it and when ssh
+        // does not get there. One more call that needs no tmux tells which:
+        // a host that cannot be reached has no tmux to call.
+        if !ok, let alias = host.sshAlias,
+           runner.run(Ssh.sshPath, Ssh.opts(host: alias) + ["true"]) == nil {
+            return nil
+        }
+        return (ok, text)
     }
 
     /// Drop a local file onto a session on this host: resolve the session's cwd,

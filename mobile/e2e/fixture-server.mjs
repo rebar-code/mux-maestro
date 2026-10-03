@@ -8,11 +8,13 @@
 // /__fixture/capability?name=&on=, /__fixture/manager-status?value=,
 // /__fixture/mac-turn?text=&reply=, /__fixture/voice?mode=&speaker=&heard=&delay=,
 // /__fixture/voice-takes, /__fixture/replies, /__fixture/prompt?id=&pid=&kind=,
-// /__fixture/upload-max?value=, /__fixture/status?id=&value=, /__fixture/panes?id=&value=,
+// /__fixture/upload-max?value=, /__fixture/status?id=&value=, /__fixture/panes?id=&value=, /__fixture/find-busy?value=,
 // /__fixture/prompt also takes truncated=1, bare=1 (an id with no choices), quiet=1,
 // /__fixture/not-sent?cleared=&reason=, /__fixture/no-input?id=&on=, /__fixture/pasted?on=,
 // /__fixture/serve-fails?code=, /__fixture/mappings (what the phone asked to publish),
-// /__fixture/tailnet?name= (publish under that name, for screenshots)
+// /__fixture/tailnet?name= (publish under that name, for screenshots),
+// /__fixture/append?count= (adds lines to pane buildbox:8),
+// /__fixture/screen?default=&max= (the screen endpoint's default and cap)
 //
 // Every /api/ request needs the header `X-MuxMaestro-Token: demo-token`.
 import { createHash } from 'node:crypto';
@@ -505,13 +507,20 @@ const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/;
 const TEXT_MAX = 8192;
 
 const DEMO_TOKEN = 'demo-token';
-let started, threads, chats, grouping, deny, token, capabilities, manager, voice;
+const LONG_ID = 'devbox:5';
+// A pane with 500 numbered, coloured lines of scrollback.
+const LOG_ID = 'buildbox:8';
+const E = '\x1b';
+let started, threads, chats, grouping, deny, token, log, screenDefault, screenMax;
+let capabilities, manager, voice;
 // Per thread id: the prompt on the pane. And everything the phone wrote.
 let prompts, replies, uploadMax, promptSeq, notSent, noInput, pasted, keyLocks;
 // Makes one thread row; set by `reset`, used again for a new window or session.
 let makeThread;
 // The ports published on the tailnet, and how the next publish is refused.
 let mappings, serveFails, tailnet;
+// How many finds the Mac refuses as busy before it answers one.
+let findBusy;
 const streams = new Set();
 
 function reset() {
@@ -541,6 +550,7 @@ function reset() {
 	pasted = true;
 	keyLocks = new Set();
 	promptSeq = 0;
+	findBusy = 0;
 	uploadMax = 10485760;
 	replies = {
 		texts: [],
@@ -593,6 +603,10 @@ function reset() {
 			}
 		]
 	};
+	screenDefault = 2000;
+	screenMax = 10000;
+	log = [];
+	appendLog(500);
 	const color = (host) => HOSTS.find((h) => h.name === host).color;
 	const make = (n, session, name, host, status, prompt, ageSeconds, idleStage) => {
 		const local = host === 'localhost';
@@ -825,6 +839,9 @@ function replyApi(req, res, url, thread, route, body) {
 		// The pane waits on a prompt the phone did not name: the key could answer the wrong one.
 		const asked = promptOf(thread);
 		if (asked && asked.id !== json.prompt) return send(res, 409, { error: 'stale' });
+		// Nobody could read what Enter or a digit would pick.
+		if (asked?.bare && /^(Enter|[1-9])$/.test(json.key))
+			return send(res, 409, { error: 'unseen', message: 'Open the terminal to answer' });
 		keyLocks.add(thread.id);
 		const locks = keyLocks;
 		return void setTimeout(() => {
@@ -856,8 +873,19 @@ function replyApi(req, res, url, thread, route, body) {
 	if (refused) return send(res, 409, refused);
 	if (notSent) {
 		// Pasted, not submitted. The Mac tried to take it out of the input box again.
-		const { cleared, reason } = notSent;
+		const { reason } = notSent;
+		// A prompt came up after the paste: the Mac sends no keys at a prompt,
+		// so the text stays in the pane.
+		const cleared = reason === 'waiting' ? false : notSent.cleared;
 		notSent = null;
+		if (reason === 'waiting') {
+			promptSeq += 1;
+			prompts[thread.id] = {
+				id: `p${promptSeq}-${thread.window}`,
+				...PERMISSION,
+				truncated: false
+			};
+		}
 		if (!cleared) replies.left.push({ thread: thread.id, text });
 		return send(res, 409, {
 			error: 'not_sent',
@@ -1107,6 +1135,7 @@ function voiceApi(req, res, url, body) {
 }
 
 function screen(t) {
+	if (t.id === LOG_ID) return log;
 	const last =
 		(chats[t.id] ?? []).filter((m) => m.role === 'assistant').at(-1)?.text ?? `${t.session} $ `;
 	const box = '─'.repeat(52);
@@ -1114,22 +1143,42 @@ function screen(t) {
 	const tail = asked
 		? [
 				`╭${box}╮`,
-				`│ ${asked.title || 'Question'}`,
+				`│ ${E}[1m${asked.title || 'Question'}${E}[0m`,
 				'│',
 				`│   ${asked.full ?? (asked.detail || asked.question)}`,
 				'│',
-				...asked.options.map((o, i) => `│ ${i === 0 ? '❯' : ' '} ${o.n}. ${o.label}`),
+				...asked.options.map((o, i) =>
+					i === 0 ? `│ ${E}[1;34m❯ ${o.n}. ${o.label}${E}[0m` : `│   ${o.n}. ${o.label}`
+				),
 				`╰${box}╯`
 			]
 		: [
 				`╭${box}╮`,
 				`│ >${' '.repeat(50)}│`,
 				`╰${box}╯`,
-				t.status === 'busy' ? '  ✻ Working… (esc to interrupt)' : '  ? for shortcuts'
+				t.status === 'busy'
+					? `  ${E}[33m✻ Working…${E}[0m ${E}[2m(esc to interrupt)${E}[0m`
+					: `  ${E}[2m? for shortcuts${E}[0m`
 			];
 	// One line wider than a phone: the terminal view has to scroll sideways.
 	const wide = `  ⎿  Read ${t.cwd}/tests/checkout.spec.ts (212 lines) · Edit tests/checkout.spec.ts (+3 −1) · 2 files changed`;
-	return [`⏺ ${last.slice(0, 50)}`, wide, '', ...tail, ''].join('\n');
+	// One pane with a long scrollback, so the terminal also scrolls down.
+	const history =
+		t.id === LONG_ID
+			? Array.from(
+					{ length: 90 },
+					(_, n) =>
+						`  12:${String(n % 60).padStart(2, '0')}:07 deploy web-${n % 7} step ${n + 1}/90 ok`
+				)
+			: [];
+	return [
+		...history,
+		`${E}[32m⏺${E}[0m ${last.slice(0, 50)}`,
+		`${E}[2m${wide}${E}[0m`,
+		'',
+		...tail,
+		''
+	];
 }
 
 const ACTIONS = [
@@ -1181,7 +1230,12 @@ function tmuxApi(req, res, path, body) {
 	let thread = null;
 	let host = null;
 	let session = null;
-	if (byThread || (action !== 'new-session' && fields.thread !== undefined)) {
+	// A session is killed by one of its threads, never by its name.
+	if (
+		byThread ||
+		action === 'kill-session' ||
+		(action !== 'new-session' && fields.thread !== undefined)
+	) {
 		if (typeof fields.thread !== 'string') return send(res, 400, { error: 'bad_request' });
 		thread = threads.find((t) => t.id === fields.thread);
 		if (!thread) return send(res, 404, { error: 'not_found' });
@@ -1217,7 +1271,8 @@ function tmuxApi(req, res, path, body) {
 		const base = name;
 		for (let n = 2; taken(name); n += 1) name = `${base}-${n}`;
 		const made = makeThread(next, name, 'zsh', host, 'idle', '', 0, 'awake');
-		Object.assign(made, { command: 'zsh', chat: false, ...(dir ? { cwd: dir } : {}) });
+		const home = host === 'localhost' ? '/Users/me' : '/home/me';
+		Object.assign(made, { command: 'zsh', chat: false, cwd: dir ?? home });
 		threads.push(made);
 		result.session = name;
 	} else if (action === 'new-window') {
@@ -1262,7 +1317,11 @@ function scrollback(t) {
 				: `  ✓ ${n} checkout step ${n} keeps the cart (${10 + n} ms)`
 		);
 	}
-	return [...run, '', '  60 passed (4.1s)', '', ...screen(t).trimEnd().split('\n')];
+	// The search captures plain text: no colours.
+	// eslint-disable-next-line no-control-regex
+	const shown = screen(t).map((line) => line.replace(/\u001b\[[0-9;]*m/g, ''));
+	while (shown.length && !shown.at(-1).trim()) shown.pop();
+	return [...run, '', '  60 passed (4.1s)', '', ...shown];
 }
 
 const FIND_MAX_QUERY = 200;
@@ -1271,6 +1330,10 @@ const FIND_MAX_MATCHES = 200;
 /** Find in a pane's scrollback: plain text, no case until the query has an uppercase letter. */
 function findApi(res, url, thread) {
 	if (!capabilities.find) return send(res, 403, { error: 'disabled' });
+	if (findBusy > 0) {
+		findBusy -= 1;
+		return send(res, 409, { error: 'busy', message: 'Another find is running' });
+	}
 	if (!thread) return send(res, 404, { error: 'not_found' });
 	const query = (url.searchParams.get('q') ?? '').trim();
 	if (!query || [...query].length > FIND_MAX_QUERY || CONTROL.test(query) || /[\n\t]/.test(query))
@@ -1354,7 +1417,22 @@ function api(req, res, url, body) {
 	if (match && match[2] !== 'chat' && match[2] !== 'screen')
 		return replyApi(req, res, url, thread, match[2], body);
 	if (!thread) return send(res, 404, { error: 'not_found' });
-	if (match[2] === 'screen') return send(res, 200, { text: screen(thread) });
+	if (match[2] === 'screen') {
+		// Same rules as the Mac: digits only, else the default; then 1 to the cap.
+		const asked = url.searchParams.get('lines') ?? '';
+		const lines = Math.min(
+			Math.max(/^\d+$/.test(asked) ? Number(asked) : screenDefault, 1),
+			screenMax
+		);
+		const text = screen(thread).slice(-lines).join('\n');
+		const etag = `"${createHash('sha1').update(`${lines}\n${text}`).digest('hex').slice(0, 16)}"`;
+		if (req.headers['if-none-match'] === etag) {
+			res.writeHead(304, { etag, 'cache-control': 'no-store' });
+			return res.end();
+		}
+		res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store', etag });
+		return res.end(JSON.stringify({ text, lines, max: screenMax }));
+	}
 	const all = chats[thread.id];
 	if (!all) return send(res, 404, { error: 'not_found' });
 	const after = url.searchParams.get('after');
@@ -1363,6 +1441,23 @@ function api(req, res, url, body) {
 		next: all.length,
 		reset: false
 	});
+}
+
+/** One numbered line of the log pane. A few carry things the parser must handle. */
+function logLine(n) {
+	const label = `line ${String(n).padStart(3, '0')}`;
+	const rest = `  build step ${n} of the nightly run finished without warnings (${(n * 37) % 900}ms)`;
+	if (n === 100) return `${E}[38;5;208m${label}${E}[0m${rest}`;
+	if (n === 200) return `${E}[38;2;255;100;0m${label}${E}[0m${rest}`;
+	if (n === 300) return `${label}  <script>alert(1)</script>`;
+	if (n === 400) return `${E}]0;window title\x07${label}  after a title${E}[K`;
+	if (n === 450) return `${E}[1;7m${label}${E}[0m${E}[2m${rest}${E}[0m`;
+	if (n === 460) return `${E}[44m${label}${E}[49m ${E}[3;4mitalic underline${E}[0m`;
+	return `${E}[${31 + (n % 6)}m${label}${E}[0m${rest}`;
+}
+
+function appendLog(count) {
+	for (let i = 0; i < count; i += 1) log.push(logLine(log.length + 1));
 }
 
 function dropStreams() {
@@ -1393,6 +1488,9 @@ function hook(res, url) {
 			});
 			if (thread.status !== 'waiting') delete prompts[thread.id];
 			break;
+		case '/__fixture/find-busy':
+			findBusy = Number(url.searchParams.get('value') ?? 1);
+			return send(res, 200, { ok: true });
 		case '/__fixture/panes':
 			// The window was split: it holds this many threads now.
 			if (!thread) return send(res, 404, { error: 'not_found' });
@@ -1449,6 +1547,15 @@ function hook(res, url) {
 			grouping = url.searchParams.get('value') ?? 'recent';
 			push('config', configBody());
 			break;
+		case '/__fixture/append':
+			appendLog(Number(url.searchParams.get('count') ?? 1));
+			// The row changes too, so an open thread view fetches at once.
+			threads.find((t) => t.id === LOG_ID).since = now + log.length;
+			break;
+		case '/__fixture/screen':
+			screenDefault = Number(url.searchParams.get('default') ?? 2000);
+			screenMax = Number(url.searchParams.get('max') ?? 10000);
+			return send(res, 200, { ok: true });
 		case '/__fixture/rotate':
 			token = url.searchParams.get('value') ?? 'rotated-token';
 			dropStreams();

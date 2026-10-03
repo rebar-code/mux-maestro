@@ -50,6 +50,9 @@ final class MobileServerTests: XCTestCase {
                 dismiss: { [self] key in lock.lock(); _dismissed.append(key); lock.unlock() })
         }
     }
+    /// What the fake pane shows, and the line counts the server asked it for.
+    private var screenText = "$ make test\n\u{1B}[32mok\u{1B}[0m\n\n\n"
+    private var askedLines: [Int] = []
 
     override func setUpWithError() throws {
         root = FileManager.default.temporaryDirectory
@@ -72,7 +75,10 @@ final class MobileServerTests: XCTestCase {
     ) -> MobileServer {
         let transcript = transcript!
         return MobileServer(staticRoot: root, sources: MobileServer.Sources(
-            screen: { thread in thread.pane == "%12" ? "$ make test\nok\n\n\n" : nil },
+            screen: { [weak self] thread, lines in
+                self?.askedLines.append(lines)
+                return thread.pane == "%12" ? (self?.screenText ?? "") : nil
+            },
             transcript: { _ in (transcript.path, false) },
             pane: { [pane] _ in pane.io }, tmux: tmux.source,
             changed: { [changes] in changes.add() }, home: home.path,
@@ -114,7 +120,7 @@ final class MobileServerTests: XCTestCase {
         let shell = TmuxPane(id: "%13", index: 0, command: "zsh", title: "", active: true)
         return MobileSnapshot.build([MobileHostInput(
             host: .local, colorHex: "#3291ff", reachability: .reachable, stats: nil,
-            sessions: [TmuxSession(name: "acme-app", attached: true, windows: [
+            sessions: [TmuxSession(name: "acme-app", attached: true, id: "$1", windows: [
                 TmuxWindow(index: 1, name: "checkout-fix", active: true, panes: [agent]),
                 TmuxWindow(index: 2, name: "shell", active: false, panes: [shell]),
             ])])])
@@ -122,13 +128,66 @@ final class MobileServerTests: XCTestCase {
 
     // MARK: client
 
+    /// How long a closed TCP connection keeps its local port (twice the
+    /// system's 15 s segment lifetime), and a little more.
+    private static let portWait: TimeInterval = 35
+
     /// Send `raw` and read until `done` says the reply is whole (or 5 s pass).
+    ///
+    /// Each exchange is a new connection from a new local port, and a closed
+    /// connection keeps its port for 30 s. The system has 16 384 of them, so
+    /// when test runs, dev servers and browsers on one machine close more
+    /// than that in 30 s, a connect fails with "Address already in use" until
+    /// some come free. That is waited out: nothing was sent, so asking again
+    /// cannot repeat a write.
     private func exchange(_ raw: String, until done: @escaping (String) -> Bool) -> String {
+        let deadline = Date().addingTimeInterval(Self.portWait)
+        while true {
+            switch attempt(raw, until: done) {
+            case .reply(let text): return text
+            case .refused: return ""
+            case .noLocalPort where Date() < deadline: Thread.sleep(forTimeInterval: 0.5)
+            case .noLocalPort:
+                XCTFail("no free local port in \(Int(Self.portWait)) s")
+                return ""
+            }
+        }
+    }
+
+    private enum Attempt {
+        case reply(String)
+        /// Nothing listens on the port.
+        case refused
+        /// The connect failed for want of a local port.
+        case noLocalPort
+    }
+
+    private func attempt(_ raw: String, until done: @escaping (String) -> Bool) -> Attempt {
         let connection = NWConnection(
             host: "127.0.0.1", port: NWEndpoint.Port(rawValue: UInt16(port))!, using: .tcp)
         let queue = DispatchQueue(label: "mobile-server-tests")
         let finished = DispatchSemaphore(value: 0)
         var received = Data()
+        var unopened: Attempt?
+        var opened = false
+        connection.stateUpdateHandler = { state in
+            switch state {
+            case .ready:
+                opened = true
+            case .waiting(let error), .failed(let error):
+                // Only before the connection opened: after that an error is
+                // the server hanging up, which the read sees.
+                guard !opened, unopened == nil else { return }
+                switch error {
+                case .posix(.EADDRINUSE), .posix(.EADDRNOTAVAIL): unopened = .noLocalPort
+                case .posix(.ECONNREFUSED): unopened = .refused
+                default: return
+                }
+                finished.signal()
+            default:
+                break
+            }
+        }
         func read() {
             connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { data, _, complete, error in
                 if let data { received.append(data) }
@@ -140,11 +199,15 @@ final class MobileServerTests: XCTestCase {
             }
         }
         connection.start(queue: queue)
+        // Queued until the connection opens; never sent when it does not.
         connection.send(content: Data(raw.utf8), completion: .contentProcessed { _ in })
         read()
         _ = finished.wait(timeout: .now() + 5)
         connection.cancel()
-        return queue.sync { String(decoding: received, as: UTF8.self) }
+        return queue.sync {
+            if let unopened, received.isEmpty { return unopened }
+            return .reply(String(decoding: received, as: UTF8.self))
+        }
     }
 
     private func whole(_ text: String) -> Bool {
@@ -328,14 +391,48 @@ final class MobileServerTests: XCTestCase {
         let chat = get("/api/threads/localhost%3A12/chat")
         XCTAssertEqual(chat.status, 200)
         XCTAssertTrue(chat.body.contains(#""text":"hello""#))
-        // Trailing blank rows of the pane are cut.
-        XCTAssertEqual(get("/api/threads/localhost%3A12/screen").body, #"{"text":"$ make test\nok"}"#)
+        // Colour escapes pass through; trailing blank rows of the pane are cut.
+        let screen = get("/api/threads/localhost%3A12/screen")
+        XCTAssertEqual(
+            screen.body,
+            #"{"lines":2000,"max":10000,"text":"$ make test\n\u001b[32mok\u001b[0m"}"#)
+        XCTAssertTrue(screen.head.contains("ETag: \""))
         // A shell has a screen and no chat.
         XCTAssertEqual(get("/api/threads/localhost%3A13/chat").status, 404)
         XCTAssertEqual(get("/api/threads/localhost%3A13/screen").status, 503)
         XCTAssertEqual(get("/api/threads/localhost%3A99/screen").status, 404)
         XCTAssertEqual(get("/api/threads/localhost%3A99/chat").status, 404)
         XCTAssertEqual(get("/api/threads", method: "POST").status, 403)
+    }
+
+    func testScreenLinesReachThePaneClamped() {
+        _ = get("/api/threads/localhost%3A12/screen")
+        _ = get("/api/threads/localhost%3A12/screen?lines=4000")
+        _ = get("/api/threads/localhost%3A12/screen?lines=999999")
+        _ = get("/api/threads/localhost%3A12/screen?lines=-50")
+        _ = get("/api/threads/localhost%3A12/screen?lines=5;kill-server")
+        XCTAssertEqual(askedLines, [2000, 4000, 10_000, 2000, 2000])
+    }
+
+    func testAnUnchangedScreenIsNotSentAgain() throws {
+        let first = get("/api/threads/localhost%3A12/screen")
+        let tag = try XCTUnwrap(first.head.components(separatedBy: "\r\n")
+            .first { $0.hasPrefix("ETag: ") }?.dropFirst("ETag: ".count))
+        let raw = "GET /api/threads/localhost%3A12/screen HTTP/1.1\r\nHost: devmac.example.ts.net\r\n"
+            + "Tailscale-User-Login: me@example.com\r\nX-MuxMaestro-Token: demo-token\r\n"
+            + "If-None-Match: \(tag)\r\n\r\n"
+        let same = exchange(raw, until: whole)
+        XCTAssertTrue(same.hasPrefix("HTTP/1.1 304 Not Modified\r\n"))
+        XCTAssertTrue(same.contains("Content-Length: 0\r\n"))
+        XCTAssertTrue(same.contains("ETag: \(tag)\r\n"))
+        XCTAssertTrue(same.hasSuffix("\r\n\r\n"))
+
+        // New output: the same validator now gets the new body.
+        screenText += "more\n"
+        let changed = exchange(raw, until: whole)
+        XCTAssertTrue(changed.hasPrefix("HTTP/1.1 200 OK\r\n"))
+        XCTAssertTrue(changed.contains("more"))
+        XCTAssertFalse(changed.contains("ETag: \(tag)\r\n"))
     }
 
     func testServesTheBundleWithTheShellAsFallback() {
@@ -898,8 +995,19 @@ final class MobileServerTests: XCTestCase {
         // Its own code, and the text is taken out of the input box again.
         XCTAssertEqual(
             refused.body,
-            #"{"cleared":true,"error":"not_sent","message":"Thread is waiting on a prompt","reason":"waiting"}"#)
-        XCTAssertEqual(pane.argv.map(\.first), ["copy-mode", "load-buffer", "paste-buffer", "send-keys"])
+            #"{"cleared":false,"error":"not_sent","message":"Thread is waiting on a prompt","reason":"waiting"}"#)
+        // A prompt is in front now: no key goes to it, not even one that clears.
+        XCTAssertEqual(pane.argv.map(\.first), ["copy-mode", "load-buffer", "paste-buffer"])
+    }
+
+    func testTextRefusedForABusyPaneIsTakenOutOfItsInputBox() {
+        repliesOn()
+        pane.statusAfterPaste = .busy
+        pane.screenAfterPaste = DemoPrompt.input("go on")
+        let refused = post(Self.thread + "/text", json: #"{"text":"go on"}"#)
+        XCTAssertEqual(
+            refused.body,
+            #"{"cleared":true,"error":"not_sent","message":"Thread is busy","reason":"busy"}"#)
         XCTAssertEqual(pane.argv.last, ["send-keys", "-t", "%12", "C-u"])
     }
 
@@ -1150,7 +1258,7 @@ final class MobileServerTests: XCTestCase {
             ("/api/tmux/zoom-pane", #"{"thread":"localhost:12"}"#),
             ("/api/tmux/kill-pane", #"{"thread":"localhost:12","confirm":true}"#),
             ("/api/tmux/kill-window", #"{"thread":"localhost:12","confirm":true}"#),
-            ("/api/tmux/kill-session", #"{"host":"localhost","session":"acme-app","confirm":true}"#),
+            ("/api/tmux/kill-session", #"{"thread":"localhost:12","confirm":true}"#),
         ]
     }
 
@@ -1242,7 +1350,7 @@ final class MobileServerTests: XCTestCase {
                 XCTAssertEqual(post("/api/tmux/\(action)", json: body).status, 404, "\(action) \(id)")
             }
         }
-        let bySession = ["new-window", "rename-session", "kill-session"]
+        let bySession = ["new-window", "rename-session"]
         for (host, session) in [("localhost", "gone"), ("devbox", "acme-app"), ("localhost", "acme")] {
             for action in bySession {
                 let body = #"{"host":"\#(host)","session":"\#(session)","name":"x","confirm":true}"#
@@ -1277,8 +1385,7 @@ final class MobileServerTests: XCTestCase {
         let kills: [(String, String, [String])] = [
             ("/api/tmux/kill-pane", #""thread":"localhost:12""#, ["kill-pane", "-t", "%12"]),
             ("/api/tmux/kill-window", #""thread":"localhost:13""#, ["kill-window", "-t", "%13"]),
-            ("/api/tmux/kill-session", #""host":"localhost","session":"acme-app""#,
-             ["kill-session", "-t", "=acme-app"]),
+            ("/api/tmux/kill-session", #""thread":"localhost:12""#, ["kill-session", "-t", "$1"]),
         ]
         for (path, target, _) in kills {
             for body in ["{\(target)}", "{\(target),\"confirm\":false}", "{\(target),\"confirm\":\"true\"}"] {
@@ -1305,7 +1412,7 @@ final class MobileServerTests: XCTestCase {
         XCTAssertEqual(made.status, 200)
         XCTAssertEqual(made.body, #"{"ok":true,"thread":"localhost:41"}"#)
         XCTAssertEqual(tmux.argv.last, [
-            "new-window", "-a", "-t", "=acme-app:", "-P", "-F", "#{window_index}\t#{pane_id}",
+            "new-window", "-a", "-t", "$1:", "-P", "-F", "#{window_index}\t#{pane_id}",
             "-c", "/Users/me/acme-app",
         ])
         XCTAssertEqual(get(Self.dirs).body, #"{"dirs":["\/Users\/me\/acme-app"]}"#)
@@ -1315,8 +1422,57 @@ final class MobileServerTests: XCTestCase {
         XCTAssertEqual(refused.status, 400)
         XCTAssertEqual(refused.body, #"{"error":"bad_dir"}"#)
         XCTAssertEqual(tmux.argv.count, before)
-        tmux.failing = true
+        // No directory: this Mac's home, from the server's own settings.
+        XCTAssertEqual(post("/api/tmux/new-session", json: #"{"host":"localhost"}"#).status, 200)
+        XCTAssertEqual(tmux.argv.last, ["new-session", "-d", "-s", "session", "-c", home.path])
+        tmux.missing = true
         XCTAssertEqual(post("/api/tmux/zoom-pane", json: #"{"thread":"localhost:12"}"#).status, 503)
+    }
+
+    func testAStaleKillIsDoneAndAnyOtherTmuxErrorIsA409() {
+        actionsOn()
+        tmux.failing = true
+        tmux.failure = "can't find pane: %12"
+        let gone = post("/api/tmux/kill-window", json: #"{"thread":"localhost:12","confirm":true}"#)
+        XCTAssertEqual(gone.status, 200)
+        XCTAssertEqual(gone.body, #"{"gone":true,"ok":true}"#)
+        // The tree is loaded again, so the phone drops the row.
+        XCTAssertEqual(changes.count, 1)
+        XCTAssertEqual(post("/api/tmux/zoom-pane", json: #"{"thread":"localhost:12"}"#).status, 404)
+
+        tmux.failure = "server exited unexpectedly"
+        let failed = post("/api/tmux/kill-window", json: #"{"thread":"localhost:12","confirm":true}"#)
+        XCTAssertEqual(failed.status, 409)
+        XCTAssertTrue(failed.body.contains(#""error":"failed""#), failed.body)
+        XCTAssertEqual(changes.count, 1)
+    }
+
+    func testOnlySoManyFindsRunAtOnce() {
+        restart(limits: MobileServer.Limits(maxFinds: 1))
+        actionsOn()
+        tmux.output = "\(PaneSearch.marker)%12\n$ make test\nok\n"
+        let gate = DispatchSemaphore(value: 0)
+        tmux.gate = gate
+        let first = expectation(description: "first find answered")
+        var status = 0
+        DispatchQueue.global().async {
+            status = self.get(Self.find).status
+            first.fulfill()
+        }
+        // The first find is inside tmux now.
+        let deadline = Date().addingTimeInterval(5)
+        while tmux.argv.count < 1, Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
+        XCTAssertEqual(tmux.argv.count, 1)
+        let second = get(Self.find)
+        XCTAssertEqual(second.status, 409)
+        XCTAssertTrue(second.body.contains(#""error":"busy""#), second.body)
+        XCTAssertEqual(tmux.argv.count, 1)
+
+        tmux.gate = nil
+        gate.signal()
+        wait(for: [first], timeout: 5)
+        XCTAssertEqual(status, 200)
+        XCTAssertEqual(get(Self.find).status, 200)
     }
 
     func testFindSearchesTheThreadsPaneAndRefusesABadQuery() throws {
@@ -1817,5 +1973,129 @@ final class MobileServerTests: XCTestCase {
         localOn()
         for path in localReads { XCTAssertEqual(get(path).status, 503, path) }
         for write in localWrites { XCTAssertEqual(post(write.path, json: write.body).status, 503, write.path) }
+    }
+
+    // MARK: replies, second review
+
+    private func promptID() throws -> String {
+        try XCTUnwrap(
+            (JSONSerialization.jsonObject(with: Data(get(Self.thread + "/prompt").body.utf8))
+                as? [String: Any])?["id"] as? String)
+    }
+
+    func testAnInputBoxWithAnythingButItsFooterBelowItIsNotAnInputBox() {
+        repliesOn()
+        // The agent exited: its last input box is still on screen, and a
+        // shell prompt is under it. Text and Enter would go to the shell.
+        for below in ["$ rm -i build\nremove build? [y/N] ", "$ ", ":", "  (END)\n~\n~\n~\n~\n~"] {
+            for id in ["localhost%3A12", "localhost%3A13"] {
+                pane.status = id.hasSuffix("12") ? .idle : nil
+                pane.screen = DemoPrompt.idle + "\n" + below
+                let refused = post("/api/threads/\(id)/text", json: #"{"text":"y"}"#)
+                XCTAssertEqual(refused.status, 409, below)
+                XCTAssertEqual(
+                    refused.body, #"{"error":"no_input","message":"Thread shows no input box"}"#, below)
+            }
+        }
+        XCTAssertEqual(pane.argv.count, 0)
+        // The box with only its footer under it takes text.
+        pane.status = .idle
+        pane.screen = DemoPrompt.idle
+        XCTAssertEqual(post(Self.thread + "/text", json: #"{"text":"go on"}"#).status, 200)
+    }
+
+    func testNoKeyGoesToAPromptThatCameUpAfterThePaste() {
+        repliesOn()
+        // By status, and by screen alone.
+        for byScreen in [false, true] {
+            pane.status = .idle
+            pane.screen = DemoPrompt.idle
+            pane.statusAfterPaste = byScreen ? nil : .waiting
+            pane.screenAfterPaste = DemoPrompt.permission
+            let before = pane.argv.count
+            let refused = post(Self.thread + "/text", json: #"{"text":"go on"}"#)
+            XCTAssertEqual(refused.status, 409)
+            // The text may still be in the hidden input box: the phone is told so.
+            XCTAssertEqual(
+                refused.body,
+                #"{"cleared":false,"error":"not_sent","message":"Thread is waiting on a prompt","reason":"waiting"}"#)
+            // The paste, and nothing after it: no Ctrl-U, no Enter.
+            XCTAssertEqual(
+                pane.argv.dropFirst(before).map(\.first), ["copy-mode", "load-buffer", "paste-buffer"])
+        }
+    }
+
+    func testANumberedPromptIsNeverDroppedForAStaleBoxOrPassedAsAnEcho() {
+        repliesOn()
+        // A prompt, a stale input box under it, and a shell line under that.
+        pane.screen = DemoPrompt.permission + "\n" + DemoPrompt.idle + "\n$ "
+        let stale = post(Self.thread + "/text", json: #"{"text":"go on"}"#)
+        XCTAssertEqual(stale.status, 409)
+        XCTAssertEqual(stale.body, #"{"error":"waiting","message":"Thread is waiting on a prompt"}"#)
+        XCTAssertEqual(pane.argv.count, 0)
+
+        // A prompt drawn between two rules with the cursor on its first row,
+        // and a reply that holds its option lines.
+        pane.screen = DemoPrompt.idle
+        pane.screenAfterPaste = "────────\n❯ 1. Yes\n  2. No\n────────"
+        let echo = post(Self.thread + "/text", json: #"{"text":"pick one:\n1. Yes\n2. No"}"#)
+        XCTAssertEqual(echo.status, 409)
+        XCTAssertTrue(echo.body.contains(#""reason":"waiting""#), echo.body)
+        XCTAssertFalse(pane.argv.contains { $0.contains("Enter") })
+    }
+
+    func testTheSameWordsAskedAgainAreAnotherPromptEvenWithNoTimeOnThePane() throws {
+        repliesOn()
+        // No `since` at all, as on a remote host.
+        pane.status = .waiting
+        pane.screen = DemoPrompt.permission
+        let first = try promptID()
+        XCTAssertEqual(try promptID(), first)
+        XCTAssertEqual(post(Self.thread + "/answer", json: #"{"prompt":"\#(first)","option":1}"#).status, 200)
+        // The agent asks the very same thing again.
+        let second = try promptID()
+        XCTAssertNotEqual(second, first)
+        let old = post(Self.thread + "/answer", json: #"{"prompt":"\#(first)","option":1}"#)
+        XCTAssertEqual(old.status, 409)
+        XCTAssertEqual(old.body, #"{"error":"stale"}"#)
+        XCTAssertEqual(pane.argv.count, 1)
+
+        // The pane left the waiting state and came back, seen only in the tree.
+        pane.status = nil
+        server.update(snapshot(status: .waiting))
+        let third = try promptID()
+        server.update(snapshot(status: .busy))
+        server.update(snapshot(status: .waiting))
+        XCTAssertNotEqual(try promptID(), third)
+        // The prompt went away and the same one came back.
+        let fourth = try promptID()
+        pane.screen = DemoPrompt.idle
+        _ = get(Self.thread + "/prompt")
+        pane.screen = DemoPrompt.permission
+        XCTAssertNotEqual(try promptID(), fourth)
+    }
+
+    func testEnterAndDigitsAnswerOnlyAPromptThePhoneCanShow() throws {
+        repliesOn()
+        // A waiting pane with no choices to read: the phone has no card for it.
+        pane.status = .waiting
+        pane.screen = DemoPrompt.yesNo
+        let blind = try promptID()
+        for key in ["Enter", "1", "9"] {
+            let refused = post(Self.thread + "/key", json: #"{"key":"\#(key)","prompt":"\#(blind)"}"#)
+            XCTAssertEqual(refused.status, 409, key)
+            XCTAssertEqual(refused.body, #"{"error":"unseen","message":"Open the terminal to answer"}"#, key)
+        }
+        XCTAssertEqual(pane.argv.count, 0)
+        // Escape and the arrows stay: they answer nothing.
+        for key in ["Escape", "Down", "Up"] {
+            XCTAssertEqual(
+                post(Self.thread + "/key", json: #"{"key":"\#(key)","prompt":"\#(blind)"}"#).status, 200, key)
+        }
+        // A prompt with a card takes Enter with that card's id.
+        pane.screen = DemoPrompt.permission
+        let card = try promptID()
+        XCTAssertEqual(post(Self.thread + "/key", json: #"{"key":"Enter","prompt":"\#(card)"}"#).status, 200)
+        XCTAssertEqual(pane.argv.map(\.last), ["Escape", "Down", "Up", "Enter"])
     }
 }

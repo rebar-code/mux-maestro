@@ -144,3 +144,37 @@ export async function touchDrag(
 	await send('touchEnd');
 	await cdp.detach();
 }
+
+type Point = [number, number];
+
+/**
+ * A real two-finger gesture: both fingers land, move in steps to their end
+ * points, and (unless `hold`) lift. With `hold`, call the returned function to lift.
+ */
+export async function twoFingers(
+	page: Page,
+	from: [Point, Point],
+	to: [Point, Point],
+	hold = false
+): Promise<() => Promise<void>> {
+	const cdp = await page.context().newCDPSession(page);
+	const send = (type: 'touchStart' | 'touchMove' | 'touchEnd', points: Point[]): Promise<unknown> =>
+		cdp.send('Input.dispatchTouchEvent', {
+			type,
+			touchPoints: points.map(([x, y], id) => ({ x, y, id }))
+		});
+	await send('touchStart', [from[0]]);
+	await send('touchStart', from);
+	const steps = 10;
+	const at = (i: number, k: 0 | 1): Point => [
+		from[k][0] + ((to[k][0] - from[k][0]) * i) / steps,
+		from[k][1] + ((to[k][1] - from[k][1]) * i) / steps
+	];
+	for (let i = 1; i <= steps; i += 1) await send('touchMove', [at(i, 0), at(i, 1)]);
+	const lift = async (): Promise<void> => {
+		await send('touchEnd', []);
+		await cdp.detach();
+	};
+	if (!hold) await lift();
+	return lift;
+}
