@@ -4354,6 +4354,7 @@ extension AppDelegate: SidebarSelectionDelegate {
         // On the host's own queue so a wedged remote can't block another host's switch.
         service.driverQueue.async {
             service.selectWindow(session: session, window: window)
+            DispatchQueue.main.async { [weak self] in self?.claimWindowSize() }
         }
     }
 
@@ -4361,7 +4362,14 @@ extension AppDelegate: SidebarSelectionDelegate {
         noteWindowVisited(WindowRef(session: session, window: window, host: service.host))
         service.driverQueue.async {
             service.selectPane(session: session, window: window, pane: pane.id, zoom: true)
+            DispatchQueue.main.async { [weak self] in self?.claimWindowSize() }
         }
+    }
+
+    /// Make tmux size the window just selected to this client. Runs after the
+    /// select lands, so the focus event arrives on the new current window.
+    private func claimWindowSize() {
+        terminalVC?.surfaceView?.pulseFocus()
     }
 
     /// A host's tree finished reloading. When the attached session lives there,
