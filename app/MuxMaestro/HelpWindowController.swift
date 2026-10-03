@@ -59,7 +59,6 @@ final class HelpWindowController: NSWindowController {
             Key(combo: "⌘W", desc: "Close the current tmux window (or a focused palette)"),
             Key(combo: "⇧⌘R", desc: "Rename Session"),
             Key(combo: "⇧⌘N", desc: "Add Server (remote SSH host)"),
-            Key(combo: "⇧⌘G", desc: "Grab pane output to the scratchpad"),
         ]),
         ("Editing (text fields)", [
             Key(combo: "⌘A", desc: "Select All"),
@@ -131,9 +130,9 @@ final class HelpWindowController: NSWindowController {
     line. The <b>Open</b> split-button opens the
     session directory in your editor.</p>
 
-    <h3>Splits, zoom &amp; scratchpad</h3>
+    <h3>Splits &amp; zoom</h3>
     <p><b>⌘D</b> / <b>⇧⌘D</b> split the active pane (tmux-native, persists on the
-    server). <b>⌘↩</b> zooms it. <b>⇧⌘G</b> grabs the pane's output to the scratchpad.</p>
+    server). <b>⌘↩</b> zooms it.</p>
 
     <h3>Remote hosts</h3>
     <p>Saved from <code>~/.ssh/config</code>. Connect from the SERVERS section; sessions

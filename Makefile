@@ -133,14 +133,13 @@ beam-selftest:
 	bash $(BEAM_DST)/beam-selftest.sh
 
 # Maintainer-only: refreshes vendored copies from upstream. Not part of the
-# default build. TOOLS_SRC is a directory holding sessions.py, scratchpad.py,
-# icons/, spindown.py and spin.py. See Resources/tools/README.md.
+# default build. TOOLS_SRC is a directory holding sessions.py,
+# spindown.py and spin.py. See Resources/tools/README.md.
 TOOLS_SRC ?=
 TOOLS_DST := app/MuxMaestro/Resources/tools
 vendor-tools:
 	@test -n "$(TOOLS_SRC)" || { echo "vendor-tools: set TOOLS_SRC to the upstream directory holding the tool scripts (maintainer-only target)"; exit 1; }
-	cp $(TOOLS_SRC)/sessions.py $(TOOLS_SRC)/scratchpad.py $(TOOLS_SRC)/spindown.py $(TOOLS_SRC)/spin.py $(TOOLS_DST)/
-	cp $(TOOLS_SRC)/icons/* $(TOOLS_DST)/icons/
+	cp $(TOOLS_SRC)/sessions.py $(TOOLS_SRC)/spindown.py $(TOOLS_SRC)/spin.py $(TOOLS_DST)/
 	@echo "Re-synced helper scripts → $(TOOLS_DST)/ (commit the output)"
 
 # Run the VENDORED helper scripts with an empty temp HOME and PATH=/usr/bin:/bin,

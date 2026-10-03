@@ -1438,13 +1438,6 @@ protocol SidebarActionDelegate: AnyObject {
     /// for a main checkout or a tree known to hold work (`Worktrees.removeOffer`).
     func sidebarRequestRemoveWorktree(entry: WorktreeEntry, work: WorktreeWork)
 
-    // Scratchpad grab (M11).
-    /// Grab a file from the row's host/session into the scratchpad (prompt for a
-    /// path defaulting to the session cwd). `session` is nil for a host row.
-    func sidebarRequestGrabFile(host: Host, session: String?, service: TmuxService)
-    /// Grab the selected pane's visible output into the scratchpad as text.
-    func sidebarRequestGrabPaneOutput(
-        session: String, window: Int, pane: String, service: TmuxService)
     /// Drop a local file onto a session (copy to its cwd + paste the path).
     func sidebarRequestDropFile(
         localPath: String, session: String, service: TmuxService)
@@ -1778,21 +1771,6 @@ final class SidebarViewController: NSViewController {
         return TmuxCommands.zoomTarget(for: selection)
     }
 
-    /// What the toolbar "Grab to Scratchpad" should do for the current selection:
-    /// a selected pane grabs its output; anything else grabs a file. nil with no
-    /// selection (the caller defaults to a local file grab).
-    enum GrabTarget {
-        case pane(session: String, window: Int, pane: String)
-        case other(host: Host, session: String?)
-    }
-    var selectedNodeForGrab: GrabTarget? {
-        guard let node = selectedNode else { return nil }
-        if case .pane(_, let session, let window, let p) = node.kind {
-            return .pane(session: session, window: window, pane: p.id)
-        }
-        return .other(host: node.host, session: node.sessionName)
-    }
-
     /// The currently-selected sidebar node (any kind), or nil.
     private var selectedNode: SidebarNode? {
         let row = outline.selectedRow
@@ -1892,9 +1870,9 @@ final class SidebarViewController: NSViewController {
         outline.doubleAction = #selector(handleDoubleClick)
         outline.onMouseMoved = { [weak self] event in self?.previewHover(event) }
         outline.menu = makeContextMenu()
-        // M11: session rows accept dropped file URLs (from Finder or the
-        // scratchpad store) — copy to the session cwd + paste the path. The private
-        // session type lets a session row be dragged to reorder it within its host.
+        // M11: session rows accept dropped file URLs (e.g. from Finder) — copy to
+        // the session cwd + paste the path. The private session type lets a
+        // session row be dragged to reorder it within its host.
         outline.registerForDraggedTypes([.fileURL, Self.sessionDragType])
 
         scroll.documentView = outline
@@ -2589,25 +2567,6 @@ final class SidebarViewController: NSViewController {
               case .session(let host, let s) = target.node.kind else { return }
         actionDelegate?.sidebarRequestMergeSession(
             session: s.name, windows: s.windows.map(\.index), into: destination,
-            service: registry.service(for: host))
-    }
-
-    // MARK: Scratchpad context actions (M11)
-
-    /// Grab a file to the scratchpad from the clicked row's host/session.
-    @objc private func contextGrabFile(_ sender: NSMenuItem) {
-        guard let node = sender.representedObject as? SidebarNode else { return }
-        actionDelegate?.sidebarRequestGrabFile(
-            host: node.host, session: node.sessionName,
-            service: registry.service(for: node.host))
-    }
-
-    /// Grab the clicked pane's visible output to the scratchpad.
-    @objc private func contextGrabPaneOutput(_ sender: NSMenuItem) {
-        guard case .pane(let host, let session, let window, let p)? =
-            (sender.representedObject as? SidebarNode)?.kind else { return }
-        actionDelegate?.sidebarRequestGrabPaneOutput(
-            session: session, window: window, pane: p.id,
             service: registry.service(for: host))
     }
 
@@ -5393,7 +5352,6 @@ extension SidebarViewController: NSMenuDelegate {
             if let node { addMergeItem(to: menu, node: node, session: s) }
             copyIdItem().map { menu.addItem($0) }
             copyAgentIdItems(into: menu)
-            menu.addItem(item("Grab file to scratchpad…", #selector(contextGrabFile(_:))))
             menu.addItem(.separator())
         case .window(_, let owner, let w):
             menu.addItem(item("New Window", #selector(contextNewWindow(_:))))
@@ -5406,7 +5364,6 @@ extension SidebarViewController: NSMenuDelegate {
             }
             copyIdItem().map { menu.addItem($0) }
             copyAgentIdItems(into: menu)
-            menu.addItem(item("Grab file to scratchpad…", #selector(contextGrabFile(_:))))
             menu.addItem(.separator())
         case .pane(_, let owner, let ownerWindow, let p):
             menu.addItem(item("Split Horizontally", #selector(contextSplitHorizontal(_:))))
@@ -5422,8 +5379,6 @@ extension SidebarViewController: NSMenuDelegate {
             menu.addItem(.separator())
             copyIdItem().map { menu.addItem($0) }
             copyAgentIdItems(into: menu)
-            menu.addItem(item("Grab pane output → scratchpad", #selector(contextGrabPaneOutput(_:))))
-            menu.addItem(item("Grab file to scratchpad…", #selector(contextGrabFile(_:))))
             menu.addItem(.separator())
         case .host(let h, _):
             // A remote host in Active is there because it's "activated" (watch on);
@@ -5446,7 +5401,6 @@ extension SidebarViewController: NSMenuDelegate {
                 menu.addItem(.separator())
             }
             addColorSubmenu(to: menu, host: h)
-            menu.addItem(item("Grab file to scratchpad…", #selector(contextGrabFile(_:))))
             menu.addItem(.separator())
         case .serverButton(let h, _, _):
             // A Servers-section row: the natural place to manage a host that

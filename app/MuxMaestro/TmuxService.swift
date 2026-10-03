@@ -1850,7 +1850,7 @@ final class TmuxService {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    // MARK: Scratchpad artifact transfer (M11)
+    // MARK: Pane capture + file drop (M11)
 
     /// Capture a pane's full visible output as plain text. `target` is a tmux
     /// target on this service's host (routed through the transport, so it's the
@@ -1858,51 +1858,7 @@ final class TmuxService {
     /// Returns the captured text, or nil if the capture failed.
     func capturePane(target: String) -> String? {
         guard transport.command(forTmux: []) != nil else { return nil }
-        return tmux(ScratchpadTransfer.capturePaneArgv(target: target))
-    }
-
-    /// Push a file FROM this service's host into the local scratchpad so it shows
-    /// on `/latest`. For the local host the source path is used directly; for a
-    /// remote host the file is first scp'd to `localStaging` (a tmp path) and that
-    /// local copy is added. Returns true on success.
-    ///
-    /// `python` + `scratchpadScript` are injected so the whole sequence is
-    /// testable against a FakeRunner with no real scp/python spawned.
-    @discardableResult
-    func grabFileToScratchpad(
-        remotePath: String, localStaging: String,
-        python: String, scratchpadScript: String
-    ) -> Bool {
-        let title = ScratchpadTransfer.fileTitle(path: remotePath, host: host)
-        let localFile: String
-        if host.isLocal {
-            localFile = remotePath
-        } else {
-            // scp the remote file down to a local staging path first.
-            let (scp, args) = ScratchpadTransfer.copyArgv(
-                host: host, localPath: localStaging,
-                remotePath: remotePath, remoteIsSource: true)
-            guard runner.run(scp, args) != nil else { return false }
-            localFile = localStaging
-        }
-        let (py, args) = ScratchpadTransfer.addInvocation(
-            python: python, scriptPath: scratchpadScript, file: localFile, title: title)
-        return runner.run(py, args) != nil
-    }
-
-    /// Capture a pane's visible output on this host and push it to the local
-    /// scratchpad as text (`push --kind text`), titled `<session>:<win> @ <host>`.
-    /// Returns true on success.
-    @discardableResult
-    func grabPaneOutputToScratchpad(
-        session: String, window: Int, paneTarget: String,
-        python: String, scratchpadScript: String
-    ) -> Bool {
-        guard let text = capturePane(target: paneTarget) else { return false }
-        let title = ScratchpadTransfer.paneTitle(session: session, window: window, host: host)
-        let (py, args) = ScratchpadTransfer.pushInvocation(
-            python: python, scriptPath: scratchpadScript, kind: "text", title: title)
-        return runner.run(py, args, stdin: Data(text.utf8)) != nil
+        return tmux(FileTransfer.capturePaneArgv(target: target))
     }
 
     /// Drop a local file onto a session on this host: resolve the session's cwd,
@@ -1920,10 +1876,10 @@ final class TmuxService {
         guard transport.command(forTmux: []) != nil else { return nil }
         guard let cwd = sessionCwd(session), !cwd.isEmpty else { return nil }
         let fileName = (localFile as NSString).lastPathComponent
-        let dest = ScratchpadTransfer.dropDestination(cwd: cwd, fileName: fileName)
+        let dest = FileTransfer.dropDestination(cwd: cwd, fileName: fileName)
         // Copy the file into the session's cwd (local cp or remote scp).
-        let (cp, args) = ScratchpadTransfer.copyArgv(
-            host: host, localPath: localFile, remotePath: dest, remoteIsSource: false)
+        let (cp, args) = FileTransfer.copyArgv(
+            host: host, localPath: localFile, remotePath: dest)
         guard runner.run(cp, args) != nil else { return nil }
         // Paste the destination path into the pane WITHOUT pressing Enter.
         let pasted = trailingSpace ? dest + " " : dest

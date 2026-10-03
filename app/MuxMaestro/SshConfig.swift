@@ -316,7 +316,7 @@ enum Ssh {
     /// Path to the ssh client binary.
     static let sshPath = "/usr/bin/ssh"
 
-    /// Path to the scp binary (used by the M11 scratchpad file transfer).
+    /// Path to the scp binary (used by the M11 file drop).
     static let scpPath = "/usr/bin/scp"
 
     /// Path to the local `mosh` client binary, or nil if not installed locally.

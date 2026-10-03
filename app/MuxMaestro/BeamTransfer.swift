@@ -3,7 +3,7 @@ import Foundation
 /// Pure construction of the invocation for **Beam** — moving a running repo +
 /// Claude Code session between this Mac and a remote SSH host, in any direction.
 /// No process spawning here (that's `BeamRunner`), so the env + argv are fully
-/// unit-testable against a fixed script path, exactly like `ScratchpadTransfer`.
+/// unit-testable against a fixed script path, exactly like `FileTransfer`.
 ///
 /// The engine is the vendored `beam.sh` (bundled under `Resources/beam/`). Three
 /// flows, all Mac-orchestrated (beam's model — the remote only runs ssh/rsync/git):

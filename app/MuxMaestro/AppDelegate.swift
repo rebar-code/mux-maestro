@@ -150,7 +150,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let tbAddServer = NSToolbarItem.Identifier("addServer")
     private static let tbZoom = NSToolbarItem.Identifier("zoom")
     private static let tbKill = NSToolbarItem.Identifier("kill")
-    private static let tbGrab = NSToolbarItem.Identifier("grab")
     private static let tbDiff = NSToolbarItem.Identifier("diff")
     private static let tbTree = NSToolbarItem.Identifier("tree")
     private static let tbArtifacts = NSToolbarItem.Identifier("artifacts")
@@ -774,11 +773,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             title: "Close Window", action: #selector(actionCloseWindow), keyEquivalent: "w")
         closeWindow.keyEquivalentModifierMask = [.command]
         sessionMenu.addItem(closeWindow)
-        sessionMenu.addItem(.separator())
-        let grab = NSMenuItem(
-            title: "Grab to Scratchpad", action: #selector(actionGrabToScratchpad), keyEquivalent: "g")
-        grab.keyEquivalentModifierMask = [.command, .shift]
-        sessionMenu.addItem(grab)
         sessionMenu.addItem(.separator())
         let showDiff = NSMenuItem(
             title: "Show Diff", action: #selector(actionShowDiff), keyEquivalent: "")
@@ -1806,7 +1800,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func worktreeToCleanUp(
         cwd: String, host: Host, closing: (String, Int, TmuxPane) -> Bool
     ) -> String? {
-        guard host.isLocal, let sidebarVC, ScratchpadTransfer.python3Path != nil,
+        guard host.isLocal, let sidebarVC, FileTransfer.python3Path != nil,
               FileManager.default.fileExists(atPath: Worktrees.spindownScriptPath)
         else { return nil }
         let survivors = sidebarVC.cachedSessions(host: host).flatMap { s in
@@ -1831,7 +1825,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// take minutes (it fetches, and may stop a Supabase stack), and tmux actions
     /// must not queue behind it.
     private func cleanUpWorktree(_ worktree: String) {
-        guard let python = ScratchpadTransfer.python3Path else { return }
+        guard let python = FileTransfer.python3Path else { return }
         let argv = Worktrees.spindownArgv(
             python: python, script: Worktrees.spindownScriptPath, worktree: worktree)
         // spindown runs `treehouse` by bare name, and it lives in ~/go/bin — not on
@@ -2120,116 +2114,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             perform: { service.mergeSession(session, windows: windows, into: destination) })
     }
 
-    // MARK: - Scratchpad transfer (M11)
-
-    /// Toolbar/menu "Grab to Scratchpad" — grabs from the current selection: a
-    /// selected pane grabs its visible output; any other selection grabs a file
-    /// (prompts for a path). Falls back to local when nothing is selected.
-    @objc private func actionGrabToScratchpad() {
-        guard let node = sidebarVC?.selectedNodeForGrab else {
-            grabFile(host: .local, session: nil, service: registry.local)
-            return
-        }
-        let service = sidebarVC?.selectedService ?? registry.local
-        switch node {
-        case .pane(let session, let window, let pane):
-            grabPaneOutput(session: session, window: window, pane: pane, service: service)
-        case .other(let host, let session):
-            grabFile(host: host, session: session, service: service)
-        }
-    }
-
-    /// Resolve python3 + the bundled scratchpad script; present an error and
-    /// return nil if either is missing.
-    private func resolveScratchpad() -> (python: String, script: String)? {
-        guard let python = ScratchpadTransfer.python3Path,
-              FileManager.default.fileExists(atPath: ScratchpadTransfer.scriptPath)
-        else {
-            presentError("Grab to Scratchpad needs python3 — see MuxMaestro ▸ Setup….")
-            return nil
-        }
-        return (python, ScratchpadTransfer.scriptPath)
-    }
-
-    /// Grab a file from `host`/`session` into the scratchpad. Prompts for a path
-    /// (defaulting to the session's cwd for the local host). The pull + scratchpad
-    /// add run off-main; success/error surface on main.
-    private func grabFile(host: Host, session: String?, service: TmuxService) {
-        guard let (python, script) = resolveScratchpad() else { return }
-        // Default the path to the session cwd (local: shell-out; remote: ~).
-        service.driverQueue.async {
-            let defaultDir = host.isLocal
-                ? Self.cwdOrHome(for: session, service: service)
-                : "~"
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                // Local: native file picker (browse / type / paste). Remote: a
-                // text field that also accepts a pasted path or a dropped file.
-                let path: String?
-                if host.isLocal {
-                    path = Self.chooseLocalFile(defaultDir: defaultDir)
-                } else {
-                    path = TextPrompt.run(
-                        window: self.window, title: "Grab File to Scratchpad",
-                        message: "File path on \(host.name):", defaultValue: defaultDir,
-                        allowsFileDrop: true)
-                }
-                guard let path else { return }
-                service.driverQueue.async {
-                    let staging = ScratchpadTransfer.stagingPath(for: path)
-                    let ok = service.grabFileToScratchpad(
-                        remotePath: path, localStaging: staging,
-                        python: python, scratchpadScript: script)
-                    DispatchQueue.main.async {
-                        if ok {
-                            self.presentInfo("Grabbed “\((path as NSString).lastPathComponent)” "
-                                + "to the scratchpad — see it on /latest.")
-                        } else {
-                            self.presentError("Couldn’t grab the file. "
-                                + "Check the path exists on \(host.name).")
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /// Native open panel for picking a local file to grab. Returns its path, or
-    /// nil if cancelled. Allows files only; defaults to the session's cwd.
-    private static func chooseLocalFile(defaultDir: String) -> String? {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        panel.prompt = "Grab"
-        panel.message = "Choose a file to grab to the scratchpad"
-        let expanded = (defaultDir as NSString).expandingTildeInPath
-        if FileManager.default.fileExists(atPath: expanded) {
-            panel.directoryURL = URL(fileURLWithPath: expanded)
-        }
-        return panel.runModal() == .OK ? panel.url?.path : nil
-    }
-
-    /// Grab a pane's visible output into the scratchpad as text. Runs off-main.
-    private func grabPaneOutput(
-        session: String, window: Int, pane: String, service: TmuxService
-    ) {
-        guard let (python, script) = resolveScratchpad() else { return }
-        service.driverQueue.async { [weak self] in
-            let ok = service.grabPaneOutputToScratchpad(
-                session: session, window: window, paneTarget: pane,
-                python: python, scratchpadScript: script)
-            DispatchQueue.main.async {
-                guard let self else { return }
-                if ok {
-                    self.presentInfo("Grabbed \(session) pane output "
-                        + "to the scratchpad — see it on /latest.")
-                } else {
-                    self.presentError("Couldn’t capture the pane output.")
-                }
-            }
-        }
-    }
+    // MARK: - File drop (M11)
 
     /// Drop a local file onto a session: copy to its cwd + paste the path (no
     /// auto-run). Runs off-main. Success is silent — the pasted path is already
@@ -3889,7 +3774,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switch action {
         case #selector(actionNewSession), #selector(actionNewRootSession),
              #selector(actionAddServer),
-             #selector(actionGrabToScratchpad),
              #selector(NSApplication.terminate(_:)):
             return true
         case #selector(actionToggleZoom), #selector(actionKillSelected),
@@ -4303,8 +4187,6 @@ extension AppDelegate: NSToolbarDelegate {
             return toolbarButton(itemIdentifier, label: "Commit", symbol: "checkmark.seal", action: #selector(actionCommit), shortcut: "⌥⌘C")
         case Self.tbGitHub:
             return toolbarButton(itemIdentifier, label: "GitHub", symbol: "chevron.left.forwardslash.chevron.right", action: #selector(actionOpenGitHub), shortcut: "⌥⌘G")
-        case Self.tbGrab:
-            return toolbarButton(itemIdentifier, label: "Grab", symbol: "square.and.arrow.up", action: #selector(actionGrabToScratchpad), shortcut: "⇧⌘G")
         case Self.tbZoom:
             return toolbarButton(itemIdentifier, label: "Zoom", symbol: "arrow.up.left.and.arrow.down.right", action: #selector(actionToggleZoom), shortcut: "⌘↩")
         case Self.tbKill:
@@ -4605,16 +4487,8 @@ extension AppDelegate: SidebarActionDelegate {
             session: session, windows: windows, into: destination, service: service)
     }
 
-    // MARK: Scratchpad transfer (M11)
+    // MARK: File drop (M11)
 
-    func sidebarRequestGrabFile(host: Host, session: String?, service: TmuxService) {
-        grabFile(host: host, session: session, service: service)
-    }
-    func sidebarRequestGrabPaneOutput(
-        session: String, window: Int, pane: String, service: TmuxService
-    ) {
-        grabPaneOutput(session: session, window: window, pane: pane, service: service)
-    }
     func sidebarRequestDropFile(
         localPath: String, session: String, service: TmuxService
     ) {
@@ -4945,7 +4819,7 @@ extension AppDelegate: SidebarActionDelegate {
     func sidebarRequestRemoveWorktree(entry: WorktreeEntry, work: WorktreeWork) {
         let offer = Worktrees.removeOffer(entry: entry, work: work)
         if case .refuse = offer { return }
-        guard ScratchpadTransfer.python3Path != nil,
+        guard FileTransfer.python3Path != nil,
               FileManager.default.fileExists(atPath: Worktrees.spindownScriptPath)
         else {
             presentError("Couldn’t remove the worktree: python3 or spindown is missing.")
