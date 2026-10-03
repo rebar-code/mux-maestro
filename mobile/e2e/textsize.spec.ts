@@ -16,6 +16,13 @@ async function terminal(page: Page): Promise<void> {
 	expect(await size(page)).toBe(11);
 }
 
+/** Start from a size an earlier pinch stored on this phone. */
+async function stored(page: Page, px: number, selector = '.screen'): Promise<void> {
+	await page.evaluate((value) => localStorage.setItem('mm.textSize', String(value)), px);
+	await page.reload();
+	await expect(page.locator(selector).first()).toBeVisible();
+}
+
 test('pinch out makes the terminal text larger, pinch in smaller; the page never zooms', async ({
 	page
 }) => {
@@ -67,7 +74,6 @@ test('the size stops at 24px and at 6px', async ({ page }) => {
 		]
 	);
 	expect(await size(page)).toBe(24);
-	await expect(page.getByRole('button', { name: 'Larger text' })).toBeDisabled();
 	await twoFingers(
 		page,
 		[
@@ -80,7 +86,6 @@ test('the size stops at 24px and at 6px', async ({ page }) => {
 		]
 	);
 	expect(await size(page)).toBe(6);
-	await expect(page.getByRole('button', { name: 'Smaller text' })).toBeDisabled();
 });
 
 test('the text under the fingers stays under them, on both axes', async ({ page }) => {
@@ -187,41 +192,10 @@ test('a pinch takes over from a drag, and the finger left behind does not start 
 	await expectDrawerClosed(page);
 });
 
-test('A+ and A− change the size by one pixel and stop at the limits', async ({ page }) => {
+test('there are no text size buttons; pinch and double tap are the controls', async ({ page }) => {
 	await terminal(page);
-	const larger = page.getByRole('button', { name: 'Larger text' });
-	const smaller = page.getByRole('button', { name: 'Smaller text' });
-	for (const button of [larger, smaller]) {
-		const box = await button.boundingBox();
-		expect(box?.width).toBeGreaterThanOrEqual(44);
-		expect(box?.height).toBeGreaterThanOrEqual(44);
-	}
-	const a = await smaller.boundingBox();
-	const b = await larger.boundingBox();
-	expect((b?.x ?? 0) - ((a?.x ?? 0) + (a?.width ?? 0))).toBeGreaterThanOrEqual(8);
-	// The title keeps a usable width beside them.
-	expect((await page.locator('.tbar .title').boundingBox())?.width).toBeGreaterThan(200);
-
-	await larger.click();
-	expect(await size(page)).toBe(12);
-	await smaller.click();
-	await smaller.click();
-	expect(await size(page)).toBe(10);
-
-	await page.evaluate(() => localStorage.setItem('mm.textSize', '23'));
-	await page.reload();
-	await expect(page.locator('.screen')).toBeVisible();
-	await larger.click();
-	expect(await size(page)).toBe(24);
-	await expect(larger).toBeDisabled();
-	await expect(smaller).toBeEnabled();
-
-	await page.evaluate(() => localStorage.setItem('mm.textSize', '7'));
-	await page.reload();
-	await expect(page.locator('.screen')).toBeVisible();
-	await smaller.click();
-	expect(await size(page)).toBe(6);
-	await expect(smaller).toBeDisabled();
+	await expect(page.getByRole('button', { name: /text/i })).toHaveCount(0);
+	await expect(page.getByText(/^A[−+-]$/)).toHaveCount(0);
 });
 
 test('the size is kept, and the first paint already has it', async ({ page }) => {
@@ -260,8 +234,7 @@ test('the size is kept, and the first paint already has it', async ({ page }) =>
 
 test('a double tap resets the size; one tap and a drag do not', async ({ page }) => {
 	await terminal(page);
-	await page.getByRole('button', { name: 'Larger text' }).click();
-	await page.getByRole('button', { name: 'Larger text' }).click();
+	await stored(page, 13);
 	expect(await size(page)).toBe(13);
 
 	await page.touchscreen.tap(200, 500);
@@ -299,7 +272,7 @@ test('a double tap resets the size; one tap and a drag do not', async ({ page })
 
 test('a mouse double click resets too, and a drag end does not', async ({ page }) => {
 	await terminal(page);
-	await page.getByRole('button', { name: 'Larger text' }).click();
+	await stored(page, 12);
 	await drag(page, [300, 300], [200, 300]);
 	await page.mouse.click(200, 500);
 	await page.waitForTimeout(400);
@@ -313,8 +286,7 @@ test('chat text follows the size', async ({ page }) => {
 	await expect(page.locator('.u').first()).toBeVisible();
 	expect(await size(page, '.a')).toBe(15);
 	expect(await size(page, '.tool')).toBeCloseTo(12.5, 1);
-	const larger = page.getByRole('button', { name: 'Larger text' });
-	for (let i = 0; i < 5; i += 1) await larger.click();
+	await stored(page, 16, '.u');
 	// 16px terminal text: chat is 15 x 16 / 11.
 	expect(await size(page, '.a')).toBeCloseTo(21.82, 1);
 	expect(await size(page, '.u')).toBeCloseTo(21.82, 1);
