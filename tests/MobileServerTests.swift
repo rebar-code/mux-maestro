@@ -1407,4 +1407,142 @@ final class MobileServerTests: XCTestCase {
         XCTAssertEqual(post(shell + "/key", json: #"{"key":"Enter"}"#).status, 409)
         XCTAssertEqual(pane.argv.count, 0)
     }
+
+    // MARK: replies, fourth review
+
+    private static let shell = "/api/threads/localhost%3A13"
+
+    func testEveryKeyThatSubmitsIsHeldToTheRulesForEnter() throws {
+        repliesOn()
+        // Ctrl-M and Ctrl-J are Enter to a terminal; Ctrl-D ends the input.
+        let submits = ["Enter", "C-m", "C-j", "C-d"]
+        // A pane with no first-hand status on a y/N question.
+        pane.status = nil
+        pane.screen = "$ rm -i build\nremove build? [y/N] "
+        pane.cursor = .lastLine
+        for key in submits {
+            let refused = post(Self.shell + "/key", json: #"{"key":"\#(key)"}"#)
+            XCTAssertEqual(refused.status, 409, key)
+            XCTAssertEqual(
+                refused.body, #"{"error":"no_input","message":"Thread shows no input box"}"#, key)
+        }
+        // A waiting pane whose prompt cannot be read: the phone has no card.
+        pane.status = .waiting
+        pane.screen = DemoPrompt.yesNo
+        let blind = try promptID()
+        for key in submits {
+            let refused = post(Self.thread + "/key", json: #"{"key":"\#(key)","prompt":"\#(blind)"}"#)
+            XCTAssertEqual(refused.status, 409, key)
+            XCTAssertEqual(refused.body, #"{"error":"unseen","message":"Open the terminal to answer"}"#, key)
+        }
+        XCTAssertEqual(pane.argv.count, 0)
+    }
+
+    func testEnterIntoALocalPaneWithAShellInFrontIsRefusedWhateverItsStatusSays() {
+        repliesOn()
+        // The hooks last said idle; the agent has since exited to a shell.
+        for status in [AttentionStatus.idle, .busy] {
+            pane.status = status
+            pane.cursor = .lastLine
+            for screen in ["$ rm -i build\nremove build? [y/N] ", "$ ", DemoPrompt.idle + "\n$ "] {
+                pane.screen = screen
+                for key in ["Enter", "C-m", "3"] {
+                    let refused = post(Self.thread + "/key", json: #"{"key":"\#(key)"}"#)
+                    XCTAssertEqual(refused.status, 409, "\(status) \(screen) \(key)")
+                    XCTAssertEqual(
+                        refused.body, #"{"error":"no_input","message":"Thread shows no input box"}"#)
+                }
+            }
+        }
+        XCTAssertEqual(pane.argv.count, 0)
+        // Keys that submit nothing stay, and the box takes Enter.
+        XCTAssertEqual(post(Self.thread + "/key", json: #"{"key":"C-c"}"#).status, 200)
+        pane.screen = DemoPrompt.claudeIdle
+        pane.cursor = .inBox
+        XCTAssertEqual(post(Self.thread + "/key", json: #"{"key":"Enter"}"#).status, 200)
+        XCTAssertEqual(pane.argv.map(\.last), ["C-c", "Enter"])
+    }
+
+    func testTextGoesIntoARealCodexComposerAndARealClaudeBox() {
+        repliesOn()
+        // Codex has no hooks here: the shell window stands in for it.
+        pane.status = nil
+        pane.screen = DemoPrompt.codexIdle
+        pane.cursor = .row(8)
+        pane.screenAfterPaste = DemoPrompt.codexInput(["run the tests", "then push"])
+        pane.cursorAfterPaste = .row(9)
+        let codex = post(Self.shell + "/text", json: #"{"text":"run the tests\nthen push"}"#)
+        XCTAssertEqual(codex.status, 200, codex.body)
+        XCTAssertTrue(FakePane.sendArgv(pane.argv, target: "%13"), "\(pane.argv)")
+
+        // Claude Code with a status line that ends in a percentage.
+        pane.status = .idle
+        pane.screen = DemoPrompt.claudeIdle
+        pane.screenAfterPaste = nil
+        pane.cursor = .inBox
+        pane.cursorAfterPaste = nil
+        let claude = post(Self.thread + "/text", json: #"{"text":"go on"}"#)
+        XCTAssertEqual(claude.status, 200, claude.body)
+
+        // Codex with its cursor somewhere else, or its own menu, takes nothing.
+        let before = pane.argv.count
+        pane.status = nil
+        pane.screen = DemoPrompt.codexIdle
+        pane.cursor = .row(2)
+        XCTAssertEqual(post(Self.shell + "/text", json: #"{"text":"go on"}"#).status, 409)
+        pane.screen = DemoPrompt.codexTrust
+        pane.cursor = .lastLine
+        XCTAssertEqual(post(Self.shell + "/text", json: #"{"text":"go on"}"#).status, 409)
+        XCTAssertEqual(pane.argv.count, before)
+    }
+
+    func testALineUnderTheBoxThatAsksOrOffersAChoiceIsNotAFooter() {
+        repliesOn()
+        let box = "────────────\n❯ \n────────────\n"
+        pane.cursor = .inBox
+        for below in [
+            "  Press Enter to continue", "  (Y)es / (N)o", "  ● Yes, proceed", "  --More--(45%)",
+            "  ○ No, go back", "  [x] overwrite", "  Continue?", "  (END)", "  y/n", "  enter continue · esc back",
+        ] {
+            pane.screen = box + below
+            let refused = post(Self.thread + "/text", json: #"{"text":"y"}"#)
+            XCTAssertEqual(refused.status, 409, below)
+        }
+        XCTAssertEqual(pane.argv.count, 0)
+        // A status line of the human's own is a footer, a percentage included.
+        for below in ["  ➜ acme-app git:(main) · ctx 42%", "  12% context left", "  main ✗ 3 files · 87%"] {
+            pane.screen = box + below
+            XCTAssertEqual(post(Self.thread + "/text", json: #"{"text":"go on"}"#).status, 200, below)
+        }
+    }
+
+    func testADigitAnswersOnlyAChoiceTheCardShows() throws {
+        repliesOn()
+        pane.status = .waiting
+        pane.cursor = .lastLine
+        pane.screen = DemoPrompt.permission
+        var id = try promptID()
+        for digit in ["4", "7", "9"] {
+            let refused = post(Self.thread + "/key", json: #"{"key":"\#(digit)","prompt":"\#(id)"}"#)
+            XCTAssertEqual(refused.status, 409, digit)
+            XCTAssertEqual(refused.body, #"{"error":"no_option","message":"Not a choice on the card"}"#, digit)
+        }
+        XCTAssertEqual(pane.argv.count, 0)
+
+        // A long menu, scrolled: the card holds every row on screen and says
+        // there are more.
+        pane.screen = DemoPrompt.scrolledMenu
+        let shown = try shownPrompt()
+        let prompt = try XCTUnwrap(shown["prompt"] as? [String: Any])
+        XCTAssertEqual(
+            (prompt["options"] as? [[String: Any]])?.compactMap { $0["n"] as? Int }, [4, 5, 6, 7, 8, 9])
+        XCTAssertEqual(prompt["selected"] as? Int, 6)
+        XCTAssertEqual(prompt["moreAbove"] as? Bool, true)
+        XCTAssertEqual(prompt["moreBelow"] as? Bool, true)
+        id = try XCTUnwrap(shown["id"] as? String)
+        // Row 9 is on the card; row 2 is off screen.
+        XCTAssertEqual(post(Self.thread + "/key", json: #"{"key":"2","prompt":"\#(id)"}"#).status, 409)
+        XCTAssertEqual(post(Self.thread + "/key", json: #"{"key":"9","prompt":"\#(id)"}"#).status, 200)
+        XCTAssertEqual(pane.argv.map(\.last), ["9"])
+    }
 }

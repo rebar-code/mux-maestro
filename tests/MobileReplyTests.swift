@@ -186,6 +186,58 @@ enum DemoPrompt {
           enter continue · esc back
         """
 
+    /// An idle Claude Code pane as tmux captures it (v2.1.288), with demo
+    /// names: a no-break space after the mark, and under the box a status
+    /// line of the human's own, then the mode line.
+    static let claudeIdle = """
+        ⏺ Done. 4 files changed, tests pass.
+
+        ────────────────────────────────────────────────────────────
+        ❯\u{A0}
+        ────────────────────────────────────────────────────────────
+          ➜ acme-app git:(main) · ctx 42%
+          ⏵⏵ auto mode on (shift+tab to cycle) · ← 1 agent
+        """
+
+    /// An idle Codex pane as tmux captures it (v0.160.0), with demo names.
+    /// The composer has no rules: its mark, a blank row, two footer rows.
+    static let codexIdle = codexInput(["Ask Codex to do anything"])
+
+    /// The same screen with `rows` in the composer.
+    static func codexInput(_ rows: [String]) -> String {
+        let box = (["› " + (rows.first ?? "")] + rows.dropFirst().map { "  " + $0 }).joined(separator: "\n")
+        return """
+
+              >_ OpenAI Codex (v0.160.0)
+                 ~/acme-app
+
+              May the source be with you.
+
+
+
+            \(box)
+
+              GPT-6-Luna medium · ~/acme-app
+              ← for agents · ? for shortcuts                              ⚠ 3 warnings · f2 to view
+            """
+    }
+
+    /// A long menu, scrolled: rows above and below are off screen.
+    static let scrolledMenu = """
+        ────────────────────────────────────────
+         ☐ Region
+
+        Which region should the deploy use?
+
+          ↑ 4. eu-west-1
+            5. eu-central-1
+          ❯ 6. us-east-1
+            7. us-west-2
+            8. ap-south-1
+          ↓ 9. ap-northeast-1
+        ────────────────────────────────────────
+        """
+
     /// The permission prompt with the cursor moved to its third choice.
     static let permissionOnThird = permission
         .replacingOccurrences(of: "❯ 1. Yes ", with: "  1. Yes ")
@@ -474,9 +526,49 @@ final class MobileReplyTests: XCTestCase {
             MobileReply.promptBody(state: state(.idle), io: FakePane().io)["id"] is NSNull)
         XCTAssertTrue(MobileReply.answers("Enter"))
         XCTAssertTrue(MobileReply.answers("7"))
-        for key in ["Escape", "Up", "Down", "Left", "Right", "Tab", "BTab", "C-c"] {
+        for key in ["Escape", "Up", "Down", "Left", "Right", "Tab", "C-c"] {
             XCTAssertFalse(MobileReply.answers(key), key)
         }
+    }
+
+    func testEveryWhitelistedKeyHasAnEffectClassAndTheGuardsUseIt() {
+        // Each key that submits, however it is named.
+        for key in ["Enter", "C-m", "C-j", "C-d", "C-o", "BTab"] {
+            XCTAssertEqual(MobileReply.effect(of: key), .submit, key)
+            XCTAssertTrue(MobileReply.answers(key), key)
+        }
+        for digit in 1...9 {
+            XCTAssertEqual(MobileReply.effect(of: "\(digit)"), .digit(digit))
+        }
+        for key in ["Up", "Down", "Left", "Right", "Tab", "C-i", "C-n", "C-p", "C-f", "C-b", "C-a", "C-e"] {
+            XCTAssertEqual(MobileReply.effect(of: key), .navigate, key)
+        }
+        for key in ["Escape", "C-c", "C-g"] { XCTAssertEqual(MobileReply.effect(of: key), .cancel, key) }
+        // Nothing on the whitelist is left without a class by accident: what
+        // is not named above edits the line.
+        let named: Set<String> = [
+            "Enter", "C-m", "C-j", "C-d", "C-o", "BTab", "Up", "Down", "Left", "Right", "Tab", "C-i",
+            "C-n", "C-p", "C-f", "C-b", "C-a", "C-e", "Escape", "C-c", "C-g",
+        ]
+        let rest = MobileReply.keys.subtracting(named).filter { MobileReply.effect(of: $0) == .other }
+        XCTAssertEqual(
+            rest.sorted(),
+            ["C-h", "C-k", "C-l", "C-q", "C-r", "C-s", "C-t", "C-u", "C-v", "C-w", "C-x", "C-y", "C-z"])
+
+        // A submit key under another name is refused where Enter is.
+        let waiting = state(.waiting, since: 100)
+        let blind = FakePane()
+        blind.screen = DemoPrompt.yesNo
+        blind.cursor = .lastLine
+        let id = shownID(waiting, blind)
+        for key in ["C-m", "C-j", "C-d", "C-o", "BTab"] {
+            XCTAssertEqual(
+                MobileReply.press(key, prompt: id, target: "%12", io: blind.io, state: waiting).status, 409, key)
+            XCTAssertEqual(
+                MobileReply.press(key, prompt: nil, target: "%12", io: blind.io, state: state(.idle)).status,
+                409, key)
+        }
+        XCTAssertEqual(blind.argv.count, 0)
     }
 
     // MARK: text
@@ -791,6 +883,62 @@ final class MobileReplyTests: XCTestCase {
         XCTAssertNotEqual(first.id, moved.id)
     }
 
+    func testRecognisesTheRealInputBoxesAndNothingShapedLikeThem() {
+        // Claude Code: two rules, a no-break space after the mark, a status
+        // line that ends in a percentage.
+        XCTAssertTrue(seen(DemoPrompt.claudeIdle).inputBox)
+        XCTAssertFalse(seen(DemoPrompt.claudeIdle, cursor: .lastLine).inputBox)
+        // Codex: no rules. The mark, a blank row, the footer.
+        XCTAssertTrue(seen(DemoPrompt.codexIdle, cursor: .row(8)).inputBox)
+        XCTAssertTrue(seen(DemoPrompt.codexInput(["run the tests", "then push"]), cursor: .row(9)).inputBox)
+        XCTAssertEqual(
+            seen(DemoPrompt.codexIdle, cursor: .row(8)).anchor, MobileScreen.Anchor(top: 7, bottom: 9))
+        for cursor in [FakePane.Cursor.row(2), .row(10), .lastLine, .unknown] {
+            XCTAssertFalse(seen(DemoPrompt.codexIdle, cursor: cursor).inputBox, "\(cursor)")
+        }
+        // The same shape with something under it that waits for a key, with
+        // a menu's mark instead of Codex's, or with a list in it.
+        let bare = { (rows: String, footer: String) in "x\n\n\(rows)\n\n\(footer)" }
+        XCTAssertTrue(seen(bare("› hello", "  ? for shortcuts"), cursor: .row(2)).inputBox)
+        for (rows, footer) in [
+            ("› Yes, proceed\n  No", "  enter continue · esc back"),
+            ("› hello", "  Overwrite? [y/N]"), ("› hello", "$ "), ("❯ hello", "  ? for shortcuts"),
+            ("> hello", "  ? for shortcuts"), ("› 1. Trust\n  2. Back", "  ? for shortcuts"),
+            ("› hello", "  a\n  b\n  c\n  d\n  e"),
+        ] {
+            XCTAssertFalse(seen(bare(rows, footer), cursor: .row(2)).inputBox, rows + " / " + footer)
+        }
+    }
+
+    func testReadsAScrolledMenuAndSaysThereIsMore() throws {
+        let prompt = try XCTUnwrap(seen(DemoPrompt.scrolledMenu, cursor: .lastLine).prompt)
+        XCTAssertEqual(prompt.options.map(\.n), [4, 5, 6, 7, 8, 9])
+        XCTAssertEqual(prompt.options.last?.label, "ap-northeast-1")
+        XCTAssertEqual(prompt.selected, 6)
+        XCTAssertTrue(prompt.moreAbove)
+        XCTAssertTrue(prompt.moreBelow)
+        XCTAssertEqual(prompt.question, "Which region should the deploy use?")
+        // A list that starts past 1 with no mark that says why is not a menu.
+        XCTAssertNil(seen(DemoPrompt.scrolledMenu.replacingOccurrences(of: "↑ 4.", with: "  4.")).prompt)
+        let whole = try XCTUnwrap(seen(DemoPrompt.permission).prompt)
+        XCTAssertFalse(whole.moreAbove)
+        XCTAssertFalse(whole.moreBelow)
+
+        // A digit answers only a row of the card.
+        let pane = FakePane()
+        pane.screen = DemoPrompt.scrolledMenu
+        pane.cursor = .lastLine
+        let waiting = state(.waiting, since: 100)
+        let id = shownID(waiting, pane)
+        for digit in ["1", "2", "3"] {
+            let refused = MobileReply.press(digit, prompt: id, target: "%12", io: pane.io, state: waiting)
+            XCTAssertEqual(body(refused), #"{"error":"no_option","message":"Not a choice on the card"}"#)
+        }
+        XCTAssertEqual(pane.argv.count, 0)
+        XCTAssertEqual(
+            MobileReply.press("9", prompt: id, target: "%12", io: pane.io, state: waiting).status, 200)
+    }
+
     func testReadsCodexsPromptAsItDrawsIt() throws {
         let prompt = try XCTUnwrap(seen(DemoPrompt.codexTrust, cursor: .lastLine).prompt)
         XCTAssertEqual(prompt.options, [
@@ -827,12 +975,18 @@ final class MobileReplyTests: XCTestCase {
                 MobileReply.press("Enter", prompt: nil, target: "%12", io: idle.io, state: unverified).status,
                 200)
         }
-        // A first-hand status is trusted here: this Mac's hooks say it waits on nothing.
-        let local = FakePane()
-        local.screen = "$ "
-        XCTAssertEqual(
-            MobileReply.press("Enter", prompt: nil, target: "%12", io: local.io, state: state(.busy)).status,
-            200)
+        // A first-hand status is held to the same rule: it can be old, and a
+        // shell may be in front.
+        for status in [AttentionStatus.idle, .busy] {
+            let local = FakePane()
+            local.screen = "$ "
+            XCTAssertEqual(
+                MobileReply.press("Enter", prompt: nil, target: "%12", io: local.io, state: state(status))
+                    .status, 409)
+            XCTAssertEqual(
+                MobileReply.press("C-c", prompt: nil, target: "%12", io: local.io, state: state(status))
+                    .status, 200)
+        }
     }
 
     func testAScreenWithoutALivePromptHasNone() {

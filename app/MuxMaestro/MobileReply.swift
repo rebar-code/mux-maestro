@@ -74,6 +74,10 @@ struct MobilePrompt: Equatable {
     let options: [Option]
     /// The choice the cursor is on: what Enter takes.
     var selected = 1
+    /// The menu is scrolled: it has rows above or below the ones on screen,
+    /// which the card cannot show.
+    var moreAbove = false
+    var moreBelow = false
     /// The card does not hold all of what the pane shows above the choices.
     var truncated = false
     /// When the pane started waiting, and the pane's prompt counter. Both
@@ -99,6 +103,7 @@ struct MobilePrompt: Equatable {
         [
             "id": id, "kind": kind.rawValue, "title": title, "detail": detail,
             "question": question, "truncated": truncated, "selected": selected,
+            "moreAbove": moreAbove, "moreBelow": moreBelow,
             "options": options.map { ["n": $0.n, "label": $0.label] as [String: Any] },
         ]
     }
@@ -158,20 +163,42 @@ struct MobileScreen: Equatable {
         return line.count == 1 || line.dropFirst().first?.isWhitespace == true
     }
 
-    /// `❯ 1. Yes` → (1, "Yes", selected).
-    private static func option(_ line: String) -> (n: Int, label: String, selected: Bool)? {
-        var rest = Substring(line)
+    private struct Row {
+        let n: Int
+        let label: String
         var selected = false
-        if let first = rest.first, cursors.contains(first) {
-            selected = true
+        /// The menu's own marks for rows off screen: `↑` on its first row,
+        /// `↓` on its last.
+        var above = false
+        var below = false
+    }
+
+    /// `❯ 1. Yes` → row 1 "Yes", selected. `↓ 9. More` → row 9, more below.
+    private static func option(_ line: String) -> Row? {
+        var rest = Substring(line)
+        var row = Row(n: 0, label: "")
+        // The cursor mark and a scroll mark, in either order.
+        for _ in 0..<2 {
+            guard let first = rest.first else { return nil }
+            if cursors.contains(first) {
+                row.selected = true
+            } else if first == "↑" {
+                row.above = true
+            } else if first == "↓" {
+                row.below = true
+            } else {
+                break
+            }
             rest = rest.dropFirst().drop(while: \.isWhitespace)
         }
-        guard let digit = rest.first, let n = digit.wholeNumberValue, (1...9).contains(n),
-              digit.isASCII, rest.dropFirst().hasPrefix(". ")
+        let digits = rest.prefix { $0.isASCII && $0.isNumber }
+        guard (1...2).contains(digits.count), let n = Int(digits), n >= 1,
+              rest.dropFirst(digits.count).hasPrefix(". ")
         else { return nil }
-        var label = rest.dropFirst(3).trimmingCharacters(in: .whitespaces)
+        var label = rest.dropFirst(digits.count + 2).trimmingCharacters(in: .whitespaces)
         if label.hasSuffix("(esc)") { label = String(label.dropLast(5)).trimmingCharacters(in: .whitespaces) }
-        return label.isEmpty ? nil : (n, label, selected)
+        guard !label.isEmpty else { return nil }
+        return Row(n: n, label: label, selected: row.selected, above: row.above, below: row.below)
     }
 
     /// `cursorRow` is the row the terminal cursor is on. `pasted` is text of
@@ -207,11 +234,18 @@ struct MobileScreen: Equatable {
         anchor = inputBox ? box : nil
     }
 
-    /// An agent's input box by its shape: the last two rules on screen with
-    /// the cursor mark on the first row between them, and under them nothing
-    /// but a footer. A box with anything else below it is a dead agent's last
-    /// frame: a shell or a pager is in front now.
+    /// An agent's input box by its shape, with under it nothing but a
+    /// footer. Anything else below it means a dead agent's last frame: a
+    /// shell or a pager is in front now.
+    ///
+    /// Claude Code draws the box between two rules, the cursor mark on the
+    /// first row between them. Codex draws no rules: its mark `›`, then a
+    /// blank row, then the footer, down to the end of the screen.
     private static func inputBox(_ lines: [String], raw: [Substring]) -> Anchor? {
+        ruledBox(lines, raw: raw) ?? bareBox(lines, raw: raw)
+    }
+
+    private static func ruledBox(_ lines: [String], raw: [Substring]) -> Anchor? {
         let rules = lines.indices.filter { isRule(lines[$0]) }
         guard rules.count >= 2 else { return nil }
         let (top, bottom) = (rules[rules.count - 2], rules[rules.count - 1])
@@ -222,18 +256,50 @@ struct MobileScreen: Equatable {
         return Anchor(top: top, bottom: bottom)
     }
 
+    private static func bareBox(_ lines: [String], raw: [Substring]) -> Anchor? {
+        let blank = { (index: Int) in lines[index].isEmpty }
+        // The footer: the last rows with text, up to a blank row.
+        guard let last = lines.indices.last(where: { !blank($0) }) else { return nil }
+        var footer = last
+        while footer > 0, !blank(footer - 1) { footer -= 1 }
+        guard last - footer < maxFooterLines, raw[footer...last].allSatisfy(isFooter),
+              footer >= 2, blank(footer - 1), !blank(footer - 2)
+        else { return nil }
+        // The composer: the rows above that blank row, up to the next one.
+        let bottom = footer - 2
+        var top = bottom
+        while top > 0, !blank(top - 1) { top -= 1 }
+        guard bottom - top < maxBoxLines, lines[top].first == "›", hasCursor(lines[top])
+        else { return nil }
+        return Anchor(top: top - 1, bottom: bottom + 1)
+    }
+
+    /// Marks a menu puts in front of a choice.
+    private static let choiceMarks: Set<Character> = [
+        "●", "○", "◉", "◯", "◆", "◇", "▶", "▸", "►", "▷", "☐", "☑", "☒", "✔", "✓",
+    ]
+    /// Words of a line that asks for a key or offers a choice.
+    private static let asks = [
+        "y/n", "(y)es", "(n)o", "yes/no", "[y", "password", "passphrase", "--more--", "(end)",
+        "enter continue", "enter to ", "to continue", "to confirm", "to select", "esc back",
+    ]
+
     /// Whether a line under the box can be the agent's footer: hints, a mode
-    /// line, a status line. It is indented with plain spaces, and it is not
-    /// a line that waits for a key: no question, no field, no shell prompt,
-    /// no menu row.
+    /// line, a status line of the human's own. It is indented with plain
+    /// spaces. A line that asks a question or offers a choice is refused; the
+    /// rest is accepted, since a status line can say anything. The cursor in
+    /// the box is the main check; this one is the second.
     private static func isFooter(_ line: Substring) -> Bool {
         guard line.hasPrefix("  ") else { return false }
         let text = line.drop { $0 == " " }
-        guard let first = text.first, !first.isWhitespace, !cursors.contains(first) else { return false }
+        guard let first = text.first, !first.isWhitespace, !cursors.contains(first),
+              !choiceMarks.contains(first)
+        else { return false }
         let trimmed = text.trimmingCharacters(in: .whitespaces).lowercased()
-        guard let last = trimmed.last, !"?:$%#>".contains(last) else { return false }
-        return !["[y/n]", "(y/n)", "[yes/no]", "(yes/no)", "password", "passphrase"]
-            .contains { trimmed.contains($0) }
+        guard let last = trimmed.last, !"?:$#>".contains(last) else { return false }
+        if ["[x]", "[ ]", "(x)", "( )", "(*)", "(•)"].contains(where: trimmed.hasPrefix) { return false }
+        if trimmed.hasPrefix("press ") || trimmed.contains(" press ") { return false }
+        return !asks.contains { trimmed.contains($0) }
     }
 
     /// Whether the input box holds exactly `text`: every row of the box is a
@@ -250,20 +316,21 @@ struct MobileScreen: Equatable {
         return !text.isEmpty && rows == lines
     }
 
-    /// The last list numbered from 1 with the cursor on one of its lines, and
-    /// the rows it covers.
+    /// The last numbered list with the cursor on one of its lines, and the
+    /// rows it covers. It starts at 1, or at a later number when the menu is
+    /// scrolled and says so with its `↑` mark.
     private static func list(_ lines: [String]) -> (prompt: MobilePrompt, rows: ClosedRange<Int>)? {
         guard let at = lines.lastIndex(where: { option($0)?.selected == true }),
               let picked = option(lines[at]) else { return nil }
 
-        var found: [(index: Int, option: MobilePrompt.Option)] = [(at, .init(n: picked.n, label: picked.label))]
-        // Up to choice 1.
+        var found: [(index: Int, row: Row)] = [(at, picked)]
+        // Up to the first choice on screen.
         var want = picked.n - 1
         var index = at - 1
         var gap = 0
-        while want >= 1, index >= 0, gap <= maxGap {
+        while want >= 1, index >= 0, gap <= maxGap, !isRule(lines[index]) {
             if let other = option(lines[index]), other.n == want {
-                found.insert((index, .init(n: other.n, label: other.label)), at: 0)
+                found.insert((index, other), at: 0)
                 want -= 1
                 gap = 0
             } else {
@@ -271,14 +338,14 @@ struct MobileScreen: Equatable {
             }
             index -= 1
         }
-        guard want == 0 else { return nil }
-        // Down to the last choice.
+        guard found[0].row.n == 1 || found[0].row.above else { return nil }
+        // Down to the last choice on screen.
         want = picked.n + 1
         index = at + 1
         gap = 0
-        while want <= 9, index < lines.count, gap <= maxGap, !isRule(lines[index]) {
+        while index < lines.count, gap <= maxGap, !isRule(lines[index]) {
             if let other = option(lines[index]), other.n == want {
-                found.append((index, .init(n: other.n, label: other.label)))
+                found.append((index, other))
                 want += 1
                 gap = 0
             } else {
@@ -309,7 +376,9 @@ struct MobileScreen: Equatable {
             || question.lowercased().contains("allow")
         let prompt = MobilePrompt(
             kind: permission ? .permission : .question, title: title, detail: detail,
-            question: question, options: found.map(\.option), selected: picked.n, truncated: truncated)
+            question: question, options: found.map { .init(n: $0.row.n, label: $0.row.label) },
+            selected: picked.n, moreAbove: found[0].row.above,
+            moreBelow: found[found.count - 1].row.below, truncated: truncated)
         return (prompt, found[0].index...found[found.count - 1].index)
     }
 }
@@ -319,6 +388,7 @@ enum MobileReply {
     static let waitingMessage = "Thread is waiting on a prompt"
     static let noInputMessage = "Thread shows no input box"
     static let unseenMessage = "Open the terminal to answer"
+    static let noOptionMessage = "Not a choice on the card"
     static let unreachable = "Could not reach the pane"
     static let sending = "A reply is being sent"
 
@@ -359,18 +429,56 @@ enum MobileReply {
         ["send-keys", "-t", target, key]
     }
 
-    /// The keys that answer a prompt: Enter takes the choice under the
-    /// cursor, a digit picks one.
-    static func answers(_ key: String) -> Bool {
-        key == "Enter" || (key.count == 1 && key.first?.isNumber == true)
+    /// What a key does to whatever is in front of the pane. The guards are
+    /// written against this, not against key names: Ctrl-M is Enter too.
+    enum KeyEffect: Equatable {
+        /// Sends what is typed, or takes the choice under the cursor.
+        case submit
+        /// Picks a numbered choice, or types a digit.
+        case digit(Int)
+        /// Moves the cursor or the selection.
+        case navigate
+        /// Backs out.
+        case cancel
+        /// Edits, or anything else.
+        case other
     }
 
-    /// Press one whitelisted key. A pane on a prompt takes it too, as a
-    /// terminal would, but only for the prompt the phone was showing: `prompt`
-    /// must name the one on the pane now. Enter and the digits answer a
-    /// prompt, so they also need a prompt the phone can show as a card: one
-    /// whose choices were read. A prompt the human has not seen is answered
-    /// by no key. Escape and the arrows answer nothing and stay allowed.
+    static func effect(of key: String) -> KeyEffect {
+        if key.count == 1, let digit = key.first?.wholeNumberValue { return .digit(digit) }
+        switch key {
+        // Ctrl-M is a carriage return and Ctrl-J a line feed: both are Enter
+        // to a terminal. Ctrl-D ends the input and Ctrl-O runs the line in a
+        // shell. Shift+Tab takes "allow all" in an agent's permission menu.
+        case "Enter", "C-m", "C-j", "C-d", "C-o", "BTab": return .submit
+        // Ctrl-I is Tab.
+        case "Up", "Down", "Left", "Right", "Tab", "C-i", "C-n", "C-p", "C-f", "C-b", "C-a", "C-e":
+            return .navigate
+        case "Escape", "C-c", "C-g": return .cancel
+        default: return .other
+        }
+    }
+
+    /// Whether `key` can answer a prompt.
+    static func answers(_ key: String) -> Bool {
+        switch effect(of: key) {
+        case .submit, .digit: return true
+        case .navigate, .cancel, .other: return false
+        }
+    }
+
+    /// Press one whitelisted key.
+    ///
+    /// A pane on a prompt takes it, as a terminal would, but only for the
+    /// prompt the phone was showing: `prompt` must name the one on the pane
+    /// now. A key that can answer (a submit key or a digit) also needs a
+    /// prompt the phone can show as a card, and a digit needs to be a choice
+    /// on that card. A prompt the human has not seen is answered by no key.
+    ///
+    /// With no prompt to name, a key that can answer goes only into a
+    /// verified input box, on every pane and whatever its status says: a
+    /// status can be old, and a shell or a question may be in front.
+    /// Keys that move or cancel answer nothing and stay allowed.
     static func press(
         _ key: String, prompt sent: String?, target: String, io: MobilePaneIO, state: MobilePaneState?
     ) -> MobileResponse {
@@ -379,13 +487,16 @@ enum MobileReply {
         guard let text = io.screen() else { return .error(503, "unavailable", message: unreachable) }
         let seen = MobileScreen(text, cursorRow: io.cursorRow())
         let card = prompt(state: state, seen: seen, io: io)
+        let effect = effect(of: key)
         if let current = card?.id ?? waitingID(state: state, seen: seen, io: io) {
             guard current == sent else { return .error(409, "stale") }
-            if answers(key), card == nil { return .error(409, "unseen", message: unseenMessage) }
-        } else if answers(key), state.unverified, !seen.inputBox {
-            // Nothing names what this pane waits on, and its status is not
-            // first-hand: it may sit on a prompt that could not be read. Only
-            // a verified input box takes an Enter or a digit then.
+            if answers(key) {
+                guard let card else { return .error(409, "unseen", message: unseenMessage) }
+                if case .digit(let n) = effect, !card.options.contains(where: { $0.n == n }) {
+                    return .error(409, "no_option", message: noOptionMessage)
+                }
+            }
+        } else if answers(key), !seen.inputBox {
             return .error(409, "no_input", message: noInputMessage)
         }
         let response = send(key: key, target: target, io: io)
@@ -571,7 +682,8 @@ enum MobileReply {
         guard let prompt = prompt(state: state, seen: look(io), io: io), prompt.id == id else {
             return .error(409, "stale")
         }
-        guard prompt.options.contains(where: { $0.n == option }) else {
+        // A choice on the card, and one a digit key can pick.
+        guard (1...9).contains(option), prompt.options.contains(where: { $0.n == option }) else {
             return .error(400, "bad_request")
         }
         let response = send(key: String(option), target: target, io: io)
