@@ -3,7 +3,7 @@
 	import { age } from '$lib/format';
 	import { pullToRefresh, swipeAway, ui } from '$lib/gestures.svelte';
 	import { counts } from '$lib/group';
-	import { can, live } from '$lib/live.svelte';
+	import { can, isOff, live, OFF_LABEL } from '$lib/live.svelte';
 	import { needsYouCards } from '$lib/manager';
 	import { manager } from '$lib/manager.svelte';
 	import PullIndicator from '$lib/PullIndicator.svelte';
@@ -14,6 +14,7 @@
 
 	const tally = $derived(live.threads ? counts(live.threads) : null);
 	const managerOn = $derived(can('manager'));
+	const boxLabel = $derived(isOff('manager') ? OFF_LABEL : 'Ask the manager');
 	const waiting = $derived(needsYouCards(live.threads ?? [], managerOn ? manager.needsYou : []));
 	const review = $derived(managerOn ? manager.review : []);
 	const canSend = $derived(manager.draft.trim() !== '');
@@ -47,14 +48,11 @@
 
 <div class="scroll home" data-pull={PULL} {@attach pullToRefresh(PULL, reload)}>
 	<PullIndicator key={PULL} />
-	<!-- Until the Mac says which features are on, hold the button's place. -->
-	{#if managerOn || live.config === null}
-		<div class="hero">
-			<button class="orb" disabled aria-disabled="true" aria-label="Talk to the manager">
-				<span>🎙</span>
-			</button>
-		</div>
-	{/if}
+	<div class="hero">
+		<button class="orb" disabled aria-disabled="true" aria-label="Talk to the manager">
+			<span>🎙</span>
+		</button>
+	</div>
 
 	{#if managerOn}
 		<div class="said" aria-live="polite" data-said {@attach manager.watch}>
@@ -157,7 +155,10 @@
 			<button class="ip" disabled aria-disabled="true" aria-label="Microphone">🎙</button>
 		</div>
 	</div>
-	<form class="compose" onsubmit={submit}>
+{/if}
+<!-- With the Manager switch off the box stays, disabled, and says where the switch is. -->
+<form class="compose" class:bare={!managerOn} onsubmit={submit}>
+	{#if managerOn}
 		<input
 			bind:value={manager.draft}
 			placeholder="Ask the manager"
@@ -166,15 +167,17 @@
 			autocomplete="off"
 			autocapitalize="sentences"
 		/>
-		{#if canSend}
-			<button class="pill send grow" type="submit" disabled={manager.busy}>↑ Send</button>
-		{:else}
-			<button class="pill grow" type="button" disabled aria-disabled="true" aria-label="Talk"
-				>🎙 Talk</button
-			>
-		{/if}
-	</form>
-{/if}
+	{:else}
+		<input disabled placeholder={boxLabel} aria-label={boxLabel} data-off={isOff('manager')} />
+	{/if}
+	{#if managerOn && canSend}
+		<button class="pill send grow" type="submit" disabled={manager.busy}>↑ Send</button>
+	{:else}
+		<button class="pill grow" type="button" disabled aria-disabled="true" aria-label="Talk"
+			>🎙 Talk</button
+		>
+	{/if}
+</form>
 
 <style>
 	.home {
@@ -468,6 +471,18 @@
 		font: inherit;
 		font-size: 16px;
 		outline: none;
+	}
+
+	/* No voice bar above it: the box draws its own top edge. */
+	.compose.bare {
+		padding-top: 8px;
+		border-top: 1px solid var(--border);
+	}
+
+	.compose input:disabled {
+		opacity: 1;
+		color: var(--muted);
+		-webkit-text-fill-color: var(--muted);
 	}
 
 	.compose input:focus-visible {

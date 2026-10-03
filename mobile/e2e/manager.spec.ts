@@ -12,6 +12,8 @@ import {
 
 const said = (page: Page) => page.locator('[data-said]');
 const box = (page: Page) => page.getByRole('textbox', { name: 'Ask the manager' });
+const offBox = (page: Page) => page.getByRole('textbox', { name: 'Off in MuxMaestro Settings' });
+const homeRow = (page: Page) => drawer(page).locator('[data-home]');
 const review = (page: Page) => page.locator('[data-review]');
 
 test('the app opens on the manager home', async ({ page }) => {
@@ -159,23 +161,32 @@ test('a right swipe on the home still opens the sidebar, over a review card too'
 	await expect(review(page)).toHaveCount(1);
 });
 
-test('the Manager row in the sidebar opens the home', async ({ page }) => {
-	await fresh(page, threadPath('localhost:1'));
-	await page.getByRole('button', { name: 'Menu' }).click();
-	await drawer(page).getByText('Manager').click();
-	await expect(page).toHaveURL(/\/$/);
-	await expectDrawerClosed(page);
-	await expect(box(page)).toBeVisible();
+test('Manager switch on: the text box is enabled and asks for a message', async ({ page }) => {
+	await fresh(page);
+	await expect(box(page)).toBeEnabled();
+	await expect(box(page)).toHaveAttribute('placeholder', 'Ask the manager');
+	await expect(offBox(page)).toHaveCount(0);
+	await expect(page.getByRole('button', { name: 'Talk to the manager' })).toBeVisible();
 });
 
-test('with the Manager switch off the home and its row are hidden', async ({ page }) => {
+test('Manager switch off: the text box stays, disabled, and says where the switch is', async ({
+	page
+}) => {
 	await fresh(page);
 	await expect(box(page)).toBeVisible();
 	await page.request.post('/__fixture/capability?name=manager&on=0');
+	await expect(offBox(page)).toBeVisible();
+	await expect(offBox(page)).toBeDisabled();
+	await expect(offBox(page)).toHaveAttribute('placeholder', 'Off in MuxMaestro Settings');
 	await expect(box(page)).toHaveCount(0);
+	// The talk button is still drawn, and nothing can be sent.
+	await expect(page.getByRole('button', { name: 'Talk to the manager' })).toBeDisabled();
+	await expect(page.getByRole('button', { name: 'Talk', exact: true })).toBeDisabled();
+	await expect(page.getByRole('button', { name: '↑ Send' })).toHaveCount(0);
+	// Nothing of the manager itself is drawn.
 	await expect(said(page)).toHaveCount(0);
 	await expect(review(page)).toHaveCount(0);
-	await expect(page.getByRole('button', { name: 'Talk to the manager' })).toHaveCount(0);
+	await expect(page.locator('[data-update]')).toHaveCount(0);
 	await expect(page.locator('[data-voicebar]')).toHaveCount(0);
 	// The threads that wait are still listed: they come from the thread list.
 	await expect(page.locator('.sect').first()).toHaveText('Needs you · 2');
@@ -185,14 +196,50 @@ test('with the Manager switch off the home and its row are hidden', async ({ pag
 			TOKEN_HEADER
 		)
 	).toBe(403);
-	await page.getByRole('button', { name: 'Menu' }).click();
-	await expect(drawer(page).getByText('Manager')).toHaveCount(0);
 
-	// Off at first paint too: nothing of the manager is drawn from the cache.
+	// Off at first paint too: the box is there, and no request goes to the manager.
+	let asked = 0;
+	page.on('request', (request) => {
+		if (request.url().includes('/api/manager')) asked += 1;
+	});
 	await page.reload();
+	await expect(offBox(page)).toBeDisabled();
 	await expect(page.locator('.sect').first()).toHaveText('Needs you · 2');
-	await expect(box(page)).toHaveCount(0);
+	expect(asked).toBe(0);
+
+	// Switched on again on the Mac: the box works without a reload.
+	await page.request.post('/__fixture/capability?name=manager&on=1');
+	await expect(box(page)).toBeEnabled();
+	await expect(offBox(page)).toHaveCount(0);
 });
+
+for (const on of [true, false]) {
+	test(`the sidebar's Manager row goes back to the home, Manager switch ${on ? 'on' : 'off'}`, async ({
+		page
+	}) => {
+		await fresh(page, threadPath('localhost:1'));
+		if (!on) await page.request.post('/__fixture/capability?name=manager&on=0');
+		await expect(page.locator('.tbar .title b')).toHaveText('acme-app · checkout-fix');
+		await page.getByRole('button', { name: 'Menu' }).click();
+		await expectDrawerOpen(page);
+		// Pinned at the top, above the grouping control, and not the current page.
+		const row = await homeRow(page).boundingBox();
+		const seg = await drawer(page).getByRole('tablist', { name: 'Group by' }).boundingBox();
+		expect(row?.y ?? 999).toBeLessThan(seg?.y ?? 0);
+		await expect(homeRow(page)).not.toHaveAttribute('aria-current', 'page');
+
+		await homeRow(page).click();
+		await expect(page).toHaveURL(/\/$/);
+		await expectDrawerClosed(page);
+		await expect(on ? box(page) : offBox(page)).toBeVisible();
+		if (on) await expect(box(page)).toBeEnabled();
+		else await expect(offBox(page)).toBeDisabled();
+
+		// On the home the row is marked as the current page.
+		await page.getByRole('button', { name: 'Menu' }).click();
+		await expect(homeRow(page)).toHaveAttribute('aria-current', 'page');
+	});
+}
 
 test('voice controls are drawn and do nothing', async ({ page }) => {
 	await fresh(page);
