@@ -15,6 +15,9 @@ struct MobilePortMapping: Equatable {
     let https: Bool
     /// When the phone last asked for it. It closes `idleSeconds` after.
     var openedAt: Date
+
+    /// What `tailscale serve` was told to proxy to: how the mapping is known again.
+    var target: String { MobileServing.target(port: port, https: https) }
 }
 
 enum MobileServing {
@@ -55,6 +58,25 @@ enum MobileServing {
         ["serve", "--bg", "--https=\(port)", target(port: port, https: https)]
     }
 
+    /// Where `tailscale serve` proxies `port`, when that is all it does with
+    /// it: one handler, a proxy, tailnet only. nil for anything else. A mapping
+    /// is this app's only when this is the exact target the app set.
+    static func proxy(serveStatusJSON json: String, port: Int) -> String? {
+        guard let root = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any]
+        else { return nil }
+        let suffix = ":\(port)"
+        for (name, on) in root["AllowFunnel"] as? [String: Any] ?? [:]
+        where name.hasSuffix(suffix) && on as? Bool == true {
+            return nil
+        }
+        var handlers: [Any] = []
+        for (name, value) in root["Web"] as? [String: Any] ?? [:] where name.hasSuffix(suffix) {
+            handlers += Array(((value as? [String: Any])?["Handlers"] as? [String: Any] ?? [:]).values)
+        }
+        guard handlers.count == 1 else { return nil }
+        return (handlers[0] as? [String: Any])?["Proxy"] as? String
+    }
+
     static func holder(serveStatusJSON json: String, port: Int) -> Holder {
         guard let root = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any]
         else { return .other }
@@ -82,6 +104,21 @@ enum MobileServing {
     static func stale(_ mappings: [MobilePortMapping], gone: Set<Int>, now: Date) -> [Int] {
         mappings.filter { gone.contains($0.port) || now.timeIntervalSince($0.openedAt) >= idleSeconds }
             .map(\.port).sorted()
+    }
+
+    /// The mappings whose server is gone, for the sweep: the thread left the
+    /// tree, or what it runs is known and no longer has the port. A list that
+    /// is not known yet, or a pane the scan could not find, proves nothing
+    /// and closes nothing; the idle time still ends such a mapping.
+    static func gone(
+        _ mappings: [MobilePortMapping], snapshot: MobileSnapshot,
+        running: (MobileThread) -> RunningSet?, ownPort: Int?
+    ) -> Set<Int> {
+        Set(mappings.filter { mapping in
+            guard let thread = snapshot.thread(id: mapping.thread) else { return true }
+            guard let set = running(thread), set.known else { return false }
+            return mappable(in: set, ownPort: ownPort)[mapping.port] == nil
+        }.map(\.port))
     }
 
     // MARK: Requests

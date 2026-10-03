@@ -47,12 +47,12 @@ private final class FakeTailscale: CommandRunner {
     }
 }
 
-/// The stored list of mapped ports, in memory.
+/// The stored mappings (port and target), in memory.
 private final class MemoryPorts: PhonePortStore {
-    var stored: [Int] = []
+    var stored: [Int: String] = [:]
 
-    func load() -> [Int] { stored }
-    func save(_ ports: [Int]) { stored = ports }
+    func load() -> [Int: String] { stored }
+    func save(_ ports: [Int: String]) { stored = ports }
 }
 
 /// The Keychain's stand-in: one token in memory.
@@ -305,14 +305,16 @@ final class PhoneLinkTests: XCTestCase {
         XCTAssertEqual(link.mappings.map(\.port), [5173, 6006])
         XCTAssertEqual(link.mappings.first?.thread, "localhost:12")
         XCTAssertEqual(link.mappings.first?.label, "acme-app")
-        XCTAssertEqual(ports.stored, [5173, 6006])
+        XCTAssertEqual(ports.stored, [
+            5173: "http://localhost:5173", 6006: "https+insecure://localhost:6006",
+        ])
         XCTAssertEqual(published, [[5173], [5173, 6006]])
         XCTAssertFalse(tailscale.calls.contains { $0.contains { $0.contains("funnel") } })
 
         XCTAssertTrue(link.closeMapping(port: 5173))
         XCTAssertEqual(serves(own: own).last, ["serve", "--https=5173", "off"])
         XCTAssertEqual(link.mappings.map(\.port), [6006])
-        XCTAssertEqual(ports.stored, [6006])
+        XCTAssertEqual(ports.stored, [6006: "https+insecure://localhost:6006"])
         // Not a mapping of ours: nothing runs.
         let before = tailscale.calls.count
         XCTAssertFalse(link.closeMapping(port: 5173))
@@ -364,7 +366,7 @@ final class PhoneLinkTests: XCTestCase {
         XCTAssertEqual(open(link, 5173), .unavailable("Tailscale did not answer"))
         XCTAssertEqual(serves(own: own), [])
         XCTAssertEqual(link.mappings, [])
-        XCTAssertEqual(ports.stored, [])
+        XCTAssertEqual(ports.stored, [:])
         tailscale.serving = "{}"
         link.shutdown()
     }
@@ -392,7 +394,7 @@ final class PhoneLinkTests: XCTestCase {
         tailscale.serveFails = true
         XCTAssertEqual(open(link, 5173), .unavailable("tailscale serve failed"))
         XCTAssertEqual(link.mappings, [])
-        XCTAssertEqual(ports.stored, [])
+        XCTAssertEqual(ports.stored, [:])
         tailscale.serveFails = false
         link.shutdown()
     }
@@ -413,7 +415,7 @@ final class PhoneLinkTests: XCTestCase {
                 ["serve", "--https=\(own)", "off"],
             ])
             XCTAssertEqual(link.mappings, [])
-            XCTAssertEqual(ports.stored, [])
+            XCTAssertEqual(ports.stored, [:])
             XCTAssertEqual(published.last, [])
         }
     }
@@ -452,7 +454,7 @@ final class PhoneLinkTests: XCTestCase {
         drain()
         XCTAssertEqual(link.mappings, [])
         XCTAssertEqual(serves(own: own).last, ["serve", "--https=8080", "off"])
-        XCTAssertEqual(ports.stored, [])
+        XCTAssertEqual(ports.stored, [:])
         XCTAssertTrue(link.isOn)
         link.shutdown()
     }
@@ -471,16 +473,23 @@ final class PhoneLinkTests: XCTestCase {
     }
 
     func testLeftoverMappingsOfOursAreRemovedAtStartAndAnotherProjectsAreNot() {
-        // 5173 and 6006 are still ours; 8080 is now another project's; 9000 is gone.
+        // 5173 and 6006 are still as this app made them. 7000 has the same
+        // port and a `localhost` target, but not the one this app set. 8080 is
+        // now another project's; 9000 is gone; 4000 was never stored.
         let serving = """
             {"Web":{"devmac.example.ts.net:5173":{"Handlers":{"/":{"Proxy":"http://localhost:5173"}}},
             "devmac.example.ts.net:6006":{"Handlers":{"/":{"Proxy":"https+insecure://localhost:6006"}}},
+            "devmac.example.ts.net:7000":{"Handlers":{"/":{"Proxy":"https+insecure://localhost:7000"}}},
             "devmac.example.ts.net:8080":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:8080"}}},
             "devmac.example.ts.net:4000":{"Handlers":{"/":{"Proxy":"http://localhost:4000"}}}}}
             """
+        let stored = [
+            5173: "http://localhost:5173", 6006: "https+insecure://localhost:6006",
+            7000: "http://localhost:7000", 8080: "http://localhost:8080", 9000: "http://localhost:9000",
+        ]
         // With the switch off, at launch.
         tailscale.serving = serving
-        ports.stored = [5173, 6006, 8080, 9000]
+        ports.stored = stored
         let off = link(port: 7433)
         off.removeLeftoverMapping()
         off.shutdown()  // drains the link's queue
@@ -488,10 +497,10 @@ final class PhoneLinkTests: XCTestCase {
             ["serve", "status", "--json"],
             ["serve", "--https=5173", "off"], ["serve", "--https=6006", "off"],
         ])
-        XCTAssertEqual(ports.stored, [])
+        XCTAssertEqual(ports.stored, [:])
 
         // With the switch on, before the listener starts.
-        ports.stored = [5173, 6006, 8080, 9000]
+        ports.stored = stored
         let on = link()
         on.turnOn()
         settle(on)
@@ -503,10 +512,40 @@ final class PhoneLinkTests: XCTestCase {
         ])
         // 4000 has our target form and was never stored: not ours to remove.
         XCTAssertFalse(tailscale.calls.contains(["serve", "--https=4000", "off"]))
-        XCTAssertEqual(ports.stored, [])
+        XCTAssertEqual(ports.stored, [:])
         XCTAssertEqual(on.mappings, [])
         tailscale.serving = "{}"
         on.shutdown()
+    }
+
+    /// A mapping on a port of ours that now proxies to the other `localhost`
+    /// form is someone's own: it is not closed, renewed or removed as ours.
+    func testAMappingWithAnotherTargetOnOurPortIsNotOurs() throws {
+        let (link, own) = try linkOn()
+        XCTAssertEqual(open(link, 5173), .ok)
+        tailscale.live = false
+        tailscale.serving = """
+            {"Web":{"devmac.example.ts.net:5173":{"Handlers":{"/":{"Proxy":"https+insecure://localhost:5173"}}}}}
+            """
+        // A second tap does not count it as open already.
+        XCTAssertEqual(open(link, 5173), .taken)
+        XCTAssertTrue(link.closeMapping(port: 5173))
+        XCTAssertFalse(serves(own: own).contains(["serve", "--https=5173", "off"]))
+        tailscale.serving = "{}"
+        link.shutdown()
+    }
+
+    func testAnOlderStoredListOfBarePortsIsReadAsEmpty() throws {
+        let suite = "phone-ports-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = DefaultsPortStore(defaults: defaults)
+        defaults.set([5173, 6006], forKey: store.key)
+        XCTAssertEqual(store.load(), [:])
+        store.save([5173: "http://localhost:5173"])
+        XCTAssertEqual(store.load(), [5173: "http://localhost:5173"])
+        store.save([:])
+        XCTAssertEqual(store.load(), [:])
     }
 
     /// The whole path of one tap: the phone's request, the server's checks,

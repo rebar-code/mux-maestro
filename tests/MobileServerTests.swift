@@ -104,11 +104,13 @@ final class MobileServerTests: XCTestCase {
         try? FileManager.default.removeItem(at: root)
     }
 
-    private func snapshot(status: AttentionStatus = .busy) -> MobileSnapshot {
+    private func snapshot(
+        status: AttentionStatus = .busy, cwd: String = "/Users/me/acme-app"
+    ) -> MobileSnapshot {
         var agent = TmuxPane(id: "%12", index: 0, command: "claude", title: "", active: true)
         agent.claudeSessionId = "c1"
         agent.attention = status
-        agent.path = "/Users/me/acme-app"
+        agent.path = cwd
         let shell = TmuxPane(id: "%13", index: 0, command: "zsh", title: "", active: true)
         return MobileSnapshot.build([MobileHostInput(
             host: .local, colorHex: "#3291ff", reachability: .reachable, stats: nil,
@@ -352,6 +354,32 @@ final class MobileServerTests: XCTestCase {
         let head = get("/", method: "HEAD")
         XCTAssertEqual(head.status, 200)
         XCTAssertEqual(head.body, "")
+    }
+
+    /// The shell can run its own scripts and nothing else. A page made from
+    /// a blob takes the policy of the page that made it, so a file with a
+    /// script in it runs nothing even when it is opened as a page.
+    func testEveryBundleResponseCarriesTheShellsContentSecurityPolicy() throws {
+        try Data("<html><script>start()</script>shell</html>".utf8)
+            .write(to: root.appendingPathComponent("index.html"))
+        let policy = MobileAPI.shellPolicy(html: "<html><script>start()</script>shell</html>")
+        XCTAssertTrue(policy.contains("script-src 'self' 'sha256-"), policy)
+        for path in ["/", "/_app/immutable/a.js", "/t/localhost%3A12"] {
+            let served = get(path)
+            XCTAssertEqual(served.status, 200, path)
+            XCTAssertTrue(served.head.contains("Content-Security-Policy: \(policy)\r\n"), served.head)
+            XCTAssertTrue(served.head.contains("script-src 'self'"), path)
+            XCTAssertTrue(served.head.contains("object-src 'none'"), path)
+            XCTAssertTrue(served.head.contains("base-uri 'none'"), path)
+            XCTAssertFalse(served.head.contains("unsafe-eval"), path)
+        }
+        // The shell changed: the next response has the new script's hash.
+        try Data("<html><script>other()</script>shell</html>".utf8)
+            .write(to: root.appendingPathComponent("index.html"))
+        XCTAssertFalse(get("/").head.contains("Content-Security-Policy: \(policy)\r\n"))
+        XCTAssertTrue(get("/").head.contains("script-src 'self' 'sha256-"))
+        // An API answer is data, not a page of the shell.
+        XCTAssertFalse(get("/api/threads").head.contains("script-src"))
     }
 
     func testAnswersTwoRequestsOnOneConnection() {
@@ -1375,8 +1403,13 @@ final class MobileServerTests: XCTestCase {
         }
     }
 
+    /// The folder the thread works in, for the tests that read files.
+    private var project: URL { root.appendingPathComponent("acme-app") }
+
     private func localOn() {
         server.configure(MobileConfig(capabilities: [.artifacts, .localServers]))
+        try? FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        server.update(snapshot(cwd: project.path))
     }
 
     /// A dev server on https, one on http, and a Supabase stack, on this Mac.
@@ -1409,7 +1442,7 @@ final class MobileServerTests: XCTestCase {
     }
 
     private func demoFile(_ name: String, _ text: String) throws -> Artifact {
-        let url = root.appendingPathComponent(name)
+        let url = project.appendingPathComponent(name)
         try Data(text.utf8).write(to: url)
         return Artifact(
             kind: ArtifactScanner.kind(of: url.path), path: url.path,
@@ -1593,16 +1626,16 @@ final class MobileServerTests: XCTestCase {
         let outside = root.appendingPathComponent("outside")
         try fm.createDirectory(at: outside, withIntermediateDirectories: true)
         try Data("outside".utf8).write(to: outside.appendingPathComponent("notes.txt"))
-        let link = root.appendingPathComponent("shot.png").path
+        let link = project.appendingPathComponent("shot.png").path
         try fm.createSymbolicLink(atPath: link, withDestinationPath: outside.path + "/notes.txt")
-        let folder = root.appendingPathComponent("out").path
+        let folder = project.appendingPathComponent("out").path
         try fm.createSymbolicLink(atPath: folder, withDestinationPath: outside.path)
-        let big = root.appendingPathComponent("big.log")
+        let big = project.appendingPathComponent("big.log")
         XCTAssertTrue(fm.createFile(atPath: big.path, contents: nil))
         let handle = try FileHandle(forWritingTo: big)
         try handle.truncate(atOffset: UInt64(MobileArtifacts.maxFileBytes) + 1)
         try handle.close()
-        let gone = root.appendingPathComponent("gone.md").path
+        let gone = project.appendingPathComponent("gone.md").path
         let paths = [link, folder + "/notes.txt", big.path, gone]
         local.artifacts = (paths.map {
             Artifact(kind: ArtifactScanner.kind(of: $0), path: $0, at: Date(), exists: true)
@@ -1617,6 +1650,40 @@ final class MobileServerTests: XCTestCase {
         let large = status(big.path)
         XCTAssertEqual(large.status, 413)
         XCTAssertEqual(large.body, #"{"error":"too_large"}"#)
+    }
+
+    /// A transcript can name any path: an edit that was refused still lists
+    /// its file. Only what lies in the thread's own folder reaches the phone.
+    func testAListedFileOutsideTheThreadsFolderIsNotOfferedAndAnswers404() throws {
+        localOn()
+        let fm = FileManager.default
+        let plan = try demoFile("PLAN.md", "# Plan")
+        var outsiders: [Artifact] = []
+        for relative in [
+            ".config/gh/hosts.yml", ".kube/config", ".docker/config.json", ".git-credentials", ".pgpass",
+            ".zsh_history", "other-app/notes.md",
+        ] {
+            let url = home.appendingPathComponent(relative)
+            try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data("secret".utf8).write(to: url)
+            outsiders.append(Artifact(kind: .file, path: url.path, at: Date(), exists: true))
+        }
+        local.artifacts = (outsiders + [plan], [])
+
+        let listed = get(Self.artifacts)
+        XCTAssertEqual(listed.status, 200)
+        XCTAssertFalse(listed.body.contains("hosts.yml"))
+        XCTAssertFalse(listed.body.contains("other-app"))
+        let files = try XCTUnwrap(
+            (JSONSerialization.jsonObject(with: Data(listed.body.utf8)) as? [String: Any])?["files"]
+                as? [[String: Any]])
+        XCTAssertEqual(files.map { $0["name"] as? String }, ["PLAN.md"])
+        for outsider in outsiders {
+            let refused = get(Self.thread + "/file?id=\(MobileArtifacts.id(path: outsider.path))")
+            XCTAssertEqual(refused.status, 404, outsider.path)
+            XCTAssertFalse(refused.body.contains("secret"), outsider.path)
+        }
+        XCTAssertEqual(get(Self.thread + "/file?id=\(MobileArtifacts.id(path: plan.path))").body, "# Plan")
     }
 
     func testServesWhatAThreadHasRunningWithoutAnyAddress() throws {

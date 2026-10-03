@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 // The pure half of the phone server: HTTP parsing, routing, the auth decision
@@ -534,6 +535,49 @@ enum MobileAPI {
         case "txt": return "text/plain; charset=utf-8"
         default: return "application/octet-stream"
         }
+    }
+
+    /// What the shell may load, as a `Content-Security-Policy`. `script-src`
+    /// is filled in by `shellPolicy(html:)`.
+    static let shellDirectives: [(name: String, value: String)] = [
+        ("default-src", "'self'"), ("script-src", "'self'"),
+        // Svelte sets styles from script; the bundle has no inline `<style>`.
+        ("style-src", "'self' 'unsafe-inline'"),
+        // An artifact image is shown from memory: a `blob:` or a `data:` address.
+        ("img-src", "'self' data: blob:"), ("media-src", "'self' data: blob:"),
+        ("font-src", "'self' data:"), ("connect-src", "'self'"), ("worker-src", "'self'"),
+        ("manifest-src", "'self'"), ("frame-src", "'none'"), ("object-src", "'none'"),
+        ("base-uri", "'none'"), ("form-action", "'none'"), ("frame-ancestors", "'none'"),
+    ]
+
+    private static let scriptTag = try! NSRegularExpression(
+        pattern: #"<script\b([^>]*)>(.*?)</script>"#,
+        options: [.caseInsensitive, .dotMatchesLineSeparators])
+    private static let srcAttribute = try! NSRegularExpression(
+        pattern: #"(^|\s)src\s*="#, options: [.caseInsensitive])
+
+    /// The policy sent with every file of the bundle. The shell's own inline
+    /// scripts (SvelteKit's start-up code) are allowed by the hash of their
+    /// text, read from `html`; no other inline script runs. A page made from a
+    /// `blob:` address takes the policy of the page that made it, so a file
+    /// with a script in it runs nothing even when it is opened as a page.
+    static func shellPolicy(html: String) -> String {
+        var hashes: [String] = []
+        let whole = NSRange(html.startIndex..., in: html)
+        for match in scriptTag.matches(in: html, range: whole) {
+            guard let attributes = Range(match.range(at: 1), in: html),
+                  let text = Range(match.range(at: 2), in: html) else { continue }
+            let tag = String(html[attributes])
+            guard srcAttribute.firstMatch(in: tag, range: NSRange(tag.startIndex..., in: tag)) == nil
+            else { continue }
+            let digest = Data(SHA256.hash(data: Data(html[text].utf8))).base64EncodedString()
+            hashes.append("'sha256-\(digest)'")
+        }
+        return shellDirectives.map { directive in
+            directive.name == "script-src"
+                ? ([directive.name, directive.value] + hashes).joined(separator: " ")
+                : "\(directive.name) \(directive.value)"
+        }.joined(separator: "; ")
     }
 
     /// Hashed build files never change; everything else (the shell, the service

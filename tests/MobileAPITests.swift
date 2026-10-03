@@ -1,3 +1,4 @@
+import CryptoKit
 import XCTest
 
 // MobileAPI.swift (Foundation only) compiles into this test target: the HTTP
@@ -585,5 +586,52 @@ final class MobileAPITests: XCTestCase {
         for endpoint in [MobileEndpoint.running(id: "a"), .servers, .serverOpen, .serverClose] {
             XCTAssertEqual(endpoint.capability, .localServers)
         }
+    }
+
+    func testTheShellPolicyAllowsItsOwnScriptsByHashAndNothingElse() {
+        let html = """
+            <!doctype html><html><head>
+            <script>start()</script>
+            <script type="module" src="/_app/immutable/a.js"></script>
+            </head><body><script type="module">
+            import("/_app/immutable/b.js");
+            </script></body></html>
+            """
+        // printf '%s' 'start()' | shasum -a 256 | xxd -r -p | base64, and the
+        // same for the second script's text with its two newlines.
+        XCTAssertEqual(
+            MobileAPI.shellPolicy(html: html),
+            "default-src 'self'; "
+                + "script-src 'self' 'sha256-DIm7WJS6ZKDYe5qFLPy+h4JFI9Bol5QmYC57mt3Fb00=' 'sha256-MZg0d/k+XTJ2DEbXVQoLH/s6pzYebT7J99de9VTLsSE='; "
+                + "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
+                + "media-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; "
+                + "worker-src 'self'; manifest-src 'self'; frame-src 'none'; object-src 'none'; "
+                + "base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+        // No inline script: no hash, and still no inline script allowed.
+        let plain = MobileAPI.shellPolicy(html: "<html><script src=\"/a.js\"></script></html>")
+        XCTAssertTrue(plain.contains("script-src 'self'; "), plain)
+        XCTAssertFalse(plain.contains("sha256-"))
+        XCTAssertEqual(plain.components(separatedBy: "; ")[1], "script-src 'self'")
+        XCTAssertTrue(MobileAPI.shellPolicy(html: "").hasPrefix("default-src 'self'; script-src 'self'; "))
+        // A `src` inside the script's text is not an attribute.
+        XCTAssertTrue(
+            MobileAPI.shellPolicy(html: "<script>const src = 1</script>").contains("'sha256-"))
+    }
+
+    /// The committed bundle's own shell: its one inline start-up script is
+    /// named in the policy by the hash a browser will compute for it.
+    func testTheCommittedShellsInlineScriptIsAllowedByItsHash() throws {
+        let shell = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appendingPathComponent("../app/MuxMaestro/Resources/mobile/index.html")
+        let html = try String(contentsOf: shell, encoding: .utf8)
+        // Found by plain search, not by the code under test.
+        let open = try XCTUnwrap(html.range(of: "<script>"))
+        let close = try XCTUnwrap(html.range(of: "</script>", range: open.upperBound..<html.endIndex))
+        let text = String(html[open.upperBound..<close.lowerBound])
+        XCTAssertTrue(text.contains("__sveltekit"))
+        let hash = Data(SHA256.hash(data: Data(text.utf8))).base64EncodedString()
+        let policy = MobileAPI.shellPolicy(html: html)
+        XCTAssertTrue(policy.contains("script-src 'self' 'sha256-\(hash)';"), policy)
+        XCTAssertEqual(policy.components(separatedBy: "'sha256-").count, 2)
     }
 }
