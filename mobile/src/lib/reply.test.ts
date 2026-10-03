@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
 	BAR_KEYS,
+	canAnswer,
 	barKeys,
 	CTRL_MS,
 	ctrlReduce,
@@ -183,6 +184,8 @@ describe('refused replies', () => {
 	it('asks for the prompt again when the pane waits on one', () => {
 		expect(needsPrompt(refused('waiting'))).toBe(true);
 		expect(needsPrompt(refused('stale'))).toBe(true);
+		expect(needsPrompt(refused('unseen'))).toBe(true);
+		expect(needsPrompt(refused('no_option'))).toBe(false);
 		expect(needsPrompt(refused('not_sent', { reason: 'waiting' }))).toBe(true);
 		expect(needsPrompt(refused('not_sent', { reason: 'busy' }))).toBe(false);
 		expect(needsPrompt(refused('busy'))).toBe(false);
@@ -193,6 +196,13 @@ describe('refused replies', () => {
 
 	it('labels a stale key', () => {
 		expect(refusalLabel(refused('stale'), 'key')).toBe('Prompt changed');
+		expect(refusalLabel(refused('no_option'), 'key')).toBe('Not a choice on the card');
+		expect(refusalLabel(refused('unseen'), 'key')).toBe('Open the terminal to answer');
+	});
+
+	it('answers only with the options the pane has a key for', () => {
+		for (const n of [1, 4, 9]) expect(canAnswer(n)).toBe(true);
+		for (const n of [0, 10, 12, -1, 1.5, NaN]) expect(canAnswer(n)).toBe(false);
 	});
 });
 

@@ -10,6 +10,7 @@
 // /__fixture/voice-takes, /__fixture/replies, /__fixture/prompt?id=&pid=&kind=,
 // /__fixture/upload-max?value=, /__fixture/status?id=&value=,
 // /__fixture/prompt also takes truncated=1, bare=1 (an id with no choices), quiet=1,
+// scrolled=<last row> (a menu scrolled to rows 4…last, with more above and below),
 // /__fixture/not-sent?cleared=&reason=, /__fixture/no-input?id=&on=, /__fixture/pasted?on=,
 // /__fixture/prompt-delay?ms=
 // /__fixture/append?count= (adds lines to pane buildbox:8),
@@ -159,6 +160,31 @@ const QUESTION = {
 };
 const LONG_COMMAND =
 	'kubectl rollout restart deploy/web -n staging && kubectl rollout status deploy/web -n staging --timeout=120s && kubectl get pods -n staging -l app=web -o wide';
+// A menu scrolled to its middle: rows 1 to 3 are above what the pane shows.
+const REGIONS = [
+	'us-east',
+	'us-west',
+	'eu-west',
+	'eu-central',
+	'eu-north',
+	'ap-south',
+	'ap-southeast',
+	'ap-northeast',
+	'sa-east',
+	'ca-central',
+	'me-south',
+	'af-south'
+];
+const scrolledMenu = (last) => ({
+	kind: 'question',
+	title: '',
+	detail: '',
+	question: 'Which region should staging run in?',
+	selected: 4,
+	moreAbove: true,
+	moreBelow: true,
+	options: REGIONS.map((label, i) => ({ n: i + 1, label })).slice(3, last)
+});
 const PROMPTS = { 'localhost:1': PERMISSION, 'devbox:2': QUESTION };
 
 const COMMANDS = [
@@ -385,6 +411,7 @@ function promptBody(thread) {
 	delete prompt.bare;
 	delete prompt.full;
 	delete prompt.base;
+	delete prompt.first;
 	return { prompt: asked.bare ? null : prompt, id: asked.id };
 }
 
@@ -487,12 +514,15 @@ function replyApi(req, res, url, thread, route, body) {
 		const asked = promptOf(thread);
 		if (asked && asked.id !== json.prompt) return send(res, 409, { error: 'stale' });
 		// Nobody could read what Enter or a digit would pick.
-		const picks = /^(Enter|[1-9])$/.test(json.key);
+		// The keys that submit, and the digits, which pick a row.
+		const picks = /^(Enter|C-[mjdo]|BTab|[1-9])$/.test(json.key);
 		if (asked?.bare && picks)
 			return send(res, 409, { error: 'unseen', message: 'Open the terminal to answer' });
 		// No prompt and no input box in sight: the key would land nobody knows where.
 		if (!asked && picks && noInput.has(thread.id))
 			return send(res, 409, { error: 'no_input', message: 'Thread shows no input box' });
+		if (asked && /^[1-9]$/.test(json.key) && !asked.options.some((o) => o.n === Number(json.key)))
+			return send(res, 409, { error: 'no_option', message: 'Not a choice on the card' });
 		keyLocks.add(thread.id);
 		const locks = keyLocks;
 		return void setTimeout(() => {
@@ -501,8 +531,11 @@ function replyApi(req, res, url, thread, route, body) {
 			const step = { Up: -1, Down: 1 }[json.key];
 			if (asked && !asked.bare && step) {
 				asked.base ??= asked.id;
-				asked.selected = Math.min(asked.options.length, Math.max(1, asked.selected + step));
-				asked.id = asked.selected === 1 ? asked.base : `${asked.base}-row${asked.selected}`;
+				const rows = asked.options.map((o) => o.n);
+				asked.selected = Math.min(rows.at(-1), Math.max(rows[0], asked.selected + step));
+				asked.first ??= rows[0];
+				asked.id =
+					asked.selected === asked.first ? asked.base : `${asked.base}-row${asked.selected}`;
 			}
 			replies.keys.push({
 				thread: thread.id,
@@ -517,7 +550,8 @@ function replyApi(req, res, url, thread, route, body) {
 			return send(res, 400, { error: 'bad_request' });
 		const prompt = promptOf(thread);
 		if (!prompt || prompt.id !== json.prompt) return send(res, 409, { error: 'stale' });
-		if (!prompt.options.some((option) => option.n === json.option))
+		// The pane has a key for 1 to 9 only.
+		if (json.option > 9 || !prompt.options.some((option) => option.n === json.option))
 			return send(res, 400, { error: 'bad_request' });
 		replies.answers.push({ thread: thread.id, prompt: json.prompt, option: json.option });
 		setStatus(thread, 'busy');
@@ -957,7 +991,11 @@ function hook(res, url) {
 			promptSeq += 1;
 			prompts[thread.id] = {
 				id: url.searchParams.get('pid') ?? `p${promptSeq}-${thread.window}`,
-				...(url.searchParams.get('kind') === 'question' ? QUESTION : PERMISSION),
+				...(url.searchParams.get('scrolled')
+					? scrolledMenu(Number(url.searchParams.get('scrolled')))
+					: url.searchParams.get('kind') === 'question'
+						? QUESTION
+						: PERMISSION),
 				truncated: url.searchParams.get('truncated') === '1',
 				...(url.searchParams.get('bare') === '1' ? { bare: true } : {})
 			};

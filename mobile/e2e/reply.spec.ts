@@ -1300,3 +1300,122 @@ test('Enter on a pane with no input box in sight is refused, and says why', asyn
 		.poll(async () => (await received(page)).keys)
 		.toEqual([{ thread: IDLE, key: 'Escape' }]);
 });
+
+test('a scrolled menu lists its rows, says there are more, and opens the terminal', async ({
+	page
+}) => {
+	await open(page, IDLE, ['replies', 'keyBar']);
+	await page.request.post(`/__fixture/prompt?id=${IDLE}&pid=menu-1&scrolled=9`);
+	await expect(card(page)).toHaveAttribute('data-prompt', 'menu-1');
+	const rows = card(page).locator('[data-option]');
+	await expect(rows).toHaveText([
+		/eu-central\s*4$/,
+		/eu-north\s*5$/,
+		/ap-south\s*6$/,
+		/ap-southeast\s*7$/,
+		/ap-northeast\s*8$/,
+		/sa-east\s*9$/
+	]);
+	// The pane's cursor is on the first row it shows, which is not option 1.
+	await expect(current(page)).toHaveAttribute('data-option', '4');
+	await expect(card(page).locator('[data-rest]')).toHaveText('More choices in the terminal');
+	const show = card(page).getByRole('button', { name: 'Show terminal' });
+	expect((await show.boundingBox())?.height).toBeGreaterThanOrEqual(44);
+	await show.scrollIntoViewIfNeeded();
+	await shot(page, 'scrolled-card');
+
+	// A row is answered by its own number, not by its place on the card.
+	await rows.nth(2).tap();
+	await expect(card(page)).toHaveCount(0);
+	expect((await received(page)).answers).toEqual([{ thread: IDLE, prompt: 'menu-1', option: 6 }]);
+
+	// Past 9 the pane has no key: those rows are read, not pressed.
+	await page.request.post(`/__fixture/prompt?id=${IDLE}&pid=menu-2&scrolled=12`);
+	await expect(card(page)).toHaveAttribute('data-prompt', 'menu-2');
+	await expect(rows).toHaveCount(9);
+	await expect(card(page).locator('button[data-option]')).toHaveCount(6);
+	await expect(card(page).locator('div[data-option]')).toHaveText([
+		/ca-central\s*10$/,
+		/me-south\s*11$/,
+		/af-south\s*12$/
+	]);
+	let answers = 0;
+	page.on('request', (request) => {
+		if (request.url().endsWith('/answer')) answers += 1;
+	});
+	await card(page).locator('div[data-option]').first().tap();
+	await page.waitForTimeout(200);
+	expect(answers).toBe(0);
+
+	await card(page).getByRole('button', { name: 'Show terminal' }).tap();
+	await expect(page.locator('[data-tab="main"]')).toHaveText(/Terminal\s*⇄/);
+	await expect(page.locator('.screen')).toContainText('12. af-south');
+});
+
+test('Ctrl and m at a prompt nobody can read is refused like Enter, once', async ({ page }) => {
+	await open(page, PERMISSION, ['replies', 'keyBar']);
+	await page.request.post(`/__fixture/prompt?id=${PERMISSION}&pid=bare-2&bare=1`);
+	await expect(card(page)).toHaveAttribute('data-kind', 'bare');
+	const posted: unknown[] = [];
+	page.on('request', (request) => {
+		if (request.url().endsWith('/key')) posted.push(request.postDataJSON());
+	});
+	const refused = page.waitForResponse((response) => response.url().endsWith('/key'));
+	await key(page, 'Control').tap();
+	await page.keyboard.type('m');
+	const response = await refused;
+	expect(response.status()).toBe(409);
+	expect(((await response.json()) as { error: string }).error).toBe('unseen');
+	await expect(note(page)).toHaveText('Open the terminal to answer');
+	await expect(box(page)).toHaveValue('');
+	await page.waitForTimeout(400);
+	expect(posted).toEqual([{ key: 'C-m', prompt: 'bare-2' }]);
+	expect((await received(page)).keys).toEqual([]);
+	// The card is still the one the pane shows.
+	await expect(card(page)).toHaveAttribute('data-prompt', 'bare-2');
+});
+
+test('Sh+Tab on a pane with no input box in sight says why', async ({ page }) => {
+	await open(page, IDLE, ['replies', 'keyBar'], [`/__fixture/no-input?id=${IDLE}`]);
+	let posts = 0;
+	page.on('request', (request) => {
+		if (request.url().endsWith('/key')) posts += 1;
+	});
+	await keybar(page).evaluate((bar) => {
+		for (const label of ['Shift Tab', 'Down'])
+			bar.querySelector<HTMLElement>(`[aria-label="${label}"]`)?.click();
+	});
+	await expect(note(page)).toHaveText('Thread shows no input box');
+	await page.waitForTimeout(400);
+	expect(posts).toBe(1);
+	expect((await received(page)).keys).toEqual([]);
+	// Tab alone submits nothing: it goes.
+	await key(page, 'Tab').tap();
+	await expect
+		.poll(async () => (await received(page)).keys)
+		.toEqual([{ thread: IDLE, key: 'Tab' }]);
+});
+
+test('the fixture refuses a digit that is not on the card, and an answer past 9', async ({
+	page
+}) => {
+	await reset(page);
+	for (const name of ['replies', 'keyBar'])
+		await page.request.post(`/__fixture/capability?name=${name}&on=1`);
+	await page.request.post(`/__fixture/prompt?id=${IDLE}&pid=menu-3&scrolled=12`);
+	const origin = new URL(test.info().project.use.baseURL ?? '').origin;
+	const post = (path: string, data: unknown): Promise<APIResponse> =>
+		page.request.post(`/api/threads/${encodeURIComponent(IDLE)}/${path}`, {
+			data,
+			headers: { ...WRITE, origin }
+		});
+	const digit = await post('key', { key: '2', prompt: 'menu-3' });
+	expect([digit.status(), await digit.json()]).toEqual([
+		409,
+		{ error: 'no_option', message: 'Not a choice on the card' }
+	]);
+	expect((await post('key', { key: '5', prompt: 'menu-3' })).status()).toBe(200);
+	expect((await post('answer', { prompt: 'menu-3', option: 11 })).status()).toBe(400);
+	expect((await post('answer', { prompt: 'menu-3', option: 2 })).status()).toBe(400);
+	expect((await post('answer', { prompt: 'menu-3', option: 9 })).status()).toBe(200);
+});

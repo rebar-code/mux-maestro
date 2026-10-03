@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { canAnswer } from './reply';
 	import type { Prompt } from './types';
 
 	const {
@@ -30,7 +31,9 @@
 	// The terminal has what the card does not: the rest of the text, or all of it.
 	// The row the pane's cursor is on: what Enter takes. The mark follows it.
 	const selected = $derived(prompt?.selected ?? null);
-	const more = $derived(prompt === null || prompt.truncated === true);
+	// A scrolled menu: the pane has rows the card does not list.
+	const scrolled = $derived(prompt?.moreAbove === true || prompt?.moreBelow === true);
+	const more = $derived(prompt === null || prompt.truncated === true || scrolled);
 </script>
 
 <div
@@ -47,10 +50,10 @@
 		{/if}
 		{#if prompt.question}<p class="q">{prompt.question}</p>{/if}
 	{/if}
-	{#if prompt?.options.length || (more && onterminal)}
+	{#if prompt?.options.length || scrolled || (more && onterminal)}
 		<div class="opts">
 			{#each prompt?.options ?? [] as option, index (option.n)}
-				{#if readonly}
+				{#if readonly || !canAnswer(option.n)}
 					<div
 						class="opt"
 						class:cur={option.n === selected}
@@ -79,6 +82,7 @@
 					</button>
 				{/if}
 			{/each}
+			{#if scrolled}<p class="rest" data-rest>More choices in the terminal</p>{/if}
 			{#if more && onterminal}
 				<button type="button" class="opt term" onclick={onterminal}>Show terminal</button>
 			{/if}
@@ -185,6 +189,13 @@
 	}
 
 	.more {
+		color: var(--muted);
+	}
+
+	.rest {
+		margin: 0;
+		padding: 0 2px;
+		font-size: 0.8667em;
 		color: var(--muted);
 	}
 
