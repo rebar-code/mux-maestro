@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ARTIFACTS, BOARD, MAIN, SERVERS, viewTabs, type TabSwitches } from './tabs';
+import { ARTIFACTS, BOARD, MAIN, REQUESTS, SERVERS, viewTabs, type TabSwitches } from './tabs';
 
 const view = (over: Partial<TabSwitches> = {}): TabSwitches => ({
 	listed: true,
@@ -20,13 +20,18 @@ describe('the tabs of a thread view', () => {
 		expect(viewTabs(view({ artifacts: false, servers: false }))).toEqual([MAIN]);
 	});
 
-	it('gives the Maestro page the board, and no files or servers', () => {
-		expect(viewTabs(view({ listed: false }))).toEqual([MAIN, BOARD]);
-		// The board does not wait for a switch: the Maestro page is its switch.
+	it('gives the Maestro page the board and the requests, and no files or servers', () => {
+		expect(viewTabs(view({ listed: false }))).toEqual([MAIN, BOARD, REQUESTS]);
+		// Neither waits for a switch: the Maestro page is their switch.
 		expect(viewTabs(view({ listed: false, artifacts: false, servers: false }))).toEqual([
 			MAIN,
-			BOARD
+			BOARD,
+			REQUESTS
 		]);
+	});
+
+	it('gives a listed thread no requests', () => {
+		expect(viewTabs(view())).not.toContain(REQUESTS);
 	});
 
 	it('gives the Maestro panel one page: it draws the board itself', () => {
