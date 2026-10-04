@@ -18,10 +18,19 @@ else
     DB=$(cd "$(dirname "$0")/.." && pwd)/manager.db
 fi
 
+# The request list lives beside the DB (<home>/requests.json).
+# MUX_MANAGER_REQUESTS overrides it (used by tests).
+if [ -n "${MUX_MANAGER_REQUESTS:-}" ]; then
+    REQUESTS=$MUX_MANAGER_REQUESTS
+else
+    REQUESTS=$(cd "$(dirname "$0")/.." && pwd)/requests.json
+fi
+
 usage() {
     cat >&2 <<'EOF'
 usage: mux <command> …
   mux sessions [--json]                      # survey every session the app sees
+  mux requests [--json] [--open|--done]      # what the human asked for, newest first
   mux phone-log [--last N] [--severity info|warn|error] [--since 30m|2h|3d]
                 [--project SESSION] [--json] # what went wrong on the phone, oldest first
   mux phone-log --projects [--since …]       # errors and warnings per project
@@ -427,6 +436,60 @@ ORDER BY CASE status WHEN 'waiting' THEN 0 WHEN 'active' THEN 1 ELSE 2 END,
         printf 'mux: no session snapshot yet — is MuxMaestro running?\n' >&2
     elif [ "$age" -gt "$SESSIONS_STALE_AFTER" ]; then
         printf 'mux: snapshot is %ss old — MuxMaestro may not be running\n' "$age" >&2
+    fi
+}
+
+# What the human asked for, from requests.json. Read-only, and it never opens
+# manager.db: the file is read into an in-memory SQLite, which also parses it.
+# The phone ticks requests done in this same file, so this is how to see the
+# list as it is now. A file that does not parse is an error, never a short list.
+cmd_requests() {
+    json=0
+    where=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --json) json=1; shift;;
+            --open) where="WHERE json_extract(value, '\$.state') <> 'done'"; shift;;
+            --done) where="WHERE json_extract(value, '\$.state') = 'done'"; shift;;
+            *) die "requests: unexpected argument: $1";;
+        esac
+    done
+
+    # No file yet is an empty list, as the app reads it.
+    if [ ! -e "$REQUESTS" ]; then
+        [ "$json" -eq 0 ] || printf '{"requests":[]}\n'
+        return 0
+    fi
+    file=$(sq "$REQUESTS")
+    doc="CAST(readfile('$file') AS TEXT)"
+    ok=$("$SQLITE" :memory: "SELECT COALESCE(json_valid($doc), 0)
+  AND COALESCE(json_type($doc, '\$.requests') = 'array', 0);" 2>/dev/null) || ok=0
+    [ "$ok" = 1 ] || die "requests: $REQUESTS is not a readable list; read it again before any write"
+
+    # Newest first, by the day in `asked`, which may be prose with a date at
+    # either end ("earlier, restated 2026-10-04"). Requests of one day, and
+    # the ones that name no day, keep the file's order.
+    day="[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]"
+    rows="SELECT value FROM (
+            SELECT value, key, COALESCE(json_extract(value, '\$.asked'), '') AS asked
+            FROM json_each($doc, '\$.requests') $where)
+          ORDER BY CASE WHEN asked GLOB '*$day' THEN substr(asked, -10)
+                        WHEN asked GLOB '$day*' THEN substr(asked, 1, 10)
+                        ELSE '' END DESC, key"
+    if [ "$json" -eq 1 ]; then
+        "$SQLITE" :memory: "SELECT json_object(
+  'updated', json_extract($doc, '\$.updated'),
+  'requests', COALESCE((SELECT json_group_array(json(value)) FROM ($rows)), json('[]')),
+  'blockers', json(COALESCE(json_extract($doc, '\$.blockers'), '[]')),
+  'open_questions', json(COALESCE(json_extract($doc, '\$.open_questions'), '[]'))
+);"
+    else
+        # state|id|project|asked|title — one line per request, the same
+        # pipe-separated shape as `sessions`.
+        "$SQLITE" :memory: "SELECT json_extract(value, '\$.state'), json_extract(value, '\$.id'),
+  COALESCE(json_extract(value, '\$.project'), ''), COALESCE(json_extract(value, '\$.asked'), ''),
+  json_extract(value, '\$.title')
+FROM ($rows);"
     fi
 }
 
@@ -909,6 +972,13 @@ EOF
 if [ "$1" = event ]; then
     shift
     cmd_event "$@"
+    exit 0
+fi
+
+# The request list is a file of its own: reading it never touches the DB.
+if [ "$1" = requests ]; then
+    shift
+    cmd_requests "$@"
     exit 0
 fi
 

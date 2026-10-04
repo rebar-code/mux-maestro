@@ -14,6 +14,8 @@ import type {
 	Mapping,
 	MappingList,
 	PromptState,
+	RequestList,
+	RequestState,
 	RunningList,
 	Thread,
 	TmuxAction,
@@ -516,6 +518,15 @@ export async function unsubscribePush(endpoint: string): Promise<void> {
 /** Say which thread this phone shows (`null`: none), so it sends no push here. */
 export async function focusPush(endpoint: string, thread: string | null): Promise<void> {
 	await post('/api/push/focus', { endpoint, thread });
+}
+
+export function fetchRequests(): Promise<RequestList> {
+	return get<RequestList>('/api/requests');
+}
+
+/** Set one request's state. The answer is the whole list after the write. */
+export async function setRequestState(id: string, state: RequestState): Promise<RequestList> {
+	return (await (await post('/api/requests/state', { id, state })).json()) as RequestList;
 }
 
 export function fetchManager(): Promise<ManagerHome> {
