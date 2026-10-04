@@ -606,6 +606,35 @@ final class ManagerPaneDriver {
         }
     }
 
+    /// The status a hook row gives, or nil when the row is not to be believed
+    /// and Claude's own status file answers. A row is written only when a
+    /// hook fires. One that says "waiting" for a prompt that has since gone
+    /// would otherwise hold forever: a waiting manager takes no turn, so no
+    /// hook would ever write the row again. The rule is the sidebar's
+    /// (`AgentState.isFresh`): the row wins while the file may lag behind it
+    /// and whenever the two agree.
+    static func status(
+        for row: AgentStateRow, fileStatus: ManagerTurnStatus?, now: Int
+    ) -> ManagerTurnStatus? {
+        let scan: AttentionStatus?
+        switch fileStatus {
+        case .idle: scan = .idle
+        case .busy: scan = .busy
+        case .waiting: scan = .waiting
+        case nil: scan = nil
+        }
+        guard AgentState.isFresh(row, scanStatus: scan, now: now) else { return nil }
+        return status(for: row.state)
+    }
+
+    /// The manager pane's status in Claude's own status file, without the
+    /// hook row. nil when the pane has no session yet. Safe on any queue.
+    func fileStatus() -> ManagerTurnStatus? {
+        guard let resolved = ManagerTranscript.session(
+            forTmuxSession: config.tmuxSession, sessionsDir: sessionsDir) else { return nil }
+        return ManagerTranscript.status(sessionFile: resolved.file).0
+    }
+
     /// The resolved Claude session id for the manager pane, re-read each call:
     /// restarting the pane gives the manager a new id.
     func currentSessionId() -> String? {
