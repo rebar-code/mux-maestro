@@ -38,8 +38,11 @@ usage: mux <command> …
   mux review add --key K --text T [--session S] [--host H] [--window N]
                  [--severity info|warn|blocked]
   mux review done --key K
-  mux review list
+  mux review list [--json]
   mux point SESSION[:WINDOW] --reason TEXT [--host H]  # point the human at a session
+            [--action LABEL=TEXT]… [--pane %ID] [--body TEXT]
+                                             # --action makes the pointer a card: a tap on
+                                             # LABEL pastes TEXT into that session's pane
   mux point SESSION[:WINDOW] --done [--host H]         # clear that pointer
   mux name --session S --window N NAME…      # name a local tmux window (sticks)
   mux name --pane %ID TITLE…                 # set a local tmux pane's title
@@ -77,6 +80,15 @@ CREATE TABLE IF NOT EXISTS review (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   dismissed INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS review_card (
+  key TEXT PRIMARY KEY,                 -- the review row this card belongs to
+  v INTEGER NOT NULL DEFAULT 1,         -- card format version
+  pane TEXT NOT NULL DEFAULT '',        -- %id of the pane that asked
+  body TEXT NOT NULL DEFAULT '',
+  actions TEXT NOT NULL DEFAULT '[]',   -- JSON array of {label, text}
+  answer TEXT NOT NULL DEFAULT '',      -- label of the action that was delivered
+  answered_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS notifications (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -673,10 +685,31 @@ cmd_review_done() {
         esac
     done
     [ -n "$key" ] || die "review done: --key is required"
-    sql "DELETE FROM review WHERE key='$(sq "$key")';"
+    sql "DELETE FROM review WHERE key='$(sq "$key")';
+DELETE FROM review_card WHERE key='$(sq "$key")';"
 }
 
 cmd_review_list() {
+    json=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --json) json=1; shift;;
+            *) die "review list: unexpected argument: $1";;
+        esac
+    done
+    if [ "$json" -eq 1 ]; then
+        # Every row, and for a card its buttons and what the human answered.
+        sql "SELECT json_group_array(json(row)) FROM (SELECT json_object(
+  'key', r.key, 'severity', r.severity, 'host', r.host, 'session', r.session,
+  'window', r.window, 'dismissed', json(CASE WHEN r.dismissed THEN 'true' ELSE 'false' END),
+  'text', r.text,
+  'card', CASE WHEN c.key IS NULL THEN NULL ELSE json_object(
+      'v', c.v, 'pane', c.pane, 'body', c.body,
+      'actions', (SELECT json_group_array(json_extract(value, '\$.label')) FROM json_each(c.actions)),
+      'answer', NULLIF(c.answer, ''), 'answered_at', c.answered_at) END) AS row
+  FROM review r LEFT JOIN review_card c ON c.key = r.key ORDER BY r.updated_at DESC);"
+        return
+    fi
     # Default sqlite3 list mode is pipe-separated, matching the documented shape.
     sql "SELECT key, severity, host, session, dismissed, text FROM review ORDER BY updated_at DESC;"
 }
@@ -688,7 +721,7 @@ cmd_review() {
     case "$sub" in
         add) cmd_review_add "$@";;
         done) cmd_review_done "$@";;
-        list) cmd_review_list;;
+        list) cmd_review_list "$@";;
         *) usage;;
     esac
 }
@@ -701,23 +734,87 @@ POINT_WINDOW_DIGITS=5
 # the list to the same number.
 POINT_MAX=20
 
+# The card format this script writes. The app shows no buttons for a version it
+# does not know.
+CARD_VERSION=1
+# The most buttons on one card, and the longest label, in characters.
+CARD_ACTIONS_MAX=4
+CARD_LABEL_MAX=40
+# The longest body, in characters, and the most text one action pastes, in
+# bytes: what the app takes as one reply.
+CARD_BODY_MAX=280
+CARD_TEXT_MAX=8192
+
+# Characters, not bytes: every byte except a UTF-8 continuation byte.
+chars() { printf %s "$1" | LC_ALL=C tr -d '\200-\277' | wc -c | tr -d ' '; }
+
+# True when a value holds a control character other than a newline or a tab.
+# In a terminal such a character is a key press, and an action's text is pasted
+# into one.
+has_control() {
+    [ -n "$(printf %s "$1" | LC_ALL=C tr -d '\n\t' | LC_ALL=C tr -cd '\001-\037\177')" ]
+}
+
+# True when a value holds a zero-width or text-direction character: the same
+# ranges the reason is checked for.
+has_unseen() {
+    printf %s "$1" | LC_ALL=C grep -q \
+        -e "$(printf '\342\200[\213-\217]')" -e "$(printf '\342\200[\252-\256]')" \
+        -e "$(printf '\342\201[\246-\251]')"
+}
+
 # Point the human at a session that needs them ("acme-app needs your approval").
 # A pointer is a review row with a key this verb owns, so it rides the same list
 # the app and the phone already read. It only writes that row: it never calls
 # tmux, never types into the session and never answers its prompt. Unlike
 # `review add` it checks the session, and the window when one is named, against
 # the app's snapshot, so a pointer always names a place the app can open.
+#
+# With --action the pointer is a card: the phone shows each label as a button,
+# and a tap makes the app paste that action's text into the session's pane. The
+# human's tap sends it; this script still types nothing. The card is one
+# review_card row under the pointer's key, so the two are cleared together.
 cmd_point() {
     target=""
     reason=""
     have_reason=0
     host="localhost"
     done_flag=0
+    pane=""
+    body=""
+    actions=""
+    action_count=0
+    card=0
     while [ $# -gt 0 ]; do
         case "$1" in
             --reason) [ $# -ge 2 ] || die "--reason requires a value"; reason=$2; have_reason=1; shift 2;;
             --host) [ $# -ge 2 ] || die "--host requires a value"; host=$2; shift 2;;
             --done) done_flag=1; shift;;
+            --pane) [ $# -ge 2 ] || die "--pane requires a value"; pane=$2; card=1; shift 2;;
+            --body) [ $# -ge 2 ] || die "--body requires a value"; body=$2; card=1; shift 2;;
+            --action)
+                [ $# -ge 2 ] || die "--action requires a value"
+                case "$2" in *=*) ;; *) die "point: --action wants LABEL=TEXT";; esac
+                label=${2%%=*}
+                answer=${2#*=}
+                [ -n "$label" ] || die "point: --action has no label"
+                [ -n "$answer" ] || die "point: --action $label has no text"
+                clean=$(printf %s "$label" | LC_ALL=C tr -d '\000-\037\177'; printf x)
+                [ "${clean%x}" = "$label" ] \
+                    || die "point: an --action label must be one line with no control characters"
+                [ "$(chars "$label")" -le "$CARD_LABEL_MAX" ] \
+                    || die "point: --action label is over $CARD_LABEL_MAX characters: $label"
+                [ "$(printf %s "$answer" | wc -c)" -le "$CARD_TEXT_MAX" ] \
+                    || die "point: --action $label is over $CARD_TEXT_MAX bytes"
+                ! has_control "$answer" || die "point: --action $label holds a control character"
+                ! has_unseen "$label$answer" \
+                    || die "point: an --action must not contain zero-width or text-direction characters"
+                action_count=$((action_count + 1))
+                [ "$action_count" -le "$CARD_ACTIONS_MAX" ] \
+                    || die "point: at most $CARD_ACTIONS_MAX actions"
+                actions="$actions${actions:+, }json_object('label', '$(sq "$label")', 'text', '$(sq "$answer")')"
+                card=1
+                shift 2;;
             -*) die "point: unexpected argument: $1";;
             *)
                 [ -z "$target" ] || die "point: unexpected argument: $1"
@@ -748,8 +845,24 @@ cmd_point() {
 
     if [ "$done_flag" -eq 1 ]; then
         [ "$have_reason" -eq 0 ] || die "point: --done takes no --reason"
-        sql "DELETE FROM review WHERE key='$(sq "$key")';"
+        [ "$card" -eq 0 ] || die "point: --done takes no --action, --pane or --body"
+        sql "DELETE FROM review WHERE key='$(sq "$key")';
+DELETE FROM review_card WHERE key='$(sq "$key")';"
         return
+    fi
+
+    case "$pane" in
+        '') ;;
+        %|%*[!0-9]*) die "point: --pane wants a pane id like %12";;
+        %*) ;;
+        *) die "point: --pane wants a pane id like %12";;
+    esac
+    if [ -n "$body" ]; then
+        ! has_control "$body" || die "point: --body holds a control character"
+        ! has_unseen "$body" \
+            || die "point: --body must not contain zero-width or text-direction characters"
+        [ "$(chars "$body")" -le "$CARD_BODY_MAX" ] \
+            || die "point: --body is over $CARD_BODY_MAX characters"
     fi
 
     [ "$have_reason" -eq 1 ] || die "point: --reason is required"
@@ -788,9 +901,29 @@ FROM sessions WHERE host='$(sq "$host")' AND name='$(sq "$session")' LIMIT 1;")
         *) die "point: no such session: $session on $host";;
     esac
 
+    # The card goes first, while the row still holds the reason it had: the same
+    # question raised again keeps its answer, and a new reason, other actions or
+    # another pane make it a new question.
+    if [ "$card" -eq 1 ]; then
+        same="review_card.actions = excluded.actions AND review_card.pane = excluded.pane
+    AND (SELECT text FROM review WHERE key = excluded.key) = '$(sq "$reason")'"
+        card_sql="INSERT INTO review_card(key, v, pane, body, actions)
+VALUES('$(sq "$key")', $CARD_VERSION, '$pane', '$(sq "$body")', json_array($actions))
+ON CONFLICT(key) DO UPDATE SET
+  answer = CASE WHEN $same THEN review_card.answer ELSE '' END,
+  answered_at = CASE WHEN $same THEN review_card.answered_at END,
+  v = excluded.v,
+  pane = excluded.pane,
+  body = excluded.body,
+  actions = excluded.actions;"
+    else
+        card_sql="DELETE FROM review_card WHERE key='$(sq "$key")';"
+    fi
+
     # The write and the cap are one transaction. The row just written is never
     # the one dropped, even when others share its second.
     sql "BEGIN IMMEDIATE;
+$card_sql
 INSERT INTO review(key, host, session, window, severity, text, created_at, updated_at)
 VALUES('$(sq "$key")', '$(sq "$host")', '$(sq "$session")', $window_sql, 'blocked', '$(sq "$reason")', $(now), $(now))
 ON CONFLICT(key) DO UPDATE SET
@@ -806,6 +939,7 @@ WHERE substr(key, 1, 6) = 'point:' AND key NOT IN (
   SELECT key FROM review WHERE substr(key, 1, 6) = 'point:'
   ORDER BY key = '$(sq "$key")' DESC, updated_at DESC, rowid DESC
   LIMIT $POINT_MAX);
+DELETE FROM review_card WHERE key NOT IN (SELECT key FROM review);
 COMMIT;"
 }
 

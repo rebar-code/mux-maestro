@@ -40,13 +40,21 @@ struct MobileManagerItem: Equatable {
     let link: ThreadLink?
     /// A review item `mux point` wrote: it points the human at a session.
     var pointer = false
+    /// The pointer's buttons, when the Maestro gave it any.
+    var card: MobileCard? = nil
 
     func json(in snapshot: MobileSnapshot) -> [String: Any] {
-        [
+        let thread = MobileManager.threadID(for: link, in: snapshot)
+        var out: [String: Any] = [
             "key": key ?? NSNull(), "title": title, "detail": detail,
             "severity": severity?.rawValue ?? NSNull(), "at": at,
-            "thread": MobileManager.threadID(for: link, in: snapshot) ?? NSNull(),
+            "thread": thread ?? NSNull(),
         ]
+        // Left out of a row with no buttons: its shape is what it always was.
+        if let key, let card {
+            out["card"] = MobileCards.json(key: key, card: card, in: snapshot, opens: thread)
+        }
+        return out
     }
 
     /// The same shape for a pointer. The CLI checks a pointer's text, but an
@@ -202,7 +210,7 @@ enum MobileManager {
     /// space, any other control character is dropped, and a long text is cut
     /// with an ellipsis. Zero-width and text-direction characters are dropped
     /// too: they can hide or reorder what the human reads.
-    static func pointerLine(_ text: String) -> String {
+    static func pointerLine(_ text: String, limit: Int = maxPointerCharacters) -> String {
         var scalars = String.UnicodeScalarView()
         for scalar in text.unicodeScalars {
             switch scalar.value {
@@ -212,8 +220,8 @@ enum MobileManager {
             }
         }
         let line = String(scalars).trimmingCharacters(in: .whitespaces)
-        guard line.count > maxPointerCharacters else { return line }
-        return String(line.prefix(maxPointerCharacters - 1)) + "…"
+        guard line.count > limit else { return line }
+        return String(line.prefix(limit - 1)) + "…"
     }
 
     /// Whether a board holds a review item with `key`: what dismiss may name.

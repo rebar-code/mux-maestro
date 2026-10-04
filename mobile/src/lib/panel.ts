@@ -2,6 +2,7 @@
  * The math of the Maestro panel: a sheet that drops from the top edge over any
  * page. Kept free of the DOM so it is tested directly.
  */
+import { capped, isOpen, parseCard, type ActionCard } from './cards';
 import { clamp, SETTLE_VELOCITY } from './pager';
 import type { ManagerItem, Thread } from './types';
 
@@ -91,18 +92,12 @@ export interface PointCard {
 	reason: string;
 	/** `gone`: the session is closed. `done`: it no longer waits. */
 	stale: 'gone' | 'done' | null;
+	/** The pointer's buttons, when the Maestro gave it any. */
+	card: ActionCard | null;
 }
 
 /** The most pointers the board lists. The Mac caps them too. */
 export const POINTS_MAX = 20;
-
-/** Zero-width and direction characters: they can hide or reorder what a line says. */
-const UNSEEN = /[\u200B-\u200F\u202A-\u202E\u2066-\u2069]/g;
-
-function capped(text: string, max = REASON_MAX): string {
-	const flat = text.replace(UNSEEN, '').replace(/\s+/g, ' ').trim();
-	return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
-}
 
 /**
  * The Maestro's pointers as cards. `threads` is null until the list has
@@ -112,9 +107,19 @@ export function pointCards(points: ManagerItem[], threads: Thread[] | null): Poi
 	return points.slice(0, POINTS_MAX).flatMap((point) => {
 		if (point.key === null) return [];
 		const thread = threads?.find((row) => row.id === point.thread) ?? null;
-		const stale = thread ? (thread.status === 'waiting' ? null : 'done') : threads ? 'gone' : null;
+		const card = parseCard(point.card);
+		// A card asks in words, so its session can be idle and still need the user.
+		const asks = thread?.status === 'waiting' || isOpen(card);
+		const stale = thread ? (asks ? null : 'done') : threads ? 'gone' : null;
 		return [
-			{ key: point.key, thread, title: capped(point.title), reason: capped(point.detail), stale }
+			{
+				key: point.key,
+				thread,
+				title: capped(point.title, REASON_MAX),
+				reason: capped(point.detail, REASON_MAX),
+				stale,
+				card
+			}
 		];
 	});
 }

@@ -1,4 +1,5 @@
 import { resolveArtifact } from './artifacts';
+import { openThreadLink } from './jump';
 import type { ArtifactFile } from './types';
 
 /** What a tap inside rendered markdown can reach. Without it, a path or a local address is text. */
@@ -42,6 +43,8 @@ export function proseTaps(links: () => ProseLinks | undefined) {
 			const target = event.target as Element;
 			const button = target.closest('[data-copy]');
 			if (button) return void copy(button);
+			const session = target.closest<HTMLElement>('[data-thread-link]');
+			if (session) return openThreadLink(session);
 			const local = target.closest<HTMLElement>('[data-local]');
 			if (local) {
 				links()?.local?.(Number(local.dataset.local), local.dataset.rest ?? '/');
