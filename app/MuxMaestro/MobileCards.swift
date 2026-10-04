@@ -153,7 +153,7 @@ enum MobileCards {
     /// picking whatever action now has that position.
     static func id(key: String, card: MobileCard) -> String {
         MobileReply.hash(
-            [key, card.source.host, card.source.session, card.source.pane ?? ""]
+            [key, card.title, card.source.host, card.source.session, card.source.pane ?? ""]
                 + card.card.actions.flatMap { [$0.label, $0.text] })
     }
 
@@ -184,18 +184,15 @@ enum MobileCards {
         case refuse(MobileResponse)
     }
 
-    /// Decide what one tap does. `delivered` holds the ids of cards this
-    /// server already answered: the board hears of an answer a moment after
-    /// it lands, and a second tap in that moment must not send it twice.
-    static func route(
-        _ ask: Ask, board: MobileManagerBoard, snapshot: MobileSnapshot,
-        delivered: Set<String> = []
-    ) -> Route {
+    /// Decide what one tap does. `board` is the board with this server's own
+    /// deliveries on it (`withDelivered`), so a second tap finds the answer.
+    static func route(_ ask: Ask, board: MobileManagerBoard, snapshot: MobileSnapshot) -> Route {
         guard let card = board.items.first(where: { $0.kind == .review && $0.key == ask.key })?.card
         else { return .refuse(.error(404, "not_found")) }
-        let id = id(key: ask.key, card: card)
-        guard id == ask.card else { return .refuse(.error(409, "changed", message: changedMessage)) }
-        guard card.card.answer == nil, !delivered.contains(id) else {
+        guard id(key: ask.key, card: card) == ask.card else {
+            return .refuse(.error(409, "changed", message: changedMessage))
+        }
+        guard card.card.answer == nil else {
             return .refuse(.error(409, "answered", message: answeredMessage))
         }
         guard card.card.actions.prefix(maxActions).indices.contains(ask.action) else {
@@ -211,6 +208,45 @@ enum MobileCards {
         case .failure(let miss): return .refuse(miss.refusal)
         case .success(let thread): return .deliver(thread: thread, label: action.label, text: action.text)
         }
+    }
+
+    // MARK: Delivered answers
+
+    // The app reads the review list on a timer, so the board hears of an
+    // answer a moment after it reached the pane. Until then the server keeps
+    // the answer itself, by the card's id, and shows it on the board: a second
+    // tap in that moment sends nothing, and the phone sees "sent" at once.
+
+    /// The deliveries the board does not show yet: the card is still listed,
+    /// as the same question, with no answer. One the board shows, or whose
+    /// card is gone or was asked anew, is dropped.
+    static func pending(
+        _ delivered: [String: ManagerCard.Answer], in board: MobileManagerBoard
+    ) -> [String: ManagerCard.Answer] {
+        guard !delivered.isEmpty else { return delivered }
+        let open = Set(board.items.compactMap { item -> String? in
+            guard let key = item.key, let card = item.card, card.card.answer == nil else { return nil }
+            return id(key: key, card: card)
+        })
+        return delivered.filter { open.contains($0.key) }
+    }
+
+    /// `board` with each of `delivered` set on its card.
+    static func withDelivered(
+        _ delivered: [String: ManagerCard.Answer], on board: MobileManagerBoard
+    ) -> MobileManagerBoard {
+        guard !delivered.isEmpty else { return board }
+        var out = board
+        out.items = board.items.map { item in
+            guard let key = item.key, let card = item.card, card.card.answer == nil,
+                  let answer = delivered[id(key: key, card: card)] else { return item }
+            var answered = card.card
+            answered.answer = answer
+            var item = item
+            item.card = MobileCard(title: card.title, source: card.source, card: answered)
+            return item
+        }
+        return out
     }
 
     // MARK: JSON

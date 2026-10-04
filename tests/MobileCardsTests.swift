@@ -214,10 +214,11 @@ final class MobileCardsTests: XCTestCase {
         XCTAssertEqual(
             code(MobileCards.route(ask(0, of: answered), board: board(answered), snapshot: snapshot)),
             "409 answered")
+        let delivered = [MobileCards.id(key: key, card: card): ManagerCard.Answer(label: "Yes", at: 5)]
         XCTAssertEqual(
             code(MobileCards.route(
-                ask(0, of: card), board: board(card), snapshot: snapshot,
-                delivered: [MobileCards.id(key: key, card: card)])),
+                ask(0, of: card), board: MobileCards.withDelivered(delivered, on: board(card)),
+                snapshot: snapshot)),
             "409 answered")
         // Not a button on the card.
         XCTAssertEqual(
@@ -244,6 +245,29 @@ final class MobileCardsTests: XCTestCase {
         }
     }
 
+    func testADeliveredAnswerShowsOnTheBoardUntilTheListHasIt() {
+        let card = card()
+        let id = MobileCards.id(key: key, card: card)
+        let answer = ManagerCard.Answer(label: "No", at: 7)
+        let delivered = [id: answer]
+        // The list has not caught up: the answer is kept, and the board shows it.
+        XCTAssertEqual(MobileCards.pending(delivered, in: board(card)), delivered)
+        let shown = MobileCards.withDelivered(delivered, on: board(card))
+        XCTAssertEqual(shown.items[0].card?.card.answer, answer)
+        XCTAssertNil(shown.items[1].card)
+        XCTAssertEqual(MobileCards.withDelivered([:], on: board(card)), board(card))
+        // The list shows it itself: nothing left to keep.
+        XCTAssertEqual(MobileCards.pending(delivered, in: board(self.card(answer: answer))), [:])
+        // The pointer was cleared, or the session was asked something new:
+        // the old answer does not answer the new question.
+        XCTAssertEqual(MobileCards.pending(delivered, in: board(nil)), [:])
+        XCTAssertEqual(MobileCards.pending(delivered, in: MobileManagerBoard()), [:])
+        let asksAgain = MobileCard(
+            title: "asks which database to use", source: card.source, card: card.card)
+        XCTAssertEqual(MobileCards.pending(delivered, in: board(asksAgain)), [:])
+        XCTAssertNil(MobileCards.withDelivered(delivered, on: board(asksAgain)).items[0].card?.card.answer)
+    }
+
     func testTheIdNamesOneStateOfTheQuestion() {
         let base = MobileCards.id(key: key, card: card())
         XCTAssertEqual(base, MobileCards.id(key: key, card: card()))
@@ -253,6 +277,10 @@ final class MobileCardsTests: XCTestCase {
             base, MobileCards.id(key: key, card: card(answer: ManagerCard.Answer(label: "Yes", at: 5))))
         XCTAssertNotEqual(base, MobileCards.id(key: "point:localhost:billing", card: card()))
         XCTAssertNotEqual(base, MobileCards.id(key: key, card: card(pane: "%12")))
+        // The same buttons under another question are another question.
+        let reworded = card()
+        XCTAssertNotEqual(base, MobileCards.id(key: key, card: MobileCard(
+            title: "asks which database to use", source: reworded.source, card: reworded.card)))
         XCTAssertNotEqual(base, MobileCards.id(key: key, card: card(actions: [yesNo[0]])))
         XCTAssertNotEqual(
             base,

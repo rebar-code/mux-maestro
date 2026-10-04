@@ -908,12 +908,24 @@ final class MobileServerTests: XCTestCase {
         XCTAssertEqual(manager.answered, ["\(Self.cardKey)=Yes"])
         let after = pane.argv.count
         XCTAssertGreaterThan(after, before)
-        // The board has not heard of the answer yet: a second tap sends nothing.
+        // The app's list has not heard of the answer yet: a second tap sends
+        // nothing, and the phone is already told the card is answered.
         let again = act(1, card: id)
         XCTAssertEqual(again.status, 409)
         XCTAssertEqual(again.body, #"{"error":"answered","message":"Already answered"}"#)
         XCTAssertEqual(pane.argv.count, after)
         XCTAssertEqual(manager.answered, ["\(Self.cardKey)=Yes"])
+        XCTAssertTrue(get("/api/manager").body.contains(#""label":"Yes""#))
+        // The same list again, still without the answer: it stays answered.
+        server.updateManager(board)
+        XCTAssertTrue(get("/api/manager").body.contains(#""label":"Yes""#))
+        XCTAssertEqual(act(0, card: id).status, 409)
+        // The pointer is cleared and the same question is asked again: it is open.
+        server.updateManager(MobileManagerBoard())
+        server.updateManager(board)
+        XCTAssertFalse(get("/api/manager").body.contains(#""label":"Yes""#))
+        XCTAssertEqual(act(0, card: id).status, 200)
+        XCTAssertEqual(manager.answered, ["\(Self.cardKey)=Yes", "\(Self.cardKey)=Yes"])
     }
 
     func testACardTapWithNoOnePaneToGoToTypesNothing() {
