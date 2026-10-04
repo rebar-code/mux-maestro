@@ -14,8 +14,8 @@ interface Take {
 
 const status = (page: Page): Locator => page.locator('[data-voice-status]');
 const primary = (page: Page): Locator => page.locator('[data-primary]');
-const orb = (page: Page): Locator => page.locator('[data-orb]');
-const said = (page: Page): Locator => page.locator('[data-said]');
+/** The manager's thread: its chat rows. */
+const said = (page: Page): Locator => page.locator('[data-view="chat"]');
 const box = (page: Page): Locator => page.getByRole('textbox', { name: 'Ask the manager' });
 const bar = (page: Page, name: string): Locator =>
 	page.locator('[data-voicebar]').getByRole('button', { name, exact: true });
@@ -48,7 +48,7 @@ async function open(page: Page, hooks: string[] = []): Promise<void> {
 	for (const hook of hooks) await page.request.post(hook);
 	await forget(page);
 	await page.goto(pairingLink());
-	await expect(primary(page)).toHaveText('🎙 Talk');
+	await expect(primary(page)).toHaveText('Talk');
 }
 
 test('Manual: tap to start, tap to send, and a pause never cuts the take', async ({ page }) => {
@@ -61,7 +61,6 @@ test('Manual: tap to start, tap to send, and a pause never cuts the take', async
 	await expect(primary(page)).toHaveText('↑ Submit');
 	// Red while the take is open.
 	await expect(primary(page)).toHaveCSS('background-color', 'rgb(255, 69, 58)');
-	await expect(orb(page)).toHaveClass(/recording/);
 
 	await say(page, 700);
 	// Longer than the silence that ends a take in Auto.
@@ -83,10 +82,10 @@ test('Manual: tap to start, tap to send, and a pause never cuts the take', async
 	await expect(said(page).locator('.u')).toHaveText('What needs me?');
 	await expect(status(page)).toHaveText('Speaking…');
 	await expect(primary(page)).toHaveText('❚❚ Pause');
-	await expect(said(page).locator('.m').last()).toHaveText(REPLY);
+	await expect(said(page).locator('.a').last()).toHaveText(REPLY);
 	// The reply has two sentences: two clips, played in order, then it rests.
 	await expect(status(page)).toHaveText('Start talking', { timeout: 8000 });
-	await expect(primary(page)).toHaveText('🎙 Talk');
+	await expect(primary(page)).toHaveText('Talk');
 	expect(await page.evaluate(() => window.__clips)).toBe(2);
 
 	// What the Mac got: raw PCM as a 16 kHz mono 16-bit WAV, the whole take.
@@ -102,7 +101,7 @@ test('Auto: speech starts a take, silence sends it, and the mic reopens', async 
 	await bar(page, 'Auto').click();
 	await expect(bar(page, 'Auto')).toHaveAttribute('aria-pressed', 'true');
 	await expect(status(page)).toHaveText('Listening…');
-	await expect(primary(page)).toHaveText('🎙 Talk');
+	await expect(primary(page)).toHaveText('Talk');
 	expect(await page.evaluate(() => window.__mic.opened)).toBe(1);
 
 	// No tap: the take opens when the speech starts.
@@ -116,6 +115,9 @@ test('Auto: speech starts a take, silence sends it, and the mic reopens', async 
 	await expect(primary(page)).toHaveText('■ Stop', { timeout: 3000 });
 	await expect(said(page).locator('.u')).toHaveText('What needs me?');
 	await expect(status(page)).toHaveText('Speaking…');
+	// The mic is closed while the reply plays: the phone plays it at full
+	// volume, and Auto cannot hear its own reply.
+	expect(await page.evaluate(() => window.__mic.live())).toBe(0);
 
 	// After the reply the mic is open again, with no tap.
 	await expect(status(page)).toHaveText('Listening…', { timeout: 8000 });
@@ -133,15 +135,15 @@ test('Auto: speech starts a take, silence sends it, and the mic reopens', async 
 	// The silence Auto waited through is not sent.
 	expect(all[0].seconds).toBeGreaterThan(0.8);
 	expect(all[0].seconds).toBeLessThan(2.5);
-	// The mic was opened once and kept.
-	expect(await page.evaluate(() => window.__mic.opened)).toBe(1);
+	// Opened for the first take, and once more after the reply.
+	expect(await page.evaluate(() => window.__mic.opened)).toBe(2);
 });
 
 test('input only: the speech becomes text and nothing is read back', async ({ page }) => {
 	await open(page);
 	await bar(page, 'Speaker').click();
 	await expect(bar(page, 'Speaker')).toHaveAttribute('aria-pressed', 'false');
-	await expect(bar(page, 'Speaker')).toHaveText('🔇');
+	await expect(bar(page, 'Speaker').locator('[data-icon="speakerOff"]')).toBeVisible();
 
 	await primary(page).click();
 	await say(page, 700);
@@ -150,14 +152,14 @@ test('input only: the speech becomes text and nothing is read back', async ({ pa
 	expect(new URL((await sent).url()).search).toBe('?target=manager&speaker=0');
 
 	await expect(said(page).locator('.u')).toHaveText('What needs me?');
-	await expect(said(page).locator('.m').last()).toHaveText(REPLY);
+	await expect(said(page).locator('.a').last()).toHaveText(REPLY);
 	await expect(status(page)).toHaveText('Start talking');
-	await expect(primary(page)).toHaveText('🎙 Talk');
+	await expect(primary(page)).toHaveText('Talk');
 	expect(await page.evaluate(() => window.__clips)).toBe(0);
 	expect((await takes(page))[0].speaker).toBe(false);
 	// The turn is in the chat: a reload shows it.
 	await page.reload();
-	await expect(said(page).locator('.m').last()).toHaveText(REPLY);
+	await expect(said(page).locator('.a').last()).toHaveText(REPLY);
 });
 
 test('interrupt: Stop while it thinks, Pause, Resume and Skip while it speaks', async ({
@@ -171,7 +173,7 @@ test('interrupt: Stop while it thinks, Pause, Resume and Skip while it speaks', 
 	await primary(page).click();
 	// Stopped before the Mac had the words: nothing was sent to the manager.
 	await expect(status(page)).toHaveText('Start talking');
-	await expect(primary(page)).toHaveText('🎙 Talk');
+	await expect(primary(page)).toHaveText('Talk');
 	await page.waitForTimeout(2800);
 	await expect(said(page).locator('.u')).toHaveCount(0);
 
@@ -195,7 +197,7 @@ test('interrupt: Stop while it thinks, Pause, Resume and Skip while it speaks', 
 	await expect(status(page)).toHaveText('Start talking');
 	await expect(bar(page, 'Skip')).toBeDisabled();
 	// The reply stays as text.
-	await expect(said(page).locator('.m').last()).toHaveText(REPLY);
+	await expect(said(page).locator('.a').last()).toHaveText(REPLY);
 });
 
 test('Replay reads the last reply again, and Talk during it starts a take', async ({ page }) => {
@@ -204,7 +206,7 @@ test('Replay reads the last reply again, and Talk during it starts a take', asyn
 	await expect(status(page)).toHaveText('Speaking…');
 	expect(await page.evaluate(() => window.__clips)).toBeGreaterThan(0);
 	await bar(page, 'Skip').click();
-	await expect(primary(page)).toHaveText('🎙 Talk');
+	await expect(primary(page)).toHaveText('Talk');
 
 	// Speaker off does not stop a Replay: the tap asks for it.
 	await bar(page, 'Speaker').click();
@@ -223,30 +225,14 @@ test('the button is Send while the box has text, and Talk when it is empty', asy
 	await expect(send).toBeEnabled();
 	await box(page).fill('');
 	await expect(send).toHaveCount(0);
-	await expect(primary(page)).toHaveText('🎙 Talk');
+	await expect(primary(page)).toHaveText('Talk');
 
 	// Typing works while voice is on, and a typed turn is not a take.
 	await box(page).fill('what needs me?');
 	await send.click();
-	await expect(said(page).locator('.m').last()).toHaveText(REPLY);
-	await expect(primary(page)).toHaveText('🎙 Talk');
+	await expect(said(page).locator('.a').last()).toHaveText(REPLY);
+	await expect(primary(page)).toHaveText('Talk');
 	expect(await takes(page)).toEqual([]);
-});
-
-test('the large button is the same control', async ({ page }) => {
-	await open(page);
-	await expect(orb(page)).toHaveAccessibleName('Talk to the manager');
-	await orb(page).click();
-	await expect(primary(page)).toHaveText('↑ Submit');
-	await expect(orb(page)).toHaveAccessibleName('Submit to the manager');
-	await say(page, 600);
-	// The button breathes while a take is open, so it never holds still.
-	await orb(page).click({ force: true });
-	await expect(orb(page)).toHaveClass(/thinking/);
-	await expect(orb(page)).toHaveClass(/speaking/);
-	await expect(orb(page)).toHaveAccessibleName('Pause to the manager');
-	await expect(status(page)).toHaveText('Start talking', { timeout: 8000 });
-	expect(await takes(page)).toHaveLength(1);
 });
 
 test('mode and speaker are remembered on this phone; the Mac sets the start', async ({ page }) => {
@@ -271,22 +257,28 @@ test('mode and speaker are remembered on this phone; the Mac sets the start', as
 
 test('a muted mic takes nothing, and a refused take says why', async ({ page }) => {
 	await open(page);
-	await primary(page).click();
-	await expect(primary(page)).toHaveText('↑ Submit');
+	// Manual opens the mic only on a tap: it has no mute control.
+	await expect(bar(page, 'Microphone')).toHaveCount(0);
+	await bar(page, 'Auto').click();
+	await expect(status(page)).toHaveText('Listening…');
+	await expect(bar(page, 'Microphone').locator('[data-icon="mic"]')).toBeVisible();
 	await bar(page, 'Microphone').click();
 	await expect(status(page)).toHaveText('Mic muted');
+	await expect(bar(page, 'Microphone').locator('[data-icon="micOff"]')).toBeVisible();
 	await expect(primary(page)).toBeDisabled();
-	await expect(orb(page)).toBeDisabled();
 	expect(await takes(page)).toEqual([]);
-	await bar(page, 'Microphone').click();
+	// Back in Manual the mute is gone with its control: Talk works.
+	await bar(page, 'Manual').click();
+	await expect(bar(page, 'Microphone')).toHaveCount(0);
 	await expect(primary(page)).toBeEnabled();
+	await expect(status(page)).toHaveText('Start talking');
 
 	await page.request.post('/__fixture/manager-status?value=waiting');
 	await primary(page).click();
 	await say(page, 600);
 	await primary(page).click();
 	await expect(status(page)).toHaveText('Manager is waiting on a prompt');
-	await expect(primary(page)).toHaveText('🎙 Talk');
+	await expect(primary(page)).toHaveText('Talk');
 
 	// A take with no words in it.
 	await page.request.post('/__fixture/manager-status?value=idle');
@@ -294,7 +286,7 @@ test('a muted mic takes nothing, and a refused take says why', async ({ page }) 
 	await primary(page).click();
 	await say(page, 600);
 	await primary(page).click();
-	await expect(status(page)).toHaveText('Heard nothing');
+	await expect(status(page)).toHaveText('No speech heard');
 });
 
 test('the mic is given back when it is not needed', async ({ page }) => {
@@ -316,12 +308,9 @@ test('the mic is given back when it is not needed', async ({ page }) => {
 	// A take that is stopped, not sent, gives it back too.
 	await primary(page).click();
 	await expect(primary(page)).toHaveText('↑ Submit');
-	await bar(page, 'Microphone').click();
-	await expect(status(page)).toHaveText('Mic muted');
-	expect(await live()).toBe(0);
-	await bar(page, 'Microphone').click();
 
-	// Auto holds it while it listens; mute and Manual give it back.
+	// Auto drops the open take and holds the mic while it listens; mute and
+	// Manual give it back.
 	await bar(page, 'Auto').click();
 	await expect(status(page)).toHaveText('Listening…');
 	expect(await live()).toBe(1);
@@ -344,6 +333,273 @@ test('the mic is given back when it is not needed', async ({ page }) => {
 	await primary(page).click();
 	await expect(primary(page)).toHaveText('↑ Submit');
 	expect(await live()).toBe(1);
+});
+
+test('a mic that does not open says why', async ({ page }) => {
+	await open(page);
+	for (const [error, label] of [
+		['NotAllowedError', 'Mic blocked'],
+		['NotFoundError', 'No microphone'],
+		['NotReadableError', 'Mic in use']
+	]) {
+		await page.evaluate((name) => (window.__mic.fail = name), error);
+		await primary(page).click();
+		await expect(status(page)).toHaveText(label);
+		await expect(primary(page)).toHaveText('Talk');
+	}
+	// Allowed again: the next tap records, and the label goes.
+	await page.evaluate(() => (window.__mic.fail = null));
+	await primary(page).click();
+	await expect(status(page)).toHaveText('Recording — tap to send');
+});
+
+test('the level meter moves with the voice while the mic is open', async ({ page }) => {
+	await open(page);
+	const meter = page.getByRole('meter', { name: 'Mic level' });
+	await expect(meter).toHaveCount(0);
+	await primary(page).click();
+	await expect(meter).toBeVisible();
+	const level = async (): Promise<number> => Number(await meter.getAttribute('aria-valuenow'));
+	await expect.poll(level).toBeLessThan(10);
+	await speak(page, true);
+	await expect.poll(level).toBeGreaterThan(50);
+	await speak(page, false);
+	await expect.poll(level).toBeLessThan(10);
+	await say(page, 500);
+	await primary(page).click();
+	// No mic, no meter.
+	await expect(meter).toHaveCount(0);
+
+	// Auto shows it while it waits for speech too.
+	await expect(status(page)).toHaveText('Start talking', { timeout: 8000 });
+	await bar(page, 'Auto').click();
+	await expect(status(page)).toHaveText('Listening…');
+	await expect(meter).toBeVisible();
+});
+
+test('a take that cannot be used says why: no speech, no Mac, no models', async ({ page }) => {
+	await open(page);
+	// Nothing said: nothing is sent.
+	await primary(page).click();
+	await page.waitForTimeout(700);
+	await primary(page).click();
+	await expect(status(page)).toHaveText('No speech heard');
+	await expect(primary(page)).toHaveText('Talk');
+	expect(await takes(page)).toEqual([]);
+
+	// The Mac is asleep or off the tailnet.
+	await page.route('**/api/voice?*', (route) => route.abort());
+	await primary(page).click();
+	await say(page, 600);
+	await primary(page).click();
+	await expect(status(page)).toHaveText('Mac not reachable');
+	await page.unroute('**/api/voice?*');
+
+	// The Mac has not fetched its voice models yet.
+	await page.route('**/api/voice?*', (route) =>
+		route.fulfill({
+			status: 503,
+			contentType: 'application/json',
+			body: JSON.stringify({ error: 'models', message: 'Voice models not ready' })
+		})
+	);
+	await primary(page).click();
+	await say(page, 600);
+	await primary(page).click();
+	await expect(status(page)).toHaveText('Voice models loading');
+	await page.unroute('**/api/voice?*');
+
+	// A take longer than the Mac accepts.
+	await page.route('**/api/voice?*', (route) =>
+		route.fulfill({
+			status: 413,
+			contentType: 'application/json',
+			body: JSON.stringify({ error: 'too_long' })
+		})
+	);
+	await primary(page).click();
+	await say(page, 600);
+	await primary(page).click();
+	await expect(status(page)).toHaveText('Take too long');
+});
+
+test('the phone is told what the audio is for, and the screen stays on for a turn', async ({
+	page
+}) => {
+	await open(page, ['/__fixture/voice?delay=800']);
+	const session = (): Promise<string> => page.evaluate(() => window.__session());
+	const awake = (): Promise<number> => page.evaluate(() => window.__awake());
+	expect(await session()).toBe('auto');
+	expect(await awake()).toBe(0);
+
+	await primary(page).click();
+	await expect(status(page)).toHaveText('Recording — tap to send');
+	// The mic is open: the session records, and the screen must not lock.
+	expect(await session()).toBe('play-and-record');
+	expect(await awake()).toBe(1);
+	await say(page, 600);
+	await primary(page).click();
+	await expect(primary(page)).toHaveText('■ Stop');
+	// The mic is closed before the reply: it plays as playback, which the
+	// ringer switch does not mute and the earpiece does not get.
+	expect(await session()).toBe('playback');
+	expect(await page.evaluate(() => window.__mic.live())).toBe(0);
+	expect(await awake()).toBe(1);
+	await expect(status(page)).toHaveText('Speaking…');
+	expect(await session()).toBe('playback');
+	await expect(status(page)).toHaveText('Start talking', { timeout: 8000 });
+	expect(await awake()).toBe(0);
+});
+
+test('the mic prompt suspends the audio; the take still records', async ({ page }) => {
+	await open(page);
+	await page.evaluate(() => (window.__mic.suspendOnOpen = true));
+	await primary(page).click();
+	await expect(status(page)).toHaveText('Recording — tap to send');
+	expect(await page.evaluate(() => window.__app?.state)).toBe('running');
+	await speak(page, true);
+	await expect
+		.poll(async () =>
+			Number(await page.getByRole('meter', { name: 'Mic level' }).getAttribute('aria-valuenow'))
+		)
+		.toBeGreaterThan(50);
+	await page.waitForTimeout(500);
+	await speak(page, false);
+	await primary(page).click();
+	await expect(said(page).locator('.u')).toHaveText('What needs me?');
+	expect((await takes(page))[0].rms).toBeGreaterThan(0.01);
+});
+
+test('an interruption ends a take with a label and holds a reply for Resume', async ({ page }) => {
+	await open(page);
+	// A call comes in while a take is open.
+	await primary(page).click();
+	await expect(status(page)).toHaveText('Recording — tap to send');
+	await page.evaluate(() => window.__app?.suspend());
+	await expect(status(page)).toHaveText('Mic interrupted');
+	await expect(primary(page)).toHaveText('Talk');
+	expect(await page.evaluate(() => window.__mic.live())).toBe(0);
+	expect(await takes(page)).toEqual([]);
+
+	// The next tap resumes the audio and records.
+	await primary(page).click();
+	await expect(status(page)).toHaveText('Recording — tap to send');
+	expect(await page.evaluate(() => window.__app?.state)).toBe('running');
+	await say(page, 600);
+	await primary(page).click();
+
+	// The same while the reply plays: it is held, not lost.
+	await expect(status(page)).toHaveText('Speaking…');
+	await page.evaluate(() => window.__app?.suspend());
+	await expect(status(page)).toHaveText('Paused');
+	await expect(primary(page)).toHaveText('▶ Resume');
+	await primary(page).click();
+	await expect(status(page)).toHaveText('Speaking…');
+	await expect(status(page)).toHaveText('Start talking', { timeout: 8000 });
+});
+
+test('on the footer a tap never drags the board and a drag never starts a take', async ({
+	page
+}) => {
+	await open(page);
+	const board = page.locator('[data-board]');
+	const foot = page.locator('[data-foot]');
+	const opened = (): Promise<number> => page.evaluate(() => window.__mic.opened);
+	const centre = async (target: Locator): Promise<[number, number]> => {
+		const box = (await target.boundingBox())!;
+		return [box.x + box.width / 2, box.y + box.height / 2];
+	};
+	const lower = async (): Promise<void> => {
+		while ((await board.getAttribute('data-stop')) !== '0') {
+			await page.locator('[data-grab]').click();
+			await page.waitForTimeout(350);
+		}
+	};
+
+	// A drag up that starts on Talk raises the board. It is not a take.
+	let [x, y] = await centre(primary(page));
+	await page.mouse.move(x, y);
+	await page.mouse.down();
+	await page.mouse.move(x, y - 160, { steps: 12 });
+	await page.waitForTimeout(120);
+	await page.mouse.up();
+	await expect(board).not.toHaveAttribute('data-stop', '0');
+	await expect(primary(page)).toHaveText('Talk');
+	expect(await opened()).toBe(0);
+	await lower();
+
+	// Up and back down onto the button, which a browser calls a click: still no take.
+	[x, y] = await centre(primary(page));
+	await page.mouse.move(x, y);
+	await page.mouse.down();
+	await page.mouse.move(x, y - 80, { steps: 8 });
+	await page.mouse.move(x, y, { steps: 8 });
+	await page.mouse.up();
+	await page.waitForTimeout(350);
+	await expect(primary(page)).toHaveText('Talk');
+	expect(await opened()).toBe(0);
+	await lower();
+
+	// The same on the other voice controls: a drag from Auto does not switch the mode.
+	[x, y] = await centre(bar(page, 'Auto'));
+	await page.mouse.move(x, y);
+	await page.mouse.down();
+	await page.mouse.move(x, y - 160, { steps: 12 });
+	await page.waitForTimeout(120);
+	await page.mouse.up();
+	await expect(bar(page, 'Manual')).toHaveAttribute('aria-pressed', 'true');
+	expect(await opened()).toBe(0);
+	await lower();
+
+	// A drag to the side that starts on the button is not a take either.
+	[x, y] = await centre(primary(page));
+	await page.mouse.move(x, y);
+	await page.mouse.down();
+	await page.mouse.move(x - 160, y, { steps: 10 });
+	await page.mouse.move(x - 20, y, { steps: 10 });
+	await page.mouse.up();
+	await page.waitForTimeout(300);
+	expect(await opened()).toBe(0);
+	if (await page.locator('[data-drawer]').isVisible()) {
+		await page.getByRole('button', { name: 'Close sidebar' }).click();
+	}
+	await lower();
+	await expect(primary(page)).toHaveText('Talk');
+
+	// A tap, with the small slip a finger makes, starts the take and the
+	// footer stays where it is.
+	const rest = (await foot.boundingBox())!.y;
+	[x, y] = await centre(primary(page));
+	await page.mouse.move(x, y);
+	await page.mouse.down();
+	await page.mouse.move(x + 3, y - 3);
+	await page.mouse.up();
+	await expect(primary(page)).toHaveText('↑ Submit');
+	expect(await opened()).toBe(1);
+	await expect(board).toHaveAttribute('data-stop', '0');
+	expect((await foot.boundingBox())!.y).toBe(rest);
+	// And the tap to send does not move it either.
+	await say(page, 500);
+	await primary(page).click();
+	await expect(primary(page)).toHaveText('■ Stop');
+	await expect(board).toHaveAttribute('data-stop', '0');
+});
+
+test('the delays of a turn are measured', async ({ page }) => {
+	await open(page);
+	await primary(page).click();
+	await say(page, 600);
+	await primary(page).click();
+	await expect(status(page)).toHaveText('Speaking…');
+	const voicebar = page.locator('[data-voicebar]');
+	const text = Number(await voicebar.getAttribute('data-first-text-ms'));
+	const audio = Number(await voicebar.getAttribute('data-first-audio-ms'));
+	// The fixture hears the take after 300 ms and speaks once the reply is written.
+	expect(text).toBeGreaterThanOrEqual(250);
+	expect(text).toBeLessThan(1500);
+	expect(audio).toBeGreaterThan(text);
+	expect(audio).toBeLessThan(5000);
+	console.log(`fixture turn: first text ${text} ms, first audio ${audio} ms after Submit`);
 });
 
 test('the first tap creates the audio the reply needs', async ({ page }) => {
@@ -370,11 +626,9 @@ test('the first tap creates the audio the reply needs', async ({ page }) => {
 test('every voice control has a 44pt touch area, clear of its neighbours', async ({ page }) => {
 	await open(page);
 	const controls = [
-		...['Auto', 'Manual', 'Speaker', 'Replay', 'Microphone'].map((name) => bar(page, name)),
+		...['Auto', 'Manual', 'Speaker', 'Replay', 'Skip'].map((name) => bar(page, name)),
 		primary(page)
 	];
-	// The large button is a 148pt circle.
-	expect((await orb(page).boundingBox())!.width).toBeGreaterThanOrEqual(44);
 	for (const control of controls) {
 		// The touch area: the control, or the larger box drawn around it.
 		const area = await control.evaluate((element) => {
@@ -414,6 +668,45 @@ test('every voice control has a 44pt touch area, clear of its neighbours', async
 	expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);
 });
 
+test('the voice controls rise with the footer and work at every stop of the board', async ({
+	page
+}) => {
+	await open(page);
+	const board = page.locator('[data-board]');
+	const foot = page.locator('[data-foot]');
+	for (const stop of [1, 2]) {
+		await page.locator('[data-grab]').click();
+		await expect(board).toHaveAttribute('data-stop', String(stop));
+		await expect
+			.poll(async () => {
+				const first = (await foot.boundingBox())?.y;
+				await page.waitForTimeout(80);
+				return (await foot.boundingBox())?.y === first;
+			})
+			.toBe(true);
+		// The bar is on the footer, above the board, and a tap reaches each control.
+		const voicebar = (await page.locator('[data-voicebar]').boundingBox())!;
+		const list = (await board.boundingBox())!;
+		expect(voicebar.y + voicebar.height).toBeLessThanOrEqual(list.y + 60);
+		for (const control of [bar(page, 'Auto'), bar(page, 'Speaker'), primary(page)]) {
+			const reached = await control.evaluate((element) => {
+				const box = element.getBoundingClientRect();
+				const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+				return hit === element || element.contains(hit);
+			});
+			expect(reached, `stop ${stop}`).toBe(true);
+		}
+	}
+	// A take works with the board up.
+	await primary(page).click();
+	await expect(status(page)).toHaveText('Recording — tap to send');
+	await say(page, 600);
+	await primary(page).click();
+	await expect(primary(page)).toHaveText('■ Stop');
+	expect(await takes(page)).toHaveLength(1);
+	await expect(board).toHaveAttribute('data-stop', '2');
+});
+
 test('with reduced motion nothing in the bar animates', async ({ page }) => {
 	await page.emulateMedia({ reducedMotion: 'reduce' });
 	await open(page);
@@ -421,7 +714,7 @@ test('with reduced motion nothing in the bar animates', async ({ page }) => {
 	await expect(status(page)).toHaveText('Recording — tap to send');
 	const animated = await page.evaluate(
 		() =>
-			[...document.querySelectorAll('[data-voicebar] .wave i, [data-orb]')].filter(
+			[...document.querySelectorAll('[data-voicebar] .wave i')].filter(
 				(element) => getComputedStyle(element).animationName !== 'none'
 			).length
 	);
