@@ -230,4 +230,40 @@ final class SettingsTests: XCTestCase {
         Settings.setRunningDrawerExpanded(true, defaults: defaults)
         XCTAssertTrue(Settings.runningDrawerExpanded(defaults: defaults))
     }
+
+    // MARK: phone
+
+    func testPhoneIsOffWithEveryFeatureOffByDefault() {
+        XCTAssertFalse(Settings.phoneEnabled(defaults: defaults))
+        XCTAssertFalse(Settings.phoneKeepAwake(defaults: defaults))
+        XCTAssertEqual(Settings.phonePort(defaults: defaults), Settings.phonePortDefault)
+        XCTAssertEqual(Settings.phoneGrouping(defaults: defaults), .recent)
+        XCTAssertEqual(Settings.phoneConfig(defaults: defaults), MobileConfig())
+        for capability in MobileCapability.allCases {
+            XCTAssertFalse(Settings.phoneCapability(capability, defaults: defaults))
+        }
+    }
+
+    func testPhoneSettingsRoundTripIntoTheServerConfig() {
+        Settings.setPhoneEnabled(true, defaults: defaults)
+        Settings.setPhoneKeepAwake(true, defaults: defaults)
+        Settings.setPhonePort(8123, defaults: defaults)
+        Settings.setPhoneGrouping(.directory, defaults: defaults)
+        Settings.setPhoneCapability(.replies, true, defaults: defaults)
+        XCTAssertTrue(Settings.phoneEnabled(defaults: defaults))
+        XCTAssertTrue(Settings.phoneKeepAwake(defaults: defaults))
+        XCTAssertEqual(Settings.phonePort(defaults: defaults), 8123)
+        XCTAssertEqual(
+            Settings.phoneConfig(defaults: defaults),
+            MobileConfig(capabilities: [.replies], grouping: .directory))
+        Settings.setPhoneCapability(.replies, false, defaults: defaults)
+        XCTAssertEqual(Settings.phoneConfig(defaults: defaults).capabilities, [])
+    }
+
+    func testAnUnusablePhonePortReadsAsTheDefault() {
+        for port in [0, 80, 70000] {
+            Settings.setPhonePort(port, defaults: defaults)
+            XCTAssertEqual(Settings.phonePort(defaults: defaults), Settings.phonePortDefault)
+        }
+    }
 }

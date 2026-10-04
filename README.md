@@ -51,6 +51,9 @@ prompt, this is for you.
   your other sessions and tells you which ones need you.
 - **Session recovery.** After a reboot, rebuild your tmux sessions and stage
   each agent's resume command.
+- **Phone.** A web app for your phone, served by the Mac over your tailnet:
+  the thread list, each host's load, and a read-only view of every thread
+  (chat or terminal). Off by default.
 - **herdr provider.** If you use [herdr](https://github.com/herdrdev/herdr) (a
   non-tmux workspace manager for agents), its sessions show next to tmux.
   Optional.
@@ -81,6 +84,10 @@ hidden or falls back.
 - **tmux window options:** `@mm_prs` (PR numbers) and `@mm_repo` (repo slug) tag
   a window with its PRs; `@tn_base` / `@tn_tags` give it a name plus status tags.
   Without them, PRs come from the window name and `git`.
+- **[Tailscale](https://tailscale.com):** needed by the phone app. MuxMaestro ▸
+  Setup… ▸ Phone access starts a server on `127.0.0.1` and runs
+  `tailscale serve` for it. Only your own tailnet login is answered. Open the
+  URL (or scan the QR code) on the phone and add it to the Home Screen.
 - **Agent hooks:** Settings can add a hook to `~/.claude/settings.json` and
   `~/.codex/hooks.json` for session recovery. Nothing is written until you click.
 
@@ -98,6 +105,11 @@ make app               # build MuxMaestro.app
 make install           # build, copy to /Applications, and relaunch
 make test              # run the unit tests
 ```
+
+To sign with your own certificate, put its name in an untracked `local.mk`:
+`SIGN_IDENTITY = Apple Development: Your Name (TEAMID)`. The file is gitignored.
+The identity's SHA-1 hash, as `security find-identity -v -p codesigning` lists
+it, works as `SIGN_IDENTITY` too.
 
 Without `make signing-identity` the app is ad-hoc signed, and macOS asks again
 for every permission after each rebuild. The build is not notarized, so on first

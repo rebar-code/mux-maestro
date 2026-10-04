@@ -319,7 +319,7 @@ enum ManagerTranscript {
 
     /// The typed content blocks of a record. A user record whose content is a
     /// plain string yields none, which is what every block-wise caller wants.
-    private static func contentBlocks(_ record: [String: Any]) -> [[String: Any]] {
+    static func contentBlocks(_ record: [String: Any]) -> [[String: Any]] {
         guard let content = message(record)["content"] as? [Any] else { return [] }
         return content.compactMap { $0 as? [String: Any] }
     }

@@ -32,3 +32,12 @@ zig-cache/
 # local planning notes; never published
 /tasks/
 /STATUS.md
+
+# per-developer Makefile settings (a signing identity name is personal)
+/local.mk
+
+# phone web app: dependencies and test output (the built bundle is committed)
+mobile/node_modules
+mobile/.svelte-kit
+mobile/test-results
+mobile/playwright-report

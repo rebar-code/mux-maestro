@@ -343,6 +343,11 @@ struct TranscriptTails: Equatable {
 /// The tree polls every 1.5s, so a transcript is read only when its size or
 /// mtime changed, and then only from its end. Safe to call from any queue.
 final class TranscriptTailReader {
+    /// The reader behind the local tree poll. Shared so another reader of the
+    /// same transcripts (the phone's chat view) can ask where a session's file
+    /// is without searching for it again.
+    static let shared = TranscriptTailReader()
+
     private struct Entry {
         let path: String
         let codex: Bool
@@ -417,6 +422,14 @@ final class TranscriptTailReader {
         }
         entries = next
         return out
+    }
+
+    /// The transcript the last `read` found for `sessionId`, and whether it is a
+    /// Codex rollout. Nil for a session the poll does not track.
+    func transcript(sessionId: String) -> (path: String, codex: Bool)? {
+        lock.lock()
+        defer { lock.unlock() }
+        return entries[sessionId].map { ($0.path, $0.codex) }
     }
 
     private func findTranscript(sessionId: String, cwd: String) -> String? {

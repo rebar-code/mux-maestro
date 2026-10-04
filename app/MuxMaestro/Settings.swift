@@ -250,4 +250,68 @@ enum Settings {
     static func setPollInterval(_ value: TimeInterval, defaults: UserDefaults = .standard) {
         defaults.set(value, forKey: pollIntervalKey)
     }
+
+    // MARK: Phone
+
+    private static let phoneEnabledKey = "phone.enabled"
+    private static let phonePortKey = "phone.port"
+    /// The port the phone server listens on and `tailscale serve` publishes.
+    static let phonePortDefault = 7433
+
+    /// Whether the phone server runs. Off until the user turns it on.
+    static func phoneEnabled(defaults: UserDefaults = .standard) -> Bool {
+        defaults.bool(forKey: phoneEnabledKey)
+    }
+
+    static func setPhoneEnabled(_ on: Bool, defaults: UserDefaults = .standard) {
+        defaults.set(on, forKey: phoneEnabledKey)
+    }
+
+    static let phonePortRange = 1024...65535
+
+    /// An unset or unusable port reads as the default.
+    static func phonePort(defaults: UserDefaults = .standard) -> Int {
+        let stored = defaults.integer(forKey: phonePortKey)
+        return phonePortRange.contains(stored) ? stored : phonePortDefault
+    }
+
+    static func setPhonePort(_ port: Int, defaults: UserDefaults = .standard) {
+        defaults.set(port, forKey: phonePortKey)
+    }
+
+    /// The grouping the phone's sidebar opens with until it is changed there.
+    static func phoneGrouping(defaults: UserDefaults = .standard) -> MobileGrouping {
+        defaults.string(forKey: "phone.grouping").flatMap(MobileGrouping.init) ?? .recent
+    }
+
+    static func setPhoneGrouping(_ grouping: MobileGrouping, defaults: UserDefaults = .standard) {
+        defaults.set(grouping.rawValue, forKey: "phone.grouping")
+    }
+
+    /// Whether the Mac is kept from idle sleep while the phone server runs.
+    static func phoneKeepAwake(defaults: UserDefaults = .standard) -> Bool {
+        defaults.bool(forKey: "phone.keepAwake")
+    }
+
+    static func setPhoneKeepAwake(_ on: Bool, defaults: UserDefaults = .standard) {
+        defaults.set(on, forKey: "phone.keepAwake")
+    }
+
+    /// One switch per phone feature. Each is off until turned on.
+    static func phoneCapability(_ capability: MobileCapability, defaults: UserDefaults = .standard) -> Bool {
+        defaults.bool(forKey: "phone.capability.\(capability.rawValue)")
+    }
+
+    static func setPhoneCapability(
+        _ capability: MobileCapability, _ on: Bool, defaults: UserDefaults = .standard
+    ) {
+        defaults.set(on, forKey: "phone.capability.\(capability.rawValue)")
+    }
+
+    /// The phone settings as the server enforces them.
+    static func phoneConfig(defaults: UserDefaults = .standard) -> MobileConfig {
+        MobileConfig(
+            capabilities: Set(MobileCapability.allCases.filter { phoneCapability($0, defaults: defaults) }),
+            grouping: phoneGrouping(defaults: defaults))
+    }
 }

@@ -75,6 +75,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The Help window (feature docs + shortcuts), created on first open.
     private var helpWindowController: HelpWindowController?
     private var setupWindowController: SetupWindowController?
+    /// The phone server and its "Phone" switch (Setup window). Off by default.
+    private lazy var mobileServer = MobileServer(
+        staticRoot: Bundle.main.resourceURL?.appendingPathComponent("mobile", isDirectory: true),
+        sources: MobileServer.Sources(
+            screen: { [registry] thread, lines in
+                registry.service(for: thread.host).captureScrollback(target: thread.pane, lines: lines)
+            },
+            transcript: { thread in
+                [thread.claudeSessionId, thread.codexSessionId].compactMap { $0 }
+                    .compactMap { TranscriptTailReader.shared.transcript(sessionId: $0) }.first
+            }))
+    private lazy var phoneLink: PhoneLink = {
+        let link = PhoneLink(server: mobileServer)
+        link.onChange = { [weak self] state in
+            self?.setupWindowController?.phone.render(state)
+            // Hand the new listener the tree at once, not on the next change.
+            if case .on = state { self?.pushMobileSnapshot() }
+        }
+        return link
+    }()
     /// The 🤖 Manager rail: the far-right split column, its item (collapse),
     /// the machinery behind it, and the toast overlay. Main-thread only.
     private var managerRailVC: ManagerRailViewController?
@@ -195,6 +215,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.showAgentToasts()
             self?.retryPendingLink()
             self?.refreshArtifacts()
+            self?.pushMobileSnapshot()
             guard let manager = self?.managerController, let sidebar else { return }
             manager.publishSessions(sidebar.managerSessionSnapshot())
         }
@@ -323,6 +344,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         breadcrumb.onWidthChange = { [weak self] width in
             self?.resizeBreadcrumbItem(to: width)
         }
+
+        sidebar.wantsAllHostStats = { [weak self] in
+            guard let self, self.phoneLink.isOn else { return false }
+            return self.mobileServer.hasRecentClient
+        }
+        mobileServer.configure(Settings.phoneConfig())
+        if Settings.phoneEnabled() { phoneLink.turnOn() } else { phoneLink.removeLeftoverMapping() }
 
         NSApp.mainMenu = makeMenu()
         NSApp.activate(ignoringOtherApps: true)
@@ -892,9 +920,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if setupWindowController == nil {
             let setup = SetupWindowController()
             setup.onInstall = { [weak self] tool in self?.runSetupInstall(tool) }
+            setup.phone.onToggle = { [weak self] on in
+                Settings.setPhoneEnabled(on)
+                if on { self?.phoneLink.turnOn() } else { self?.phoneLink.turnOff() }
+            }
+            setup.phone.onPort = { [weak self] port in
+                Settings.setPhonePort(port)
+                // The listener and the tailnet mapping both move to the new port.
+                if Settings.phoneEnabled() { self?.phoneLink.turnOn() }
+            }
+            setup.phone.onGrouping = { [weak self] grouping in
+                Settings.setPhoneGrouping(grouping)
+                self?.mobileServer.configure(Settings.phoneConfig())
+            }
+            setup.phone.onRotate = { [weak self] in self?.phoneLink.rotateToken() }
+            setup.phone.onKeepAwake = { [weak self] on in
+                Settings.setPhoneKeepAwake(on)
+                self?.phoneLink.refreshKeepAwake()
+            }
+            setup.phone.render(phoneLink.state)
             setupWindowController = setup
         }
         setupWindowController?.show()
+    }
+
+    /// Give the phone server the tree the sidebar just loaded. Costs nothing
+    /// while the phone switch is off.
+    private func pushMobileSnapshot() {
+        guard phoneLink.isOn, let sidebar = sidebarVC else { return }
+        mobileServer.update(sidebar.mobileSnapshot())
     }
 
     /// Run a Setup install recipe in the terminal, like the remote mosh install:
@@ -4046,6 +4100,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Close any remote SSH masters so backgrounded `ssh -fN -L` forwards
         // (the browser-preview tunnels) don't linger after the app exits.
         registry.closeAllMasters()
+        if Settings.phoneEnabled() { phoneLink.shutdown() }
     }
 
     /// Choose what the terminal runs: `tmux attach` if a tmux server is up,

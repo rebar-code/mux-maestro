@@ -2904,13 +2904,24 @@ final class SidebarViewController: NSViewController {
     /// fetch runs off-main; a failed one keeps the last value on the card.
     /// Main-thread only.
     private func requestHostStats(now: Date = Date()) {
-        guard let servers = roots.first(where: {
+        var wanted: [Host] = []
+        if let servers = roots.first(where: {
             if case .serversGroup = $0.kind { return true }
             return false
-        }), outline.isItemExpanded(servers) else { return }
-        for button in servers.children where outline.isItemExpanded(button) {
-            guard case .serverButton(let host, _, _) = button.kind,
-                  !hostStatsInFlight.contains(host.name),
+        }), outline.isItemExpanded(servers) {
+            for button in servers.children where outline.isItemExpanded(button) {
+                if case .serverButton(let host, _, _) = button.kind { wanted.append(host) }
+            }
+        }
+        // The phone lists every host's stats, expanded here or not. Only hosts
+        // that answer are asked, and only while a phone is reading them.
+        if wantsAllHostStats?() == true {
+            wanted += mobileHosts().filter { host in
+                reachabilityByHost[host.name] == .reachable && !wanted.contains(host)
+            }
+        }
+        for host in wanted {
+            guard !hostStatsInFlight.contains(host.name),
                   RemoteTier.isDue(last: hostStatsFetchedAt[host.name], now: now,
                                    interval: Self.hostStatsInterval)
             else { continue }
@@ -3080,6 +3091,26 @@ final class SidebarViewController: NSViewController {
             }
         }
         return rows
+    }
+
+    /// Set by the app delegate: true while a phone is reading host stats.
+    var wantsAllHostStats: (() -> Bool)?
+
+    /// The hosts the phone lists: this Mac, then the SERVERS catalog.
+    private func mobileHosts() -> [Host] {
+        [.local] + RemoteTier.servers(hosts.filter { !$0.isLocal }) { SshIdentity.cached($0) }
+    }
+
+    /// The cached tree and host stats as the phone API serves them. Reads only
+    /// what the poll already loaded.
+    func mobileSnapshot() -> MobileSnapshot {
+        MobileSnapshot.build(mobileHosts().map { host in
+            MobileHostInput(
+                host: host, colorHex: Settings.colorHex(host: host),
+                reachability: reachabilityByHost[host.name] ?? .unknown,
+                stats: hostStatsByName[host.name],
+                sessions: loadedSessions(host: host))
+        })
     }
 
     /// `session`'s attention on `host` from the cached tree, or nil when it isn't

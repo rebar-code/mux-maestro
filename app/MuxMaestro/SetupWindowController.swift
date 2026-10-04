@@ -7,6 +7,8 @@ import Cocoa
 final class SetupWindowController: NSWindowController, NSWindowDelegate {
     /// Runs a tool's install recipe. Set by the app delegate, which owns the terminal.
     var onInstall: ((SetupTool) -> Void)?
+    /// The "Phone" row. The app delegate wires its switch to `PhoneLink`.
+    let phone = PhoneSettingsView()
 
     private struct Row {
         let status: NSTextField
@@ -116,8 +118,13 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         checkAgain.action = #selector(checkAgainClicked)
         checkAgain.bezelStyle = .rounded
 
+        phone.onResize = { [weak self] in
+            guard let window = self?.window, let content = window.contentView else { return }
+            window.setContentSize(content.fittingSize)
+        }
+
         let content = NSView()
-        for view in [grid, checkAgain] as [NSView] {
+        for view in [grid, phone, checkAgain] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             content.addSubview(view)
         }
@@ -125,7 +132,10 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
             grid.topAnchor.constraint(equalTo: content.topAnchor, constant: 20),
             grid.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24),
             grid.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -24),
-            checkAgain.topAnchor.constraint(equalTo: grid.bottomAnchor, constant: 20),
+            phone.topAnchor.constraint(equalTo: grid.bottomAnchor, constant: 20),
+            phone.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24),
+            phone.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -24),
+            checkAgain.topAnchor.constraint(equalTo: phone.bottomAnchor, constant: 20),
             checkAgain.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -24),
             checkAgain.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -20),
         ])

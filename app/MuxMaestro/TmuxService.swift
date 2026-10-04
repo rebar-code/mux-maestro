@@ -732,7 +732,7 @@ final class TmuxService {
             runner: runner,
             statusProvider: CachedStatusProvider(SessionsPyStatusProvider(runner: runner)),
             agentStates: AgentStateReader().rows,
-            transcripts: TranscriptTailReader().read(sessionCwds:codexRollouts:),
+            transcripts: TranscriptTailReader.shared.read(sessionCwds:codexRollouts:),
             slowRunner: ProcessCommandRunner(timeout: Self.slowCommandTimeout))
     }
 
@@ -1861,6 +1861,13 @@ final class TmuxService {
     func capturePane(target: String) -> String? {
         guard transport.command(forTmux: []) != nil else { return nil }
         return tmux(FileTransfer.capturePaneArgv(target: target))
+    }
+
+    /// Capture a pane's last `lines` lines of scrollback plus its screen, with
+    /// colour escapes. For the phone's terminal view. Nil if the capture failed.
+    func captureScrollback(target: String, lines: Int) -> String? {
+        guard transport.command(forTmux: []) != nil else { return nil }
+        return tmux(FileTransfer.captureScrollbackArgv(target: target, lines: lines))
     }
 
     /// Drop a local file onto a session on this host: resolve the session's cwd,
