@@ -196,7 +196,7 @@ final class MobileActionsTests: XCTestCase {
             ["new-window", "-a", "-t", "$1:", "-P", "-F", format, "-c", "/Users/me/acme-app"],
             ["new-window", "-a", "-t", "$1:", "-P", "-F", format, "-c", "/Users/me/acme-app/web"],
             ["rename-session", "-t", "$0", "infra 2"],
-            ["rename-window", "-t", "%12", "🌱 checkout"],
+            ["rename-window", "-t", "%12", "--", "🌱 checkout"],
             ["resize-pane", "-Z", "-t", "%14"],
             ["kill-pane", "-t", "%14"],
             ["kill-window", "-t", "%3"],
@@ -592,7 +592,7 @@ final class MobileActionsTests: XCTestCase {
         XCTAssertEqual(tmux.calls.map(\.host), ["devbox", "devbox", "devbox", "devbox"])
         XCTAssertEqual(tmux.argv, [
             ["new-window", "-a", "-t", "$3:", "-P", "-F", "#{window_index}\t#{pane_id}", "-c", "/home/me/infra"],
-            ["rename-window", "-t", "%3", "deploy"],
+            ["rename-window", "-t", "%3", "--", "deploy"],
             ["kill-session", "-t", "$3"],
             ["new-session", "-d", "-s", "session", "-c", "~"],
         ])
