@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { anchorScroll, chatSize, clampSize, DEFAULT_SIZE, pinchSize } from './textsize';
+import {
+	anchorScroll,
+	BOX_MIN,
+	boxSize,
+	chatSize,
+	clampSize,
+	DEFAULT_SIZE,
+	MAX_SIZE,
+	MIN_SIZE,
+	pinchSize
+} from './textsize';
 
 describe('clampSize', () => {
 	it('keeps a size between 6 and 24', () => {
@@ -61,5 +71,18 @@ describe('chatSize', () => {
 	it('is 15px at the default and follows by ratio', () => {
 		expect(chatSize(11)).toBe(15);
 		expect(chatSize(22)).toBe(30);
+	});
+});
+
+describe('boxSize', () => {
+	it('is 16px at the default size and under it', () => {
+		expect(boxSize(DEFAULT_SIZE)).toBe(BOX_MIN);
+		expect(boxSize(MIN_SIZE)).toBe(BOX_MIN);
+	});
+
+	it('follows the chat text once that is larger', () => {
+		expect(boxSize(16.5)).toBe(22.5);
+		expect(boxSize(MAX_SIZE)).toBe(Math.round(chatSize(MAX_SIZE) * 10) / 10);
+		expect(boxSize(MAX_SIZE)).toBeGreaterThan(30);
 	});
 });

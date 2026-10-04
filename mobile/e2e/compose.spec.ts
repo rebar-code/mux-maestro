@@ -1,6 +1,6 @@
 import { mkdirSync } from 'node:fs';
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import { forget, pairingLink, reset, threadPath, touchDrag } from './helpers';
+import { forget, pairingLink, reset, threadPath, touchDrag, twoFingers } from './helpers';
 
 /** Idle, local, with a chat. */
 const IDLE = 'localhost:7';
@@ -840,4 +840,56 @@ test('a pull down on the messages puts the keyboard away', async ({ page }) => {
 	const said = (await page.locator('[data-view="chat"]').boundingBox())!;
 	await touchDrag(page, [said.x + 100, said.y + 60], [said.x + 100, said.y + 150]);
 	await expect(ask(page)).not.toBeFocused();
+});
+
+test('two fingers on the text box change its text size, never under 16px', async ({ page }) => {
+	await open(page, threadPath(IDLE), ['replies']);
+	await box(page).fill('one\ntwo\nthree');
+	const size = (): Promise<number> =>
+		box(page).evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
+	expect(await size()).toBe(16);
+	const middle = async (): Promise<[number, number]> => {
+		const at = (await box(page).boundingBox())!;
+		return [at.x + at.width / 2, at.y + at.height / 2];
+	};
+	// The fingers move apart: the text grows, and the size is kept on this phone.
+	let [x, y] = await middle();
+	await twoFingers(
+		page,
+		[
+			[x - 20, y],
+			[x + 20, y]
+		],
+		[
+			[x - 60, y],
+			[x + 60, y]
+		]
+	);
+	const grown = await size();
+	expect(grown).toBeGreaterThan(24);
+	expect(Number(await page.evaluate(() => localStorage.getItem('mm.textSize')))).toBeGreaterThan(
+		11
+	);
+	// The box grows with its text: every line is still whole.
+	expect(await box(page).evaluate((el) => el.scrollHeight - el.clientHeight)).toBeLessThanOrEqual(
+		1
+	);
+	// Two taps in the box pick a word. They do not put the size back.
+	[x, y] = await middle();
+	await page.touchscreen.tap(x - 40, y);
+	await page.touchscreen.tap(x - 40, y);
+	expect(await size()).toBe(grown);
+	// The fingers close all the way: iOS zooms the page for a box under 16px, so it stops there.
+	await twoFingers(
+		page,
+		[
+			[x - 100, y],
+			[x + 100, y]
+		],
+		[
+			[x - 8, y],
+			[x + 8, y]
+		]
+	);
+	expect(await size()).toBe(16);
 });

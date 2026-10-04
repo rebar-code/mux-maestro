@@ -217,7 +217,8 @@ export function gestures(node: HTMLElement): () => void {
 		lastX = event.clientX;
 		lastT = event.timeStamp;
 		downT = event.timeStamp;
-		downZoom = (event.target as Element).closest('[data-zoom]') !== null;
+		// Two taps in a text box pick a word: they are the browser's, not the size's.
+		downZoom = (event.target as Element).closest('[data-zoom]:not([data-zoom="box"])') !== null;
 		hscroll = (event.target as Element).closest<HTMLElement>('[data-hscroll]');
 		swiped = (event.target as Element).closest<HTMLElement>('[data-swipe]');
 		origin = event.target as Element;

@@ -3,11 +3,14 @@
 	import type { FormEventHandler } from 'svelte/elements';
 	import { boxCap, enterSends, hasHardwareKeyboard } from './compose';
 	import { keyboardInset } from './pager';
+	import { boxSize } from './textsize';
+	import { text } from './textsize.svelte';
 
 	/**
 	 * The text box of every composer: it wraps, and grows with its text up to a
 	 * cap, then scrolls inside. The growth is the browser's own: a hidden copy
-	 * of the text in the same grid cell gives the cell its height.
+	 * of the text in the same grid cell gives the cell its height. Two fingers
+	 * on it change the text size, as they do on the terminal.
 	 */
 	// `value` is bound, so the whole pattern is a `let`.
 	/* eslint-disable prefer-const */
@@ -86,9 +89,17 @@
 	}
 </script>
 
-<div class="field" class:off={disabled} data-value={value} data-growing {@attach cap}>
+<div
+	class="field"
+	class:off={disabled}
+	style:--box-size="{boxSize(text.size)}px"
+	data-value={value}
+	data-growing
+	{@attach cap}
+>
 	<textarea
 		rows="1"
+		data-zoom="box"
 		bind:value
 		{@attach box}
 		placeholder={label}
@@ -142,10 +153,11 @@
 		margin: 0;
 		padding: 11px 14px;
 		border: 0;
-		/* 16px: a smaller box makes iOS zoom the page on focus. */
+		/* Never under 16px: a smaller box makes iOS zoom the page on focus. */
 		font: inherit;
-		font-size: 16px;
-		line-height: 22px;
+		font-size: var(--box-size, 16px);
+		/* 22px beside 16px text. */
+		line-height: 1.375;
 		white-space: pre-wrap;
 		overflow-wrap: anywhere;
 	}
