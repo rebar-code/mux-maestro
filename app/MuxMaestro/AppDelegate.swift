@@ -156,6 +156,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 return (ManagerHome.sessionName, io)
             }),
+        requests: ManagerHome.defaultHome().map {
+            RequestTracker(url: $0.appendingPathComponent(RequestTracker.fileName))
+        },
         // The phone's takes use the Mac's own engine. Nothing plays here: the
         // phone gets the samples.
         voice: MobileServer.Voice(
@@ -170,7 +173,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             close: { [weak self] port in self?.phoneLink.closeMapping(port: port) ?? false },
             list: { [weak self] in self?.phoneLink.mappings ?? [] }),
-        push: pushCenter)
+        push: pushCenter,
+        logDirectory: Settings.phoneLogDirectory())
     /// The phones that asked for notifications, and the sending.
     private lazy var pushCenter: MobilePushCenter = {
         let center = MobilePushCenter()

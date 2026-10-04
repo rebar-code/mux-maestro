@@ -284,7 +284,7 @@ final class ManagerStoreTests: XCTestCase {
                                 firstSeen: now - 500, lastSeen: now - 500)
         try store.insertWorkLog(sessionId: "new", repo: "mux-maestro", prs: "",
                                 firstSeen: now - 10, lastSeen: now)
-        try store.insertWorkLog(sessionId: "odd", repo: "coachwell", prs: "7 draft 9",
+        try store.insertWorkLog(sessionId: "odd", repo: "widget-shop", prs: "7 draft 9",
                                 firstSeen: now - 100, lastSeen: now - 100)
 
         let rows = try store.workLog()

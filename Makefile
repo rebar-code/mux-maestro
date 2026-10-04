@@ -8,7 +8,7 @@
 # is optional: the build works without it.
 -include local.mk
 
-.PHONY: libghostty clean-libghostty app run install signing-identity signing-selftest test clean-app diff-bundle mobile vendor-beam beam-selftest vendor-tools tools-selftest
+.PHONY: libghostty clean-libghostty app run install signing-identity signing-selftest demo-names-check test clean-app diff-bundle mobile vendor-beam beam-selftest vendor-tools tools-selftest
 
 # Xcode to build with. Overridable so CI can point at its Xcode_16.2.app; the
 # Swift packages need tools version 6.0, which the runner's default Xcode lacks.
@@ -110,9 +110,14 @@ install: app
 	@echo "Installed /Applications/MuxMaestro.app ($$(date -r /Applications/MuxMaestro.app/Contents/MacOS/MuxMaestro '+%Y-%m-%d %H:%M'))"
 	open /Applications/MuxMaestro.app
 
+# Fail when a real project name is in the tree. This repository is public.
+demo-names-check:
+	bash scripts/demo-names-check.sh
+
 # Run the unit tests (pure tmux parsing + attention/sort logic). This is a
 # logic-test bundle with no app host, so it does not require GhosttyKit.
-test:
+# `demo-names-check` runs first: it takes about a second.
+test: demo-names-check
 	DEVELOPER_DIR=$(DEVELOPER_DIR) \
 	xcodebuild test \
 		-project MuxMaestro.xcodeproj \

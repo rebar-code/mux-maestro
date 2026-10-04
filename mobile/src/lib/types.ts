@@ -314,3 +314,42 @@ export interface MappingList {
 	mappings: Mapping[];
 	max: number;
 }
+
+/** Where a tracked request stands. The Mac may send a word this app does not know yet. */
+export type RequestState = 'todo' | 'in_progress' | 'blocked' | 'review' | 'done' | (string & {});
+
+/** One step in how a request got to where it is. Entries are only ever appended. */
+export interface RequestHistoryEntry {
+	/** A date. */
+	at: string;
+	/** `maestro` for the agent's own entries; any other word is the human. */
+	by: string;
+	/** The human's exact words. */
+	verbatim?: string;
+	/** What changed. */
+	note?: string;
+}
+
+/** One thing the human asked an agent for. */
+export interface TrackedRequest {
+	id: string;
+	title: string;
+	/** The tmux session the request belongs to. */
+	project: string;
+	/** When it was asked: an ISO date, or free text that may hold some. */
+	asked: string;
+	state: RequestState;
+	detail?: string;
+	blocked_by?: string | null;
+	/** How the request got to its state, oldest first. Absent in a schema 1 list. */
+	history?: RequestHistoryEntry[];
+}
+
+/** The Mac's request list. One that does not exist yet comes with no rows. */
+export interface RequestList {
+	schema: number;
+	updated?: string;
+	requests: TrackedRequest[];
+	blockers?: unknown[];
+	open_questions?: unknown[];
+}

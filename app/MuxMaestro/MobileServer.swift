@@ -195,11 +195,17 @@ final class MobileServer {
     private let sources: Sources
     private let limits: Limits
     private let manager: Manager?
+    /// The list of what the human asked for. nil where there is none (the dev
+    /// server): the request routes then answer 503.
+    private let requests: RequestTracker?
     private let voice: Voice?
     private let serving: Serving?
     /// The phones that asked for notifications. nil where nothing is sent
     /// (the dev server): the push routes then answer 503.
     private let push: MobilePushCenter?
+    /// The phone's own log, in a file. nil where none is kept (the tests):
+    /// the log route then answers 503.
+    private let log: MobileLogSink?
     private let queue = DispatchQueue(label: "is.rebar.muxmaestro.mobile")
     private let work = DispatchQueue(label: "is.rebar.muxmaestro.mobile.work", attributes: .concurrent)
 
@@ -250,15 +256,20 @@ final class MobileServer {
 
     init(
         staticRoot: URL?, sources: Sources, limits: Limits = Limits(), manager: Manager? = nil,
-        voice: Voice? = nil, serving: Serving? = nil, push: MobilePushCenter? = nil
+        requests: RequestTracker? = nil, voice: Voice? = nil, serving: Serving? = nil,
+        push: MobilePushCenter? = nil, logDirectory: URL? = nil
     ) {
         self.staticRoot = staticRoot
         self.sources = sources
         self.limits = limits
         self.manager = manager
+        self.requests = requests
         self.voice = voice
         self.serving = serving
         self.push = push
+        log = logDirectory.map {
+            MobileLogSink(directory: $0, served: MobileLog.servedBuild(staticRoot: staticRoot))
+        }
     }
 
     /// Whether a phone asked for something lately or holds an event stream.
@@ -299,6 +310,7 @@ final class MobileServer {
                     reported = true
                     let bound = Int(listener?.port?.rawValue ?? nwPort.rawValue)
                     if self?.listener === listener { self?.boundPort = bound }
+                    self?.log?.started(port: bound)
                     completion(.success(bound))
                 case .failed(let error):
                     listener?.cancel()
@@ -688,6 +700,11 @@ final class MobileServer {
             send(.json(data: threadsBody), to: client, head: head)
         case .hosts:
             send(.json(data: hostsBody), to: client, head: head)
+        case .log:
+            guard let log else { return send(.error(503, "unavailable"), to: client, head: head) }
+            // Answered before the file is touched: the log writes on its own queue.
+            log.receive(request.body)
+            send(.json(["ok": true]), to: client, head: head)
         case .events:
             startStream(client)
         case .chat(let id, let after):
@@ -808,6 +825,22 @@ final class MobileServer {
                 MobileReply.press(
                     press.key, prompt: press.prompt, terminal: press.terminal, target: target, io: io,
                     state: state)
+            }
+        case .requests:
+            guard let requests else {
+                return send(.error(503, "unavailable"), to: client, head: head)
+            }
+            // The file is read off the server queue: a read can wait on a writer.
+            reply(to: client) { MobileRequests.response(requests.read()) }
+        case .requestState:
+            guard let change = MobileRequests.change(in: request.body) else {
+                return send(.error(400, "bad_request"), to: client, head: head)
+            }
+            guard let requests else {
+                return send(.error(503, "unavailable"), to: client, head: head)
+            }
+            reply(to: client) {
+                MobileRequests.response(requests.setState(change.state, of: change.id))
             }
         case .voice:
             startVoice(request, client: client)
