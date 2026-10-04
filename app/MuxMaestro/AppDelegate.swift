@@ -100,6 +100,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             changed: { [weak self] in
                 // The sidebar loads the tree again, and the phone follows it.
                 DispatchQueue.main.async { self?.sidebarVC?.refresh() }
+            },
+            artifacts: { [artifactReader] thread in
+                MobileArtifacts.scan(thread: thread, reader: artifactReader)
+            },
+            running: { [weak self] thread in
+                // The sidebar's scan caches belong to the main thread.
+                DispatchQueue.main.sync {
+                    self?.sidebarVC?.runningSet(paneID: thread.pane, host: thread.host)
+                }
             }),
         manager: MobileServer.Manager(
             pane: { [weak self] in
@@ -124,13 +133,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             speech: EngineSpeech(),
             warm: { speaker in
                 Task { try? await VoiceEngine.shared.loadIfNeeded(speaker ? .all : .whisper) }
-            }))
+            }),
+        serving: MobileServer.Serving(
+            open: { [weak self] port, https, thread, label in
+                self?.phoneLink.openMapping(port: port, https: https, thread: thread, label: label)
+                    ?? .unavailable("Phone access is off")
+            },
+            close: { [weak self] port in self?.phoneLink.closeMapping(port: port) ?? false },
+            list: { [weak self] in self?.phoneLink.mappings ?? [] }))
     private lazy var phoneLink: PhoneLink = {
         let link = PhoneLink(server: mobileServer)
         link.onChange = { [weak self] state in
             self?.setupWindowController?.phone.render(state)
             // Hand the new listener the tree at once, not on the next change.
             if case .on = state { self?.pushMobileSnapshot() }
+        }
+        link.onMappings = { [weak self] mappings in
+            self?.setupWindowController?.phone.renderMappings(mappings.map(\.port))
         }
         return link
     }()
@@ -973,6 +992,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             setup.phone.onCapability = { [weak self] capability, on in
                 Settings.setPhoneCapability(capability, on)
                 self?.mobileServer.configure(Settings.phoneConfig())
+                // A dev server stays published only while its switch is on.
+                if capability == .localServers, !on { self?.phoneLink.closeAllMappings() }
                 self?.startManagerForPhoneIfNeeded()
             }
             setup.phone.onPort = { [weak self] port in
@@ -998,6 +1019,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.phoneLink.refreshKeepAwake()
             }
             setup.phone.render(phoneLink.state)
+            setup.phone.renderMappings(phoneLink.mappings.map(\.port))
             setupWindowController = setup
         }
         setupWindowController?.show()
@@ -1007,7 +1029,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// while the phone switch is off.
     private func pushMobileSnapshot() {
         guard phoneLink.isOn, let sidebar = sidebarVC else { return }
-        mobileServer.update(sidebar.mobileSnapshot())
+        let snapshot = sidebar.mobileSnapshot()
+        mobileServer.update(snapshot)
+        // A published dev server is closed once it stops, or its thread goes.
+        phoneLink.sweep(snapshot: snapshot) { sidebar.runningSet(paneID: $0.pane, host: $0.host) }
     }
 
     /// Run a Setup install recipe in the terminal, like the remote mosh install:

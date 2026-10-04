@@ -26,6 +26,23 @@ final class MobileServer {
         var changed: () -> Void = {}
         /// The home folder whose skills and commands the `/` list reads.
         var home = NSHomeDirectory()
+        /// What the thread's transcript says its agent made. nil where no
+        /// transcript is read (the dev server): the artifact routes then
+        /// answer 503. May block.
+        var artifacts: ((MobileThread) -> MobileArtifactSource?)? = nil
+        /// What the thread's pane has running, or nil once the pane has gone.
+        /// nil where nothing is scanned (the dev server): 503. May block.
+        var running: ((MobileThread) -> RunningSet?)? = nil
+    }
+
+    /// The local ports published on the tailnet, as `PhoneLink` keeps them.
+    /// nil where there is no tailnet (the dev server): the server routes then
+    /// answer 503. Every call may block.
+    struct Serving {
+        var open: (_ port: Int, _ https: Bool, _ thread: String, _ label: String) -> MobileServing.Opened
+        /// False when this app has no mapping on the port.
+        var close: (_ port: Int) -> Bool
+        var list: () -> [MobilePortMapping]
     }
 
     /// The manager pane, as the app reaches it. nil where there is no manager
@@ -112,13 +129,17 @@ final class MobileServer {
     private let limits: Limits
     private let manager: Manager?
     private let voice: Voice?
+    private let serving: Serving?
     private let queue = DispatchQueue(label: "is.rebar.muxmaestro.mobile")
     private let work = DispatchQueue(label: "is.rebar.muxmaestro.mobile.work", attributes: .concurrent)
 
     // Confined to `queue`.
     private var listener: NWListener?
     private var identity: MobileIdentity?
+    /// The port the listener is bound to: the one port no mapping may publish.
+    private var boundPort: Int?
     private var token: String?
+    private var shellPolicyCache: (shell: Data, policy: String)?
     private var snapshot = MobileSnapshot()
     private var threadsBody = MobileSnapshot().threadsJSON()
     private var hostsBody = MobileSnapshot().hostsJSON()
@@ -152,13 +173,14 @@ final class MobileServer {
 
     init(
         staticRoot: URL?, sources: Sources, limits: Limits = Limits(), manager: Manager? = nil,
-        voice: Voice? = nil
+        voice: Voice? = nil, serving: Serving? = nil
     ) {
         self.staticRoot = staticRoot
         self.sources = sources
         self.limits = limits
         self.manager = manager
         self.voice = voice
+        self.serving = serving
     }
 
     /// Whether a phone asked for something lately or holds an event stream.
@@ -197,7 +219,9 @@ final class MobileServer {
                 case .ready:
                     guard !reported else { return }
                     reported = true
-                    completion(.success(Int(listener?.port?.rawValue ?? nwPort.rawValue)))
+                    let bound = Int(listener?.port?.rawValue ?? nwPort.rawValue)
+                    if self?.listener === listener { self?.boundPort = bound }
+                    completion(.success(bound))
                 case .failed(let error):
                     listener?.cancel()
                     if self?.listener === listener { self?.listener = nil }
@@ -224,6 +248,7 @@ final class MobileServer {
         listener?.cancel()
         listener = nil
         identity = nil
+        boundPort = nil
         token = nil
         for client in clients.values { client.connection.cancel() }
         clients.removeAll()
@@ -674,6 +699,77 @@ final class MobileServer {
                     self.send(response, to: client, head: false)
                 }
             }
+        case .artifacts(let id):
+            guard let thread = snapshot.thread(id: id) else {
+                return send(.error(404, "not_found"), to: client, head: head)
+            }
+            guard let source = sources.artifacts else {
+                return send(.error(503, "unavailable"), to: client, head: head)
+            }
+            reply(to: client) { MobileArtifacts.list(thread: thread, source: source) }
+        case .file(let id, let artifact):
+            guard let thread = snapshot.thread(id: id) else {
+                return send(.error(404, "not_found"), to: client, head: head)
+            }
+            guard let source = sources.artifacts else {
+                return send(.error(503, "unavailable"), to: client, head: head)
+            }
+            // The id is looked up in the thread's own list; it is never a path.
+            reply(to: client) { MobileArtifacts.file(id: artifact, thread: thread, source: source) }
+        case .running(let id):
+            guard let thread = snapshot.thread(id: id) else {
+                return send(.error(404, "not_found"), to: client, head: head)
+            }
+            guard let running = sources.running else {
+                return send(.error(503, "unavailable"), to: client, head: head)
+            }
+            let ownPort = boundPort
+            reply(to: client) {
+                guard let set = running(thread) else { return .error(404, "not_found") }
+                return .json(MobileServing.runningJSON(set, ownPort: ownPort))
+            }
+        case .servers:
+            guard let serving, let identity else {
+                return send(.error(503, "unavailable"), to: client, head: head)
+            }
+            reply(to: client) { .json(MobileServing.listJSON(serving.list(), identity: identity)) }
+        case .serverOpen:
+            openServer(request, client: client)
+        case .serverClose:
+            guard let port = MobileServing.closeRequest(request.body) else {
+                return send(.error(400, "bad_request"), to: client, head: head)
+            }
+            guard let serving else {
+                return send(.error(503, "unavailable"), to: client, head: head)
+            }
+            reply(to: client) {
+                serving.close(port) ? .json(["ok": true]) : .error(404, "not_found")
+            }
+        }
+    }
+
+    /// Publish one local port on the tailnet. The phone names a thread and a
+    /// port number, and the port must be one Running reports for that thread
+    /// now: what it is and where it listens come from the Mac, never the phone.
+    private func openServer(_ request: MobileRequest, client: Client) {
+        guard let ask = MobileServing.openRequest(request.body) else {
+            return send(.error(400, "bad_request"), to: client, head: false)
+        }
+        guard let thread = snapshot.thread(id: ask.thread) else {
+            return send(.error(404, "not_found"), to: client, head: false)
+        }
+        guard let serving, let running = sources.running, let identity else {
+            return send(.error(503, "unavailable"), to: client, head: false)
+        }
+        let ownPort = boundPort
+        guard MobileServing.allowed(port: ask.port, ownPort: ownPort) else {
+            return send(.error(403, "refused"), to: client, head: false)
+        }
+        reply(to: client) {
+            guard let found = running(thread).map({ MobileServing.mappable(in: $0, ownPort: ownPort) })?[ask.port]
+            else { return .error(404, "not_running") }
+            let opened = serving.open(ask.port, found.https, thread.id, found.label)
+            return MobileServing.response(opened, port: ask.port, identity: identity)
         }
     }
 
@@ -1060,12 +1156,23 @@ final class MobileServer {
             data = try? Data(contentsOf: staticRoot.appendingPathComponent(served))
         }
         guard let data else { return .error(404, "not_found") }
+        let shell = served == "index.html"
+            ? data : (try? Data(contentsOf: staticRoot.appendingPathComponent("index.html"))) ?? Data()
         return MobileResponse(
             status: 200,
             headers: [
                 "Content-Type": MobileAPI.contentType(forPath: served),
                 "Cache-Control": MobileAPI.cacheControl(forPath: served),
+                "Content-Security-Policy": shellPolicy(for: shell),
             ],
             body: data)
+    }
+
+    /// The bundle's policy, worked out once for each shell it is read from.
+    private func shellPolicy(for shell: Data) -> String {
+        if let cached = shellPolicyCache, cached.shell == shell { return cached.policy }
+        let policy = MobileAPI.shellPolicy(html: String(decoding: shell, as: UTF8.self))
+        shellPolicyCache = (shell, policy)
+        return policy
     }
 }

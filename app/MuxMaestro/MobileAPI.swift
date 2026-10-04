@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 // The pure half of the phone server: HTTP parsing, routing, the auth decision
@@ -213,6 +214,17 @@ enum MobileEndpoint: Equatable {
     case dirs(host: String)
     /// Find `query` in the thread's scrollback.
     case find(id: String, query: String)
+    /// What the thread's agent made: files and links.
+    case artifacts(id: String)
+    /// One file of that list, named by its id there. Never by a path.
+    case file(id: String, artifact: String)
+    /// What the thread has running: dev servers, stacks, containers.
+    case running(id: String)
+    /// The local ports this app has published on the tailnet.
+    case servers
+    /// Publish one port a thread has running. The body names both.
+    case serverOpen
+    case serverClose
 
     var capability: MobileCapability {
         switch self {
@@ -225,6 +237,8 @@ enum MobileEndpoint: Equatable {
         case .tmux(let action): return action.isKill ? .kill : .sessionActions
         case .dirs: return .sessionActions
         case .find: return .find
+        case .artifacts, .file: return .artifacts
+        case .running, .servers, .serverOpen, .serverClose: return .localServers
         }
     }
 
@@ -233,10 +247,10 @@ enum MobileEndpoint: Equatable {
     var method: String {
         switch self {
         case .config, .threads, .hosts, .events, .chat, .screen, .manager, .prompt, .commands,
-             .dirs, .find:
+             .dirs, .find, .artifacts, .file, .running, .servers:
             return "GET"
         case .managerText, .managerDismiss, .voice, .voiceReplay, .voiceWarm, .text, .key, .answer,
-             .upload, .tmux:
+             .upload, .tmux, .serverOpen, .serverClose:
             return "POST"
         }
     }
@@ -349,6 +363,7 @@ enum MobileAPI {
             case "key": return .keyBar
             case "upload": return .upload
             case "artifacts", "file": return .artifacts
+            case "running": return .localServers
             case "find": return .find
             default: return nil
             }
@@ -406,6 +421,15 @@ enum MobileAPI {
             endpoint = .upload(id: segments[2], name: request.query["name"] ?? "")
         case 4 where segments[1] == "threads" && segments[3] == "find":
             endpoint = .find(id: segments[2], query: request.query["q"] ?? "")
+        case 4 where segments[1] == "threads" && segments[3] == "artifacts":
+            endpoint = .artifacts(id: segments[2])
+        case 4 where segments[1] == "threads" && segments[3] == "file":
+            endpoint = .file(id: segments[2], artifact: request.query["id"] ?? "")
+        case 4 where segments[1] == "threads" && segments[3] == "running":
+            endpoint = .running(id: segments[2])
+        case 2 where segments[1] == "servers": endpoint = .servers
+        case 3 where segments[1] == "servers" && segments[2] == "open": endpoint = .serverOpen
+        case 3 where segments[1] == "servers" && segments[2] == "close": endpoint = .serverClose
         case 4 where segments[1] == "hosts" && segments[3] == "dirs":
             endpoint = .dirs(host: segments[2])
         case 3 where segments[1] == "tmux":
@@ -547,6 +571,49 @@ enum MobileAPI {
         case "txt": return "text/plain; charset=utf-8"
         default: return "application/octet-stream"
         }
+    }
+
+    /// What the shell may load, as a `Content-Security-Policy`. `script-src`
+    /// is filled in by `shellPolicy(html:)`.
+    static let shellDirectives: [(name: String, value: String)] = [
+        ("default-src", "'self'"), ("script-src", "'self'"),
+        // Svelte sets styles from script; the bundle has no inline `<style>`.
+        ("style-src", "'self' 'unsafe-inline'"),
+        // An artifact image is shown from memory: a `blob:` or a `data:` address.
+        ("img-src", "'self' data: blob:"), ("media-src", "'self' data: blob:"),
+        ("font-src", "'self' data:"), ("connect-src", "'self'"), ("worker-src", "'self'"),
+        ("manifest-src", "'self'"), ("frame-src", "'none'"), ("object-src", "'none'"),
+        ("base-uri", "'none'"), ("form-action", "'none'"), ("frame-ancestors", "'none'"),
+    ]
+
+    private static let scriptTag = try! NSRegularExpression(
+        pattern: #"<script\b([^>]*)>(.*?)</script>"#,
+        options: [.caseInsensitive, .dotMatchesLineSeparators])
+    private static let srcAttribute = try! NSRegularExpression(
+        pattern: #"(^|\s)src\s*="#, options: [.caseInsensitive])
+
+    /// The policy sent with every file of the bundle. The shell's own inline
+    /// scripts (SvelteKit's start-up code) are allowed by the hash of their
+    /// text, read from `html`; no other inline script runs. A page made from a
+    /// `blob:` address takes the policy of the page that made it, so a file
+    /// with a script in it runs nothing even when it is opened as a page.
+    static func shellPolicy(html: String) -> String {
+        var hashes: [String] = []
+        let whole = NSRange(html.startIndex..., in: html)
+        for match in scriptTag.matches(in: html, range: whole) {
+            guard let attributes = Range(match.range(at: 1), in: html),
+                  let text = Range(match.range(at: 2), in: html) else { continue }
+            let tag = String(html[attributes])
+            guard srcAttribute.firstMatch(in: tag, range: NSRange(tag.startIndex..., in: tag)) == nil
+            else { continue }
+            let digest = Data(SHA256.hash(data: Data(html[text].utf8))).base64EncodedString()
+            hashes.append("'sha256-\(digest)'")
+        }
+        return shellDirectives.map { directive in
+            directive.name == "script-src"
+                ? ([directive.name, directive.value] + hashes).joined(separator: " ")
+                : "\(directive.name) \(directive.value)"
+        }.joined(separator: "; ")
     }
 
     /// Hashed build files never change; everything else (the shell, the service

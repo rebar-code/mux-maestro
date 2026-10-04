@@ -2,13 +2,17 @@ import { tokenFrom, withoutPair } from './pairing';
 import { frameParser, readOrStall, STALLED, type Frame } from './sse';
 import type {
 	ActionTarget,
+	ArtifactList,
 	ChatPage,
 	Command,
 	Config,
 	FindResult,
 	Host,
 	ManagerHome,
+	Mapping,
+	MappingList,
 	PromptState,
+	RunningList,
 	Thread,
 	TmuxAction,
 	TurnEnd
@@ -317,6 +321,36 @@ export function fetchFind(id: string, query: string, signal?: AbortSignal): Prom
 		undefined,
 		signal
 	);
+}
+
+export function fetchArtifacts(id: string): Promise<ArtifactList> {
+	return get<ArtifactList>(`${threadPath(id)}/artifacts`);
+}
+
+/**
+ * One artifact's bytes. The file is named by the id the Mac gave it, never by
+ * a path. It is fetched (the token rides in a header) and never linked to.
+ */
+export async function fetchFile(id: string, file: string, signal?: AbortSignal): Promise<Blob> {
+	const path = `${threadPath(id)}/file?id=${encodeURIComponent(file)}`;
+	return (await request(path, '*/*', undefined, signal)).blob();
+}
+
+export function fetchRunning(id: string): Promise<RunningList> {
+	return get<RunningList>(`${threadPath(id)}/running`);
+}
+
+export function fetchMappings(): Promise<MappingList> {
+	return get<MappingList>('/api/servers');
+}
+
+/** Ask the Mac to publish one of the thread's local ports on the tailnet. */
+export async function openServer(id: string, port: number): Promise<Mapping> {
+	return (await (await post('/api/servers/open', { thread: id, port })).json()) as Mapping;
+}
+
+export async function closeServer(port: number): Promise<void> {
+	await post('/api/servers/close', { port });
 }
 
 export function fetchManager(): Promise<ManagerHome> {
