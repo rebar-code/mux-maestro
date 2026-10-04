@@ -72,6 +72,8 @@ class Manager {
 	/** Review items dismissed here that the Mac has not dropped yet. */
 	private dismissed = new Set<string>();
 	private loading = false;
+	/** Counts the `manager` events, so a load can tell that one overtook it. */
+	private events = 0;
 
 	private save(): void {
 		try {
@@ -95,6 +97,7 @@ class Manager {
 
 	/** The `manager` event. */
 	apply(body: ManagerLive): void {
+		this.events += 1;
 		this.setCards(body);
 		// This phone's own turn is drawn from its own stream.
 		if (!this.sending) {
@@ -116,11 +119,15 @@ class Manager {
 		if (this.loading) return;
 		this.loading = true;
 		try {
+			const events = this.events;
 			const home: ManagerHome = await fetchManager();
-			this.setCards(home);
+			// An event that came while this was asked is newer than the answer:
+			// its cards and its turn stay.
+			const current = events === this.events;
+			if (current) this.setCards(home);
 			this.status = home.status;
 			this.chat = home.chat.messages;
-			if (!this.sending) this.turn = home.turn;
+			if (current && !this.sending) this.turn = home.turn;
 			this.save();
 		} catch (error) {
 			live.fail(error);
