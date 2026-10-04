@@ -31,16 +31,20 @@ export interface Hit {
 	range: Range;
 }
 
-/** The hits of each chat row, keyed by the row's `n`, and how many there are. */
+/**
+ * The hits of each chat row, keyed by the row's `n`, and how many there are.
+ * `textOf` is the text a row shows, when that is not the text it holds.
+ */
 export function chatHits(
 	messages: ChatMessage[],
-	query: string
+	query: string,
+	textOf: (message: ChatMessage) => string = (message) => message.text
 ): { byRow: Map<number, Hit[]>; count: number } {
 	const byRow = new Map<number, Hit[]>();
 	let count = 0;
 	for (const message of messages) {
 		if (count >= MAX_CHAT_HITS) break;
-		const hits = occurrences(message.text, query)
+		const hits = occurrences(textOf(message), query)
 			.slice(0, MAX_CHAT_HITS - count)
 			.map((range, i) => ({ index: count + i, range }));
 		if (!hits.length) continue;

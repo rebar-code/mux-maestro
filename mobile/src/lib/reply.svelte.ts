@@ -17,7 +17,9 @@ import {
 	CTRL_MS,
 	ctrlReduce,
 	filterCommands,
+	LIVE_MS,
 	needsPrompt,
+	paced,
 	queueKey,
 	refusalLabel,
 	slashQuery,
@@ -434,15 +436,17 @@ export class Reply {
 
 	// MARK: voice
 
-	private grow = (delta: string): void => {
+	// The reply comes a word at a time; the chat draws it at most every `LIVE_MS`.
+	private pace = paced(LIVE_MS, (text) => {
 		const turn = this.turn;
 		if (turn)
-			void this.host.stick(() => (this.turn = { ...turn, reply: turn.reply + delta }), false);
-	};
+			void this.host.stick(() => (this.turn = { ...turn, reply: turn.reply + text }), false);
+	});
 
 	/** The chat has the turn now, or will not get it: stop drawing it here. */
 	private async settle(note: Note | null): Promise<void> {
 		this.note = note;
+		this.pace.flush();
 		await this.host.refresh();
 		this.turn = null;
 	}
@@ -451,9 +455,10 @@ export class Reply {
 	readonly voice: VoiceSink = {
 		begin: (prompt) => {
 			this.note = null;
+			this.pace.cancel();
 			void this.host.stick(() => (this.turn = { prompt, reply: '' }), false);
 		},
-		delta: this.grow,
+		delta: this.pace.add,
 		end: (end) => void this.settle(end.message ? { text: end.message, bad: true } : null),
 		fail: (message) => void this.settle({ text: message, bad: true }),
 		// The Mac still runs the turn: the chat draws the rest.

@@ -2,8 +2,13 @@ import { tick } from 'svelte';
 import { ApiError, fetchFind } from './api';
 import { chatHits, countLabel, step, terminalHits, type Hit } from './find';
 import { live } from './live.svelte';
+import { renderer } from './renderer.svelte';
 import type { Mode } from './thread.svelte';
 import type { ChatMessage, FindResult } from './types';
+
+/** An assistant row is drawn as markdown: a find looks in what it shows. */
+const shown = (message: ChatMessage): string =>
+	message.role === 'assistant' && renderer.api ? renderer.api.chatText(message.text) : message.text;
 
 const DEBOUNCE_MS = 250;
 /** The Mac runs few finds at once: a refused one is asked again, this often. */
@@ -38,7 +43,7 @@ export class Find {
 		messages: () => ChatMessage[],
 		private readonly mode: () => Mode
 	) {
-		this.chat = $derived(chatHits(this.open ? messages() : [], this.query));
+		this.chat = $derived(chatHits(this.open ? messages() : [], this.query, shown));
 		this.terminal = $derived(
 			this.result ? terminalHits(this.result.text, this.result.matches) : []
 		);
