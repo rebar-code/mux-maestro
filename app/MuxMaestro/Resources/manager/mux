@@ -450,9 +450,16 @@ cmd_requests() {
   AND COALESCE(json_type($doc, '\$.requests') = 'array', 0);" 2>/dev/null) || ok=0
     [ "$ok" = 1 ] || die "requests: $REQUESTS is not a readable list; read it again before any write"
 
-    # Newest first; requests asked the same day keep the file's order.
-    rows="SELECT value FROM json_each($doc, '\$.requests') $where
-          ORDER BY json_extract(value, '\$.asked') DESC, key"
+    # Newest first, by the day in `asked`, which may be prose with a date at
+    # either end ("earlier, restated 2026-10-04"). Requests of one day, and
+    # the ones that name no day, keep the file's order.
+    day="[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]"
+    rows="SELECT value FROM (
+            SELECT value, key, COALESCE(json_extract(value, '\$.asked'), '') AS asked
+            FROM json_each($doc, '\$.requests') $where)
+          ORDER BY CASE WHEN asked GLOB '*$day' THEN substr(asked, -10)
+                        WHEN asked GLOB '$day*' THEN substr(asked, 1, 10)
+                        ELSE '' END DESC, key"
     if [ "$json" -eq 1 ]; then
         "$SQLITE" :memory: "SELECT json_object(
   'updated', json_extract($doc, '\$.updated'),

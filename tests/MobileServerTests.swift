@@ -23,11 +23,16 @@ final class MobileServerTests: XCTestCase {
     private var requestsFile: URL { root.appendingPathComponent(RequestTracker.fileName) }
     private static let requestList = """
     {
-      "schema": 1,
+      "schema": 2,
       "updated": "2026-10-03T16:20:00Z",
       "requests": [
-        { "id": "req-002", "title": "Dark mode", "project": "acme-app", "state": "in_progress" },
-        { "id": "req-001", "title": "Nightly backup", "project": "devbox", "state": "todo" }
+        { "id": "req-002", "title": "Dark mode", "project": "acme-app", "state": "in_progress",
+          "history": [{ "at": "2026-10-03", "by": "me", "verbatim": "dark mode please" }] },
+        { "id": "req-001", "title": "Nightly backup", "project": "devbox", "state": "todo",
+          "history": [
+            { "at": "2026-10-02", "by": "me", "verbatim": "back devbox up every night" },
+            { "at": "2026-10-03", "by": "maestro", "note": "Set it weekly by mistake. Now nightly." }
+          ] }
       ]
     }
 
@@ -112,7 +117,7 @@ final class MobileServerTests: XCTestCase {
             artifacts: withLocal ? local.artifactSource : nil,
             running: withLocal ? local.runningSource : nil),
             limits: limits, manager: manager.source,
-            requests: withLocal ? RequestTracker(url: requestsFile) : nil,
+            requests: withLocal ? RequestTracker(url: requestsFile, author: "me") : nil,
             serving: withLocal ? local.serving : nil,
             push: withLocal ? push : nil)
     }
@@ -620,7 +625,7 @@ final class MobileServerTests: XCTestCase {
         // No file yet is an empty list.
         let none = get("/api/requests")
         XCTAssertEqual(none.status, 200)
-        XCTAssertEqual(none.body, #"{"schema":1,"requests":[]}"#)
+        XCTAssertEqual(none.body, #"{"schema":2,"requests":[]}"#)
 
         try Data(Self.requestList.utf8).write(to: requestsFile)
         let list = get("/api/requests")
@@ -637,17 +642,45 @@ final class MobileServerTests: XCTestCase {
         // The answer is the list after the write, and so is the file.
         XCTAssertEqual(ticked.body, requestsOnDisk())
         XCTAssertTrue(requestsOnDisk().contains(
-            #"{ "id": "req-001", "title": "Nightly backup", "project": "devbox", "state": "done" }"#))
+            #"{ "id": "req-001", "title": "Nightly backup", "project": "devbox", "state": "done","#))
         // The other request is as it was; only the time changed besides.
         XCTAssertTrue(requestsOnDisk().contains(
-            #"{ "id": "req-002", "title": "Dark mode", "project": "acme-app", "state": "in_progress" }"#))
+            #"{ "id": "req-002", "title": "Dark mode", "project": "acme-app", "state": "in_progress","#
+                + "\n" + #"      "history": [{ "at": "2026-10-03", "by": "me", "verbatim": "dark mode please" }] },"#))
         XCTAssertFalse(requestsOnDisk().contains("2026-10-03T16:20:00Z"))
         XCTAssertEqual(get("/api/requests").body, requestsOnDisk())
 
-        // And back.
+        // The history has what it had, and one entry more: who ticked, and what.
+        XCTAssertTrue(requestsOnDisk().contains(
+            #"{ "at": "2026-10-03", "by": "maestro", "note": "Set it weekly by mistake. Now nightly." },"#))
+        XCTAssertTrue(requestsOnDisk().contains(
+            #""by": "me", "note": "State changed from todo to done on the phone." }"#), requestsOnDisk())
+
+        // And back: one more entry, none taken away.
         XCTAssertEqual(
             post("/api/requests/state", json: #"{"id":"req-001","state":"todo"}"#).status, 200)
-        XCTAssertTrue(requestsOnDisk().contains(#""id": "req-001", "title": "Nightly backup", "project": "devbox", "state": "todo""#))
+        XCTAssertTrue(requestsOnDisk().contains(
+            #""id": "req-001", "title": "Nightly backup", "project": "devbox", "state": "todo""#))
+        XCTAssertTrue(requestsOnDisk().contains(
+            #""note": "State changed from todo to done on the phone." },"#))
+        XCTAssertTrue(requestsOnDisk().contains(
+            #""note": "State changed from done to todo on the phone." }"#))
+    }
+
+    func testThePhoneCannotWriteAHistoryEntryOfItsOwn() throws {
+        managerOn()
+        try Data(Self.requestList.utf8).write(to: requestsFile)
+        // The body's own `history`, `by` and `note` are not read: the entry is the server's.
+        let body = #"{"id":"req-001","state":"done","by":"maestro","note":"forged","history":[]}"#
+        XCTAssertEqual(post("/api/requests/state", json: body).status, 200)
+        XCTAssertFalse(requestsOnDisk().contains("forged"))
+        XCTAssertTrue(requestsOnDisk().contains(
+            #""by": "me", "note": "State changed from todo to done on the phone." }"#))
+        XCTAssertTrue(requestsOnDisk().contains(#""verbatim": "back devbox up every night" }"#))
+        // There is no other write on the list.
+        for path in ["/api/requests", "/api/requests/history", "/api/requests/req-001"] {
+            XCTAssertNotEqual(post(path, json: body).status, 200, path)
+        }
     }
 
     func testABadTickIsRefusedAndWritesNothing() throws {

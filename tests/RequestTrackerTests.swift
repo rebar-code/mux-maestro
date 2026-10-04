@@ -9,27 +9,55 @@ final class RequestTrackerTests: XCTestCase {
     private var tracker: RequestTracker {
         var tracker = RequestTracker(url: file)
         tracker.now = { Date(timeIntervalSince1970: 1_791_100_800) }
+        tracker.timeZone = TimeZone(identifier: "UTC")!
+        tracker.author = "me"
         tracker.readPause = 0.005
         return tracker
     }
-    /// What `now` above writes into `updated`.
+    /// What `now` above writes into `updated`, and into a new entry's `at`.
     private let stamp = "2026-10-04T08:00:00Z"
+    private let day = "2026-10-04"
 
-    /// The list as the agent writes it: two-space indent, newest first.
+    /// The entry a change from the phone adds, as one line.
+    private func entry(_ from: String, _ to: String) -> String {
+        #"{ "at": "2026-10-04", "by": "me", "note": "State changed from \#(from) to \#(to) on the phone." }"#
+    }
+
+    /// The list as the agent writes it: two-space indent, newest first, and a
+    /// history in each of the layouts an agent writes one in.
     private static let list = """
     {
-      "schema": 1,
-      "note": "What the human asked for. 'project' groups by tmux session.",
+      "schema": 2,
+      "note": "What the human asked for. history[] is append-only.",
       "updated": "2026-10-03T16:20:00Z",
       "requests": [
         {
           "id": "req-004",
           "title": "Search across every session",
           "project": "acme-app",
-          "asked": "2026-10-03",
+          "asked": "earlier, restated 2026-10-03",
           "state": "in_progress",
           "detail": "A \\"quoted\\" word, a brace } and a bracket ] in the text.",
-          "blocked_by": null
+          "blocked_by": null,
+          "history": [
+            {
+              "at": "2026-10-01",
+              "by": "me",
+              "verbatim": "search should look in every session, not just this one",
+              "note": "Original ask."
+            },
+            {
+              "at": "2026-10-02",
+              "by": "maestro",
+              "note": "Built search for one host only. That was a misread of the ask."
+            },
+            {
+              "at": "2026-10-03",
+              "by": "me",
+              "verbatim": "every session means every host too",
+              "note": "Clarified the scope."
+            }
+          ]
         },
         {
           "id": "req-003",
@@ -38,7 +66,10 @@ final class RequestTrackerTests: XCTestCase {
           "asked": "2026-10-03",
           "state": "blocked",
           "detail": "Waits on the theme tokens.",
-          "blocked_by": "req-001"
+          "blocked_by": "req-001",
+          "history": [
+            { "at": "2026-10-03", "by": "me", "verbatim": "dark mode on settings please", "note": "Original ask." }
+          ]
         },
         {
           "id": "req-002",
@@ -47,7 +78,8 @@ final class RequestTrackerTests: XCTestCase {
           "asked": "2026-10-02",
           "state": "done",
           "detail": "",
-          "blocked_by": null
+          "blocked_by": null,
+          "history": [{"at":"2026-10-02","by":"me","note":"Original ask."}]
         },
         {
           "id": "req-001",
@@ -56,7 +88,8 @@ final class RequestTrackerTests: XCTestCase {
           "asked": "2026-10-01",
           "state": "todo",
           "detail": "",
-          "blocked_by": null
+          "blocked_by": null,
+          "history": []
         }
       ],
       "blockers": [
@@ -66,6 +99,10 @@ final class RequestTrackerTests: XCTestCase {
     }
 
     """
+
+    /// The history of req-004 as the fixture writes it, to the byte.
+    private static let story = String(
+        list[list.range(of: #""history": ["#)!.lowerBound..<list.range(of: "\"Clarified the scope.\"\n        }")!.upperBound])
 
     override func setUpWithError() throws {
         directory = FileManager.default.temporaryDirectory
@@ -94,6 +131,13 @@ final class RequestTrackerTests: XCTestCase {
             guard let id = $0["id"] as? String, let state = $0["state"] as? String else { return nil }
             return (id, state)
         })
+    }
+
+    private func history(_ id: String, _ data: Data? = nil) -> [[String: String]] {
+        let data = data ?? (try? Data(contentsOf: file)) ?? Data()
+        let list = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        let requests = list?["requests"] as? [[String: Any]] ?? []
+        return requests.first { $0["id"] as? String == id }?["history"] as? [[String: String]] ?? []
     }
 
     /// Files a write left behind beside the list.
@@ -139,7 +183,9 @@ final class RequestTrackerTests: XCTestCase {
             ("", "not valid JSON"),
             ("[]", "not valid JSON"),
             (#"{"requests":[]}"#, "names no schema"),
-            (#"{"schema":2,"requests":[]}"#, "schema 2"),
+            (#"{"schema":3,"requests":[]}"#, "schema 3"),
+            (#"{"schema":2,"requests":[{"id":"a","title":"t","state":"todo"}]}"#, "without a history"),
+            (#"{"schema":2,"requests":[{"id":"a","title":"t","state":"todo","history":{}}]}"#, "without a history"),
             (#"{"schema":1}"#, "no list of requests"),
             (#"{"schema":1,"requests":[{"id":"a","title":"t"}]}"#, "without an id, a title or a state"),
         ] {
@@ -171,14 +217,61 @@ final class RequestTrackerTests: XCTestCase {
 
     // MARK: Write
 
-    func testATickChangesTheStateAndTheTimeAndNoOtherByte() {
+    func testATickChangesTheStateAndTheTimeAddsOneEntryAndNoOtherByte() {
         let after = value(tracker.setState(.done, of: "req-004"))
+        // The new entry is laid out as the ones before it.
         let expected = Self.list
             .replacingOccurrences(of: #""state": "in_progress""#, with: #""state": "done""#)
             .replacingOccurrences(of: "2026-10-03T16:20:00Z", with: stamp)
+            .replacingOccurrences(
+                of: "\"note\": \"Clarified the scope.\"\n        }\n",
+                with: "\"note\": \"Clarified the scope.\"\n        },\n        {\n"
+                    + "          \"at\": \"2026-10-04\",\n          \"by\": \"me\",\n"
+                    + "          \"note\": \"State changed from in_progress to done on the phone.\"\n"
+                    + "        }\n")
         XCTAssertEqual(onDisk, expected)
         XCTAssertEqual(after, Data(expected.utf8))
         XCTAssertEqual(value(tracker.read()), after)
+    }
+
+    func testTheEntryFollowsTheLayoutOfTheHistoryItJoins() {
+        // One entry a line.
+        XCTAssertNotNil(value(tracker.setState(.review, of: "req-003")))
+        XCTAssertTrue(onDisk.contains(
+            "\"note\": \"Original ask.\" },\n        " + entry("blocked", "review") + "\n      ]"), onDisk)
+        // No space at all.
+        XCTAssertNotNil(value(tracker.setState(.todo, of: "req-002")))
+        XCTAssertTrue(onDisk.contains(
+            #"[{"at":"2026-10-02","by":"me","note":"Original ask."},"#
+                + #"{"at": "2026-10-04", "by": "me", "note": "State changed from done to todo on the phone."}]"#),
+            onDisk)
+        // An empty history.
+        XCTAssertNotNil(value(tracker.setState(.done, of: "req-001")))
+        XCTAssertTrue(onDisk.contains(#""history": ["# + entry("todo", "done") + "]"), onDisk)
+        XCTAssertNil(RequestTracker.fault(in: Data(onDisk.utf8)))
+    }
+
+    func testHistoryIsOnlyEverAddedTo() {
+        let before = history("req-004")
+        XCTAssertEqual(before.count, 3)
+        for state in [RequestState.done, .todo, .blocked, .done] {
+            XCTAssertNotNil(value(tracker.setState(state, of: "req-004")))
+        }
+        let after = history("req-004")
+        // What was there is there still, first and in order, to the byte.
+        XCTAssertEqual(Array(after.prefix(3)), before)
+        XCTAssertTrue(onDisk.contains(Self.story), "an entry was rewritten")
+        XCTAssertEqual(after.dropFirst(3).map { $0["note"] }, [
+            "State changed from in_progress to done on the phone.",
+            "State changed from done to todo on the phone.",
+            "State changed from todo to blocked on the phone.",
+            "State changed from blocked to done on the phone.",
+        ])
+        XCTAssertEqual(Set(after.dropFirst(3).map { $0["by"] }), ["me"])
+        XCTAssertEqual(Set(after.dropFirst(3).map { $0["at"] }), [day])
+        // No other request's history moved.
+        XCTAssertEqual(history("req-003").count, 1)
+        XCTAssertEqual(history("req-001").count, 0)
     }
 
     func testRoundTripThroughEveryState() {
@@ -187,9 +280,31 @@ final class RequestTrackerTests: XCTestCase {
             XCTAssertEqual(states()["req-001"], state.rawValue)
             XCTAssertEqual(states(value(tracker.read())), states())
         }
-        // Back where it started: the text is the first one again, but for the time.
-        XCTAssertEqual(onDisk, Self.list.replacingOccurrences(of: "2026-10-03T16:20:00Z", with: stamp))
+        // The first `todo` changed nothing; each of the five others left an entry.
+        XCTAssertEqual(history("req-001").count, 5)
         XCTAssertEqual(leftovers, [])
+    }
+
+    func testTheNameOnAnEntryIsWrittenAsJSON() {
+        var named = tracker
+        named.author = #"a "b" \ é/"#
+        XCTAssertNotNil(value(named.setState(.done, of: "req-001")))
+        XCTAssertEqual(history("req-001").last?["by"], #"a "b" \ é/"#)
+    }
+
+    func testTheDayIsTheDayWhereTheHumanIs() throws {
+        let date = Date(timeIntervalSince1970: 1_791_082_800) // 2026-10-04T03:00:00Z
+        XCTAssertEqual(RequestTracker.day(date, in: try XCTUnwrap(TimeZone(identifier: "UTC"))), "2026-10-04")
+        XCTAssertEqual(
+            RequestTracker.day(date, in: try XCTUnwrap(TimeZone(identifier: "America/Denver"))), "2026-10-03")
+    }
+
+    func testAListWithNoHistoryGetsNone() throws {
+        let old = #"{"schema":1,"updated":"then","requests":[{"id":"a","title":"t","state":"todo"}]}"#
+        try put(old)
+        XCTAssertNotNil(value(tracker.setState(.done, of: "a")))
+        XCTAssertEqual(
+            onDisk, #"{"schema":1,"updated":"\#(stamp)","requests":[{"id":"a","title":"t","state":"done"}]}"#)
     }
 
     func testTheSameStateWritesNothing() throws {
@@ -260,7 +375,8 @@ final class RequestTrackerTests: XCTestCase {
             .replacingOccurrences(
                 of: "  \"requests\": [\n",
                 with: "  \"requests\": [\n    { \"id\": \"req-005\", \"title\": \"New ask\","
-                    + " \"project\": \"devbox\", \"asked\": \"2026-10-04\", \"state\": \"todo\" },\n")
+                    + " \"project\": \"devbox\", \"asked\": \"2026-10-04\", \"state\": \"todo\","
+                    + " \"history\": [] },\n")
         var commits = 0
         var raced = tracker
         raced.beforeCommit = { [self] in
@@ -277,11 +393,13 @@ final class RequestTrackerTests: XCTestCase {
         XCTAssertEqual(
             onDisk,
             agents.replacingOccurrences(
-                of: "\"req-001\",\n      \"title\": \"Theme tokens\",\n      \"project\": \"acme-app\","
-                    + "\n      \"asked\": \"2026-10-01\",\n      \"state\": \"todo\"",
-                with: "\"req-001\",\n      \"title\": \"Theme tokens\",\n      \"project\": \"acme-app\","
-                    + "\n      \"asked\": \"2026-10-01\",\n      \"state\": \"done\"")
+                of: "\"state\": \"todo\",\n      \"detail\": \"\",\n      \"blocked_by\": null,\n"
+                    + "      \"history\": []",
+                with: "\"state\": \"done\",\n      \"detail\": \"\",\n      \"blocked_by\": null,\n"
+                    + "      \"history\": [" + entry("todo", "done") + "]")
                 .replacingOccurrences(of: "2026-10-03T16:20:00Z", with: stamp))
+        // The agent's own entries are as it wrote them.
+        XCTAssertTrue(onDisk.contains(Self.story))
         XCTAssertEqual(leftovers, [])
     }
 
@@ -311,9 +429,9 @@ final class RequestTrackerTests: XCTestCase {
     func testTicksFromManyThreadsAllLandAndAReaderNeverSeesHalfAFile() throws {
         let count = 24
         let rows = (1...count).map {
-            #"    { "id": "r\#($0)", "title": "Ask \#($0)", "project": "acme-app", "state": "todo" }"#
+            #"    { "id": "r\#($0)", "title": "Ask \#($0)", "project": "acme-app", "state": "todo", "history": [] }"#
         }
-        try put("{\n  \"schema\": 1,\n  \"updated\": \"x\",\n  \"requests\": [\n"
+        try put("{\n  \"schema\": 2,\n  \"updated\": \"x\",\n  \"requests\": [\n"
             + rows.joined(separator: ",\n") + "\n  ]\n}\n")
 
         let file = file
@@ -356,6 +474,7 @@ final class RequestTrackerTests: XCTestCase {
 
         XCTAssertEqual(failures, [])
         XCTAssertEqual(states().values.filter { $0 == "done" }.count, count)
+        XCTAssertEqual((1...count).map { history("r\($0)").count }, Array(repeating: 1, count: count))
         XCTAssertEqual(broken, [])
         XCTAssertGreaterThan(reads, 0)
         XCTAssertEqual(leftovers, [])
@@ -365,8 +484,9 @@ final class RequestTrackerTests: XCTestCase {
 
     private func edit(_ text: String, id: String = "a", state: RequestState = .done)
         -> Result<String, RequestTrackerError> {
-        RequestTracker.edit(Data(text.utf8), id: id, state: state, stamp: "NOW")
-            .map { String(decoding: $0, as: UTF8.self) }
+        RequestTracker.edit(
+            Data(text.utf8), id: id, change: .init(state: state, stamp: "NOW", day: "DAY", by: "me")
+        ).map { String(decoding: $0, as: UTF8.self) }
     }
 
     func testTheEditFindsTheStateInAnyLayout() {
@@ -385,13 +505,14 @@ final class RequestTrackerTests: XCTestCase {
     }
 
     func testTheEditIsNotFooledByTextThatLooksLikeTheList() {
-        // A "state" in a nested object, in a string, and in another request stay.
+        // A "state" or a "history" in a nested object, in a string, in another
+        // request or beside the list stays.
         let text = #"""
-        {"schema":1,"updated":7,"note":"\"id\":\"a\",\"state\":\"todo\" }]",
-         "blockers":[{"id":"a","state":"todo"}],
+        {"schema":1,"updated":7,"note":"\"id\":\"a\",\"state\":\"todo\" }]","history":[],
+         "blockers":[{"id":"a","state":"todo","history":[]}],
          "requests":[
-          {"id":"b","title":"{\"id\":\"a\"}","state":"todo"},
-          {"id":"a","title":"t [","meta":{"id":"z","state":"todo","deep":[{"state":"todo"}]},"state":"todo"}
+          {"id":"b","title":"{\"id\":\"a\"}","state":"todo","history":[]},
+          {"id":"a","title":"t [","meta":{"id":"z","history":[],"deep":[{"state":"todo"}]},"state":"todo"}
          ]}
         """#
         let expected = text.replacingOccurrences(
@@ -412,7 +533,7 @@ final class RequestTrackerTests: XCTestCase {
         // The whole text less its last line end is still the list.
         for length in 0..<(bytes.count - 2) {
             let cut = Data(bytes[0..<length])
-            guard case .failure = RequestTracker.edit(cut, id: "req-001", state: .done, stamp: "NOW") else {
+            guard case .failure = edit(String(decoding: cut, as: UTF8.self), id: "req-001") else {
                 return XCTFail("a list cut at byte \(length) was changed")
             }
             XCTAssertNotNil(RequestTracker.fault(in: cut), "cut at \(length)")
@@ -427,7 +548,8 @@ final class RequestTrackerTests: XCTestCase {
                 _ = spans.elements(of: root)
                 _ = spans.string(root)
             }
-            guard case .failure = RequestTracker.edit(junk, id: "a", state: .done, stamp: "NOW") else {
+            let change = RequestTracker.Change(state: .done, stamp: "NOW", day: "DAY", by: "me")
+            guard case .failure = RequestTracker.edit(junk, id: "a", change: change) else {
                 return XCTFail("noise was changed")
             }
         }
@@ -517,7 +639,7 @@ final class RequestTrackerTests: XCTestCase {
         let all = mux(["requests"])
         XCTAssertEqual(all.status, 0, all.error)
         XCTAssertEqual(all.out, """
-        in_progress|req-004|acme-app|2026-10-03|Search across every session
+        in_progress|req-004|acme-app|earlier, restated 2026-10-03|Search across every session
         blocked|req-003|acme-app|2026-10-03|Dark mode for the settings page ✨
         done|req-002|devbox|2026-10-02|Nightly backup of devbox
         todo|req-001|acme-app|2026-10-01|Theme tokens
@@ -541,6 +663,11 @@ final class RequestTrackerTests: XCTestCase {
         XCTAssertEqual(
             (object["requests"] as? [[String: Any]])?.compactMap { $0["id"] as? String },
             ["req-004", "req-003"])
+        // The history comes whole, with the entry the tick added.
+        XCTAssertEqual(
+            (object["requests"] as? [[String: Any]])?.map { ($0["history"] as? [Any])?.count }, [3, 1])
+        let done = mux(["requests", "--json", "--done"])
+        XCTAssertTrue(done.out.contains("State changed from todo to done on the phone."), done.out)
         XCTAssertEqual((object["blockers"] as? [[String: Any]])?.count, 1)
         XCTAssertEqual(object["open_questions"] as? [String], ["Keep the old search box?"])
     }

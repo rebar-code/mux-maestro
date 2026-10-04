@@ -24,9 +24,14 @@ enum RequestTrackerError: Error, Equatable {
 /// home. The manager agent keeps the file; the app reads it and changes the
 /// state of one request.
 ///
+/// Top-level fields of a request are its current state. Its `history` is how
+/// it got there, and is append-only: the app adds an entry when the human
+/// changes a state, and never changes or drops one.
+///
 /// Two writers share the file, so the app's write is built to lose nothing:
 /// - It changes two values in the text (the request's `state` and the list's
-///   `updated`) and leaves every other byte as the agent wrote it.
+///   `updated`), adds one entry at the end of the request's `history`, and
+///   leaves every other byte as the agent wrote it.
 /// - The new text goes to a temporary file that is then renamed over the
 ///   list, so a reader sees the old list or the new one, never a part of one.
 /// - If the file changed between the read and the rename, the change is made
@@ -34,13 +39,19 @@ enum RequestTrackerError: Error, Equatable {
 /// - A file that does not read is an error. It is never replaced.
 struct RequestTracker {
     static let fileName = "requests.json"
-    /// The one schema this build reads and writes.
-    static let schema = 1
+    /// The schemas this build reads and writes. 2 gave each request a `history`.
+    static let schemas = 1...2
     /// What a list that does not exist yet reads as.
-    static let empty = Data(#"{"schema":1,"requests":[]}"#.utf8)
+    static let empty = Data(#"{"schema":2,"requests":[]}"#.utf8)
+    /// Who the agent is in a history entry's `by`. Any other name is the human.
+    static let agent = "maestro"
 
     let url: URL
+    /// Who a change from the phone is `by`: the human, as the Mac names them.
+    var author = NSUserName()
     var now: () -> Date = Date.init
+    /// The zone a history entry's day is read in.
+    var timeZone = TimeZone.current
     /// A file that does not parse is read again this many times, this far
     /// apart: a writer that does not rename leaves it in halves for a moment.
     var readAttempts = 3
@@ -73,7 +84,10 @@ struct RequestTracker {
             case .success(let data?): before = data
             }
             let after: Data
-            switch Self.edit(before, id: id, state: state, stamp: Self.stamp(now())) {
+            let date = now()
+            let change = Change(
+                state: state, stamp: Self.stamp(date), day: Self.day(date, in: timeZone), by: author)
+            switch Self.edit(before, id: id, change: change) {
             case .failure(let error): return .failure(error)
             case .success(let data): after = data
             }
@@ -124,8 +138,8 @@ struct RequestTracker {
     static func fault(in data: Data) -> String? {
         guard let list = object(data) else { return "\(fileName) is not valid JSON" }
         guard let version = list["schema"] as? Int else { return "\(fileName) names no schema" }
-        guard version == schema else {
-            return "\(fileName) has schema \(version); this build reads schema \(schema)"
+        guard schemas.contains(version) else {
+            return "\(fileName) has schema \(version); this build reads up to schema \(schemas.upperBound)"
         }
         guard let requests = list["requests"] as? [[String: Any]] else {
             return "\(fileName) has no list of requests"
@@ -133,22 +147,33 @@ struct RequestTracker {
         let whole = requests.allSatisfy {
             $0["id"] is String && $0["title"] is String && $0["state"] is String
         }
-        return whole ? nil : "\(fileName) has a request without an id, a title or a state"
+        guard whole else { return "\(fileName) has a request without an id, a title or a state" }
+        let recorded = version < 2 || requests.allSatisfy { $0["history"] is [[String: Any]] }
+        return recorded ? nil : "\(fileName) has a request without a history"
     }
 
-    /// `text` with the state of request `id` set, and `updated` set to `stamp`
-    /// where the list has one. Only those two values change. A request that is
-    /// in that state already leaves the text as it is.
-    static func edit(
-        _ text: Data, id: String, state: RequestState, stamp: String
-    ) -> Result<Data, RequestTrackerError> {
+    /// One change from the phone: the new state, and what its history entry says.
+    struct Change {
+        var state: RequestState
+        /// The time for the list's `updated`.
+        var stamp: String
+        /// The day for the entry's `at`.
+        var day: String
+        var by: String
+    }
+
+    /// `text` with the state of request `id` set, one entry added at the end of
+    /// its `history` where it has one, and `updated` set where the list has
+    /// one. Nothing else changes: no entry that is there is touched. A request
+    /// that is in that state already leaves the text as it is.
+    static func edit(_ text: Data, id: String, change: Change) -> Result<Data, RequestTrackerError> {
         let spans = JSONSpans(text)
         guard let root = spans.root(), let top = spans.members(of: root),
               let list = top.first(where: { $0.key == "requests" }),
               let rows = spans.elements(of: list.value)
         else { return .failure(.corrupt("\(fileName) is not valid JSON")) }
 
-        var found: [Range<Int>] = []
+        var found: [(state: Range<Int>, history: Range<Int>?)] = []
         for row in rows {
             guard let members = spans.members(of: row) else {
                 return .failure(.corrupt("\(fileName) has a request that is not an object"))
@@ -159,18 +184,33 @@ struct RequestTracker {
             guard let value = members.first(where: { $0.key == "state" }) else {
                 return .failure(.corrupt("\(fileName) has a request without a state"))
             }
-            found.append(value.value)
+            found.append((value.value, members.first { $0.key == "history" }?.value))
         }
         guard let target = found.first else { return .failure(.unknownRequest) }
         guard found.count == 1 else {
             return .failure(.corrupt("\(fileName) has \(found.count) requests with the id \(id)"))
         }
-        if spans.string(target) == state.rawValue { return .success(text) }
+        let state = change.state.rawValue
+        guard let was = spans.string(target.state) else {
+            return .failure(.corrupt("\(fileName) has a request without a state"))
+        }
+        if was == state { return .success(text) }
 
-        var changes = [(range: target, value: "\"\(state.rawValue)\"")]
+        var changes = [(range: target.state, value: quoted(state))]
         let updated = top.first { $0.key == "updated" }.map(\.value)
         let stamped = updated.flatMap(spans.string) != nil
-        if let updated, stamped { changes.append((updated, "\"\(stamp)\"")) }
+        if let updated, stamped { changes.append((updated, quoted(change.stamp))) }
+
+        let entry = [
+            (key: "at", value: change.day), (key: "by", value: change.by),
+            (key: "note", value: "State changed from \(was) to \(state) on the phone."),
+        ]
+        if let history = target.history {
+            guard let addition = spans.addition(entry, to: history) else {
+                return .failure(.corrupt("\(fileName) has a history that is not a list"))
+            }
+            changes.append((addition.at..<addition.at, addition.text))
+        }
 
         var bytes = [UInt8](text)
         for change in changes.sorted(by: { $0.range.lowerBound > $1.range.lowerBound }) {
@@ -178,24 +218,46 @@ struct RequestTracker {
         }
         let edited = Data(bytes)
 
-        // The proof: read both texts as JSON. They must differ by those two
-        // values and nothing else, or the new text is not used.
+        // The proof: read both texts as JSON. They must differ by the state,
+        // the time and the one new entry, and by nothing else, or the new
+        // text is not used.
         guard var expected = object(text), let got = object(edited),
               var requests = expected["requests"] as? [[String: Any]],
               let index = requests.firstIndex(where: { $0["id"] as? String == id })
         else { return .failure(.corrupt("\(fileName) is not valid JSON")) }
-        requests[index]["state"] = state.rawValue
+        requests[index]["state"] = state
+        if target.history != nil {
+            let before = requests[index]["history"] as? [Any] ?? []
+            let added = Dictionary(uniqueKeysWithValues: entry.map { ($0.key, $0.value) })
+            requests[index]["history"] = before + [added]
+        }
         expected["requests"] = requests
-        if stamped { expected["updated"] = stamp }
+        if stamped { expected["updated"] = change.stamp }
         guard NSDictionary(dictionary: expected).isEqual(to: got) else {
             return .failure(.corrupt("\(fileName) could not be changed safely"))
         }
         return .success(edited)
     }
 
+    /// `text` as a JSON string, with its quotes.
+    static func quoted(_ text: String) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.withoutEscapingSlashes]
+        return (try? encoder.encode(text)).map { String(decoding: $0, as: UTF8.self) } ?? "\"\""
+    }
+
     /// The time as the file writes it: `2026-10-04T16:20:00Z`.
     static func stamp(_ date: Date) -> String {
         ISO8601DateFormatter().string(from: date)
+    }
+
+    /// The day as a history entry writes it: `2026-10-04`.
+    static func day(_ date: Date, in zone: TimeZone) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = zone
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
     }
 
     private static func object(_ data: Data) -> [String: Any]? {
@@ -291,6 +353,42 @@ struct JSONSpans {
         else { return nil }
         return (try? JSONSerialization.jsonObject(
             with: Data(bytes[range]), options: .fragmentsAllowed)) as? String
+    }
+
+    /// What to write, and where, to add an object of string `members` at the
+    /// end of the array at `range`. It is laid out as the array's last element
+    /// is, so the file keeps its shape. nil when `range` is not an array.
+    func addition(
+        _ members: [(key: String, value: String)], to range: Range<Int>
+    ) -> (at: Int, text: String)? {
+        guard let elements = elements(of: range) else { return nil }
+        let pair = { (member: (key: String, value: String)) in
+            "\(RequestTracker.quoted(member.key)): \(RequestTracker.quoted(member.value))"
+        }
+        guard let first = elements.first, let last = elements.last else {
+            let object = "{ " + members.map(pair).joined(separator: ", ") + " }"
+            return (range.lowerBound + 1, object)
+        }
+        // The space after a bracket is the space before every element.
+        let lead = text(spaceAfter: range.lowerBound + 1, upTo: first.lowerBound)
+        var inner = " "
+        var close = " "
+        if bytes[last.lowerBound] == 0x7B {
+            var index = last.lowerBound + 1
+            skipSpace(&index)
+            inner = text(spaceAfter: last.lowerBound + 1, upTo: index)
+            var end = last.upperBound - 1
+            while end > index, Self.space.contains(bytes[end - 1]) { end -= 1 }
+            close = text(spaceAfter: end, upTo: last.upperBound - 1)
+        }
+        let between = inner.contains("\n") ? "," + inner : ", "
+        let object = "{" + inner + members.map(pair).joined(separator: between) + close + "}"
+        return (last.upperBound, "," + lead + object)
+    }
+
+    private func text(spaceAfter start: Int, upTo end: Int) -> String {
+        guard start <= end, end <= bytes.count else { return "" }
+        return String(decoding: bytes[start..<end], as: UTF8.self)
     }
 
     private func skipSpace(_ index: inout Int) {
