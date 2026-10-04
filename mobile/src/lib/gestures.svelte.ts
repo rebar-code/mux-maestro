@@ -4,10 +4,13 @@ import {
 	pageOffset,
 	resolveDrag,
 	settleBack,
+	resolveSheetDrag,
 	settleDrawer,
 	settlePage,
+	settleSheet,
 	settleSwipe,
-	type DragKind
+	type DragKind,
+	type SheetStop
 } from './pager';
 
 import { anchorScroll, pinchSize } from './textsize';
@@ -20,6 +23,8 @@ const TAP_PX = 30;
 const PULL_TRIGGER = 56;
 const PULL_MAX = 96;
 const PULL_HOLD = 44;
+/** A swipe up this far on a thread that is at its end brings the board up. */
+const RISE = 24;
 
 /** What the gestures move. Views read it; visible controls call its methods. */
 class Ui {
@@ -46,6 +51,37 @@ class Ui {
 	pull = $state(0);
 	pulling = $state(false);
 	refreshing = $state<string | null>(null);
+	/**
+	 * The board drawer: its stop, how much of the board each stop shows, and a
+	 * drag in progress. The footer is its top edge; the board is below it.
+	 */
+	sheet = $state<SheetStop>(0);
+	sheetHeights = $state.raw<[number, number, number]>([0, 250, 560]);
+	/** How far above its stop a finger holds the drawer, in pixels. */
+	sheetUp = $state(0);
+	sheetDragging = $state(false);
+	/** The text box has the keyboard: the footer sits on it and the board stays shut. */
+	sheetLocked = $state(false);
+
+	/** The grabber: one stop up, and from the top back to rest. */
+	stepSheet(): void {
+		if (this.sheetLocked) return;
+		this.sheet = this.sheet === 2 ? 0 : ((this.sheet + 1) as SheetStop);
+	}
+
+	/** The thread was swiped up at its end: bring the board up from rest. */
+	riseSheet(): void {
+		if (this.sheet === 0 && !this.sheetLocked) this.sheet = 1;
+	}
+
+	/** The text box took or lost the keyboard. */
+	lockSheet(locked: boolean): void {
+		this.sheetLocked = locked;
+		if (locked) {
+			this.sheet = 0;
+			this.sheetUp = 0;
+		}
+	}
 
 	get drawerOpen(): boolean {
 		return this.drawer === 1;
@@ -145,7 +181,12 @@ function canScroll(el: HTMLElement | null, dx: number): boolean {
  */
 export function gestures(node: HTMLElement): () => void {
 	let start: { id: number; x: number; y: number } | null = null;
-	let kind: DragKind | 'vertical' | null = null;
+	let kind: DragKind | 'vertical' | 'sheet' | 'sheet-list' | null = null;
+	let sheetList: HTMLElement | null = null;
+	let onSheet = false;
+	let listStart = 0;
+	let lastY = 0;
+	let vy = 0;
 	let base = 0;
 	let lastX = 0;
 	let lastT = 0;
@@ -179,6 +220,14 @@ export function gestures(node: HTMLElement): () => void {
 		hscroll = (event.target as Element).closest<HTMLElement>('[data-hscroll]');
 		swiped = (event.target as Element).closest<HTMLElement>('[data-swipe]');
 		origin = event.target as Element;
+		// A drag that begins in the text box is typing or moving the caret, not the drawer.
+		onSheet =
+			!ui.sheetLocked &&
+			(event.target as Element).closest('[data-sheet]') !== null &&
+			(event.target as Element).closest('input, textarea') === null;
+		sheetList = (event.target as Element).closest<HTMLElement>('[data-sheet-list]');
+		lastY = event.clientY;
+		vy = 0;
 	}
 
 	/** Let go of the drag with nothing moved. */
@@ -197,8 +246,10 @@ export function gestures(node: HTMLElement): () => void {
 		if (kind === 'drawer-open') ui.drawer = 0;
 		else if (kind === 'drawer-close') ui.drawer = 1;
 		else if (kind === 'page') ui.dragX = 0;
+		else if (kind === 'sheet') ui.sheetUp = 0;
 		if (start) kind = 'none';
 		ui.dragging = false;
+		ui.sheetDragging = false;
 	}
 
 	/** Two quick taps on zoomable text put it back to the default size. */
@@ -222,9 +273,35 @@ export function gestures(node: HTMLElement): () => void {
 			if (multi) return;
 			if (Math.max(Math.abs(dx), Math.abs(dy)) < SLOP) return;
 			if (Math.abs(dy) > Math.abs(dx)) {
-				kind = 'vertical';
-				return;
+				// The board drawer is the one thing a vertical drag moves; all
+				// other vertical movement is the browser's scrolling.
+				if (!onSheet || ui.drawer > 0) {
+					kind = 'vertical';
+					return;
+				}
+				kind = resolveSheetDrag({
+					stop: ui.sheet,
+					dy,
+					inList: sheetList !== null,
+					listTop: sheetList?.scrollTop ?? 0
+				});
+				base = dy;
+				listStart = sheetList?.scrollTop ?? 0;
+				node.setPointerCapture(start.id);
+				if (kind === 'sheet') ui.sheetDragging = true;
 			}
+		}
+		if (kind === 'sheet' || kind === 'sheet-list') {
+			const dt = event.timeStamp - lastT;
+			if (dt > 0) vy = 0.7 * ((event.clientY - lastY) / dt) + 0.3 * vy;
+			lastY = event.clientY;
+			lastT = event.timeStamp;
+			const up = base - dy;
+			if (kind === 'sheet') ui.sheetUp = up;
+			else if (sheetList) sheetList.scrollTop = listStart + up;
+			return;
+		}
+		if (kind === null) {
 			kind = resolveDrag({
 				dx,
 				drawerOpen: ui.drawerOpen,
@@ -258,11 +335,15 @@ export function gestures(node: HTMLElement): () => void {
 		else if (hscroll) hscroll.scrollLeft = hscrollStart - moved;
 	}
 
-	function coast(el: HTMLElement, velocity: number): void {
+	function coast(
+		el: HTMLElement,
+		velocity: number,
+		axis: 'scrollLeft' | 'scrollTop' = 'scrollLeft'
+	): void {
 		let v = velocity;
 		let previous = performance.now();
 		const step = (now: number): void => {
-			el.scrollLeft -= v * (now - previous);
+			el[axis] -= v * (now - previous);
 			previous = now;
 			v *= 0.94;
 			if (Math.abs(v) > 0.02) momentum = requestAnimationFrame(step);
@@ -276,8 +357,19 @@ export function gestures(node: HTMLElement): () => void {
 			event.type === 'pointerup' && kind === null && !multi && event.timeStamp - downT <= TAP_MS;
 		if (tapped && downZoom) noteTap(event);
 		else lastTap = null;
+		const still = event.type === 'pointercancel' || event.timeStamp - lastT > 80;
+		if (kind === 'sheet') {
+			const stop = settleSheet(ui.sheet, ui.sheetUp, still ? 0 : vy);
+			// Below the tall stop the list does not scroll: it starts from its top.
+			if (stop < 2) node.querySelector('[data-sheet-list]')?.scrollTo({ top: 0 });
+			ui.sheet = stop;
+			ui.sheetUp = 0;
+			ui.sheetDragging = false;
+		} else if (kind === 'sheet-list' && sheetList && !still && Math.abs(vy) > 0.1) {
+			coast(sheetList, vy, 'scrollTop');
+		}
 		const moved = event.clientX - start.x - base;
-		const speed = event.type === 'pointercancel' || event.timeStamp - lastT > 80 ? 0 : vx;
+		const speed = still ? 0 : vx;
 		if (kind === 'drawer-open' || kind === 'drawer-close') {
 			ui.drawer = settleDrawer(ui.drawer, speed, kind === 'drawer-close') ? 1 : 0;
 		} else if (kind === 'page') {
@@ -312,6 +404,8 @@ export function gestures(node: HTMLElement): () => void {
 	}
 
 	let pull: { key: string; x: number; y: number; active: boolean } | null = null;
+	/** A touch that began on a thread at its end: a swipe up there raises the board. */
+	let rise: { x: number; y: number } | null = null;
 
 	interface Axis {
 		el: HTMLElement;
@@ -399,6 +493,13 @@ export function gestures(node: HTMLElement): () => void {
 			beginPinch(event);
 			return;
 		}
+		rise = null;
+		if (event.touches.length === 1) {
+			const thread = (event.target as Element).closest<HTMLElement>('[data-rise]');
+			if (thread && thread.scrollHeight - thread.scrollTop - thread.clientHeight < 2) {
+				rise = { x: event.touches[0].clientX, y: event.touches[0].clientY };
+			}
+		}
 		if (event.touches.length !== 1 || ui.refreshing) return;
 		const scroller = (event.target as Element).closest<HTMLElement>('[data-pull]');
 		if (!scroller || scroller.scrollTop > 0) return;
@@ -411,6 +512,15 @@ export function gestures(node: HTMLElement): () => void {
 			if (event.cancelable) event.preventDefault();
 			movePinch(event);
 			return;
+		}
+		if (rise) {
+			const dx = event.touches[0].clientX - rise.x;
+			const dy = event.touches[0].clientY - rise.y;
+			if (dy > 0 || Math.abs(dx) > Math.abs(dy)) rise = null;
+			else if (dy <= -RISE) {
+				rise = null;
+				ui.riseSheet();
+			}
 		}
 		if (!pull) return;
 		const touch = event.touches[0];

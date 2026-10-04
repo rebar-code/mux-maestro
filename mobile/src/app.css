@@ -27,6 +27,11 @@ html,
 body {
 	margin: 0;
 	height: 100%;
+	/*
+	 * The visible height. As a Home Screen app, `100%` can come out taller than
+	 * the screen, which leaves an empty band under the last control.
+	 */
+	height: 100dvh;
 	background: #000;
 	color: var(--text);
 	font:

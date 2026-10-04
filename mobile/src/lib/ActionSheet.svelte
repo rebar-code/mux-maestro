@@ -75,7 +75,7 @@
 		aria-modal="true"
 		aria-label={title}
 		tabindex="-1"
-		data-sheet={menu.stage}
+		data-action-sheet={menu.stage}
 		style:transform="translate3d(0, {pulled}px, 0)"
 		{onpointerdown}
 		{onpointermove}

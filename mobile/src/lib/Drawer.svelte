@@ -16,6 +16,7 @@
 
 	const groups = $derived(live.threads ? sections(live.threads, live.grouping) : []);
 	const waiting = $derived(live.threads ? counts(live.threads).waiting : 0);
+	const onHome = $derived(page.route.id === '/');
 	const openId = $derived(page.route.id === '/t/[id]' ? page.params.id : null);
 	const closed = $derived(ui.drawer === 0 && !ui.dragging);
 
@@ -37,37 +38,23 @@
 	aria-label="Threads"
 >
 	<div class="dtop">
-		{#if can('manager')}
-			<a
-				class="mrow grow"
-				class:sel={page.route.id === '/'}
-				href={resolve('/')}
-				onclick={() => ui.closeDrawer()}
-			>
-				<span>✦ Manager</span>
-				{#if waiting}<span class="badge">{waiting}</span>{/if}
-			</a>
-		{:else}
-			<span class="mgap"></span>
-		{/if}
+		<div class="seg" role="tablist" aria-label="Group by">
+			{#each GROUPINGS as option (option.key)}
+				<button
+					class="grow"
+					class:on={live.grouping === option.key}
+					role="tab"
+					aria-selected={live.grouping === option.key}
+					onclick={() => live.setGrouping(option.key)}>{option.label}</button
+				>
+			{/each}
+		</div>
 		<button
 			class="tb"
 			aria-label="Refresh"
 			disabled={ui.refreshing !== null}
 			onclick={() => ui.refresh(PULL)}>↻</button
 		>
-	</div>
-
-	<div class="seg" role="tablist" aria-label="Group by">
-		{#each GROUPINGS as option (option.key)}
-			<button
-				class="grow"
-				class:on={live.grouping === option.key}
-				role="tab"
-				aria-selected={live.grouping === option.key}
-				onclick={() => live.setGrouping(option.key)}>{option.label}</button
-			>
-		{/each}
 	</div>
 
 	<div class="scroll" data-pull={PULL} {@attach pullToRefresh(PULL, live.refresh)}>
@@ -128,6 +115,21 @@
 		{/if}
 		<div class="end"></div>
 	</div>
+
+	<!-- Always here, in reach of a thumb: the way back to the home, whatever is switched on. -->
+	<div class="dbar">
+		<a
+			class="mrow"
+			class:sel={onHome}
+			href={resolve('/')}
+			aria-current={onHome ? 'page' : undefined}
+			data-home
+			onclick={() => ui.closeDrawer()}
+		>
+			<span>✦ Manager</span>
+			{#if waiting}<span class="badge">{waiting}</span>{/if}
+		</a>
+	</div>
 </aside>
 
 <style>
@@ -156,30 +158,34 @@
 	.dtop {
 		display: flex;
 		align-items: center;
+		flex: none;
 		gap: 8px;
-		padding: 0 8px 2px 14px;
+		padding-right: 8px;
+	}
+
+	.dtop .seg {
+		flex: 1;
+		margin-right: 0;
+	}
+
+	/* Fixed under the list: the list ends above it, and it clears the home indicator. */
+	.dbar {
+		flex: none;
+		padding: 8px 14px calc(8px + env(safe-area-inset-bottom));
+		border-top: 1px solid var(--border);
+		background: var(--bar);
 	}
 
 	.mrow {
-		flex: 1;
 		display: flex;
 		align-items: center;
-		position: relative;
 		justify-content: space-between;
+		min-height: var(--hit);
 		padding: 9px 12px;
 		border-radius: 10px;
 		background: var(--mgr);
 		border: 1px solid #2b2b3d;
 		font-weight: 600;
-	}
-
-	/* Its 44pt touch area must not make the top row taller than the Manager row. */
-	.dtop .tb {
-		margin: -2px 0;
-	}
-
-	.mgap {
-		flex: 1;
 	}
 
 	.mrow.sel {
@@ -250,6 +256,6 @@
 	}
 
 	.end {
-		height: calc(24px + env(safe-area-inset-bottom));
+		height: 24px;
 	}
 </style>

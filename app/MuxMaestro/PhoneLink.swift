@@ -101,6 +101,9 @@ final class PhoneLink {
     enum State: Equatable {
         case off
         case starting
+        /// The start is held by the Keychain read: macOS is asking the user to
+        /// allow this build to use the pairing token.
+        case waitingForKeychain
         /// `url` is the address; `pairing` is the same with the pairing token,
         /// for the QR code.
         case on(url: String, pairing: String)
@@ -115,6 +118,8 @@ final class PhoneLink {
     private let tokens: PhoneTokenStore
     private let ports: PhonePortStore
     private let now: () -> Date
+    /// How long a Keychain read may take before the state says it is waiting.
+    private let keychainNotice: TimeInterval
     private let queue = DispatchQueue(label: "is.rebar.muxmaestro.phone")
     private let notify: (@escaping () -> Void) -> Void
 
@@ -151,6 +156,7 @@ final class PhoneLink {
         tokens: PhoneTokenStore = KeychainTokenStore(),
         ports: PhonePortStore = DefaultsPortStore(),
         now: @escaping () -> Date = Date.init,
+        keychainNotice: TimeInterval = 0.5,
         notify: @escaping (@escaping () -> Void) -> Void = { DispatchQueue.main.async(execute: $0) }
     ) {
         self.server = server
@@ -161,6 +167,7 @@ final class PhoneLink {
         self.tokens = tokens
         self.ports = ports
         self.now = now
+        self.keychainNotice = keychainNotice
         self.notify = notify
     }
 
@@ -263,7 +270,7 @@ final class PhoneLink {
         // Without a stored token nothing could pair, so nothing is published.
         // A token that could not be read is not replaced: the phones hold it.
         var stored: String?
-        switch tokens.read() {
+        switch readToken() {
         case .found(let token):
             stored = token
         case .failed:
@@ -293,6 +300,25 @@ final class PhoneLink {
                 self.set(self.on((bound, identity), token: token))
             }
         }
+    }
+
+    /// Read the stored token. The read blocks while macOS shows its Keychain
+    /// dialog (every new build, until the user allows it), so a read that is
+    /// still pending after `keychainNotice` says so instead of looking hung.
+    private func readToken() -> PhoneTokenRead {
+        let pending = NSLock()
+        var done = false
+        DispatchQueue.global().asyncAfter(deadline: .now() + keychainNotice) { [weak self] in
+            pending.lock()
+            defer { pending.unlock() }
+            if !done { self?.set(.waitingForKeychain) }
+        }
+        let token = tokens.read()
+        pending.lock()
+        done = true
+        pending.unlock()
+        if state == .waitingForKeychain { set(.starting) }
+        return token
     }
 
     private func applyKeepAwake() {

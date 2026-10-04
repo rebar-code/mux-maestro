@@ -1,4 +1,5 @@
 <script lang="ts">
+	import Icon from './Icon.svelte';
 	import { voice, type PrimaryKind, type VoiceSink, type VoiceTarget } from './voice.svelte';
 
 	/**
@@ -8,21 +9,54 @@
 	const {
 		target,
 		sink,
-		orb = false
-	}: { target: VoiceTarget; sink: VoiceSink; orb?: boolean } = $props();
+		orb = false,
+		off = false
+	}: {
+		target: VoiceTarget;
+		sink: VoiceSink;
+		orb?: boolean;
+		/** Voice is switched off on the Mac: the button is drawn and does nothing. */
+		off?: boolean;
+	} = $props();
 
 	const FACE: Record<PrimaryKind, { icon: string; label: string }> = {
-		talk: { icon: '🎙', label: 'Talk' },
+		// Drawn as an icon, not a character: see the markup.
+		talk: { icon: '', label: 'Talk' },
 		submit: { icon: '↑', label: 'Submit' },
 		stop: { icon: '■', label: 'Stop' },
 		pause: { icon: '❚❚', label: 'Pause' },
 		resume: { icon: '▶', label: 'Resume' }
 	};
 
-	const kind = $derived(voice.primaryOf(target));
+	const kind = $derived(off ? 'talk' : voice.primaryOf(target));
 	const face = $derived(FACE[kind]);
-	const status = $derived(voice.statusOf(target));
-	const disabled = $derived(kind === 'talk' && voice.micMuted);
+	const status = $derived(off ? 'idle' : voice.statusOf(target));
+	const disabled = $derived(off || (kind === 'talk' && voice.micMuted));
+
+	/** A finger that moves this far is a drag, not a tap. */
+	const SLOP = 10;
+	let down: { x: number; y: number } | null = null;
+	let dragged = false;
+
+	function press(event: PointerEvent): void {
+		down = { x: event.clientX, y: event.clientY };
+		dragged = false;
+	}
+
+	function move(event: PointerEvent): void {
+		if (down && Math.hypot(event.clientX - down.x, event.clientY - down.y) > SLOP) dragged = true;
+	}
+
+	/**
+	 * A take starts on a tap only. A drag that began on the button (the board,
+	 * the sidebar) and ends on it is not one.
+	 */
+	function tap(): void {
+		const wasDrag = dragged;
+		down = null;
+		dragged = false;
+		if (!wasDrag) void voice.primary(target, sink);
+	}
 </script>
 
 {#if orb}
@@ -33,18 +67,28 @@
 		{disabled}
 		aria-label="{face.label} to the manager"
 		data-orb
-		onclick={() => voice.primary(target, sink)}
+		onpointerdown={press}
+		onpointermove={move}
+		onclick={tap}
 	>
-		<span class="icon {kind}">{face.icon}</span>
+		<span class="icon {kind}"
+			>{#if kind === 'talk'}<Icon name="mic" size={44} />{:else}{face.icon}{/if}</span
+		>
 	</button>
 {:else}
 	<button
 		class="pill grow {status}"
 		type="button"
 		{disabled}
+		aria-label={face.label}
 		data-primary={kind}
-		onclick={() => voice.primary(target, sink)}
-		><span class="icon {kind}">{face.icon}</span> {face.label}</button
+		onpointerdown={press}
+		onpointermove={move}
+		onclick={tap}
+		><span class="icon {kind}"
+			>{#if kind === 'talk'}<Icon name="mic" size={17} />{:else}{face.icon}{/if}</span
+		>
+		{face.label}</button
 	>
 {/if}
 
@@ -52,6 +96,9 @@
 	.pill {
 		position: relative;
 		flex: none;
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
 		height: 40px;
 		padding: 0 16px;
 		border-radius: 20px;
@@ -88,6 +135,11 @@
 		box-shadow: 0 10px 50px rgba(163, 113, 247, 0.45);
 		font-size: 52px;
 		color: #fff;
+	}
+
+	.icon {
+		display: inline-flex;
+		align-items: center;
 	}
 
 	.orb span {

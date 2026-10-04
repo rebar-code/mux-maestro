@@ -80,19 +80,23 @@ export interface QueuedKey {
 	key: string;
 	/** The id of the card the human saw at the tap, or `null` with no card. */
 	prompt: string | null;
+	/** The pane's Terminal view was the one on screen at the tap. */
+	terminal: boolean;
 }
 
 /**
  * `queue` with `key` at its end. `prompt` is the card on screen now, at the
- * tap: a key answers what the human saw, not what the pane shows by the time
- * the key is sent. A full queue drops the key.
+ * tap, and `terminal` whether the pane's own text was: a key answers what the
+ * human saw, not what the pane shows by the time the key is sent. A full
+ * queue drops the key.
  */
 export function queueKey(
 	queue: readonly QueuedKey[],
 	key: string,
-	prompt: string | null
+	prompt: string | null,
+	terminal = false
 ): QueuedKey[] {
-	return queue.length >= KEY_QUEUE_MAX ? [...queue] : [...queue, { key, prompt }];
+	return queue.length >= KEY_QUEUE_MAX ? [...queue] : [...queue, { key, prompt, terminal }];
 }
 
 /**
@@ -139,7 +143,8 @@ const LABELS: Record<string, string> = {
 	stale: 'Prompt changed',
 	no_input: 'No input box',
 	not_sent: 'Not sent',
-	unseen: 'Open the terminal to answer'
+	unseen: 'Open the terminal to answer',
+	no_option: 'Not a choice on the card'
 };
 
 /** What the Mac said when it refused a write. `ApiError` is one. */
@@ -151,15 +156,25 @@ export interface Refusal {
 	cleared?: boolean | null;
 }
 
+/** The highest option a key or the answer route can pick. */
+export const MAX_ANSWER = 9;
+
+/** Whether the phone can answer with option `n`: the pane has keys for 1 to 9 only. */
+export function canAnswer(n: number): boolean {
+	return Number.isInteger(n) && n >= 1 && n <= MAX_ANSWER;
+}
+
 /**
  * The pane may show a prompt the phone has not drawn: it refused because it
- * waits, or because the prompt the phone named is not the one it shows.
+ * waits, because the prompt the phone named is not the one it shows, or
+ * because it shows one that cannot be read.
  */
 export function needsPrompt(refusal: Refusal | null): boolean {
 	if (refusal?.status !== 409) return false;
 	return (
 		refusal.code === 'waiting' ||
 		refusal.code === 'stale' ||
+		refusal.code === 'unseen' ||
 		(refusal.code === 'not_sent' && refusal.reason === 'waiting')
 	);
 }

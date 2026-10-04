@@ -6,8 +6,10 @@
 	import type { VoiceSink, VoiceTarget } from './voice.svelte';
 
 	/**
-	 * A text box and its primary button. With voice on and an empty box the
-	 * button is the voice control of `target`; with text in the box it sends.
+	 * A text box and its primary button, for the manager home and for a thread.
+	 * With an empty box the button is the voice control of `target`; with text
+	 * in the box it sends. A switch that is off on the Mac leaves its control in
+	 * place, disabled: `off` for the box, `voiceOn` false for the voice button.
 	 */
 	// `value` is bound, so the whole pattern is a `let`.
 	/* eslint-disable prefer-const */
@@ -18,12 +20,18 @@
 		sink,
 		voiceOn,
 		blocked = false,
+		off = false,
+		bare = false,
 		note = null,
 		onsend,
 		oninput,
 		onbeforeinput,
+		onpaste,
+		onfocus,
+		onblur,
 		box,
-		leading
+		leading,
+		above
 	}: {
 		value: string;
 		/** The placeholder, and the box's name. */
@@ -33,6 +41,13 @@
 		voiceOn: boolean;
 		/** Nothing can be sent now. The box still takes text. */
 		blocked?: boolean;
+		/**
+		 * The feature is switched off: the box holds its place and takes nothing.
+		 * The caller's `label` then says where the switch is.
+		 */
+		off?: boolean;
+		/** No voice bar sits above: the box draws its own top edge. */
+		bare?: boolean;
 		/** The status line: what the last send came to. */
 		note?: { text: string; bad: boolean } | null;
 		onsend: () => void;
@@ -40,8 +55,13 @@
 		onbeforeinput?: (event: InputEvent) => void;
 		/** Attachment for the text box, for a caller that types into it or moves the focus. */
 		box?: Attachment<HTMLInputElement>;
+		onpaste?: (event: ClipboardEvent) => void;
+		onfocus?: () => void;
+		onblur?: () => void;
 		/** Controls left of the text box. */
 		leading?: Snippet;
+		/** A row above the text box, as wide as the composer. */
+		above?: Snippet;
 	} = $props();
 	/* eslint-enable prefer-const */
 
@@ -49,16 +69,17 @@
 
 	function submit(event: SubmitEvent): void {
 		event.preventDefault();
-		if (canSend && !blocked) onsend();
+		if (canSend && !blocked && !off) onsend();
 	}
 </script>
 
-<form class="compose" class:bare={!voiceOn} onsubmit={submit} data-compose>
+<form class="compose" class:bare onsubmit={submit} data-compose data-off={off ? '' : undefined}>
 	{#if note}
 		<div class="note" class:bad={note.bad} role={note.bad ? 'alert' : 'status'} data-note>
 			{note.text}
 		</div>
 	{/if}
+	{@render above?.()}
 	{@render leading?.()}
 	<input
 		bind:value
@@ -68,14 +89,18 @@
 		enterkeyhint="send"
 		autocomplete="off"
 		autocapitalize="sentences"
+		disabled={off}
 		{oninput}
 		{onbeforeinput}
+		{onpaste}
+		{onfocus}
+		{onblur}
 	/>
 	<!-- Typing is always there: with text in the box the button sends it. -->
-	{#if canSend || !voiceOn}
-		<button class="pill send grow" type="submit" disabled={!canSend || blocked}>↑ Send</button>
+	{#if canSend && !off}
+		<button class="pill send grow" type="submit" disabled={blocked}>↑ Send</button>
 	{:else}
-		<TalkButton {target} {sink} />
+		<TalkButton {target} {sink} off={!voiceOn} />
 	{/if}
 </form>
 
@@ -87,16 +112,24 @@
 		align-items: center;
 		gap: 8px;
 		margin: 0;
-		/* With the keyboard up there is no home indicator under the box. */
+		/*
+		 * The bottom inset is counted once. With the keyboard up there is no home
+		 * indicator under the box (`--safe-bottom`); on the manager home the board
+		 * takes the inset over once it shows under the footer (`--board`).
+		 */
 		padding: 6px max(10px, env(safe-area-inset-right))
-			calc(10px + var(--safe-bottom, env(safe-area-inset-bottom)))
+			calc(10px + var(--safe-bottom, max(0px, env(safe-area-inset-bottom) - var(--board, 0px))))
 			max(10px, env(safe-area-inset-left));
 		background: var(--bar);
 	}
 
-	/* With no voice bar above it, the text box draws the top edge itself. */
+	/*
+	 * With no voice bar above it, the text box draws the top edge itself. The
+	 * edge and the padding add up to the same height, so the box does not move
+	 * when a switch on the Mac brings the voice bar in.
+	 */
 	.compose.bare {
-		padding-top: 8px;
+		padding-top: 5px;
 		border-top: 1px solid var(--border);
 	}
 
@@ -127,6 +160,18 @@
 		font: inherit;
 		font-size: 16px;
 		outline: none;
+	}
+
+	/* Off, not broken: the label stays readable. */
+	input:disabled {
+		opacity: 1;
+		color: var(--muted);
+		-webkit-text-fill-color: var(--muted);
+	}
+
+	input:disabled::placeholder {
+		color: var(--muted);
+		opacity: 1;
 	}
 
 	input:focus-visible {
