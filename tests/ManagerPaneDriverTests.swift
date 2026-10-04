@@ -606,6 +606,44 @@ final class ManagerPaneDriverTests: XCTestCase {
         return dir
     }
 
+    /// The pane's hook row said "waiting" for a prompt that has since gone;
+    /// no later hook wrote the row, and Claude's own status file says idle.
+    /// The manager then refused every turn, so nothing could ever write the
+    /// row again.
+    func testAStaleHookRowDoesNotOutliveClaudesOwnStatus() {
+        let row = { (state: AgentStateRow.State, at: Int) in
+            AgentStateRow(
+                sessionId: "wanted", agent: "claude", state: state, reason: "Claude needs your permission",
+                pane: "%5", cwd: "/Users/me", since: at, updatedAt: at)
+        }
+        let now = 1_000_000
+        // Written hours ago, and the file disagrees: the file is believed.
+        XCTAssertNil(ManagerPaneDriver.status(for: row(.waiting, now - 5000), fileStatus: .idle, now: now))
+        XCTAssertNil(ManagerPaneDriver.status(for: row(.busy, now - 5000), fileStatus: .idle, now: now))
+        // The row still wins while the file may lag behind it, and when they agree.
+        XCTAssertEqual(
+            ManagerPaneDriver.status(for: row(.waiting, now - 5), fileStatus: .idle, now: now), .waiting)
+        XCTAssertEqual(
+            ManagerPaneDriver.status(for: row(.waiting, now - 5000), fileStatus: .waiting, now: now), .waiting)
+        XCTAssertEqual(
+            ManagerPaneDriver.status(for: row(.done, now - 5000), fileStatus: .idle, now: now), .idle)
+        // No file to compare with: the row is all there is.
+        XCTAssertEqual(
+            ManagerPaneDriver.status(for: row(.waiting, now - 5000), fileStatus: nil, now: now), .waiting)
+        XCTAssertNil(ManagerPaneDriver.status(for: row(.ended, now), fileStatus: .idle, now: now))
+    }
+
+    func testFileStatusReadsClaudesOwnStatusForTheManagerPane() throws {
+        let dir = try makeClaudeDir()
+        let driver = ManagerPaneDriver(
+            config: config(claudeDir: dir), runner: FakeRunner(),
+            statusOverride: { _ in .waiting }, queue: DispatchQueue(label: "test.pane"))
+        XCTAssertNil(driver.fileStatus())
+        try seedSession(in: dir, sessionId: "wanted")
+        // Not the hook row's answer: the file's.
+        XCTAssertEqual(driver.fileStatus(), .idle)
+    }
+
     private func seedSession(in claudeDir: URL, sessionId: String) throws {
         try write(["sessionId": sessionId, "tmux": "mux-manager:@1.%5", "status": "idle"],
                   to: claudeDir.appendingPathComponent("sessions/4242.json"))

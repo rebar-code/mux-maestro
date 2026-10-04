@@ -291,7 +291,9 @@ final class ManagerController {
     }
 
     /// The driver's status source: the manager pane's own `agent_state` row, which
-    /// its hooks write and which is fresher than any file the driver can scan.
+    /// its hooks write and which is fresher than any file the driver can scan,
+    /// until it is not: a row no hook has written for a while gives way to
+    /// Claude's own status file when the two disagree.
     ///
     /// Called synchronously on the driver queue, once per poll, with the session
     /// id the driver resolved when the turn started. The store is opened
@@ -300,7 +302,8 @@ final class ManagerController {
         guard let store, !id.isEmpty,
               let row = (try? store.agentStates())?.first(where: { $0.sessionId == id })
         else { return nil }
-        return ManagerPaneDriver.status(for: row.state)
+        return ManagerPaneDriver.status(
+            for: row, fileStatus: driver?.fileStatus(), now: Int(Date().timeIntervalSince1970))
     }
 
     private func poll() {

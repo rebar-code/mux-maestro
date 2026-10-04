@@ -107,6 +107,11 @@ make install           # build, copy to /Applications, and relaunch
 make test              # run the unit tests
 ```
 
+To sign with your own certificate, put its name in an untracked `local.mk`:
+`SIGN_IDENTITY = Apple Development: Your Name (TEAMID)`. The file is gitignored.
+The identity's SHA-1 hash, as `security find-identity -v -p codesigning` lists
+it, works as `SIGN_IDENTITY` too.
+
 Without `make signing-identity` the app is ad-hoc signed, and macOS asks again
 for every permission after each rebuild. The build is not notarized, so on first
 launch Gatekeeper asks you to confirm: right-click → Open, or allow it in
