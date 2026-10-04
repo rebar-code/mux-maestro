@@ -1,7 +1,8 @@
 import type { Terminal } from '@xterm/xterm';
 import { untrack } from 'svelte';
 import { openTerminal } from './api';
-import { barKeyText, messages, typed } from './livekeys';
+import { barKeyText, messages, Pacer, typed } from './livekeys';
+import { isReport, silenceQueries } from './livequiet';
 import { followTop, isFollowing, place, totalHeight, type Geometry } from './livescroll';
 import { afterClose, serverMessage, type LiveState } from './livesocket';
 import type { BarKey, KeySink } from './reply';
@@ -41,6 +42,12 @@ export class LiveTerm implements KeySink {
 	private socket: WebSocket | null = null;
 	private size = DEFAULT_SIZE;
 	private sync: ((follow?: boolean) => void) | null = null;
+
+	/** What is typed, on its way out: a long paste goes a lot at a time. */
+	private readonly pacer = new Pacer<Uint8Array<ArrayBuffer>>((message) => {
+		const socket = this.socket;
+		if (socket && socket.readyState === WebSocket.OPEN) socket.send(message);
+	});
 
 	constructor(private readonly id: string) {}
 
@@ -88,7 +95,7 @@ export class LiveTerm implements KeySink {
 		this.ctrl = false;
 		const socket = this.socket;
 		if (!socket || socket.readyState !== WebSocket.OPEN || this.state !== 'live') return;
-		for (const message of messages(out)) socket.send(message);
+		this.pacer.push(messages(out));
 		this.jump();
 	}
 
@@ -148,6 +155,7 @@ export class LiveTerm implements KeySink {
 				clearTimeout(timer);
 				const socket = this.socket;
 				this.socket = null;
+				this.pacer.clear();
 				socket?.close();
 			};
 
@@ -181,6 +189,7 @@ export class LiveTerm implements KeySink {
 				socket.addEventListener('close', (event: CloseEvent) => {
 					if (socket !== this.socket || disposed) return;
 					this.socket = null;
+					this.pacer.clear();
 					const next = afterClose(event.code, tries);
 					if ('stop' in next) {
 						this.failed = true;
@@ -223,7 +232,12 @@ export class LiveTerm implements KeySink {
 				});
 				term.open(host);
 				this.term = term;
-				term.onData((data) => this.type(data));
+				// Only the keyboard types. The terminal answers no question from
+				// the pane, so nothing the pane prints comes back as a key press.
+				silenceQueries(term.parser);
+				term.onData((data) => {
+					if (!isReport(data)) this.type(data);
+				});
 				term.onWriteParsed(() => sync());
 				term.onResize(() => sync());
 				connect();

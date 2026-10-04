@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { barKeyText, ctrlChar, messages, typed } from './livekeys';
+import { barKeyText, BATCH, BATCH_MS, ctrlChar, messages, Pacer, typed } from './livekeys';
 import { BAR_KEYS } from './reply';
 
 const key = (label: string) => BAR_KEYS.find((k) => k.label === label)!;
@@ -62,5 +62,53 @@ describe('messages', () => {
 
 	it('sends nothing for nothing', () => {
 		expect(messages('')).toEqual([]);
+	});
+});
+
+describe('Pacer', () => {
+	it('sends what is typed at once', () => {
+		const sent: number[] = [];
+		const pacer = new Pacer<number>((n) => sent.push(n));
+		pacer.push([1]);
+		pacer.push([2, 3]);
+		expect(sent).toEqual([1, 2, 3]);
+	});
+
+	it('sends a long paste a lot at a time, in order', () => {
+		const sent: number[] = [];
+		const waits: number[] = [];
+		let next: (() => void) | null = null;
+		const pacer = new Pacer<number>(
+			(n) => sent.push(n),
+			(run, ms) => {
+				next = run;
+				waits.push(ms);
+				return 0 as unknown as ReturnType<typeof setTimeout>;
+			}
+		);
+		const all = Array.from({ length: BATCH * 2 + 5 }, (_, n) => n);
+		pacer.push(all);
+		expect(sent).toHaveLength(BATCH);
+		// Typed while the paste goes out: it waits its turn.
+		pacer.push([999]);
+		expect(sent).toHaveLength(BATCH);
+		next!();
+		expect(sent).toHaveLength(BATCH * 2);
+		next!();
+		expect(sent).toEqual([...all, 999]);
+		expect(waits).toEqual([BATCH_MS, BATCH_MS]);
+	});
+
+	it('forgets the rest when the socket has gone', () => {
+		const sent: number[] = [];
+		const pacer = new Pacer<number>(
+			(n) => sent.push(n),
+			() => setTimeout(() => {}, 0)
+		);
+		pacer.push(Array.from({ length: BATCH + 10 }, (_, n) => n));
+		pacer.clear();
+		pacer.push([7]);
+		expect(sent).toHaveLength(BATCH + 1);
+		expect(sent.at(-1)).toBe(7);
 	});
 });

@@ -157,6 +157,49 @@ test('the key bar and the keyboard type through the socket', async ({ page }) =>
 	await page.screenshot({ path: 'test-results/shots/live-keys.png' });
 });
 
+test('what the pane prints never types: terminal queries get no answer from the phone', async ({
+	page
+}) => {
+	await live(page);
+	// Device attributes, status and cursor reports, colour queries, mode and
+	// setting requests, version and window reports. tmux answers these itself;
+	// an answer from the phone would arrive in the pane as typed keys.
+	const queries = [
+		'\x1b[c',
+		'\x1b[>c',
+		'\x1b[=c',
+		'\x1b[5n',
+		'\x1b[6n',
+		'\x1b[?6n',
+		'\x1b]10;?\x07',
+		'\x1b]11;?\x1b\\',
+		'\x1b]12;?\x07',
+		'\x1b]4;1;?\x07',
+		'\x1b[?2026$p',
+		'\x1b[4$p',
+		'\x1bP$qm\x1b\\',
+		'\x1bP+q544e\x1b\\',
+		'\x1b[>q',
+		'\x1b[18t',
+		'\x1b[14t',
+		'\x1b[?u',
+		'\x1b[?1004h'
+	].join('');
+	await page.request.post(
+		`/__fixture/terminal-say?text=${encodeURIComponent(`${queries}queries done\r\n`)}`
+	);
+	await expect(rows(page)).toContainText('queries done');
+	// Focus reporting is on now: taking and losing focus sends nothing either.
+	await page.locator('[data-pin]').click();
+	await page.getByRole('button', { name: 'Hide keyboard' }).click();
+	await page.waitForTimeout(300);
+	expect((await fixture(page)).typed).toBe('');
+	// The keyboard still types.
+	await page.locator('[data-pin]').click();
+	await page.keyboard.type('ok');
+	await expect.poll(async () => (await fixture(page)).typed).toBe('ok');
+});
+
 test('a cut connection says Reconnecting and comes back', async ({ page }) => {
 	await live(page);
 	// The Mac is gone for a moment: every socket is cut and the next refused.
