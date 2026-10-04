@@ -18,18 +18,31 @@ enum ManagerPane {
     struct Row: Equatable {
         var id: String
         var marked: Bool
-        /// `pane_current_command`: what runs in the pane now.
-        var command: String
+        /// Started with the app's launch command (`launchShell`).
+        var launched: Bool
+        /// At a shell now. The Maestro's pane execs the agent, so a shell
+        /// there is a launch that has not finished, or not the Maestro.
+        var shell: Bool
         var path: String
-        /// `pane_start_command`: empty for a pane that began as a plain shell.
-        var start: String
     }
 
-    private static let format = ["#{pane_id}", "#{\(mark)}", "#{pane_current_command}",
-                                 "#{pane_current_path}", "#{pane_start_command}"].joined(separator: "\t")
-    /// What a pane at a prompt runs. The Maestro's pane execs the agent, so a
-    /// shell there is the launch that has not finished, or not the Maestro.
-    private static let shells: Set<String> = ["zsh", "bash", "sh", "fish", "dash", "ksh", "tcsh", "csh", "nu"]
+    /// What the session holds for the Maestro.
+    enum Lookup: Equatable {
+        case pane(String)
+        /// The app's own launch, still in its login shell. The agent follows.
+        case starting
+        case none
+    }
+
+    /// tmux works out every yes/no itself and prints `1` or `0`; the only free
+    /// text is the path, and it is last. Spaces part the fields, not tabs: a
+    /// tmux client with no UTF-8 locale (an app opened from Finder) prints
+    /// every control character as `_`.
+    private static let format = [
+        "#{pane_id}", "#{?#{\(mark)},1,0}", "#{m:*exec claude*,#{pane_start_command}}",
+        "#{m/r:^-?(zsh|bash|sh|fish|dash|ksh|tcsh|csh|nu)$,#{pane_current_command}}",
+        "#{pane_current_path}",
+    ].joined(separator: " ")
 
     /// Every pane of the session, in all its windows.
     static func listArgv(session: String) -> [String] {
@@ -53,11 +66,14 @@ enum ManagerPane {
 
     static func parse(_ output: String) -> [Row] {
         output.split(separator: "\n").compactMap { line in
-            let fields = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
-            guard fields.count >= 4, fields[0].hasPrefix("%") else { return nil }
+            let fields = line.split(separator: " ", maxSplits: 4, omittingEmptySubsequences: false)
+                .map(String.init)
+            let flags = fields.dropFirst().prefix(3)
+            guard fields.count >= 4, fields[0].hasPrefix("%"),
+                  flags.allSatisfy({ $0 == "1" || $0 == "0" }) else { return nil }
             return Row(
-                id: fields[0], marked: !fields[1].isEmpty, command: fields[2], path: fields[3],
-                start: fields.dropFirst(4).joined(separator: "\t"))
+                id: fields[0], marked: fields[1] == "1", launched: fields[2] == "1",
+                shell: fields[3] == "1", path: fields.count > 4 ? fields[4] : "")
         }
     }
 
@@ -68,15 +84,24 @@ enum ManagerPane {
         let home = homePath.map(resolved)
         let marked = rows.filter(\.marked)
         let candidates = marked.isEmpty
-            ? rows.filter { $0.start.contains("exec claude") || (home != nil && resolved($0.path) == home) }
+            ? rows.filter { $0.launched || (home != nil && resolved($0.path) == home) }
             : marked
         // Pane ids count up for the life of the server: the lowest came first.
         return candidates.min { number($0.id) < number($1.id) }
     }
 
-    static func isAgent(_ row: Row) -> Bool {
-        let command = row.command.hasPrefix("-") ? String(row.command.dropFirst()) : row.command
-        return !command.isEmpty && !shells.contains(command)
+    /// Find the Maestro's pane, and mark it when the rule found it unmarked.
+    /// Blocking shell-out.
+    static func lookup(
+        session: String = ManagerHome.sessionName,
+        homePath: String? = ManagerHome.defaultHome()?.path,
+        run: ([String]) -> String?
+    ) -> Lookup {
+        guard let output = run(listArgv(session: session)),
+              let row = pinned(parse(output), homePath: homePath) else { return .none }
+        guard !row.shell else { return row.launched ? .starting : .none }
+        if !row.marked { _ = run(markArgv(pane: row.id)) }
+        return .pane(row.id)
     }
 
     /// The id of the Maestro's pane, or nil when the session has none or the
@@ -86,10 +111,8 @@ enum ManagerPane {
         homePath: String? = ManagerHome.defaultHome()?.path,
         run: ([String]) -> String?
     ) -> String? {
-        guard let output = run(listArgv(session: session)),
-              let row = pinned(parse(output), homePath: homePath), isAgent(row) else { return nil }
-        if !row.marked { _ = run(markArgv(pane: row.id)) }
-        return row.id
+        guard case .pane(let id) = lookup(session: session, homePath: homePath, run: run) else { return nil }
+        return id
     }
 
     private static func number(_ id: String) -> Int {

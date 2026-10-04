@@ -766,7 +766,7 @@ final class ManagerPaneDriverTests: XCTestCase {
         let dir = try makeClaudeDir()
         try seedSession(in: dir, sessionId: "wanted")
         let runner = runner(showing: Self.idleScreen, cursorRow: Self.idleCursorRow)
-        runner.panes = "%5\t1\tclaude\t/Users/me/manager\t\n%9\t\tzsh\t/Users/me/code/acme-app\t\n"
+        runner.panes = "%5 1 0 0 /Users/me/manager\n%9 0 0 1 /Users/me/code/acme-app\n"
         let status = StatusBox(.waiting)
         let driver = ManagerPaneDriver(
             config: config(claudeDir: dir), runner: runner,
@@ -797,8 +797,8 @@ final class ManagerPaneDriverTests: XCTestCase {
     func testNothingIsTypedWhenTheMaestroPaneIsMissingOrIsAShell() throws {
         let dir = try makeClaudeDir()
         try seedSession(in: dir, sessionId: "wanted")
-        let onlyAShell = "%9\t\tzsh\t/Users/me/code/acme-app\t\n"
-        let maestroAtAShell = "%5\t1\tzsh\t/Users/me/manager\t\n%9\t\tclaude\t/Users/me/code/acme-app\t\n"
+        let onlyAShell = "%9 0 0 1 /Users/me/code/acme-app\n"
+        let maestroAtAShell = "%5 1 0 1 /Users/me/manager\n%9 0 0 0 /Users/me/code/acme-app\n"
         for panes in [onlyAShell, maestroAtAShell, ""] {
             let runner = FakeRunner()
             runner.panes = panes
@@ -828,7 +828,7 @@ final class ManagerPaneDriverTests: XCTestCase {
         try write(["sessionId": "longer-id", "tmux": "mux-manager:@3.%55", "updatedAt": 3_000],
                   to: dir.appendingPathComponent("sessions/3.json"))
         let runner = FakeRunner()
-        runner.panes = "%5\t1\tclaude\t/Users/me/manager\t\n%8\t\tclaude\t/Users/me/manager\t\n"
+        runner.panes = "%5 1 0 0 /Users/me/manager\n%8 0 0 0 /Users/me/manager\n"
         let driver = ManagerPaneDriver(
             config: config(claudeDir: dir), runner: runner, queue: DispatchQueue(label: "test.pane"))
         XCTAssertEqual(driver.currentSessionId(), "maestro")
@@ -895,15 +895,14 @@ final class ManagerPaneDriverTests: XCTestCase {
     }
 
     func testThePinnedPaneIsTheMarkedOneElseTheFirstTheAppLaunched() {
-        let launch = #""exec \"\$SHELL\" -lc 'PATH='\\''/Users/me/manager/bin'\\'':\"\$PATH\" exec claude'""#
         let rows = ManagerPane.parse(
-            "%12\t\tzsh\t/Users/me/code/acme-app\t\n"
-                + "%9\t\t2.1.0\t/Users/me/manager\t\n"
-                + "%3\t\tclaude\t/Users/me/elsewhere\t\(launch)\n"
-                + "%4\t1\tclaude\t/Users/me/manager\t\n"
-                + "not a pane\n")
+            "%12 0 0 1 /Users/me/code/acme-app\n"
+                + "%9 0 0 0 /Users/me/manager\n"
+                + "%3 0 1 0 /Users/me/elsewhere\n"
+                + "%4 1 0 0 /Users/me/manager\n"
+                + "not a pane\n"
+                + "%5_1_claude_/Users/me/manager_\n")
         XCTAssertEqual(rows.map(\.id), ["%12", "%9", "%3", "%4"])
-        XCTAssertEqual(rows[2].start, launch)
         // The mark wins over everything.
         XCTAssertEqual(ManagerPane.pinned(rows, homePath: "/Users/me/manager")?.id, "%4")
         // No mark: the lowest id among the app's launch and the panes in the home.
@@ -914,26 +913,111 @@ final class ManagerPaneDriverTests: XCTestCase {
         XCTAssertNil(ManagerPane.pinned(Array(unmarked.prefix(1)), homePath: "/Users/me/manager"))
         XCTAssertNil(ManagerPane.pinned(Array(unmarked.prefix(2)), homePath: nil))
 
-        XCTAssertTrue(ManagerPane.isAgent(rows[1]))
-        XCTAssertFalse(ManagerPane.isAgent(rows[0]))
-        XCTAssertFalse(ManagerPane.isAgent(.init(id: "%1", marked: true, command: "-zsh", path: "/", start: "")))
-
         // A pane found by the rule is marked; one at a shell is neither marked
         // nor returned.
         var ran: [[String]] = []
         let found = ManagerPane.resolve(session: "mux-manager", homePath: "/Users/me/manager") {
             ran.append($0)
-            return $0.first == "list-panes" ? "%9\t\tclaude\t/Users/me/manager\t\n" : ""
+            return $0.first == "list-panes" ? "%9 0 0 0 /Users/me/manager\n" : ""
         }
         XCTAssertEqual(found, "%9")
         XCTAssertEqual(ran.first?.prefix(4), ["list-panes", "-s", "-t", "=mux-manager"])
         XCTAssertEqual(ran.last, ["set-option", "-p", "-t", "%9", "@mux_maestro", "1"])
         ran = []
-        XCTAssertNil(ManagerPane.resolve(session: "mux-manager", homePath: "/Users/me/manager") {
+        XCTAssertEqual(ManagerPane.lookup(session: "mux-manager", homePath: "/Users/me/manager") {
             ran.append($0)
-            return "%9\t\tzsh\t/Users/me/manager\t\n"
-        })
+            return "%9 0 0 1 /Users/me/manager\n"
+        }, ManagerPane.Lookup.none)
         XCTAssertEqual(ran.count, 1)
+        // The app's own launch at its login shell is on its way to the agent.
+        XCTAssertEqual(
+            ManagerPane.lookup(session: "mux-manager", homePath: nil) { _ in "%9 1 1 1 /Users/me/manager\n" },
+            .starting)
+    }
+
+    /// The path is the one free-text field. It is last, so the spaces that
+    /// part the fields, and anything else, may be in it.
+    func testAPathWithSpacesAndBarsIsReadWhole() {
+        let home = "/Users/me/Library/Application Support/Mux|Maestro 1 0/manager"
+        let rows = ManagerPane.parse("%7 0 0 0 \(home)\n%8 0 0 1 /Users/me/a b\n%9 0 0 0 \n")
+        XCTAssertEqual(rows.map(\.path), [home, "/Users/me/a b", ""])
+        XCTAssertEqual(ManagerPane.pinned(rows, homePath: home)?.id, "%7")
+    }
+
+    /// An app opened from Finder has no LANG or LC_ variable. tmux then prints
+    /// control characters as "_", so a format parted by tabs comes back as one
+    /// field and every turn was refused.
+    func testThePaneIsFoundWithNoLocaleInTheEnvironment() throws {
+        guard let tmux = PrivateTmux(environment: ["PATH": "/usr/bin:/bin", "HOME": "/tmp"]) else {
+            throw XCTSkip("no tmux on this machine")
+        }
+        addTeardownBlock { tmux.tmux(["kill-server"]) }
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("manager home|\(UUID().uuidString.prefix(8))", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: home) }
+        let size = ["-x", "100", "-y", "30"]
+        // Marked, as the app makes it.
+        tmux.tmux(["-f", "/dev/null", "new-session", "-d", "-s", "mux-manager", "-c", home.path] + size + ["cat"]
+                  + ManagerPane.createMarkArgv(session: "mux-manager"))
+        let maestro = tmux.tmux(["display-message", "-p", "-t", "mux-manager", "#{pane_id}"])
+        tmux.tmux(["new-window", "-t", "mux-manager", "-c", "/", "/bin/sh"])
+        let run: ([String]) -> String? = { tmux.run(tmux.path, $0, stdin: nil) }
+        XCTAssertEqual(ManagerPane.resolve(session: "mux-manager", homePath: nil, run: run), maestro)
+        let rows = ManagerPane.parse(run(ManagerPane.listArgv(session: "mux-manager")) ?? "")
+        XCTAssertEqual(rows.map(\.shell), [false, true])
+        XCTAssertEqual(rows.map(\.marked), [true, false])
+
+        // Not marked, found by its directory: a path with a space and a bar.
+        tmux.tmux(["set-option", "-p", "-u", "-t", maestro, "@mux_maestro"])
+        XCTAssertNil(ManagerPane.resolve(session: "mux-manager", homePath: "/Users/me/manager", run: run))
+        XCTAssertEqual(ManagerPane.resolve(session: "mux-manager", homePath: home.path, run: run), maestro)
+
+        let dir = try makeClaudeDir()
+        let driver = ManagerPaneDriver(
+            config: .init(tmuxPath: tmux.path, homePath: home.path, claudeDir: dir, pollInterval: 0.02),
+            runner: tmux, statusOverride: { _ in .idle }, queue: DispatchQueue(label: "test.pane"))
+        driver.send("hello maestro", onDelta: { _ in }) { _ in }
+        XCTAssertTrue(eventually { tmux.screen(maestro).components(separatedBy: "hello maestro").count == 3 })
+        driver.cancel()
+    }
+
+    /// The app made the session a moment ago and the pane is still in its
+    /// login shell. The turn waits for the agent; it is not refused, and it
+    /// is not typed into the shell.
+    func testATurnWaitsForAPaneThatIsStillStarting() throws {
+        let dir = try makeClaudeDir()
+        try seedSession(in: dir, sessionId: "wanted")
+        let runner = FakeRunner()
+        runner.panes = "%5 1 1 1 /Users/me/manager\n"
+        let driver = ManagerPaneDriver(
+            config: config(claudeDir: dir), runner: runner,
+            statusOverride: { _ in .idle }, queue: DispatchQueue(label: "test.pane"))
+        let sent = expectation(description: "sent")
+        runner.onRun = { if $0 == ["send-keys", "-t", "%5", "Enter"] { sent.fulfill() } }
+        driver.send("hello", onDelta: { _ in }) { _ in }
+        Thread.sleep(forTimeInterval: 0.3)
+        XCTAssertEqual(runner.recorded(), [], "nothing is typed into the login shell")
+        XCTAssertGreaterThan(runner.lookups(), 1)
+        runner.panes = "%5 1 1 0 /Users/me/manager\n"
+        wait(for: [sent], timeout: 5)
+        driver.cancel()
+
+        // A launch that never gets to the agent: the wait ends.
+        let stuck = FakeRunner()
+        stuck.panes = "%5 1 1 1 /Users/me/manager\n"
+        var brief = config(claudeDir: dir)
+        brief.startTimeout = 0.3
+        let late = ManagerPaneDriver(
+            config: brief, runner: stuck,
+            statusOverride: { _ in .idle }, queue: DispatchQueue(label: "test.pane"))
+        let done = expectation(description: "unreachable")
+        late.send("hello", onDelta: { _ in }) { outcome in
+            XCTAssertEqual(outcome, .unreachable("The Maestro session is not running"))
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 5)
+        XCTAssertEqual(stuck.recorded(), [])
     }
 
     /// A session with shells only: the turn fails and no shell gets the text.
@@ -1094,7 +1178,7 @@ private final class FakeRunner: CommandRunner {
     /// What `list-panes` prints for the session: one marked agent pane unless a
     /// test says otherwise. The lookups are counted apart from `recorded()`,
     /// which holds what was done to a pane.
-    var panes = "%5\t1\tclaude\t/Users/me/manager\t\n"
+    var panes = "%5 1 0 0 /Users/me/manager\n"
     /// The pane cannot be captured, though tmux answers.
     var unreadable = false
     private var lookupCount = 0
@@ -1141,23 +1225,24 @@ private final class FakeRunner: CommandRunner {
 private final class PrivateTmux: CommandRunner {
     let path: String
     let name = "mm-maestro-\(UUID().uuidString.prefix(8))"
+    /// The whole environment of each tmux call, when a test gives one.
+    private let fixedEnvironment: [String: String]?
 
-    init?() {
+    init?(environment: [String: String]? = nil) {
         guard let path = ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"]
             .first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else { return nil }
         self.path = path
+        self.fixedEnvironment = environment
     }
 
     func run(_ path: String, _ args: [String], stdin: Data?) -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = ["-L", name] + args
-        // No $TMUX: it names the live server. A UTF-8 locale, as the app has:
-        // without one tmux prints the tabs between fields as "_".
+        // No $TMUX: it names the live server.
         var environment = ProcessInfo.processInfo.environment
         environment["TMUX"] = nil
-        environment["LANG"] = "en_US.UTF-8"
-        process.environment = environment
+        process.environment = fixedEnvironment ?? environment
         let out = Pipe()
         process.standardOutput = out
         process.standardError = FileHandle.nullDevice

@@ -610,6 +610,9 @@ final class ManagerPaneDriver {
         var homePath: String?
         var claudeDir: URL
         var pollInterval: TimeInterval
+        /// How long a turn waits for a session the app has just made to get
+        /// from its login shell to the agent.
+        var startTimeout: TimeInterval
 
         init(
             tmuxPath: String,
@@ -617,13 +620,15 @@ final class ManagerPaneDriver {
             homePath: String? = ManagerHome.defaultHome()?.path,
             claudeDir: URL = FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent(".claude", isDirectory: true),
-            pollInterval: TimeInterval = ManagerTurnWatcher.poll
+            pollInterval: TimeInterval = ManagerTurnWatcher.poll,
+            startTimeout: TimeInterval = 10
         ) {
             self.tmuxPath = tmuxPath
             self.tmuxSession = tmuxSession
             self.homePath = homePath
             self.claudeDir = claudeDir
             self.pollInterval = pollInterval
+            self.startTimeout = startTimeout
         }
     }
 
@@ -722,8 +727,29 @@ final class ManagerPaneDriver {
     /// pane. nil when there is none to type into. A session name is never a
     /// target here: tmux reads it as the session's active pane.
     private func maestroPane() -> String? {
-        ManagerPane.resolve(session: config.tmuxSession, homePath: config.homePath) {
+        guard case .pane(let id) = lookup() else { return nil }
+        return id
+    }
+
+    private func lookup() -> ManagerPane.Lookup {
+        ManagerPane.lookup(session: config.tmuxSession, homePath: config.homePath) {
             runner.run(config.tmuxPath, $0, stdin: nil)
+        }
+    }
+
+    /// The pane for a turn. A session the app has just made runs a login
+    /// shell for a moment before the agent; a turn sent then waits for the
+    /// agent, and is not typed into the shell. Blocks; on `queue` only.
+    private func paneForTurn() -> String? {
+        let deadline = Self.now() + config.startTimeout
+        while true {
+            switch lookup() {
+            case .pane(let id): return id
+            case .none: return nil
+            case .starting:
+                guard Self.now() < deadline else { return nil }
+                Thread.sleep(forTimeInterval: 0.1)
+            }
         }
     }
 
@@ -807,7 +833,7 @@ final class ManagerPaneDriver {
 
             // No pane of the Maestro's own, or a shell in it: the text goes
             // nowhere. The session's active pane is never the fallback.
-            guard let pane = self.maestroPane() else {
+            guard let pane = self.paneForTurn() else {
                 self.report(.unreachable("The Maestro session is not running"), to: completion)
                 return
             }
