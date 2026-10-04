@@ -182,7 +182,7 @@ test('hosts section: every host with colour, thread count and stats', async ({ p
 });
 
 test('controls that arrive later are drawn but do nothing', async ({ page }) => {
-	await expect(page.getByRole('button', { name: 'Talk to the manager' })).toBeDisabled();
+	await expect(page.getByRole('button', { name: 'Talk', exact: true })).toBeDisabled();
 	await page.getByRole('button', { name: 'Menu' }).click();
 	await expect(page.getByRole('button', { name: 'New window in acme-app' })).toBeDisabled();
 	await drawer(page).locator('[data-hosts]').scrollIntoViewIfNeeded();
@@ -195,17 +195,22 @@ test('controls that arrive later are drawn but do nothing', async ({ page }) => 
 
 test('home: status chips and the threads that need you, live', async ({ page }) => {
 	await expect(page.locator('.chip')).toHaveText(['2 need you', '4 running', '💤 14']);
-	await expect(page.locator('.item')).toHaveCount(2);
+	const cards = page.locator('.item[data-thread]');
+	await expect(cards).toHaveCount(2);
+	// The cards are on the board, under the footer: raise it.
+	await page.locator('[data-grab]').click();
+	await expect(page.locator('[data-board]')).toHaveAttribute('data-stop', '1');
+	await page.waitForTimeout(450);
 
 	// A live update lands without moving what is already on screen.
-	const first = page.locator('.item').first();
+	const first = cards.first();
 	const before = await first.boundingBox();
 	await page.request.post('/__fixture/wait?id=localhost:3');
 	await expect(page.locator('.chip').first()).toHaveText('3 need you');
-	await expect(page.locator('.item')).toHaveCount(3);
+	await expect(cards).toHaveCount(3);
 	expect(await first.boundingBox()).toEqual(before);
 
-	await page.locator('.item').first().click();
+	await first.click();
 	await expect(page).toHaveURL(/\/t\/localhost(:|%3A)1$/);
 });
 

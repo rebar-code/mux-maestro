@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 // The pure half of the phone server: HTTP parsing, routing, the auth decision
@@ -31,8 +32,9 @@ struct MobileResponse: Equatable {
     var body = Data()
 
     static let reasons = [
-        200: "OK", 304: "Not Modified", 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found",
-        405: "Method Not Allowed", 413: "Payload Too Large",
+        101: "Switching Protocols", 200: "OK", 304: "Not Modified", 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found",
+        405: "Method Not Allowed", 409: "Conflict", 413: "Payload Too Large",
+        426: "Upgrade Required",
         431: "Request Header Fields Too Large", 500: "Internal Server Error",
         503: "Service Unavailable",
     ]
@@ -56,6 +58,11 @@ struct MobileResponse: Equatable {
         json(["error": code], status: status)
     }
 
+    /// An error the phone shows as it is: `message` is the sentence.
+    static func error(_ status: Int, _ code: String, message: String) -> MobileResponse {
+        json(["error": code, "message": message], status: status)
+    }
+
     /// The bytes to write. A HEAD response keeps `Content-Length` and drops the body.
     func serialized(head: Bool = false, keepAlive: Bool = true) -> Data {
         var all = headers
@@ -76,6 +83,19 @@ enum MobileHTTP {
     static let maxHeaderBytes = 32_768
     static let maxBodyBytes = 1_048_576
 
+    /// The largest body a request to `path` may carry. Only a voice take, which
+    /// is audio, and an upload, which is a file, get more than `maxBodyBytes`.
+    /// The upload's own limit, from Settings, is checked when it is answered.
+    static func bodyLimit(method: String, path: String) -> Int {
+        guard method == "POST" else { return maxBodyBytes }
+        if path == "/api/voice" { return MobileVoice.maxBodyBytes }
+        let segments = path.split(separator: "/", omittingEmptySubsequences: true)
+        if segments.count == 4, segments[0] == "api", segments[1] == "threads", segments[3] == "upload" {
+            return MobileReply.maxUploadBytes
+        }
+        return maxBodyBytes
+    }
+
     enum Parsed: Equatable {
         /// More bytes are needed.
         case incomplete
@@ -86,7 +106,12 @@ enum MobileHTTP {
     }
 
     /// Parse one request from the front of `buffer`.
-    static func parse(_ buffer: Data) -> Parsed {
+    ///
+    /// `precheck` sees a request that asks for more than `maxBodyBytes` (a
+    /// voice take) when its headers are in and before any of its body is
+    /// waited for. A status it returns ends the request there, so only a
+    /// caller that is allowed in gets the server to hold megabytes for it.
+    static func parse(_ buffer: Data, precheck: ((MobileRequest) -> Int?)? = nil) -> Parsed {
         let terminator = Data("\r\n\r\n".utf8)
         guard let end = buffer.range(of: terminator) else {
             return buffer.count > maxHeaderBytes ? .invalid(431) : .incomplete
@@ -115,17 +140,21 @@ enum MobileHTTP {
         var length = 0
         if let raw = headers["content-length"] {
             guard let n = Int(raw), n >= 0 else { return .invalid(400) }
-            guard n <= maxBodyBytes else { return .invalid(413) }
+            let limit = bodyLimit(
+                method: String(requestLine[0]),
+                path: String(requestLine[1].split(separator: "?", maxSplits: 1).first ?? ""))
+            guard n <= limit else { return .invalid(413) }
             length = n
         }
-        let bodyStart = headBytes + terminator.count
-        guard buffer.count >= bodyStart + length else { return .incomplete }
-
         let target = String(requestLine[1])
         let parts = target.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
         var request = MobileRequest(method: String(requestLine[0]), path: String(parts[0]))
         if parts.count == 2 { request.query = parseQuery(String(parts[1])) }
         request.headers = headers
+        if length > maxBodyBytes, let status = precheck?(request) { return .invalid(status) }
+
+        let bodyStart = headBytes + terminator.count
+        guard buffer.count >= bodyStart + length else { return .incomplete }
         let from = buffer.index(buffer.startIndex, offsetBy: bodyStart)
         request.body = Data(buffer[from..<buffer.index(from, offsetBy: length)])
         return .request(request, consumed: bodyStart + length)
@@ -157,10 +186,111 @@ enum MobileEndpoint: Equatable {
     case chat(id: String, after: UInt64?)
     /// `lines` is how much scrollback to capture, already clamped.
     case screen(id: String, lines: Int)
+    /// The manager home: what needs the human, and the chat so far.
+    case manager
+    /// One manager turn. The reply streams back.
+    case managerText
+    case managerDismiss
+    /// The manager pane's transcript as chat rows, like a thread's chat.
+    case managerChat(after: UInt64?)
+    /// The manager pane's terminal text, like a thread's screen.
+    case managerScreen(lines: Int)
+    /// The prompt the manager's own pane waits on, as choices.
+    case managerPrompt
+    /// Pick one choice of that prompt, or back out of it.
+    case managerAnswer
+    /// Press one whitelisted key in the manager's pane.
+    case managerKey
+    /// One voice take: audio in; transcript, reply and audio stream back.
+    case voice
+    /// Read the target's last reply again.
+    case voiceReplay
+    /// A take has started: load the models while the human talks.
+    case voiceWarm
+    /// Paste text into a thread's pane and submit it.
+    case text(id: String)
+    /// Press one whitelisted key in a thread's pane.
+    case key(id: String)
+    /// The prompt a thread's pane waits on, as choices.
+    case prompt(id: String)
+    /// Pick one choice of that prompt.
+    case answer(id: String)
+    /// The thread's skills and commands, for the `/` list.
+    case commands(id: String)
+    /// Save a file in the thread's working directory. With `paste` its path
+    /// is pasted into the pane; without, the phone puts it in its reply box.
+    case upload(id: String, name: String, paste: Bool)
+    /// One session action. The body names its target.
+    case tmux(MobileAction)
+    /// The directories a host offers for a new session.
+    case dirs(host: String)
+    /// Find `query` in the thread's scrollback.
+    case find(id: String, query: String)
+    /// What the thread's agent made: files and links.
+    case artifacts(id: String)
+    /// One file of that list, named by its id there. Never by a path.
+    case file(id: String, artifact: String)
+    /// What the thread has running: dev servers, stacks, containers.
+    case running(id: String)
+    /// The local ports this app has published on the tailnet.
+    case servers
+    /// Publish one port a thread has running. The body names both.
+    case serverOpen
+    case serverClose
+    /// This Mac's VAPID public key: what a phone subscribes with.
+    case pushKey
+    /// Keep a phone's push subscription. The body is the browser's own JSON.
+    case pushSubscribe
+    case pushUnsubscribe
+    /// The phone says which thread it shows, so that thread sends it nothing.
+    case pushFocus
+    /// The live terminal of one thread: a WebSocket, never a plain request.
+    /// `MobileSocket.upgrade` answers it before the routes are read.
+    case terminal(id: String)
 
     var capability: MobileCapability {
         switch self {
         case .config, .threads, .hosts, .events, .chat, .screen: return .access
+        case .manager, .managerText, .managerDismiss, .managerChat, .managerScreen, .managerPrompt,
+             .managerAnswer, .managerKey:
+            return .manager
+        case .voice, .voiceReplay, .voiceWarm: return .voice
+        case .text, .prompt, .answer, .commands: return .replies
+        case .key: return .keyBar
+        case .upload: return .upload
+        case .tmux(let action): return action.isKill ? .kill : .sessionActions
+        case .dirs: return .sessionActions
+        case .find: return .find
+        case .artifacts, .file: return .artifacts
+        case .running, .servers, .serverOpen, .serverClose: return .localServers
+        case .pushKey, .pushSubscribe, .pushUnsubscribe, .pushFocus: return .notifications
+        case .terminal: return .liveTerminal
+        }
+    }
+
+    /// The one method the endpoint answers. A write is a POST, so it also has
+    /// to pass the write checks in `MobileAPI.authorize`.
+    var method: String {
+        switch self {
+        case .config, .threads, .hosts, .events, .chat, .screen, .manager, .managerChat,
+             .managerScreen, .managerPrompt, .prompt, .commands,
+             .dirs, .find, .artifacts, .file, .running, .servers, .pushKey, .terminal:
+            return "GET"
+        case .managerText, .managerDismiss, .managerAnswer, .managerKey, .voice, .voiceReplay,
+             .voiceWarm, .text, .key, .answer, .upload, .tmux, .serverOpen, .serverClose,
+             .pushSubscribe, .pushUnsubscribe, .pushFocus:
+            return "POST"
+        }
+    }
+
+    /// A second feature the endpoint needs besides its own. Answering the
+    /// manager's prompt types into its pane, as a reply to a thread does, so
+    /// it needs the switch for that too.
+    var also: MobileCapability? {
+        switch self {
+        case .managerAnswer: return .replies
+        case .managerKey: return .keyBar
+        default: return nil
         }
     }
 }
@@ -171,6 +301,8 @@ enum MobileRoute: Equatable {
     case asset(String)
     case methodNotAllowed
     case notFound
+    /// `/api/tmux/<action>` with an action that is not a `MobileAction`.
+    case unknownAction
     /// The route belongs to a feature whose switch is off.
     case disabled(MobileCapability)
 }
@@ -185,10 +317,15 @@ enum MobileCapability: String, CaseIterable {
     case access
     case manager
     case voice
+    /// Text into a thread and answers to its prompts.
     case replies
+    /// Key presses from the key bar.
+    case keyBar
     case upload
     case sessionActions
     case kill
+    /// Find in a thread's scrollback.
+    case find
     case artifacts
     case localServers
     case stopServers
@@ -207,6 +344,9 @@ struct MobileConfig: Equatable {
     /// Nothing is on unless its switch was turned on.
     var capabilities: Set<MobileCapability> = []
     var grouping = MobileGrouping.recent
+    var voice = MobileVoiceDefaults()
+    /// The largest file the phone may upload, in bytes.
+    var uploadLimit = MobileReply.defaultUploadLimit
 
     func allows(_ capability: MobileCapability) -> Bool {
         capability == .access || capabilities.contains(capability)
@@ -219,6 +359,8 @@ struct MobileConfig: Equatable {
                 ($0.rawValue, allows($0))
             }),
             "grouping": grouping.rawValue,
+            "voice": voice.json,
+            "upload": ["maxBytes": min(uploadLimit, MobileReply.maxUploadBytes)],
         ]
         return (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]))
             ?? Data("{}".utf8)
@@ -252,12 +394,16 @@ enum MobileAPI {
         case "push": return .notifications
         case "terminal": return .liveTerminal
         case "servers": return segments.last == "stop" ? .stopServers : .localServers
-        case "tmux": return segments.count >= 3 && segments[2] == "kill" ? .kill : .sessionActions
+        case "tmux": return segments.count >= 3 && segments[2].hasPrefix("kill") ? .kill : .sessionActions
+        case "hosts" where segments.count >= 3: return .sessionActions
         case "threads" where segments.count >= 4:
             switch segments[3] {
-            case "text", "key": return .replies
+            case "text", "prompt", "answer", "commands": return .replies
+            case "key": return .keyBar
             case "upload": return .upload
             case "artifacts", "file": return .artifacts
+            case "running": return .localServers
+            case "find": return .find
             default: return nil
             }
         default: return nil
@@ -272,8 +418,17 @@ enum MobileAPI {
         }
         // Checked before the route is matched: a feature that is off refuses
         // every path under it, built or not.
-        if let capability = capability(forSegments: segments), !config.allows(capability) {
+        // The prompt's id is what a key into a waiting pane must carry, so the
+        // key bar alone may read it too.
+        let promptForKeys = segments.count == 4 && segments[1] == "threads"
+            && segments[3] == "prompt" && config.allows(.keyBar)
+        if let capability = capability(forSegments: segments), !config.allows(capability),
+           !promptForKeys {
             return .disabled(capability)
+        }
+        // A kill is a session action too: it needs both switches.
+        if segments.count >= 2, segments[1] == "tmux", !config.allows(.sessionActions) {
+            return .disabled(.sessionActions)
         }
         let endpoint: MobileEndpoint
         switch segments.count {
@@ -281,14 +436,69 @@ enum MobileAPI {
         case 2 where segments[1] == "threads": endpoint = .threads
         case 2 where segments[1] == "hosts": endpoint = .hosts
         case 2 where segments[1] == "events": endpoint = .events
+        case 2 where segments[1] == "manager": endpoint = .manager
+        case 3 where segments[1] == "manager" && segments[2] == "text": endpoint = .managerText
+        case 3 where segments[1] == "manager" && segments[2] == "dismiss": endpoint = .managerDismiss
+        case 3 where segments[1] == "manager" && segments[2] == "chat":
+            endpoint = .managerChat(after: request.query["after"].flatMap(UInt64.init))
+        case 3 where segments[1] == "manager" && segments[2] == "screen":
+            endpoint = .managerScreen(lines: screenLines(request.query["lines"]))
+        case 3 where segments[1] == "manager" && segments[2] == "prompt": endpoint = .managerPrompt
+        case 3 where segments[1] == "manager" && segments[2] == "answer": endpoint = .managerAnswer
+        case 3 where segments[1] == "manager" && segments[2] == "key": endpoint = .managerKey
+        case 2 where segments[1] == "voice": endpoint = .voice
+        case 3 where segments[1] == "voice" && segments[2] == "replay": endpoint = .voiceReplay
+        case 3 where segments[1] == "voice" && segments[2] == "warm": endpoint = .voiceWarm
         case 4 where segments[1] == "threads" && segments[3] == "chat":
             endpoint = .chat(id: segments[2], after: request.query["after"].flatMap(UInt64.init))
         case 4 where segments[1] == "threads" && segments[3] == "screen":
             endpoint = .screen(id: segments[2], lines: screenLines(request.query["lines"]))
+        case 4 where segments[1] == "threads" && segments[3] == "text":
+            endpoint = .text(id: segments[2])
+        case 4 where segments[1] == "threads" && segments[3] == "key":
+            endpoint = .key(id: segments[2])
+        case 4 where segments[1] == "threads" && segments[3] == "prompt":
+            endpoint = .prompt(id: segments[2])
+        case 4 where segments[1] == "threads" && segments[3] == "answer":
+            endpoint = .answer(id: segments[2])
+        case 4 where segments[1] == "threads" && segments[3] == "commands":
+            endpoint = .commands(id: segments[2])
+        case 4 where segments[1] == "threads" && segments[3] == "upload":
+            endpoint = .upload(
+                id: segments[2], name: request.query["name"] ?? "", paste: request.query["paste"] != "0")
+        case 4 where segments[1] == "threads" && segments[3] == "find":
+            endpoint = .find(id: segments[2], query: request.query["q"] ?? "")
+        case 4 where segments[1] == "threads" && segments[3] == "artifacts":
+            endpoint = .artifacts(id: segments[2])
+        case 4 where segments[1] == "threads" && segments[3] == "file":
+            endpoint = .file(id: segments[2], artifact: request.query["id"] ?? "")
+        case 4 where segments[1] == "threads" && segments[3] == "running":
+            endpoint = .running(id: segments[2])
+        case 2 where segments[1] == "servers": endpoint = .servers
+        case 3 where segments[1] == "servers" && segments[2] == "open": endpoint = .serverOpen
+        case 3 where segments[1] == "servers" && segments[2] == "close": endpoint = .serverClose
+        case 3 where segments[1] == "push" && segments[2] == "key": endpoint = .pushKey
+        case 3 where segments[1] == "push" && segments[2] == "subscribe": endpoint = .pushSubscribe
+        case 3 where segments[1] == "push" && segments[2] == "unsubscribe": endpoint = .pushUnsubscribe
+        case 3 where segments[1] == "push" && segments[2] == "focus": endpoint = .pushFocus
+        case 3 where segments[1] == "terminal": endpoint = .terminal(id: segments[2])
+        case 4 where segments[1] == "hosts" && segments[3] == "dirs":
+            endpoint = .dirs(host: segments[2])
+        case 3 where segments[1] == "tmux":
+            // A fixed list: any other word is refused, whatever its method.
+            guard let action = MobileAction(rawValue: segments[2]) else { return .unknownAction }
+            endpoint = .tmux(action)
         default: return .notFound
         }
-        guard config.allows(endpoint.capability) else { return .disabled(endpoint.capability) }
-        return request.method == "GET" ? .api(endpoint) : .methodNotAllowed
+        guard config.allows(endpoint.capability) || promptForKeys else {
+            return .disabled(endpoint.capability)
+        }
+        if let also = endpoint.also, !config.allows(also) { return .disabled(also) }
+        // The manager's prompt is read by whichever can act on it.
+        if endpoint == .managerPrompt, !config.allows(.replies), !config.allows(.keyBar) {
+            return .disabled(.replies)
+        }
+        return request.method == endpoint.method ? .api(endpoint) : .methodNotAllowed
     }
 
     /// Scrollback lines a screen request gets when it names none, and the most
@@ -340,7 +550,14 @@ enum MobileAPI {
     /// the loopback port; the token is the secret only a paired phone holds.
     /// Compared in constant time. No token set means nothing is paired.
     static func hasToken(_ request: MobileRequest, token: String?) -> Bool {
-        guard let token, !token.isEmpty, let sent = request.header(tokenHeader) else { return false }
+        guard let sent = request.header(tokenHeader) else { return false }
+        return sameToken(sent, token: token)
+    }
+
+    /// Whether `sent` is the pairing token. The time it takes depends on the
+    /// token's length alone, never on how much of `sent` is right.
+    static func sameToken(_ sent: String, token: String?) -> Bool {
+        guard let token, !token.isEmpty else { return false }
         let a = Array(sent.utf8), b = Array(token.utf8)
         var difference = UInt8(a.count == b.count ? 0 : 1)
         for index in b.indices { difference |= b[index] ^ (index < a.count ? a[index] : 0) }
@@ -367,11 +584,37 @@ enum MobileAPI {
         else { return .denied("host") }
         guard request.method != "GET", request.method != "HEAD" else { return .allowed }
         guard request.header(writeHeader) != nil else { return .denied("write header") }
-        guard let origin = request.header("origin"),
-              let url = URL(string: origin), url.scheme == "https",
-              (url.host ?? "").caseInsensitiveCompare(identity.dnsName) == .orderedSame
-        else { return .denied("origin") }
+        guard sameOrigin(request, identity: identity) else { return .denied("origin") }
         return .allowed
+    }
+
+    /// Whether the request's `Origin` is the app's own. The origin is this
+    /// Mac's name on the port the request came to: another `tailscale serve`
+    /// mapping on the same name is another origin. A request with no `Origin`
+    /// is not the app's.
+    static func sameOrigin(_ request: MobileRequest, identity: MobileIdentity) -> Bool {
+        guard let host = request.header("host"), let origin = request.header("origin"),
+              let url = URL(string: origin), url.scheme == "https",
+              (url.host ?? "").caseInsensitiveCompare(identity.dnsName) == .orderedSame,
+              (url.port ?? 443) == hostPort(host)
+        else { return false }
+        return true
+    }
+
+    /// The one WebSocket address the shell may open: this Mac's name on the
+    /// port the request came to. `'self'` already means it in a current
+    /// browser; an older one reads `'self'` as `https:` only.
+    static func socketOrigin(_ request: MobileRequest, identity: MobileIdentity?) -> String? {
+        guard let identity, let host = request.header("host"), let port = hostPort(host),
+              (1...65535).contains(port)
+        else { return nil }
+        return port == 443 ? "wss://\(identity.dnsName)" : "wss://\(identity.dnsName):\(port)"
+    }
+
+    /// The port of a `host[:port]` header; 443 when it names none, as HTTPS does.
+    static func hostPort(_ header: String) -> Int? {
+        let parts = header.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+        return parts.count == 2 ? Int(parts[1]) : 443
     }
 
     /// `host[:port]` without the port. Tailnet names are never IPv6 literals.
@@ -411,6 +654,53 @@ enum MobileAPI {
         }
     }
 
+    /// What the shell may load, as a `Content-Security-Policy`. `script-src`
+    /// is filled in by `shellPolicy(html:)`.
+    static let shellDirectives: [(name: String, value: String)] = [
+        ("default-src", "'self'"), ("script-src", "'self'"),
+        // Svelte sets styles from script; the bundle has no inline `<style>`.
+        ("style-src", "'self' 'unsafe-inline'"),
+        // An artifact image is shown from memory: a `blob:` or a `data:` address.
+        ("img-src", "'self' data: blob:"), ("media-src", "'self' data: blob:"),
+        ("font-src", "'self' data:"), ("connect-src", "'self'"), ("worker-src", "'self'"),
+        ("manifest-src", "'self'"), ("frame-src", "'none'"), ("object-src", "'none'"),
+        ("base-uri", "'none'"), ("form-action", "'none'"), ("frame-ancestors", "'none'"),
+    ]
+
+    private static let scriptTag = try! NSRegularExpression(
+        pattern: #"<script\b([^>]*)>(.*?)</script>"#,
+        options: [.caseInsensitive, .dotMatchesLineSeparators])
+    private static let srcAttribute = try! NSRegularExpression(
+        pattern: #"(^|\s)src\s*="#, options: [.caseInsensitive])
+
+    /// The policy sent with every file of the bundle. The shell's own inline
+    /// scripts (SvelteKit's start-up code) are allowed by the hash of their
+    /// text, read from `html`; no other inline script runs. A page made from a
+    /// `blob:` address takes the policy of the page that made it, so a file
+    /// with a script in it runs nothing even when it is opened as a page.
+    static func shellPolicy(html: String, socket: String? = nil) -> String {
+        var hashes: [String] = []
+        let whole = NSRange(html.startIndex..., in: html)
+        for match in scriptTag.matches(in: html, range: whole) {
+            guard let attributes = Range(match.range(at: 1), in: html),
+                  let text = Range(match.range(at: 2), in: html) else { continue }
+            let tag = String(html[attributes])
+            guard srcAttribute.firstMatch(in: tag, range: NSRange(tag.startIndex..., in: tag)) == nil
+            else { continue }
+            let digest = Data(SHA256.hash(data: Data(html[text].utf8))).base64EncodedString()
+            hashes.append("'sha256-\(digest)'")
+        }
+        return shellDirectives.map { directive in
+            switch directive.name {
+            case "script-src": return ([directive.name, directive.value] + hashes).joined(separator: " ")
+            // The live terminal's socket: the app's own address and no other.
+            case "connect-src": return ([directive.name, directive.value] + [socket].compactMap { $0 })
+                .joined(separator: " ")
+            default: return "\(directive.name) \(directive.value)"
+            }
+        }.joined(separator: "; ")
+    }
+
     /// Hashed build files never change; everything else (the shell, the service
     /// worker, the manifest) is revalidated on each load.
     static func cacheControl(forPath path: String) -> String {
@@ -443,6 +733,8 @@ struct MobileThread: Equatable {
     let pane: String
     /// Threads in this window.
     var panes = 1
+    /// The session's tmux id (`$3`), empty when the tree has none.
+    var sessionId = ""
     let command: String
     let cwd: String
     let status: AttentionStatus
@@ -570,7 +862,7 @@ struct MobileSnapshot: Equatable {
                 id: threadID(host: input.host, pane: pane.id),
                 host: input.host, hostColor: input.colorHex,
                 session: session.name, window: window.index, name: windowName(window),
-                pane: pane.id, panes: panes.count, command: pane.command,
+                pane: pane.id, panes: panes.count, sessionId: session.id, command: pane.command,
                 cwd: pane.path.isEmpty ? window.cwd : pane.path,
                 status: pane.attention, since: pane.agentState?.since,
                 idleStage: pane.idleStage, lastPrompt: pane.lastPrompt,

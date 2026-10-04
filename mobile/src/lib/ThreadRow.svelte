@@ -1,8 +1,10 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
+	import { menu } from './actions.svelte';
 	import { age, dotClass, stageTag, threadTitle } from './format';
 	import { ui } from './gestures.svelte';
-	import { live } from './live.svelte';
+	import { can, live } from './live.svelte';
+	import { longPress } from './longpress';
 	import type { Thread } from './types';
 
 	const { thread, selected }: { thread: Thread; selected: boolean } = $props();
@@ -22,6 +24,7 @@
 	aria-current={selected ? 'page' : undefined}
 	data-thread={thread.id}
 	onclick={() => ui.closeDrawer()}
+	{@attach can('sessionActions') && longPress(() => menu.open({ kind: 'thread', thread }))}
 >
 	<span class="dot {dotClass(thread)}"></span>
 	<span class="main">

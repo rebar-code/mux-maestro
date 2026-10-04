@@ -98,7 +98,7 @@ test('a refused device sees "Not allowed"; a switched-off feature does not', asy
 	await fresh(page);
 	// A feature that is off answers 403 "disabled". That is not a refusal.
 	const disabled = await page.evaluate(
-		async (headers) => (await fetch('/api/manager', { headers })).status,
+		async (headers) => (await fetch('/api/voice', { headers })).status,
 		TOKEN_HEADER
 	);
 	expect(disabled).toBe(403);

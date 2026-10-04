@@ -27,6 +27,11 @@ html,
 body {
 	margin: 0;
 	height: 100%;
+	/*
+	 * The visible height. As a Home Screen app, `100%` can come out taller than
+	 * the screen, which leaves an empty band under the last control.
+	 */
+	height: 100dvh;
 	background: #000;
 	color: var(--text);
 	font:
@@ -54,6 +59,13 @@ a {
 	user-select: none;
 	-webkit-touch-callout: none;
 	-webkit-user-drag: none;
+}
+
+/* A row with a long-press menu: the press selects no text and shows no callout. */
+[data-hold] {
+	-webkit-touch-callout: none;
+	-webkit-user-select: none;
+	user-select: none;
 }
 
 button:disabled {
@@ -282,4 +294,65 @@ button:disabled {
 		animation: none !important;
 		transition: none !important;
 	}
+}
+
+/* Highlighted code (highlight.js class names), on the app's dark surface. */
+.hljs {
+	color: #d6d6d6;
+}
+
+.hljs-comment,
+.hljs-quote,
+.hljs-meta {
+	color: #7d7d7d;
+}
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-doctag {
+	color: #c792ea;
+}
+
+.hljs-string,
+.hljs-regexp,
+.hljs-addition,
+.hljs-attribute {
+	color: #9ad68b;
+}
+
+.hljs-number,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-link {
+	color: #f5a623;
+}
+
+.hljs-title,
+.hljs-section,
+.hljs-name,
+.hljs-function,
+.hljs-selector-id,
+.hljs-selector-class {
+	color: #6cb6ff;
+}
+
+.hljs-type,
+.hljs-built_in,
+.hljs-attr,
+.hljs-variable,
+.hljs-template-variable {
+	color: #7fd1c7;
+}
+
+.hljs-deletion {
+	color: #f85149;
+}
+
+.hljs-emphasis {
+	font-style: italic;
+}
+
+.hljs-strong {
+	font-weight: 700;
 }

@@ -3978,6 +3978,19 @@ final class SidebarViewController: NSViewController {
         return Running.resources(pane: runningPane(pane, host: host, scans: scans), scans: scans)
     }
 
+    /// The same for the pane `paneID` names on `host` in the tree as it is
+    /// now, for the phone. nil once the pane has gone.
+    func runningSet(paneID: String, host: Host) -> RunningSet? {
+        for session in sessionsByHost[host.name] ?? [] {
+            for window in session.windows {
+                if let pane = window.panes.first(where: { $0.id == paneID }) {
+                    return runningSet(forPane: pane, host: host)
+                }
+            }
+        }
+        return nil
+    }
+
     /// What the rail shows for the current selection.
     ///
     /// A pane is a flat list of its own. A window is that window, named. A

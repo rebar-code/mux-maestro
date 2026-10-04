@@ -27,6 +27,25 @@ enum TmuxCommands {
         )
     }
 
+    /// The same two steps for a prompt that is then submitted. `-p` makes the
+    /// text one bracketed paste and `-r` keeps its newlines as newlines, so no
+    /// byte of it is read as a key press and a newline cannot submit it early.
+    /// `buffer` names the tmux buffer: two pastes that may overlap need one each.
+    static func pastePrompt(
+        session: String, buffer: String = sendBuffer
+    ) -> (load: [String], paste: [String]) {
+        (
+            load: ["load-buffer", "-b", buffer, "-"],
+            paste: ["paste-buffer", "-p", "-r", "-d", "-b", buffer, "-t", session]
+        )
+    }
+
+    /// Take back a prompt that was pasted and must not be sent: Ctrl-U deletes
+    /// an input line, once per line of the text. It presses no Enter.
+    static func clearInput(target: String, lines: Int) -> [String] {
+        ["send-keys", "-t", target] + Array(repeating: "C-u", count: min(max(lines, 1), 64))
+    }
+
     /// Create a detached session named `name` in directory `dir`. tmux requires
     /// the session name to be non-empty; callers should validate first. A nil/empty
     /// `dir` omits `-c` (same convention as `newWindow`/`splitWindow`) — the
@@ -85,6 +104,14 @@ enum TmuxCommands {
     /// wrong one.
     static func killSession(name: String) -> [String] {
         ["kill-session", "-t", "=\(name)"]
+    }
+
+    /// Kill a session by its id (`$3`). tmux never gives an id to another
+    /// session, so a kill that arrives late cannot reach a newer session that
+    /// took the same name, and a session in a group is told from the others
+    /// of its group, which a pane id cannot do: they share their panes.
+    static func killSession(id: String) -> [String] {
+        ["kill-session", "-t", id]
     }
 
     /// Whether a destructive command that exited non-zero actually reached its goal:
