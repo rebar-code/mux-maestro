@@ -308,10 +308,55 @@ enum Settings {
         defaults.set(on, forKey: "phone.capability.\(capability.rawValue)")
     }
 
+    /// The voice mode and speaker a phone starts with until it picks its own.
+    static func phoneVoice(defaults: UserDefaults = .standard) -> MobileVoiceDefaults {
+        MobileVoiceDefaults(
+            mode: defaults.string(forKey: "phone.voice.mode").flatMap(MobileVoiceMode.init) ?? .manual,
+            // Stored as "input only", so an unset key reads as two-way.
+            speaker: !defaults.bool(forKey: "phone.voice.inputOnly"))
+    }
+
+    static func setPhoneVoice(_ voice: MobileVoiceDefaults, defaults: UserDefaults = .standard) {
+        defaults.set(voice.mode.rawValue, forKey: "phone.voice.mode")
+        defaults.set(!voice.speaker, forKey: "phone.voice.inputOnly")
+    }
+
+    /// The largest file the phone may upload, in bytes: one of
+    /// `MobileReply.uploadLimits`.
+    static func phoneUploadLimit(defaults: UserDefaults = .standard) -> Int {
+        let stored = defaults.integer(forKey: "phone.upload.maxBytes")
+        return MobileReply.uploadLimits.contains(stored) ? stored : MobileReply.defaultUploadLimit
+    }
+
+    static func setPhoneUploadLimit(_ bytes: Int, defaults: UserDefaults = .standard) {
+        defaults.set(bytes, forKey: "phone.upload.maxBytes")
+    }
+
+    /// Which events notify the phone, what the text says, and the VAPID
+    /// contact. Both events are on and the text is generic until changed.
+    static func phonePush(defaults: UserDefaults = .standard) -> MobilePushOptions {
+        MobilePushOptions(
+            waiting: defaults.object(forKey: "phone.push.waiting") as? Bool ?? true,
+            done: defaults.object(forKey: "phone.push.done") as? Bool ?? true,
+            detail: defaults.bool(forKey: "phone.push.detail"),
+            subject: defaults.string(forKey: "phone.push.subject").flatMap(MobilePush.subject)
+                ?? MobilePush.defaultSubject)
+    }
+
+    static func setPhonePush(_ options: MobilePushOptions, defaults: UserDefaults = .standard) {
+        defaults.set(options.waiting, forKey: "phone.push.waiting")
+        defaults.set(options.done, forKey: "phone.push.done")
+        defaults.set(options.detail, forKey: "phone.push.detail")
+        defaults.set(MobilePush.subject(options.subject) ?? MobilePush.defaultSubject,
+                     forKey: "phone.push.subject")
+    }
+
     /// The phone settings as the server enforces them.
     static func phoneConfig(defaults: UserDefaults = .standard) -> MobileConfig {
         MobileConfig(
             capabilities: Set(MobileCapability.allCases.filter { phoneCapability($0, defaults: defaults) }),
-            grouping: phoneGrouping(defaults: defaults))
+            grouping: phoneGrouping(defaults: defaults),
+            voice: phoneVoice(defaults: defaults),
+            uploadLimit: phoneUploadLimit(defaults: defaults))
     }
 }

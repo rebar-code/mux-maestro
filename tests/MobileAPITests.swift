@@ -1,3 +1,4 @@
+import CryptoKit
 import XCTest
 
 // MobileAPI.swift (Foundation only) compiles into this test target: the HTTP
@@ -169,10 +170,16 @@ final class MobileAPITests: XCTestCase {
             ("POST", "/api/manager/text", .manager),
             ("POST", "/api/voice", .voice),
             ("POST", "/api/threads/localhost%3A1/text", .replies),
-            ("POST", "/api/threads/localhost%3A1/key", .replies),
+            ("GET", "/api/threads/localhost%3A1/prompt", .replies),
+            ("POST", "/api/threads/localhost%3A1/answer", .replies),
+            ("GET", "/api/threads/localhost%3A1/commands", .replies),
+            ("POST", "/api/threads/localhost%3A1/key", .keyBar),
             ("POST", "/api/threads/localhost%3A1/upload", .upload),
             ("GET", "/api/threads/localhost%3A1/artifacts", .artifacts),
-            ("GET", "/api/threads/localhost%3A1/file?path=a", .artifacts),
+            ("GET", "/api/threads/localhost%3A1/file?id=a", .artifacts),
+            ("GET", "/api/threads/localhost%3A1/running", .localServers),
+            ("GET", "/api/servers", .localServers),
+            ("POST", "/api/servers/close", .localServers),
             ("POST", "/api/tmux/new-window", .sessionActions),
             ("POST", "/api/tmux/kill", .kill),
             ("POST", "/api/servers/open", .localServers),
@@ -188,9 +195,20 @@ final class MobileAPITests: XCTestCase {
 
     func testAnEnabledCapabilityReachesTheRouterAndOthersStayOff() {
         let config = MobileConfig(capabilities: [.replies])
-        // Its routes are not built yet, so the router answers, not the gate.
         XCTAssertEqual(
             MobileAPI.route(request("/api/threads/localhost%3A1/text", method: "POST"), config: config),
+            .api(.text(id: "localhost:1")))
+        // Another switch on: its route is reached, and a path under it that
+        // is no route is the router's to refuse, not the gate's.
+        XCTAssertEqual(
+            MobileAPI.route(
+                request("/api/terminal/localhost%3A1"),
+                config: MobileConfig(capabilities: [.liveTerminal])),
+            .api(.terminal(id: "localhost:1")))
+        XCTAssertEqual(
+            MobileAPI.route(
+                request("/api/terminal/localhost%3A1/resize"),
+                config: MobileConfig(capabilities: [.liveTerminal])),
             .notFound)
         XCTAssertEqual(
             MobileAPI.route(request("/api/threads/localhost%3A1/upload", method: "POST"), config: config),
@@ -316,7 +334,29 @@ final class MobileAPITests: XCTestCase {
         XCTAssertEqual(
             MobileAPI.authorize(request("/api/x", method: "POST", headers: headers), identity: identity),
             .denied("origin"))
+        // The right name on another port is another `tailscale serve` mapping.
+        headers["Origin"] = "https://devmac.example.ts.net:5173"
+        XCTAssertEqual(
+            MobileAPI.authorize(request("/api/x", method: "POST", headers: headers), identity: identity),
+            .denied("origin"))
+        headers["Origin"] = "https://devmac.example.ts.net"
+        XCTAssertEqual(
+            MobileAPI.authorize(request("/api/x", method: "POST", headers: headers), identity: identity),
+            .denied("origin"))
         headers["Origin"] = "https://devmac.example.ts.net:7433"
+        XCTAssertEqual(
+            MobileAPI.authorize(request("/api/x", method: "POST", headers: headers), identity: identity),
+            .allowed)
+        // Port 443 is the one an origin and a Host header both leave out.
+        headers["Host"] = "devmac.example.ts.net"
+        XCTAssertEqual(
+            MobileAPI.authorize(request("/api/x", method: "POST", headers: headers), identity: identity),
+            .denied("origin"))
+        headers["Origin"] = "https://devmac.example.ts.net"
+        XCTAssertEqual(
+            MobileAPI.authorize(request("/api/x", method: "POST", headers: headers), identity: identity),
+            .allowed)
+        headers["Origin"] = "https://devmac.example.ts.net:443"
         XCTAssertEqual(
             MobileAPI.authorize(request("/api/x", method: "POST", headers: headers), identity: identity),
             .allowed)
@@ -550,5 +590,86 @@ final class MobileAPITests: XCTestCase {
         XCTAssertFalse(MobileTailnet.servesOurs(serveStatusJSON: serving, port: 9000))
         XCTAssertFalse(MobileTailnet.servesOurs(serveStatusJSON: serving, port: 7434))
         XCTAssertFalse(MobileTailnet.servesOurs(serveStatusJSON: "{}", port: 7433))
+    }
+
+    func testArtifactAndServerRoutesAreMatchedOnceTheirSwitchesAreOn() {
+        let config = MobileConfig(capabilities: [.artifacts, .localServers])
+        let routed = { (path: String, method: String) in
+            MobileAPI.route(self.request(path, method: method), config: config)
+        }
+        XCTAssertEqual(routed("/api/threads/localhost%3A1/artifacts", "GET"), .api(.artifacts(id: "localhost:1")))
+        XCTAssertEqual(
+            routed("/api/threads/localhost%3A1/file?id=0123abcd", "GET"),
+            .api(.file(id: "localhost:1", artifact: "0123abcd")))
+        // The id is one query value. A path in the URL is no route.
+        XCTAssertEqual(
+            routed("/api/threads/localhost%3A1/file?path=%2Fetc%2Fpasswd", "GET"),
+            .api(.file(id: "localhost:1", artifact: "")))
+        XCTAssertEqual(routed("/api/threads/localhost%3A1/file/etc/passwd", "GET"), .notFound)
+        XCTAssertEqual(routed("/api/threads/localhost%3A1/running", "GET"), .api(.running(id: "localhost:1")))
+        XCTAssertEqual(routed("/api/servers", "GET"), .api(.servers))
+        XCTAssertEqual(routed("/api/servers/open", "POST"), .api(.serverOpen))
+        XCTAssertEqual(routed("/api/servers/close", "POST"), .api(.serverClose))
+        for (path, method) in [
+            ("/api/servers/open", "GET"), ("/api/servers/close", "GET"), ("/api/servers", "POST"),
+            ("/api/threads/localhost%3A1/file?id=a", "POST"), ("/api/threads/localhost%3A1/running", "POST"),
+        ] {
+            XCTAssertEqual(routed(path, method), .methodNotAllowed, path)
+        }
+        XCTAssertEqual(routed("/api/servers/5173/stop", "POST"), .disabled(.stopServers))
+        XCTAssertEqual(routed("/api/servers/funnel", "POST"), .notFound)
+        for endpoint in [MobileEndpoint.artifacts(id: "a"), .file(id: "a", artifact: "b")] {
+            XCTAssertEqual(endpoint.capability, .artifacts)
+        }
+        for endpoint in [MobileEndpoint.running(id: "a"), .servers, .serverOpen, .serverClose] {
+            XCTAssertEqual(endpoint.capability, .localServers)
+        }
+    }
+
+    func testTheShellPolicyAllowsItsOwnScriptsByHashAndNothingElse() {
+        let html = """
+            <!doctype html><html><head>
+            <script>start()</script>
+            <script type="module" src="/_app/immutable/a.js"></script>
+            </head><body><script type="module">
+            import("/_app/immutable/b.js");
+            </script></body></html>
+            """
+        // printf '%s' 'start()' | shasum -a 256 | xxd -r -p | base64, and the
+        // same for the second script's text with its two newlines.
+        XCTAssertEqual(
+            MobileAPI.shellPolicy(html: html),
+            "default-src 'self'; "
+                + "script-src 'self' 'sha256-DIm7WJS6ZKDYe5qFLPy+h4JFI9Bol5QmYC57mt3Fb00=' 'sha256-MZg0d/k+XTJ2DEbXVQoLH/s6pzYebT7J99de9VTLsSE='; "
+                + "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
+                + "media-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; "
+                + "worker-src 'self'; manifest-src 'self'; frame-src 'none'; object-src 'none'; "
+                + "base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+        // No inline script: no hash, and still no inline script allowed.
+        let plain = MobileAPI.shellPolicy(html: "<html><script src=\"/a.js\"></script></html>")
+        XCTAssertTrue(plain.contains("script-src 'self'; "), plain)
+        XCTAssertFalse(plain.contains("sha256-"))
+        XCTAssertEqual(plain.components(separatedBy: "; ")[1], "script-src 'self'")
+        XCTAssertTrue(MobileAPI.shellPolicy(html: "").hasPrefix("default-src 'self'; script-src 'self'; "))
+        // A `src` inside the script's text is not an attribute.
+        XCTAssertTrue(
+            MobileAPI.shellPolicy(html: "<script>const src = 1</script>").contains("'sha256-"))
+    }
+
+    /// The committed bundle's own shell: its one inline start-up script is
+    /// named in the policy by the hash a browser will compute for it.
+    func testTheCommittedShellsInlineScriptIsAllowedByItsHash() throws {
+        let shell = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appendingPathComponent("../app/MuxMaestro/Resources/mobile/index.html")
+        let html = try String(contentsOf: shell, encoding: .utf8)
+        // Found by plain search, not by the code under test.
+        let open = try XCTUnwrap(html.range(of: "<script>"))
+        let close = try XCTUnwrap(html.range(of: "</script>", range: open.upperBound..<html.endIndex))
+        let text = String(html[open.upperBound..<close.lowerBound])
+        XCTAssertTrue(text.contains("__sveltekit"))
+        let hash = Data(SHA256.hash(data: Data(text.utf8))).base64EncodedString()
+        let policy = MobileAPI.shellPolicy(html: html)
+        XCTAssertTrue(policy.contains("script-src 'self' 'sha256-\(hash)';"), policy)
+        XCTAssertEqual(policy.components(separatedBy: "'sha256-").count, 2)
     }
 }

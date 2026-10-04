@@ -66,9 +66,11 @@ export const CAPABILITIES = [
 	'manager',
 	'voice',
 	'replies',
+	'keyBar',
 	'upload',
 	'sessionActions',
 	'kill',
+	'find',
 	'artifacts',
 	'localServers',
 	'stopServers',
@@ -82,4 +84,229 @@ export interface Config {
 	/** A key the server did not send counts as off. */
 	capabilities: Partial<Record<Capability, boolean>>;
 	grouping: 'recent' | 'host' | 'directory';
+	/** What a phone starts with until its own voice controls are used. */
+	voice?: VoiceDefaults;
+	upload?: UploadLimits;
+}
+
+export interface UploadLimits {
+	/** The largest file the Mac accepts. */
+	maxBytes: number;
+}
+
+export interface PromptOption {
+	/** The number the pane takes for this answer. Past 9 it has no key: read-only. */
+	n: number;
+	label: string;
+}
+
+/** What a waiting pane asks: a permission, or a question. */
+export interface Prompt {
+	id: string;
+	kind: 'permission' | 'question';
+	title: string;
+	detail: string;
+	question: string;
+	options: PromptOption[];
+	/** The option the pane's cursor is on: what Enter takes. */
+	selected?: number;
+	/** The menu is scrolled: it has rows above, or below, the ones listed. */
+	moreAbove?: boolean;
+	moreBelow?: boolean;
+	/** The pane shows more of the detail than the Mac sent. */
+	truncated?: boolean;
+}
+
+/** The answer of `GET /prompt`. */
+export interface PromptState {
+	prompt: Prompt | null;
+	/** Names what the pane waits on, also when it has no readable choices. */
+	id: string | null;
+}
+
+/** A slash command of a thread. `name` has no leading slash. */
+export interface Command {
+	name: string;
+	description: string;
+	source: 'skill' | 'command' | 'builtin';
+}
+
+export type VoiceMode = 'auto' | 'manual';
+
+export interface VoiceDefaults {
+	mode: VoiceMode;
+	/** On: the reply is spoken. Off: input only. */
+	speaker: boolean;
+	/** The longest take the Mac accepts. */
+	maxSeconds: number;
+}
+
+export type ManagerStatus = 'off' | 'unknown' | 'idle' | 'busy' | 'waiting';
+
+/** A card on the manager home: an agent that waits, or a review item. */
+export interface ManagerItem {
+	/** What dismiss takes. Only a review item has one. */
+	key: string | null;
+	title: string;
+	detail: string;
+	severity: 'info' | 'warn' | 'blocked' | null;
+	at: number;
+	/** The thread it opens, when the thread list has it. */
+	thread: string | null;
+}
+
+export interface ManagerUpdate {
+	kind: 'done' | 'notification';
+	text: string;
+	at: number;
+	host: string;
+	session: string;
+	thread: string | null;
+}
+
+/** The manager turn in flight, whichever side started it. */
+export interface ManagerTurn {
+	prompt: string;
+	reply: string;
+	/** The pane's own spinner line ("Incubating… 4m 48s"), when it could be read. */
+	spinner?: string | null;
+}
+
+/** The `manager` event: what changes without a request. */
+export interface ManagerLive {
+	needsYou: ManagerItem[];
+	review: ManagerItem[];
+	/** Sessions the Maestro points the user at. Left out by a Mac that has no pointers. */
+	points?: ManagerItem[];
+	updates: ManagerUpdate[];
+	turn: ManagerTurn | null;
+}
+
+export interface ManagerHome extends ManagerLive {
+	status: ManagerStatus;
+}
+
+/** The last event of a turn's stream. */
+export interface TurnEnd {
+	outcome: 'done' | 'permission' | 'timeout' | 'unreachable' | 'refused';
+	reply: string;
+	/** Set when there is something to tell the human. */
+	message: string | null;
+}
+
+/** The last event of a voice stream. `empty` and `failed` never reached the target. */
+export interface VoiceEnd extends Omit<TurnEnd, 'outcome'> {
+	outcome: TurnEnd['outcome'] | 'empty' | 'failed';
+}
+
+/** The last segment of `/api/tmux/<action>`. The Mac takes no other word. */
+export type TmuxAction =
+	| 'new-session'
+	| 'new-window'
+	| 'rename-session'
+	| 'rename-window'
+	| 'kill-session'
+	| 'kill-window'
+	| 'kill-pane'
+	| 'zoom-pane';
+
+/** What an action is done to: a thread, or the session that holds it. */
+export interface ActionTarget {
+	thread: string;
+}
+
+/** A start and an end offset in a string. */
+export type Range = [number, number];
+
+export interface FindMatch {
+	/** The line of `text`, from 0. */
+	line: number;
+	/** Where the query is in that line. */
+	ranges: Range[];
+}
+
+/** A thread's scrollback and where the query is in it. */
+export interface FindResult {
+	text: string;
+	matches: FindMatch[];
+	/** There were more matches than the Mac sends. */
+	truncated: boolean;
+}
+
+export type ArtifactKind = 'image' | 'pdf' | 'markdown' | 'html' | 'code' | 'text' | 'other';
+
+/** One file a thread's agent made. The Mac reads it by `id`; the phone never sends a path. */
+export interface ArtifactFile {
+	id: string;
+	name: string;
+	dir: string;
+	kind: ArtifactKind;
+	mime: string;
+	/** Bytes, when the file is there. */
+	size: number | null;
+	at: number;
+	exists: boolean;
+}
+
+export interface ArtifactLink {
+	url: string;
+	host: string;
+	path: string;
+	at: number | null;
+}
+
+export interface ArtifactList {
+	files: ArtifactFile[];
+	links: ArtifactLink[];
+	/** The thread runs on another host: its files are not read. */
+	remote: boolean;
+}
+
+/** One port of something that runs. `mappable`: the Mac can publish it on the tailnet. */
+export interface RunningLink {
+	label: string;
+	port: number;
+	open: boolean;
+	mappable: boolean;
+}
+
+interface RunningRow {
+	key: string;
+	label: string;
+	host: string;
+	local: boolean;
+}
+
+export interface RunningServer extends RunningRow {
+	port: number;
+	https: boolean;
+	mappable: boolean;
+}
+
+export interface RunningContainer extends RunningRow {
+	count: number;
+	links: RunningLink[];
+}
+
+/** What a thread has running, as the Mac's Running drawer lists it. */
+export interface RunningList {
+	/** False while the Mac has not seen everything: an empty list is then not "nothing". */
+	known: boolean;
+	unknowns: string[];
+	servers: RunningServer[];
+	stacks: RunningContainer[];
+	containers: RunningContainer[];
+}
+
+/** A local port the Mac publishes on the tailnet. */
+export interface Mapping {
+	port: number;
+	url: string;
+	thread: string;
+	label: string;
+}
+
+export interface MappingList {
+	mappings: Mapping[];
+	max: number;
 }

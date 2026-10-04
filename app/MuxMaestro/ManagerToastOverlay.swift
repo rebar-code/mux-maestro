@@ -38,6 +38,9 @@ final class ManagerToastOverlay: NSViewController {
     private let titleLabel = NSTextField(labelWithString: "")
     private let body = LinkLabel(font: .systemFont(ofSize: 12), color: SidebarPalette.muted, maxLines: 2)
     private let closeButton = SidebarAddButton.make(tooltip: "Dismiss", symbol: "xmark")
+    /// A toast's one button (Undo, on an archive toast). Hidden on every other.
+    private let actionButton = NSButton(title: "", target: nil, action: nil)
+    private var onAction: (() -> Void)?
     private var dismissTimer: Timer?
     private var current: ManagerNotification?
 
@@ -98,7 +101,14 @@ final class ManagerToastOverlay: NSViewController {
         container.addSubview(titleLabel)
         container.addSubview(body)
         container.addSubview(closeButton)
+
+        actionButton.isBordered = false
+        actionButton.isHidden = true
+        actionButton.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(actionButton)
         NSLayoutConstraint.activate([
+            actionButton.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
+            actionButton.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -10),
             // The panel takes its size from this view, and the link text has no
             // intrinsic width to size it by — pin the designed size.
             container.widthAnchor.constraint(equalToConstant: Self.panelWidth),
@@ -127,7 +137,7 @@ final class ManagerToastOverlay: NSViewController {
     /// replacing any toast already up and resetting the auto-dismiss clock.
     /// `extra` > 0 appends a "+N more" hint.
     func show(over parent: NSWindow, notification: ManagerNotification, extra: Int) {
-        let session = notification.session.isEmpty ? "manager" : notification.session
+        let session = notification.session.isEmpty ? "Maestro" : notification.session
         let suffix = extra > 0 ? "   +\(extra) more" : ""
         present(
             over: parent, glyph: "🤖", title: session + suffix, text: notification.text,
@@ -140,12 +150,33 @@ final class ManagerToastOverlay: NSViewController {
         present(over: parent, glyph: glyph, title: title, text: text, notification: nil)
     }
 
+    /// A toast with one button, e.g. "Archived api" with Undo. A click on the
+    /// button runs `onAction`; a click anywhere else only dismisses.
+    func show(
+        over parent: NSWindow, glyph: String, title: String, text: String,
+        actionTitle: String, onAction: @escaping () -> Void
+    ) {
+        present(
+            over: parent, glyph: glyph, title: title, text: text, notification: nil,
+            actionTitle: actionTitle, onAction: onAction)
+    }
+
     private func present(
         over parent: NSWindow, glyph: String, title: String, text: String,
-        notification: ManagerNotification?
+        notification: ManagerNotification?,
+        actionTitle: String? = nil, onAction: (() -> Void)? = nil
     ) {
         current = notification
         loadViewIfNeeded()
+        self.onAction = onAction
+        // A borderless button ignores `contentTintColor` for its title.
+        actionButton.attributedTitle = NSAttributedString(
+            string: actionTitle ?? "",
+            attributes: [
+                .foregroundColor: SidebarPalette.accent,
+                .font: NSFont.systemFont(ofSize: 12, weight: .semibold),
+            ])
+        actionButton.isHidden = actionTitle == nil
         robot.stringValue = glyph
         titleLabel.stringValue = title
         body.setText(text)
@@ -193,11 +224,19 @@ final class ManagerToastOverlay: NSViewController {
         // the mouse-down, so the button never tracks it. Dismiss here too.
         let inClose = !closeButton.isHidden
             && closeButton.bounds.contains(gesture.location(in: closeButton))
-        switch ToastClick.action(inCloseButton: inClose, link: body.link(at: gesture.location(in: body))) {
+        // The same holds for the action button.
+        let inAction = !actionButton.isHidden
+            && actionButton.bounds.contains(gesture.location(in: actionButton))
+        // Hide first: the action may put up a toast of its own.
+        let action = onAction
+        hide()
+        switch ToastClick.action(
+            inCloseButton: inClose, inActionButton: inAction,
+            link: body.link(at: gesture.location(in: body))) {
         case .dismiss: break
+        case .action: action?()
         case .openLink(let link): onOpenLink?(link)
         case .open: if let current { onOpen?(current) }
         }
-        hide()
     }
 }

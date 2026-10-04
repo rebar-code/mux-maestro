@@ -703,6 +703,10 @@ final class TmuxService {
     /// The poll/refresh path uses its own global queues, not this one.
     let driverQueue: DispatchQueue
 
+    /// How long an undo waits for a restored pane's shell prompt before it gives
+    /// up on typing the agent's resume command: 50 looks, 0.1 s apart.
+    var shellPromptWait: (tries: Int, pause: useconds_t) = (tries: 50, pause: 100_000)
+
     /// Guards `lastSnapshotKey`, written from whichever poll queue ran the load.
     private let snapshotLock = NSLock()
     /// Shape of the last tree written to `recovery/tree.json` — so an unchanged
@@ -895,6 +899,7 @@ final class TmuxService {
         }
 
         let sessionRows = TmuxModel.dedupeGroups(TmuxModel.parseSessions(sessOut))
+        let sessionIds = TmuxModel.parseSessionIds(sessOut)
 
         // Two server-wide queries, not one per session and one per window. A failed
         // query yields no windows/panes rather than dropping the session itself —
@@ -912,7 +917,8 @@ final class TmuxService {
                     TmuxModel.paneKey(session: row.name, window: windows[i].index)] ?? []
             }
             sessions.append(TmuxSession(
-                name: row.name, attached: row.attached, windows: windows, activity: row.activity))
+                name: row.name, attached: row.attached, id: sessionIds[row.name] ?? "",
+                windows: windows, activity: row.activity))
         }
         // One status read, parsed three ways — `statuses()`, `activity()` and
         // `paneStatuses()` each used to spawn their own `sessions.py` (~200ms apiece).
@@ -1571,15 +1577,179 @@ final class TmuxService {
     /// it behind a confirmation. Routes through the transport so it kills the
     /// window on this service's host (local or remote) automatically.
     @discardableResult
-    func killWindow(session: String, window: Int) -> Bool {
+    func killWindow(session: String, window: Int, knownTree: [TmuxSession]? = nil) -> Bool {
         let tree = host.isLocal && SessionRecord.canWriteSnapshot
-            && Settings.sessionRecoveryEnabled() ? (loadTree() ?? []) : []
+            && Settings.sessionRecoveryEnabled() ? (knownTree ?? loadTree() ?? []) : []
         let removesLastSession = tree.count == 1 && tree[0].name == session
             && tree[0].windows.count == 1 && tree[0].windows[0].index == window
         let target = TmuxCommands.windowTarget(session: session, window: window)
         let killed = tmuxDestructive(TmuxCommands.killWindow(target: target))
         if killed, removesLastSession { persistSnapshot([], allowEmpty: true) }
         return killed
+    }
+
+    // MARK: Archive Window / Undo
+
+    /// Archive a window: read what undo needs, then kill it. The read has to come
+    /// first — tmux keeps nothing about a window once it is gone. `window` nil
+    /// means the session's active window (⌘W before the sidebar has loaded it).
+    /// `records` are the `SessionStart` hook's pane records; nil reads them from
+    /// disk on the local host. `archived` is nil when the kill failed or the
+    /// window could not be read, and then there is nothing to undo.
+    /// `onlyIfNamed` refuses the kill when the window found has another name:
+    /// redo passes it, because an index can change hands between undo and redo.
+    /// Blocking; call off the main thread.
+    func archiveWindow(
+        session: String, window: Int?, records: [String: AgentRecord]? = nil,
+        onlyIfNamed expectedName: String? = nil
+    ) -> (killed: Bool, archived: ArchivedWindow?) {
+        let tree = loadTree() ?? []
+        let known = records ?? (host.isLocal
+            ? SessionRecord.parseAgents(SessionRecord.agentsURL()
+                .flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? "")
+            : [:])
+        let archived = WindowArchive.capture(
+            tree: tree, host: host, session: session, window: window, records: known)
+        if let expectedName, archived?.name != expectedName { return (false, nil) }
+        // Kill the window that was read, not whichever one is active by now.
+        let killed = (window ?? archived?.index).map {
+            killWindow(session: session, window: $0, knownTree: tree)
+        } ?? killActiveWindow(session: session)
+        return (killed, killed ? archived : nil)
+    }
+
+    /// Undo an archive: create the window again in its session (and the session,
+    /// when archiving ended it), at its old index when that is free, then rebuild
+    /// its panes and run each agent's resume command through the same code a
+    /// post-reboot restore uses. `directoryExists` is injected by tests.
+    /// Blocking; call off the main thread.
+    func restoreArchivedWindow(
+        _ archived: ArchivedWindow, directoryExists: ((String) -> Bool?)? = nil
+    ) -> Result<RestoredWindow, WindowRestoreFailure> {
+        guard transport.command(forTmux: []) != nil else {
+            return .failure(.tmux("tmux is unavailable."))
+        }
+        let window: RestoreWindow
+        switch WindowArchive.restorePlan(
+            archived, directoryExists: directoryExists ?? self.directoryExists) {
+        case .failure(let failure): return .failure(failure)
+        // The name and the directories were read from tmux, which would expand
+        // `#{...}` in them again: pass them back as literals.
+        case .success(let plan):
+            window = RestoreWindow(
+                name: TmuxCommands.literal(plan.name),
+                panes: plan.panes.map {
+                    RestorePane(
+                        cwd: TmuxCommands.literal($0.cwd), resumeCommand: $0.resumeCommand,
+                        active: $0.active)
+                },
+                index: plan.index, layout: plan.layout, active: plan.active)
+        }
+        let session = archived.session
+        let cwd = window.panes[0].cwd
+        let listed = tmux(["list-sessions", "-F", "#{session_name}"])
+        // No list from a remote host is "no tmux server" only if the host answers.
+        if listed == nil, !host.isLocal, probeReachability() != .reachable {
+            return .failure(.hostUnreachable(host.name))
+        }
+        let createdSession = !(listed ?? "").split(separator: "\n").contains { $0 == session }
+        // A session that was still there after the archive was ended on purpose
+        // since: do not bring it back.
+        if createdSession, !archived.removedSession { return .failure(.sessionGone(session)) }
+        var index = archived.index
+        if createdSession {
+            guard tmux(TmuxCommands.newSession(name: session, dir: cwd)) != nil else {
+                return .failure(.tmux("tmux could not create the session."))
+            }
+            let current = tmux(["display-message", "-p", "-t", "=\(session):", "#{window_index}"])
+                .flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            // An index tmux will not give back is not worth failing the undo for.
+            if let current, current != index, tmux(TmuxCommands.moveWindow(
+                source: "=\(session):\(current)", target: "=\(session):\(index)")) == nil {
+                index = current
+            }
+        } else {
+            let used = Set((tmux(["list-windows", "-t", "=\(session)", "-F", "#{window_index}"]) ?? "")
+                .split(separator: "\n").compactMap { Int($0) })
+            let argv = used.contains(index)
+                ? TmuxCommands.newWindow(session: session, cwd: cwd, printIndex: true)
+                : TmuxCommands.newWindow(
+                    session: session, cwd: cwd, printIndex: true, atIndex: index)
+            guard let made = TmuxCommands.parseCreatedWindow(tmux(argv)) else {
+                return .failure(.tmux("tmux could not create the window."))
+            }
+            index = made
+        }
+
+        let target = TmuxCommands.windowTarget(session: session, window: index)
+        // The id names this window for good; its index can change hands.
+        let windowId = tmux(["display-message", "-p", "-t", target, "#{window_id}"])
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .flatMap { $0.isEmpty ? nil : $0 }
+        var pendingResumes: [PendingAgentResume] = []
+        var failure = restore(
+            window: window, target: target, resumeAgentsImmediately: true,
+            pendingResumes: &pendingResumes)
+        // Every pane exists before any agent starts, as in a topology restore.
+        // A command is typed only at a shell prompt, never into whatever a login
+        // script has put in the foreground.
+        var unsent: [String] = []
+        if failure == nil {
+            for resume in pendingResumes {
+                guard waitForShellPrompt(pane: resume.pane) else {
+                    unsent.append(resume.command)
+                    continue
+                }
+                if tmux(TmuxCommands.sendKeysLine(
+                    session: resume.pane, line: resume.command)) == nil {
+                    failure = "tmux could not run the agent’s resume command."
+                    break
+                }
+            }
+        }
+        if let failure {
+            _ = tmuxDestructive(createdSession
+                ? TmuxCommands.killSession(name: session)
+                : TmuxCommands.killWindow(target: windowId ?? target))
+            return .failure(.tmux(failure))
+        }
+        return .success(RestoredWindow(
+            index: index,
+            agentsWithoutSession: archived.panes.filter(\.lostAgentSession).count,
+            unsentResumes: unsent))
+    }
+
+    /// `-F` format for the shell-prompt check: foreground command and cursor column.
+    static let shellPromptFormat = "#{pane_current_command}\t#{cursor_x}"
+    /// Prints `yes` or `no` for the directory in `$1`. A probe that prints
+    /// neither did not reach the host.
+    static let directoryProbeScript = "if [ -d \"$1\" ]; then echo yes; else echo no; fi"
+
+    /// Poll `pane` until it shows a shell prompt (see `WindowArchive.isShellPrompt`).
+    private func waitForShellPrompt(pane: String) -> Bool {
+        for attempt in 0..<shellPromptWait.tries {
+            if attempt > 0, shellPromptWait.pause > 0 { usleep(shellPromptWait.pause) }
+            if let probe = tmux(["display-message", "-p", "-t", pane, Self.shellPromptFormat]),
+               WindowArchive.isShellPrompt(probe) { return true }
+        }
+        return false
+    }
+
+    /// Whether `path` is a directory on this service's host; nil when a remote
+    /// host did not answer.
+    private func directoryExists(_ path: String) -> Bool? {
+        if host.isLocal {
+            var isDirectory: ObjCBool = false
+            return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
+                && isDirectory.boolValue
+        }
+        switch runHostCommand(
+            local: "/bin/sh", remote: "sh", ["-c", Self.directoryProbeScript, "sh", path])?
+            .trimmingCharacters(in: .whitespacesAndNewlines) {
+        case "yes": return true
+        case "no": return false
+        default: return nil
+        }
     }
 
     /// Kill the session's currently-active window (⌘W). tmux resolves a bare
@@ -1868,6 +2038,63 @@ final class TmuxService {
     func captureScrollback(target: String, lines: Int) -> String? {
         guard transport.command(forTmux: []) != nil else { return nil }
         return tmux(FileTransfer.captureScrollbackArgv(target: target, lines: lines))
+    }
+
+    // MARK: Phone replies
+
+    /// What the phone server may do to a pane on this host. Each call runs one
+    /// argv the server built (`MobileReply`); nothing here goes through a shell
+    /// on this Mac.
+    func phonePane(
+        target: String, state: @escaping (MobileThread) -> MobilePaneState
+    ) -> MobilePaneIO {
+        MobilePaneIO(
+            tmux: { [self] args, stdin in tmux(args, stdin: stdin) },
+            screen: { [self] in capturePane(target: target) },
+            state: state,
+            save: { [self] data, path in
+                guard let alias = host.sshAlias else {
+                    return FileTransfer.writeExclusive(data, to: path)
+                }
+                // An upload to a remote host can take longer than a tmux call.
+                let (ssh, args) = FileTransfer.exclusiveWriteArgv(alias: alias, path: path)
+                return FileTransfer.saved(remoteOutput: slow.run(ssh, args, stdin: data))
+            },
+            cursorRow: { [self] in
+                tmux(["display-message", "-p", "-t", target, "#{cursor_y}"])
+                    .flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            })
+    }
+
+    /// The command that runs a tmux control client on this host for the
+    /// phone's live terminal, under the shell that ends it when the bridge or
+    /// this app goes away. Over ssh that shell runs on the far host, next to
+    /// the client, and each word is quoted for the remote shell.
+    func phoneTerminal(_ target: MobileTerminal.Target) -> MobileTerminalBridge.Launch? {
+        if let ssh = transport as? SshTmuxTransport {
+            return .remote(
+                sshPath: ssh.sshPath, options: Ssh.opts(host: ssh.host), tmux: ssh.remoteTmux,
+                target: target)
+        }
+        return transport.command(forTmux: MobileTerminal.attachArgv(target))
+            .map { .supervised(MobileTerminalBridge.Launch(path: $0.path, args: $0.args)) }
+    }
+
+    /// One tmux call on this host, for the phone's session actions and find:
+    /// whether it exited 0, and its output with its errors, so a target that
+    /// is already gone can be told from a host that did not answer. nil when
+    /// the host has no tmux to call. Blocking; call off the main thread.
+    func phoneTmux(_ args: [String]) -> (ok: Bool, output: String)? {
+        guard let (path, full) = transport.command(forTmux: args) else { return nil }
+        let (ok, text) = runner.runCapturing(path, full)
+        // A call to a remote host fails when tmux refuses it and when ssh
+        // does not get there. One more call that needs no tmux tells which:
+        // a host that cannot be reached has no tmux to call.
+        if !ok, let alias = host.sshAlias,
+           runner.run(Ssh.sshPath, Ssh.opts(host: alias) + ["true"]) == nil {
+            return nil
+        }
+        return (ok, text)
     }
 
     /// Drop a local file onto a session on this host: resolve the session's cwd,

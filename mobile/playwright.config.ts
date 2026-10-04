@@ -18,6 +18,8 @@ export default defineConfig({
 		hasTouch: true,
 		userAgent:
 			'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
+		// The voice specs build their own microphone from an oscillator.
+		launchOptions: { args: ['--autoplay-policy=no-user-gesture-required'] },
 		trace: 'retain-on-failure'
 	},
 	webServer: {

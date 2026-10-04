@@ -27,6 +27,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var runningDrawer: RunningDrawer?
     private var detailVC: DetailViewController?
     private var sidebarVC: SidebarViewController?
+    /// The archived windows Edit > Undo can still restore. In memory only.
+    private lazy var archiveHistory: WindowArchiveHistory = {
+        let history = WindowArchiveHistory()
+        history.onLeave = { [weak self] entry, worktree in
+            self?.window?.undoManager?.removeAllActions(withTarget: entry)
+            if let worktree { self?.cleanUpWorktreeUnlessInUse(worktree) }
+            self?.savePendingCleanups()
+        }
+        return history
+    }()
     /// The tmux service for the current breadcrumb selection — the target an inline
     /// breadcrumb rename runs against.
     private var breadcrumbService: TmuxService?
@@ -85,13 +95,95 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             transcript: { thread in
                 [thread.claudeSessionId, thread.codexSessionId].compactMap { $0 }
                     .compactMap { TranscriptTailReader.shared.transcript(sessionId: $0) }.first
-            }))
+            },
+            pane: { [registry, agentStates = AgentStateReader()] thread in
+                registry.service(for: thread.host).phonePane(target: thread.pane) { latest in
+                    // The hooks' own rows, read now: newer than the tree.
+                    MobileReply.state(
+                        thread: latest, rows: agentStates.rows(),
+                        now: Int(Date().timeIntervalSince1970))
+                }
+            },
+            tmux: { [registry] host in
+                { args in registry.service(for: host).phoneTmux(args) }
+            },
+            changed: { [weak self] in
+                // The sidebar loads the tree again, and the phone follows it.
+                DispatchQueue.main.async { self?.sidebarVC?.refresh() }
+            },
+            artifacts: { [artifactReader] thread in
+                MobileArtifacts.scan(thread: thread, reader: artifactReader)
+            },
+            running: { [weak self] thread in
+                // The sidebar's scan caches belong to the main thread.
+                DispatchQueue.main.sync {
+                    self?.sidebarVC?.runningSet(paneID: thread.pane, host: thread.host)
+                }
+            },
+            terminal: { [registry] thread, target in
+                registry.service(for: thread.host).phoneTerminal(target)
+            }),
+        manager: MobileServer.Manager(
+            pane: { [weak self] in
+                // The controller belongs to the main thread; its readers do not.
+                guard let reader = DispatchQueue.main.sync(execute: {
+                    self?.managerController?.paneReader()
+                }) else { return (.off, nil) }
+                return (MobileManagerStatus(reader.status()), reader.transcript()?.path)
+            },
+            send: { [weak self] text, onDelta, completion in
+                DispatchQueue.main.async {
+                    guard let self else { return completion(.unreachable(MobileManager.offMessage)) }
+                    self.runPhoneManagerTurn(text, onDelta: onDelta, completion: completion)
+                }
+            },
+            dismiss: { [weak self] key in
+                DispatchQueue.main.async { self?.managerController?.dismiss(key: key) }
+            },
+            screen: { [registry] lines in
+                registry.local.captureScrollback(target: ManagerHome.sessionName, lines: lines)
+            },
+            io: { [registry] in
+                // The server takes the manager's state from `pane` above; the
+                // per-thread state source is not used for it.
+                let io = registry.local.phonePane(target: ManagerHome.sessionName) { thread in
+                    MobilePaneState(status: thread.status, since: thread.since)
+                }
+                return (ManagerHome.sessionName, io)
+            }),
+        // The phone's takes use the Mac's own engine. Nothing plays here: the
+        // phone gets the samples.
+        voice: MobileServer.Voice(
+            speech: EngineSpeech(),
+            warm: { speaker in
+                Task { try? await VoiceEngine.shared.loadIfNeeded(speaker ? .all : .whisper) }
+            }),
+        serving: MobileServer.Serving(
+            open: { [weak self] port, https, thread, label in
+                self?.phoneLink.openMapping(port: port, https: https, thread: thread, label: label)
+                    ?? .unavailable("Phone access is off")
+            },
+            close: { [weak self] port in self?.phoneLink.closeMapping(port: port) ?? false },
+            list: { [weak self] in self?.phoneLink.mappings ?? [] }),
+        push: pushCenter)
+    /// The phones that asked for notifications, and the sending.
+    private lazy var pushCenter: MobilePushCenter = {
+        let center = MobilePushCenter()
+        center.configure(Settings.phonePush())
+        center.onCount = { [weak self] count in
+            DispatchQueue.main.async { self?.setupWindowController?.phone.renderPushCount(count) }
+        }
+        return center
+    }()
     private lazy var phoneLink: PhoneLink = {
         let link = PhoneLink(server: mobileServer)
         link.onChange = { [weak self] state in
             self?.setupWindowController?.phone.render(state)
             // Hand the new listener the tree at once, not on the next change.
             if case .on = state { self?.pushMobileSnapshot() }
+        }
+        link.onMappings = { [weak self] mappings in
+            self?.setupWindowController?.phone.renderMappings(mappings.map(\.port))
         }
         return link
     }()
@@ -100,6 +192,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var managerRailVC: ManagerRailViewController?
     private var managerRailItem: NSSplitViewItem?
     private var managerController: ManagerController?
+    /// A manager turn is in flight, from the rail or from the phone.
+    private var managerTurnRunning = false
     private var managerToast: ManagerToastOverlay?
     /// Push-to-talk, built on first press. The manager pane is its only target
     /// today.
@@ -362,7 +456,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // right away when the rail was open last quit / a manager session from a
         // previous run is still alive; see managerAutoStartCheck).
         let manager = ManagerController(service: registry.local)
-        manager.onSnapshot = { [weak managerRail] in managerRail?.setSnapshot($0) }
+        manager.onSnapshot = { [weak self, weak managerRail] snapshot in
+            managerRail?.setSnapshot(snapshot)
+            self?.mobileServer.updateManager(snapshot.mobileBoard)
+        }
         manager.onToast = { [weak self] notification, extra in
             self?.showManagerToast(notification, extra: extra)
         }
@@ -377,6 +474,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         managerRail.onShowTerminal = { [weak self] in self?.installManagerTerminalIfNeeded() }
         self.managerController = manager
         if Settings.managerRailShown() { startManagerMachinery() }
+        startManagerForPhoneIfNeeded()
 
         // Drive libghostty. wakeup_cb also ticks on demand, but a steady timer
         // keeps animations/cursor blink and the renderer healthy.
@@ -387,10 +485,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.tickTimer = timer
 
         restoreAfterRebootIfNeeded()
+        // After the first tree load, so a worktree with a live pane is left alone.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+            self?.offerPendingWorktreeCleanups()
+        }
         // Voice models fetch once, in the background; nothing waits on them.
         VoiceModels.shared.start()
         VoiceSelfTest.runIfRequested()
 
+        if ProcessInfo.processInfo.environment["SIDEKICK_ARCHIVE_SELFTEST"] == "1" {
+            runArchiveSelfTest()
+        }
         if ProcessInfo.processInfo.environment["SIDEKICK_M2_SELFTEST"] == "1" {
             runSelfTest()
         }
@@ -798,7 +903,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             title: "Kill Session", action: #selector(actionKillSelected), keyEquivalent: "")
         sessionMenu.addItem(kill)
         let closeWindow = NSMenuItem(
-            title: "Close Window", action: #selector(actionCloseWindow), keyEquivalent: "w")
+            title: "Archive Window", action: #selector(actionCloseWindow), keyEquivalent: "w")
         closeWindow.keyEquivalentModifierMask = [.command]
         sessionMenu.addItem(closeWindow)
         sessionMenu.addItem(.separator())
@@ -823,14 +928,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         sidebarLayout.keyEquivalentModifierMask = [.command, .control]
         sessionMenu.addItem(sidebarLayout)
         let toggleManager = NSMenuItem(
-            title: "Toggle Manager", action: #selector(actionToggleManager), keyEquivalent: "m")
+            title: "Toggle Maestro", action: #selector(actionToggleManager), keyEquivalent: "m")
         toggleManager.keyEquivalentModifierMask = [.command, .shift]
         sessionMenu.addItem(toggleManager)
-        let talk = NSMenuItem(title: "Talk to Manager", action: #selector(actionTalk), keyEquivalent: "t")
+        let talk = NSMenuItem(title: "Talk to Maestro", action: #selector(actionTalk), keyEquivalent: "t")
         talk.keyEquivalentModifierMask = [.command, .shift]
         sessionMenu.addItem(talk)
         let restartManager = NSMenuItem(
-            title: "Restart Manager Agent", action: #selector(actionRestartManager), keyEquivalent: "")
+            title: "Restart Maestro Agent", action: #selector(actionRestartManager), keyEquivalent: "")
         sessionMenu.addItem(restartManager)
         // ⌘F searches the pane on screen (tmux scrollback); ⌘⇧F opens the search
         // panel, whose scope switch chooses every pane or the selected repo.
@@ -923,6 +1028,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             setup.phone.onToggle = { [weak self] on in
                 Settings.setPhoneEnabled(on)
                 if on { self?.phoneLink.turnOn() } else { self?.phoneLink.turnOff() }
+                self?.startManagerForPhoneIfNeeded()
+            }
+            setup.phone.onCapability = { [weak self] capability, on in
+                Settings.setPhoneCapability(capability, on)
+                self?.mobileServer.configure(Settings.phoneConfig())
+                // A dev server stays published only while its switch is on.
+                if capability == .localServers, !on { self?.phoneLink.closeAllMappings() }
+                self?.startManagerForPhoneIfNeeded()
             }
             setup.phone.onPort = { [weak self] port in
                 Settings.setPhonePort(port)
@@ -933,13 +1046,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 Settings.setPhoneGrouping(grouping)
                 self?.mobileServer.configure(Settings.phoneConfig())
             }
+            setup.phone.onVoice = { [weak self] voice in
+                Settings.setPhoneVoice(voice)
+                self?.mobileServer.configure(Settings.phoneConfig())
+            }
+            setup.phone.onUploadLimit = { [weak self] bytes in
+                Settings.setPhoneUploadLimit(bytes)
+                self?.mobileServer.configure(Settings.phoneConfig())
+            }
+            setup.phone.onPush = { [weak self] options in
+                Settings.setPhonePush(options)
+                self?.pushCenter.configure(options)
+            }
+            setup.phone.onTestPush = { [weak self] in
+                self?.pushCenter.sendTest { result in
+                    DispatchQueue.main.async { self?.setupWindowController?.phone.renderPushTest(result) }
+                }
+            }
             setup.phone.onRotate = { [weak self] in self?.phoneLink.rotateToken() }
             setup.phone.onKeepAwake = { [weak self] on in
                 Settings.setPhoneKeepAwake(on)
                 self?.phoneLink.refreshKeepAwake()
             }
             setup.phone.render(phoneLink.state)
+            setup.phone.renderMappings(phoneLink.mappings.map(\.port))
             setupWindowController = setup
+            // The count is in the Keychain: only a Mac that uses notifications reads it.
+            if Settings.phoneCapability(.notifications) { pushCenter.reportCount() }
         }
         setupWindowController?.show()
     }
@@ -948,7 +1081,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// while the phone switch is off.
     private func pushMobileSnapshot() {
         guard phoneLink.isOn, let sidebar = sidebarVC else { return }
-        mobileServer.update(sidebar.mobileSnapshot())
+        let snapshot = sidebar.mobileSnapshot()
+        mobileServer.update(snapshot)
+        // A published dev server is closed once it stops, or its thread goes.
+        phoneLink.sweep(snapshot: snapshot) { sidebar.runningSet(paneID: $0.pane, host: $0.host) }
     }
 
     /// Run a Setup install recipe in the terminal, like the remote mosh install:
@@ -1755,7 +1891,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     ///
     /// It used to always kill the window: ⌘W typed inside one pane of a
     /// three-pane window took all three with it. `paneFirst` is what asks for the
-    /// narrower target; the sidebar's explicit Close/Kill Window items don't.
+    /// narrower target; the sidebar's explicit Archive Window items don't.
     @objc private func actionCloseWindow() {
         if let panel = NSApp.keyWindow as? NSPanel, panel.isFloatingPanel {
             panel.close()
@@ -1767,7 +1903,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Gate a `kill-pane`/`kill-window` behind a confirm that names the exact
-    /// target (⌘W and both sidebar Close/Kill Window items land here; the sidebar
+    /// target (⌘W and both sidebar Archive Window items land here; the sidebar
     /// items skip the sheet). Confirm is the default button, so ⌘W → Return still
     /// closes in one beat; Escape cancels.
     ///
@@ -1804,16 +1940,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         let failure = action == .window
-            ? "Couldn’t close the window." : "Couldn’t close the pane."
+            ? "Couldn’t archive the window." : "Couldn’t close the pane."
+        // Written by `perform` on the driver queue, read by `archived` on main
+        // once it has returned.
+        var archivedWindow: ArchivedWindow?
         let perform = {
-            guard let index else { return service.killActiveWindow(session: session) }
-            if case .pane(let pane) = action {
+            if let index, case .pane(let pane) = action {
                 return service.killPane(session: session, window: index, pane: pane)
             }
-            return service.killWindow(session: session, window: index)
+            let result = service.archiveWindow(session: session, window: index)
+            archivedWindow = result.archived
+            return result.killed
         }
+        // An archive keeps its worktree until undo is no longer offered, so the
+        // cleanup the sheet asked for goes with the archive instead of running now.
+        let archived: ((String?) -> Void)? = action == .window ? { [weak self] cleanUp in
+            self?.didArchive(archivedWindow, service: service, worktree: cleanUp)
+        } : nil
         guard CloseWindowPrompt.needsConfirm(source) else {
-            performDestructive(failure: failure, on: service, cleanUp: worktree, perform: perform)
+            performDestructive(
+                failure: failure, on: service, cleanUp: worktree, perform: perform,
+                onSuccess: archived)
             return
         }
         confirmDestructive(
@@ -1823,7 +1970,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             failure: failure,
             on: service,
             worktree: worktree,
-            perform: perform)
+            perform: perform,
+            onSuccess: archived)
     }
 
     /// Read a close target out of the cached sidebar tree (`window` nil ⇒ the
@@ -1911,7 +2059,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func confirmDestructive(
         title: String, info: String, confirmTitle: String,
         failure: String, on service: TmuxService? = nil, worktree: String? = nil,
-        perform: @escaping () -> Bool
+        perform: @escaping () -> Bool, onSuccess: ((String?) -> Void)? = nil
     ) {
         let alert = NSAlert()
         alert.messageText = title
@@ -1928,7 +2076,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let go = { [weak self] in
             let cleanUp = alert.suppressionButton?.state == .on ? worktree : nil
             self?.performDestructive(
-                failure: failure, on: service, cleanUp: cleanUp, perform: perform)
+                failure: failure, on: service, cleanUp: cleanUp, perform: perform,
+                onSuccess: onSuccess)
         }
         if let window {
             alert.beginSheetModal(for: window) { resp in
@@ -1942,10 +2091,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Run a destructive tmux mutation now — what a confirm sheet does once
     /// accepted, and what a sidebar right-click does with no sheet. `perform` runs
     /// off-main; success refreshes the tree and hands `cleanUp` to spindown,
-    /// failure shows `failure`.
+    /// failure shows `failure`. With `onSuccess`, the worktree goes to it instead:
+    /// an archive decides when its worktree is cleaned up.
     private func performDestructive(
         failure: String, on service: TmuxService?, cleanUp: String?,
-        perform: @escaping () -> Bool
+        perform: @escaping () -> Bool, onSuccess: ((String?) -> Void)? = nil
     ) {
         // Route to the target host's serial queue so a wedged remote can't block
         // another host; herdr and host-agnostic ops fall back to the global queue.
@@ -1955,7 +2105,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async {
                 guard let self else { return }
                 if ok { self.sidebarVC?.refresh() } else { self.presentError(failure) }
-                if ok, let cleanUp { self.cleanUpWorktree(cleanUp) }
+                guard ok else { return }
+                if let onSuccess {
+                    onSuccess(cleanUp)
+                } else if let cleanUp {
+                    self.cleanUpWorktree(cleanUp)
+                }
             }
         }
     }
@@ -2584,24 +2739,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// and the voice take both come through here.
     private func runManagerTurn(
         _ text: String,
+        requireIdle: Bool = false,
         onDelta: @escaping (String) -> Void = { _ in },
         completion: @escaping (ManagerTurnOutcome) -> Void = { _ in }
     ) {
         guard let manager = managerController else {
-            completion(.unreachable("Manager not running"))
+            completion(.unreachable("Maestro not running"))
             return
+        }
+        // The phone follows the same turn. A second call while one runs is
+        // refused by the driver and must not end the first one's record.
+        let tracked = !managerTurnRunning
+        if tracked {
+            managerTurnRunning = true
+            mobileServer.managerTurnBegan(text)
         }
         managerRailVC?.beginTurn(text)
         manager.send(
             text,
+            requireIdle: requireIdle,
             onDelta: { [weak self] delta in
                 self?.managerRailVC?.appendReply(delta)
+                if tracked { self?.mobileServer.managerTurnAppended(delta) }
                 onDelta(delta)
             },
             completion: { [weak self] outcome in
                 self?.managerRailVC?.endTurn(outcome)
+                if tracked {
+                    self?.managerTurnRunning = false
+                    self?.mobileServer.managerTurnEnded()
+                }
                 completion(outcome)
             })
+    }
+
+    /// A turn the phone sent: the same turn as one typed into the rail, so it
+    /// shows there too. The rail holds its input while a turn runs; the phone
+    /// has no such hold, so a second turn is refused here, before it is drawn.
+    private func runPhoneManagerTurn(
+        _ text: String,
+        onDelta: @escaping (String) -> Void,
+        completion: @escaping (ManagerTurnOutcome) -> Void
+    ) {
+        guard !managerTurnRunning else { return completion(.refused(MobileManager.busyMessage)) }
+        // The phone cannot see the pane: its turn starts only from idle.
+        runManagerTurn(text, requireIdle: true, onDelta: onDelta, completion: completion)
+    }
+
+    /// The phone's manager home needs the manager running, rail shown or not.
+    private func startManagerForPhoneIfNeeded() {
+        guard Settings.phoneEnabled(), Settings.phoneCapability(.manager) else { return }
+        startManagerMachinery()
     }
 
     /// Boot the manager machinery (home + store + session + timers). Idempotent.
@@ -4101,6 +4289,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // (the browser-preview tunnels) don't linger after the app exits.
         registry.closeAllMasters()
         if Settings.phoneEnabled() { phoneLink.shutdown() }
+        finishArchivesAtQuit()
     }
 
     /// Choose what the terminal runs: `tmux attach` if a tmux server is up,
@@ -4156,9 +4345,8 @@ extension AppDelegate: NSToolbarItemValidation, NSMenuItemValidation {
         }
         // ⌘W's label has to follow ⌘W's target — it closes the focused pane of a
         // multi-pane window and the window only when the pane *is* the window.
-        // Left as a fixed "Close Window" it promised the wider blast radius on
-        // every press. Falls back to "Close Window" with nothing attached, which
-        // is also what ⌘W does once a session loads.
+        // A fixed "Archive Window" would promise the wider blast radius on every
+        // press. With nothing attached the label is "Archive Window".
         if item.action == #selector(actionCloseWindow) {
             var action = CloseWindowPrompt.Action.window
             if let session = attachedSession, let service = attachedService,
@@ -4229,7 +4417,7 @@ extension AppDelegate: NSToolbarDelegate {
         case Self.tbSidebar:
             return toolbarButton(itemIdentifier, label: "Sidebar", symbol: "sidebar.right", action: #selector(actionToggleSidebar), shortcut: "⌘B")
         case Self.tbManager:
-            let item = toolbarButton(itemIdentifier, label: "Manager", symbol: "sidebar.right", action: #selector(actionToggleManager), shortcut: "⌘⇧M")
+            let item = toolbarButton(itemIdentifier, label: "Maestro", symbol: "sidebar.right", action: #selector(actionToggleManager), shortcut: "⌘⇧M")
             item.image = Self.robotToolbarImage()
             return item
         case Self.tbOpenDir:
@@ -4315,6 +4503,7 @@ extension AppDelegate: SidebarSelectionDelegate {
     /// only place the app can see it — and without this ⌘` would forget every
     /// switch the user made from the keyboard.
     func sidebarDidRefreshTree(host: Host) {
+        dropArchivesOfEndedSessions(host: host)
         reloadPullRequestsScreen()
         refreshHandoffCommands()
         guard let session = attachedSession, attachedService?.host == host,
@@ -4914,7 +5103,8 @@ extension AppDelegate: SidebarActionDelegate {
                 else { return false }
                 Settings.clearHost(Host(name: alias, sshAlias: alias))
                 return true
-            })
+            },
+            onSuccess: { [weak self] _ in self?.dropArchives(ofHostAlias: alias) })
     }
 
     func sidebarRequestInstallMosh(host: Host) {
@@ -5308,5 +5498,373 @@ extension AppDelegate: CommitPanelDelegate {
             if token.hasPrefix("https://"), let u = URL(string: String(token)) { return u }
         }
         return nil
+    }
+}
+
+// MARK: - Archive Window / Undo
+
+extension AppDelegate {
+    /// A window was archived. Keep what undo needs, put Undo Archive Window on
+    /// the Edit menu, and offer the same undo in a toast.
+    ///
+    /// `worktree` is the worktree the close flow would clean up. It stays until
+    /// the archive leaves the undo history (pushed out by newer archives, dropped,
+    /// or the app quits): undo needs the directory for as long as it is offered.
+    ///
+    /// `archived` is nil when the window could not be read before the kill. Then
+    /// nothing can be undone: the toast says so and the worktree is cleaned up now.
+    ///
+    /// ⌘Z reaches the undo even while the terminal has focus: the terminal view
+    /// does not answer `undo:`, so the window does, and Edit > Undo is enabled
+    /// while an archive is on its undo stack. With nothing to undo the item is
+    /// disabled and ⌘Z goes to the terminal as a key press, as before. A text
+    /// field's own edits sit above the archive on the stack and are undone first.
+    private func didArchive(_ archived: ArchivedWindow?, service: TmuxService, worktree: String?) {
+        guard let archived else {
+            if let worktree { cleanUpWorktree(worktree) }
+            if let window {
+                toast.show(
+                    over: window, glyph: "🗃", title: "Archived window",
+                    text: WindowArchive.notUndoableNote)
+            }
+            return
+        }
+        registerArchiveUndo(archiveHistory.push(archived, worktree: worktree), service: service)
+        savePendingCleanups()
+        showArchivedToast(archived)
+    }
+
+    private func registerArchiveUndo(_ entry: WindowArchiveHistory.Entry, service: TmuxService) {
+        guard let undoManager = window?.undoManager else { return }
+        undoManager.registerUndo(withTarget: entry) { [weak self] entry in
+            self?.undoArchive(entry, service: service)
+        }
+        undoManager.setActionName(WindowArchive.actionName)
+    }
+
+    private func showArchivedToast(_ archived: ArchivedWindow) {
+        guard let window else { return }
+        toast.show(
+            over: window, glyph: "🗃", title: WindowArchive.archivedTitle(archived), text: "",
+            actionTitle: "Undo"
+        ) { [weak self] in
+            // Only when the archive is still what Edit > Undo would undo.
+            guard let undoManager = self?.window?.undoManager, undoManager.canUndo,
+                  undoManager.undoActionName == WindowArchive.actionName else { return }
+            undoManager.undo()
+        }
+    }
+
+    /// Edit > Undo Archive Window: create the window again, resume its agents and
+    /// select its row. Runs inside the undo, so the registration below is the redo.
+    private func undoArchive(_ entry: WindowArchiveHistory.Entry, service: TmuxService) {
+        if let undoManager = window?.undoManager {
+            undoManager.registerUndo(withTarget: entry) { [weak self] entry in
+                self?.redoArchive(entry, service: service)
+            }
+            undoManager.setActionName(WindowArchive.actionName)
+        }
+        toast.hide()
+        service.driverQueue.async { [weak self] in
+            let archived = entry.archived
+            let result = service.restoreArchivedWindow(archived)
+            if case .success(let restored) = result { entry.restoredIndex = restored.index }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                switch result {
+                case .success(let restored):
+                    entry.isArchived = false
+                    self.savePendingCleanups()
+                    self.focusNew(
+                        session: archived.session, window: restored.index, pane: nil,
+                        service: service)
+                    if let window = self.window {
+                        self.toast.show(
+                            over: window, glyph: "🗃",
+                            title: WindowArchive.restoredTitle(archived),
+                            text: WindowArchive.restoredNote(restored))
+                    }
+                case .failure(let failure):
+                    // Nothing came back, so there is nothing to redo.
+                    self.window?.undoManager?.removeAllActions(withTarget: entry)
+                    if failure.isRetryable {
+                        // An ssh timeout or a busy tmux: the undo goes back on the
+                        // stack, so ⌘Z tries again.
+                        self.registerArchiveUndo(entry, service: service)
+                    } else {
+                        self.archiveHistory.remove(entry)
+                    }
+                    self.presentError(WindowArchive.failureMessage(archived, failure))
+                }
+            }
+        }
+    }
+
+    /// Edit > Redo Archive Window: archive the restored window again. No confirm
+    /// sheet: the archive was confirmed the first time.
+    private func redoArchive(_ entry: WindowArchiveHistory.Entry, service: TmuxService) {
+        registerArchiveUndo(entry, service: service)
+        service.driverQueue.async { [weak self] in
+            let before = entry.archived
+            guard let index = entry.restoredIndex else { return }
+            // Only the window undo made: an index can belong to another window by now.
+            let result = service.archiveWindow(
+                session: before.session, window: index, onlyIfNamed: before.name)
+            if let again = result.archived { entry.archived = again }
+            if result.killed { entry.restoredIndex = nil }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                guard result.killed else {
+                    // The window is still there, so the entry has nothing to undo.
+                    self.archiveHistory.remove(entry)
+                    self.presentError("Couldn’t archive the window.")
+                    return
+                }
+                entry.isArchived = true
+                if let again = result.archived { entry.adopt(again) }
+                self.savePendingCleanups()
+                self.sidebarVC?.refresh()
+                self.showArchivedToast(result.archived ?? before)
+            }
+        }
+    }
+
+    /// A host's tree reloaded: drop its archives whose session is no longer there.
+    func dropArchivesOfEndedSessions(host: Host) {
+        guard !archiveHistory.entries.isEmpty, let sidebarVC else { return }
+        archiveHistory.dropEndedSessions(
+            host: host, live: Set(sidebarVC.cachedSessions(host: host).map(\.name)))
+    }
+
+    func dropArchives(ofHostAlias alias: String) {
+        archiveHistory.dropHost(alias: alias)
+    }
+
+    /// Keep the list of waiting worktree cleanups on disk, so a crash or a kill
+    /// (`make install` stops the app with a signal) does not forget them.
+    private func savePendingCleanups() {
+        PendingWorktreeCleanups.save(archiveHistory.pendingWorktrees)
+    }
+
+    /// At launch: cleanups a previous run was killed before it could do. They are
+    /// offered, never run unasked: those archives can no longer be undone, but
+    /// the choice to delete a worktree was made in another run.
+    func offerPendingWorktreeCleanups() {
+        // A second instance must not take the list the first one is still using.
+        let instances = Bundle.main.bundleIdentifier.map {
+            NSRunningApplication.runningApplications(withBundleIdentifier: $0).count
+        } ?? 1
+        let pending = PendingWorktreeCleanups.load().filter {
+            FileManager.default.fileExists(atPath: $0)
+        }
+        guard instances <= 1 else { return }
+        PendingWorktreeCleanups.save([])
+        guard !pending.isEmpty else { return }
+        let alert = NSAlert()
+        alert.messageText = PendingWorktreeCleanups.offerTitle(pending)
+        alert.informativeText = pending.joined(separator: "\n")
+        alert.addButton(withTitle: "Clean Up")
+        alert.addButton(withTitle: "Keep")
+        let go = { [weak self] (response: NSApplication.ModalResponse) in
+            guard response == .alertFirstButtonReturn else { return }
+            pending.forEach { self?.cleanUpWorktreeUnlessInUse($0) }
+        }
+        if let window { alert.beginSheetModal(for: window, completionHandler: go) }
+        else { go(alert.runModal()) }
+    }
+
+    /// A deferred worktree cleanup, now due. Skipped when a pane sits in the
+    /// worktree again (an undone archive, or a window opened there since).
+    private func cleanUpWorktreeUnlessInUse(_ worktree: String) {
+        guard !worktreeIsInUse(worktree) else { return }
+        cleanUpWorktree(worktree)
+    }
+
+    private func worktreeIsInUse(_ worktree: String) -> Bool {
+        (sidebarVC?.cachedSessions(host: .local) ?? []).contains { session in
+            session.windows.contains { window in
+                window.panes.contains { Worktrees.isInside(path: $0.path, root: worktree) }
+            }
+        }
+    }
+
+    /// Quitting ends every undo offer, so the deferred cleanups run now. spindown
+    /// can take minutes; it is started on its own and not waited for.
+    func finishArchivesAtQuit() {
+        // Without python nothing can run: the list stays on disk for the next launch.
+        guard let python = FileTransfer.python3Path else { return }
+        let path = NSHomeDirectory() + "/go/bin:"
+            + (ProcessCommandRunner.childEnvironment["PATH"] ?? "")
+        let due = archiveHistory.drain()
+        savePendingCleanups()
+        for worktree in due where !worktreeIsInUse(worktree) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = ["PATH=\(path)"] + Worktrees.spindownArgv(
+                python: python, script: Worktrees.spindownScriptPath, worktree: worktree)
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            try? process.run()
+        }
+    }
+}
+
+// MARK: - Archive Window self-test
+
+extension AppDelegate {
+    /// Archive Window end to end in the real app: the row button, the archive,
+    /// the toast, Edit > Undo and Redo, and the row selected again. Run it through
+    /// `scripts/archive-selftest.sh`, which builds the `acme-app` fixture on a
+    /// private tmux server; it refuses any other socket because it kills a window.
+    /// `SIDEKICK_ARCHIVE_SHOTS` names a directory for PNGs of each step.
+    private func runArchiveSelfTest() {
+        let activity = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiated, .latencyCritical], reason: "archive self-test")
+        let service = registry.local
+        let session = "acme-app", name = "api"
+        let shots = ProcessInfo.processInfo.environment["SIDEKICK_ARCHIVE_SHOTS"]
+        var lines = ["ARCHIVE SELFTEST"]
+        var ok = true
+        func check(_ label: String, _ passed: Bool, _ detail: String = "") {
+            ok = ok && passed
+            lines.append("  \(passed ? "PASS" : "FAIL")  \(label)\(detail.isEmpty ? "" : "  \(detail)")")
+        }
+        func finish() -> Never {
+            print(lines.joined(separator: "\n"))
+            ProcessInfo.processInfo.endActivity(activity)
+            exit(ok ? 0 : 1)
+        }
+        func shot(_ view: NSView?, _ file: String) {
+            guard let shots, let view,
+                  let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+            view.cacheDisplay(in: view.bounds, to: rep)
+            try? rep.representation(using: .png, properties: [:])?
+                .write(to: URL(fileURLWithPath: shots).appendingPathComponent(file))
+        }
+        func all(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(all) }
+        func outline() -> NSOutlineView? {
+            window?.contentView.flatMap(all)?.first { $0 is NSOutlineView } as? NSOutlineView
+        }
+        /// The sidebar row of the fixture window, and its tmux index.
+        func row() -> (row: Int, index: Int)? {
+            guard let outline = outline() else { return nil }
+            for row in 0..<outline.numberOfRows {
+                if case .window(_, session, let w)? = (outline.item(atRow: row) as? SidebarNode)?.kind,
+                   w.name == name { return (row, w.index) }
+            }
+            return nil
+        }
+        /// The fixture window as tmux has it now; nil once archived.
+        func live() -> TmuxWindow? {
+            service.loadTree()?.first { $0.name == session }?.windows.first { $0.name == name }
+        }
+        func after(_ seconds: TimeInterval, _ step: @escaping () -> Void) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: step)
+        }
+        func editItem(_ index: Int) -> NSMenuItem? {
+            // A self-test launched from a shell is never the active app, so the
+            // menu has no key window to validate against: ask the window, which
+            // is what AppKit does for Undo and Redo when it is key.
+            guard let item = Self.editMenu?.item(at: index) else { return nil }
+            item.isEnabled = window?.validateMenuItem(item) ?? false
+            return item
+        }
+
+        /// The first poll can take a while on a busy machine: wait for the row.
+        func whenFixtureShows(_ tries: Int, _ step: @escaping () -> Void) {
+            if row() != nil || tries == 0 { return step() }
+            after(1) { whenFixtureShows(tries - 1, step) }
+        }
+
+        after(3) { whenFixtureShows(30) { [weak self] in
+            guard let self else { return }
+            guard (service.socketPath() ?? "").contains("muxmaestro-archive-selftest") else {
+                lines.append("  FAIL  not a scratch socket. Run via scripts/archive-selftest.sh.")
+                ok = false
+                finish()
+            }
+            guard let found = row(), let before = live(),
+                  let cell = outline()?.view(atColumn: 0, row: found.row, makeIfNecessary: true)
+                    as? RowCell
+            else {
+                check("fixture window is in the sidebar", false)
+                finish()
+            }
+            cell.isRowHovered = true
+            // ⌘Z with the terminal focused, which is where focus nearly always is.
+            let surface = self.terminalVC?.surfaceView
+            self.window?.makeFirstResponder(surface)
+            let commandZ = NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
+                windowNumber: self.window?.windowNumber ?? 0, context: nil, characters: "z",
+                charactersIgnoringModifiers: "z", isARepeat: false, keyCode: 6)
+            /// Who gets ⌘Z now: "menu" when Edit > Undo is enabled and the window
+            /// answers it from the terminal's responder chain, else "terminal" (a
+            /// disabled item claims no key, so AppKit sends the terminal a keyDown).
+            func commandZTarget() -> String {
+                guard let surface, self.window?.firstResponder === surface,
+                      let commandZ, !surface.performKeyEquivalent(with: commandZ)
+                else { return "terminal view took the key equivalent" }
+                var responder: NSResponder? = surface
+                while let next = responder, !next.responds(to: Selector(("undo:"))) {
+                    responder = next.nextResponder
+                }
+                guard responder === self.window else { return "undo: answered by \(String(describing: responder))" }
+                return editItem(0)?.isEnabled == true ? "menu" : "terminal"
+            }
+            check("⌘Z goes to the terminal when there is nothing to undo",
+                  commandZTarget() == "terminal", commandZTarget())
+            check("row button says Archive Window", cell.trashButton.toolTip == "Archive Window"
+                && cell.trashButton.image?.accessibilityDescription == "Archive Window")
+            check("nothing to undo yet", editItem(0)?.isEnabled == false)
+            shot(self.sidebarVC?.view, "1-row.png")
+
+            // The right-click Archive Window: the same archive, with no sheet to answer.
+            self.sidebarRequestKillWindow(session: session, window: found.index, service: service)
+            after(3) {
+                check("window is archived", live() == nil)
+                check("the archive is in the undo history",
+                      self.archiveHistory.entries.count == 1
+                        && self.archiveHistory.entries.first?.isArchived == true)
+                check("Edit menu offers the undo",
+                      editItem(0)?.title == "Undo Archive Window" && editItem(0)?.isEnabled == true,
+                      editItem(0)?.title ?? "")
+                check("⌘Z undoes the archive while the terminal has focus",
+                      commandZTarget() == "menu", commandZTarget())
+                shot(self.toast.view, "2-toast.png")
+                do {
+                    self.window?.undoManager?.undo()
+                    after(6) {
+                        let restored = live()
+                        check("undo brings the window back", restored?.index == before.index,
+                              "index \(restored?.index ?? -1)")
+                        check("with its panes in their directories",
+                              restored?.panes.map(\.path) == before.panes.map(\.path))
+                        check("its row is selected", row()?.row == outline()?.selectedRow)
+                        check("the history knows the window is back",
+                              self.archiveHistory.entries.first?.isArchived == false
+                                && self.archiveHistory.pendingWorktrees.isEmpty)
+                        check("Edit menu offers the redo",
+                              editItem(1)?.title == "Redo Archive Window" && editItem(1)?.isEnabled == true,
+                              editItem(1)?.title ?? "")
+                        shot(self.toast.view, "4-restored-toast.png")
+                        shot(self.sidebarVC?.view, "5-restored-row.png")
+                        self.window?.undoManager?.redo()
+                        after(3) {
+                            check("redo archives it again", live() == nil)
+                            check("the history knows it is archived again",
+                                  self.archiveHistory.entries.first?.isArchived == true)
+                            check("and it can be undone again",
+                                  editItem(0)?.title == "Undo Archive Window")
+                            finish()
+                        }
+                    }
+                }
+            }
+        } }
+    }
+
+    private static var editMenu: NSMenu? {
+        NSApp.mainMenu?.items.first { $0.submenu?.title == "Edit" }?.submenu
     }
 }

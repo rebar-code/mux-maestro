@@ -47,13 +47,14 @@ prompt, this is for you.
   passphrase.
 - **Full lifecycle.** New, kill, rename and zoom for sessions, windows and
   panes; tmux-native splits. Destructive actions ask first.
-- **Manager agent.** An optional Claude Code agent in a side rail that watches
+- **The Maestro.** An optional Claude Code agent in a side rail that watches
   your other sessions and tells you which ones need you.
 - **Session recovery.** After a reboot, rebuild your tmux sessions and stage
   each agent's resume command.
 - **Phone.** A web app for your phone, served by the Mac over your tailnet:
   the thread list, each host's load, and a read-only view of every thread
-  (chat or terminal). Off by default.
+  (chat or terminal). With "Run Maestro agent" on, it opens on the Maestro:
+  what needs you, the review items, and a text box to ask it. Off by default.
 - **herdr provider.** If you use [herdr](https://github.com/herdrdev/herdr) (a
   non-tmux workspace manager for agents), its sessions show next to tmux.
   Optional.

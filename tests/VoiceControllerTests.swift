@@ -31,6 +31,9 @@ final class VoiceControllerTests: XCTestCase {
             if failSpeak { throw SpeakFailed() }
         }
         func stopSpeaking() async { stops += 1 }
+        func synthesize(
+            _ text: AsyncStream<String>, onAudio: @escaping (SpeechAudio, String) -> Void
+        ) async throws {}
     }
 
     private var recorder = FakeRecorder()

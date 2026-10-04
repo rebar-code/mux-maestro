@@ -11,7 +11,8 @@ import {
 import { tokenFrom } from './pairing';
 import type { Frame } from './sse';
 import type { Grouping } from './group';
-import type { Capability, Config, Host, Thread } from './types';
+import { manager } from './manager.svelte';
+import type { Capability, Config, Host, ManagerLive, Thread } from './types';
 
 const THREADS_KEY = 'mm.threads';
 const HOSTS_KEY = 'mm.hosts';
@@ -58,6 +59,7 @@ class Live {
 	readonly grouping: Grouping = $derived(this.picked ?? this.config?.grouping ?? 'recent');
 
 	private listeners = new Set<() => void>();
+	private configListeners = new Set<() => void>();
 
 	byId(id: string): Thread | undefined {
 		return this.threads?.find((thread) => thread.id === id);
@@ -82,6 +84,13 @@ class Live {
 	setConfig(config: Config): void {
 		this.config = config;
 		write(CONFIG_KEY, config);
+		for (const listener of this.configListeners) listener();
+	}
+
+	/** Call `listener` after each config from the Mac. Returns the unsubscribe. */
+	onConfig(listener: () => void): () => void {
+		this.configListeners.add(listener);
+		return () => this.configListeners.delete(listener);
 	}
 
 	/** Call `listener` after each new thread list. Returns the unsubscribe. */
@@ -125,6 +134,12 @@ class Live {
 			this.setHosts((JSON.parse(frame.data) as { hosts: Host[] }).hosts);
 		} else if (frame.event === 'config') {
 			this.setConfig(JSON.parse(frame.data) as Config);
+		} else if (frame.event === 'manager') {
+			manager.apply(JSON.parse(frame.data) as ManagerLive);
+		} else if (frame.event === 'manager-delta') {
+			manager.append();
+		} else if (frame.event === 'manager-spinner') {
+			manager.spin((JSON.parse(frame.data) as { text: string | null }).text);
 		}
 	}
 
@@ -156,12 +171,21 @@ class Live {
 
 export const live = new Live();
 
-/**
- * Whether the Mac has switched a feature on. A feature that is off is hidden,
- * not drawn disabled.
- */
+/** Whether the Mac has switched a feature on (`/api/config`). */
 export function can(capability: Capability): boolean {
 	return live.config?.capabilities[capability] === true;
+}
+
+/** The label of a control whose feature is switched off on the Mac. */
+export const OFF_LABEL = 'Off in MuxMaestro Settings';
+
+/**
+ * Whether the Mac has said a feature is off. Its main control is then drawn
+ * disabled with `OFF_LABEL`, so an app with nothing switched on does not look
+ * broken. False until the Mac has answered.
+ */
+export function isOff(capability: Capability): boolean {
+	return live.config !== null && !can(capability);
 }
 
 const RETRY_FIRST = 1000;

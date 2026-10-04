@@ -235,10 +235,25 @@ final class ManagerStoreTests: XCTestCase {
         _ name: String,
         state: ManagerSessionRow.State = .inactive,
         host: String = "localhost",
-        attached: Bool = false
+        attached: Bool = false,
+        windowIndexes: [Int]? = [1, 2]
     ) -> ManagerSessionRow {
         ManagerSessionRow(name: name, host: host, attached: attached, state: state,
-                          windows: 2, panes: 3, cwd: "/tmp/\(name)")
+                          windows: 2, panes: 3, cwd: "/tmp/\(name)",
+                          windowIndexes: windowIndexes)
+    }
+
+    func testReplaceSessionsRoundTripsTheWindowIndexes() throws {
+        let store = try makeStore()
+        try store.replaceSessions([
+            sessionRow("acme-app", windowIndexes: [1, 2, 7]),
+            sessionRow("billing", windowIndexes: []),
+            sessionRow("reports", windowIndexes: nil),
+        ])
+        XCTAssertEqual(try store.sessions().map(\.windowIndexes), [[1, 2, 7], [], nil])
+        XCTAssertEqual(
+            try sqlite("SELECT '[' || COALESCE(window_indexes, 'none') || ']' FROM sessions ORDER BY name;"),
+            ["[1,2,7]", "[]", "[none]"])
     }
 
     // MARK: work_log
@@ -400,6 +415,286 @@ final class ManagerStoreTests: XCTestCase {
     func testMuxInvalidSeverityExitsTwo() throws {
         let result = runMux(["review", "add", "--key", "k", "--text", "t", "--severity", "nope"])
         XCTAssertEqual(result.status, 2)
+    }
+
+    // MARK: mux point
+
+    private let pointRows =
+        "SELECT key, host, session, COALESCE(window, 'none'), severity, text, dismissed FROM review ORDER BY key;"
+
+    private func seedPointSessions() throws {
+        try makeStore().replaceSessions([
+            sessionRow("acme-app", state: .waiting, windowIndexes: [1, 2, 7]),
+            sessionRow("billing", state: .waiting, host: "devbox", windowIndexes: [0, 3]),
+        ])
+    }
+
+    func testMuxPointRecordsABlockedReviewRow() throws {
+        try seedPointSessions()
+        try store(mux: ["point", "acme-app", "--reason", "  needs your approval "])
+        try store(mux: ["point", "billing:3", "--host", "devbox", "--reason", "asks 'which' database"])
+        XCTAssertEqual(try sqlite(pointRows), [
+            "point:devbox:billing:3|devbox|billing|3|blocked|asks 'which' database|0",
+            "point:localhost:acme-app|localhost|acme-app|none|blocked|needs your approval|0",
+        ])
+        let item = try XCTUnwrap(try makeStore().reviewItems().first { $0.session == "billing" })
+        XCTAssertTrue(item.isPointer)
+        XCTAssertEqual(item.window, 3)
+    }
+
+    func testMuxPointUpdatesInPlaceAndShowsADismissedPointerAgain() throws {
+        try seedPointSessions()
+        try store(mux: ["point", "acme-app", "--reason", "needs your approval"])
+        let store = try makeStore()
+        try store.dismiss(key: "point:localhost:acme-app")
+        XCTAssertEqual(try store.reviewItems(), [])
+
+        try self.store(mux: ["point", "acme-app", "--reason", "asks which database to use"])
+        XCTAssertEqual(try sqlite(pointRows), [
+            "point:localhost:acme-app|localhost|acme-app|none|blocked|asks which database to use|0",
+        ])
+        XCTAssertEqual(try store.reviewItems().count, 1)
+    }
+
+    func testMuxPointDoneDeletesOnlyThatPointer() throws {
+        try seedPointSessions()
+        try store(mux: ["point", "acme-app", "--reason", "needs your approval"])
+        try store(mux: ["point", "acme-app:2", "--reason", "asks a question"])
+        try store(mux: ["point", "billing", "--host", "devbox", "--reason", "needs your approval"])
+        try store(mux: ["point", "acme-app:2", "--done"])
+        try store(mux: ["point", "billing", "--done", "--host", "devbox"])
+        XCTAssertEqual(try sqlite("SELECT key FROM review;"), ["point:localhost:acme-app"])
+        // A session that is gone can still be cleared, and so can a pointer
+        // through the review list.
+        try store(mux: ["point", "closed", "--done"])
+        try store(mux: ["review", "done", "--key", "point:localhost:acme-app"])
+        XCTAssertEqual(try sqlite("SELECT key FROM review;"), [])
+    }
+
+    func testMuxPointRefusesASessionTheAppDoesNotList() throws {
+        try seedPointSessions()
+        let unknown = runMux(["point", "nope", "--reason", "needs your approval"])
+        XCTAssertEqual(unknown.status, 2)
+        XCTAssertEqual(unknown.output, "mux: point: no such session: nope on localhost\n")
+        // The name exists, but on another host.
+        let otherHost = runMux(["point", "billing", "--reason", "needs your approval"])
+        XCTAssertEqual(otherHost.status, 2)
+        XCTAssertEqual(otherHost.output, "mux: point: no such session: billing on localhost\n")
+        let unknownHost = runMux(["point", "acme-app", "--host", "nas", "--reason", "needs your approval"])
+        XCTAssertEqual(unknownHost.status, 2)
+        XCTAssertEqual(unknownHost.output, "mux: point: no such session: acme-app on nas\n")
+        XCTAssertEqual(try sqlite("SELECT COUNT(*) FROM review;"), ["0"])
+    }
+
+    func testMuxPointRefusesABadWindowOrReason() throws {
+        try seedPointSessions()
+        // A two-byte character that has no decomposed form: `Process` hands
+        // arguments over decomposed, which would turn "é" into two.
+        let long = String(repeating: "ß", count: 121)
+        let refused: [[String]] = [
+            ["point", "acme-app:two", "--reason", "needs your approval"],
+            ["point", "acme-app:", "--reason", "needs your approval"],
+            ["point", "acme-app"],
+            ["point", "acme-app", "--reason", ""],
+            ["point", "acme-app", "--reason", "   "],
+            ["point", "acme-app", "--reason", long],
+            ["point", "acme-app", "--reason", "needs\nyour approval"],
+            ["point", "acme-app", "--reason", "needs your approval\n"],
+            ["point", "acme-app", "--reason", "needs\u{1B}[2Jyour approval"],
+            ["point", "acme-app", "--reason", "needs\tyour approval"],
+            ["point", "--reason", "needs your approval"],
+            ["point", "acme-app", "--done", "--reason", "needs your approval"],
+            ["point", "acme-app", "--severity", "info", "--reason", "needs your approval"],
+        ]
+        for args in refused {
+            XCTAssertEqual(runMux(args).status, 2, args.joined(separator: " "))
+        }
+        XCTAssertTrue(runMux(["point", "acme-app", "--reason", long]).output.contains("121 characters"))
+        XCTAssertEqual(try sqlite("SELECT COUNT(*) FROM review;"), ["0"])
+
+        // The limit counts characters, not bytes.
+        try store(mux: ["point", "acme-app", "--reason", String(repeating: "ß", count: 120)])
+        XCTAssertEqual(try sqlite("SELECT COUNT(*) FROM review;"), ["1"])
+    }
+
+    func testMuxPointRefusesAWindowTheSessionDoesNotHave() throws {
+        try seedPointSessions()
+        let missing = runMux(["point", "acme-app:9", "--reason", "needs your approval"])
+        XCTAssertEqual(missing.status, 2)
+        XCTAssertEqual(missing.output, "mux: point: no such window: acme-app:9 on localhost\n")
+        // A window of the same session name on another host does not count,
+        // and neither does a number that only holds a listed one.
+        for target in ["acme-app:3", "acme-app:0", "acme-app:12", "acme-app:27", "acme-app:71"] {
+            XCTAssertEqual(
+                runMux(["point", target, "--reason", "needs your approval"]).status, 2, target)
+        }
+        XCTAssertEqual(try sqlite("SELECT COUNT(*) FROM review;"), ["0"])
+
+        try store(mux: ["point", "acme-app:7", "--reason", "needs your approval"])
+        try store(mux: ["point", "billing:0", "--host", "devbox", "--reason", "needs your approval"])
+        XCTAssertEqual(
+            try sqlite("SELECT key FROM review ORDER BY key;"),
+            ["point:devbox:billing:0", "point:localhost:acme-app:7"])
+    }
+
+    func testMuxPointWritesOneKeyForAWindowWithLeadingZeros() throws {
+        try seedPointSessions()
+        try store(mux: ["point", "acme-app:007", "--reason", "needs your approval"])
+        try store(mux: ["point", "acme-app:7", "--reason", "asks a question"])
+        try store(mux: ["point", "billing:000", "--host", "devbox", "--reason", "needs your approval"])
+        XCTAssertEqual(try sqlite(pointRows), [
+            "point:devbox:billing:0|devbox|billing|0|blocked|needs your approval|0",
+            "point:localhost:acme-app:7|localhost|acme-app|7|blocked|asks a question|0",
+        ])
+        XCTAssertEqual(try sqlite("SELECT typeof(window) FROM review;"), ["integer", "integer"])
+        try store(mux: ["point", "acme-app:0007", "--done"])
+        XCTAssertEqual(try sqlite("SELECT key FROM review;"), ["point:devbox:billing:0"])
+    }
+
+    func testMuxPointRefusesAnOverLongWindow() throws {
+        try seedPointSessions()
+        let huge = String(repeating: "9", count: 23)
+        for args in [
+            ["point", "acme-app:\(huge)", "--reason", "needs your approval"],
+            ["point", "acme-app:100000", "--reason", "needs your approval"],
+            ["point", "acme-app:\(huge)", "--done"],
+        ] {
+            let result = runMux(args)
+            XCTAssertEqual(result.status, 2, args.joined(separator: " "))
+            XCTAssertEqual(result.output, "mux: point: window must be at most 5 digits\n")
+        }
+        XCTAssertEqual(try sqlite("SELECT COUNT(*) FROM review;"), ["0"])
+    }
+
+    /// A snapshot an older app build wrote has no window list: the window
+    /// form is refused, never taken unchecked.
+    func testMuxPointRefusesAWindowWhenTheSnapshotListsNoWindows() throws {
+        try makeStore().replaceSessions([sessionRow("acme-app", windowIndexes: nil)])
+        let result = runMux(["point", "acme-app:1", "--reason", "needs your approval"])
+        XCTAssertEqual(result.status, 2)
+        XCTAssertEqual(
+            result.output,
+            "mux: point: the snapshot lists no windows for acme-app on localhost; "
+                + "point at the session without a window\n")
+        XCTAssertEqual(try sqlite("SELECT COUNT(*) FROM review;"), ["0"])
+        try store(mux: ["point", "acme-app", "--reason", "needs your approval"])
+        XCTAssertEqual(try sqlite("SELECT key FROM review;"), ["point:localhost:acme-app"])
+    }
+
+    /// The `sessions` table of a DB an older build made has no window list.
+    /// Both the CLI and the app add the column, in either order.
+    func testAnOlderDatabaseGainsTheWindowListColumn() throws {
+        let oldSessions = """
+        CREATE TABLE sessions (
+          name TEXT NOT NULL, host TEXT NOT NULL DEFAULT 'localhost',
+          attached INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'inactive',
+          windows INTEGER NOT NULL DEFAULT 0, panes INTEGER NOT NULL DEFAULT 0,
+          cwd TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL,
+          PRIMARY KEY (host, name));
+        INSERT INTO sessions(name, windows, updated_at) VALUES('acme-app', 2, 1);
+        """
+        let hasColumn =
+            "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'window_indexes';"
+
+        // The CLI first.
+        _ = try sqlite(oldSessions)
+        XCTAssertEqual(try sqlite(hasColumn), ["0"])
+        let result = runMux(["point", "acme-app:1", "--reason", "needs your approval"])
+        XCTAssertEqual(result.status, 2)
+        XCTAssertTrue(result.output.hasPrefix("mux: point: the snapshot lists no windows"), result.output)
+        XCTAssertEqual(try sqlite(hasColumn), ["1"])
+        XCTAssertEqual(try sqlite("SELECT name, windows FROM sessions;"), ["acme-app|2"])
+        try store(mux: ["point", "acme-app", "--reason", "needs your approval"])
+        // Then the app: the column is there, and opening twice is safe.
+        try makeStore().replaceSessions([sessionRow("acme-app", windowIndexes: [1, 2])])
+        try makeStore().replaceSessions([sessionRow("acme-app", windowIndexes: [1, 2])])
+        try store(mux: ["point", "acme-app:1", "--reason", "needs your approval"])
+
+        // The app first.
+        try tearDownWithError()
+        _ = try sqlite(oldSessions)
+        let store = try makeStore()
+        XCTAssertEqual(try sqlite(hasColumn), ["1"])
+        XCTAssertEqual(try store.sessions().map(\.windowIndexes), [nil])
+        try store.replaceSessions([sessionRow("acme-app", windowIndexes: [1, 2])])
+        try self.store(mux: ["point", "acme-app:2", "--reason", "needs your approval"])
+        XCTAssertEqual(try sqlite("SELECT key FROM review;"), ["point:localhost:acme-app:2"])
+    }
+
+    func testMuxPointKeepsAtMostTwentyPointers() throws {
+        try seedPointSessions()
+        let rows = (1...20).map { n in
+            "('point:localhost:old-\(n)', 'localhost', 'old-\(n)', 'blocked', 'needs your approval', \(1000 + n), \(1000 + n))"
+        }
+        _ = try sqlite("""
+        INSERT INTO review(key, host, session, severity, text, created_at, updated_at)
+        VALUES \(rows.joined(separator: ",\n"));
+        """)
+        try store(mux: ["review", "add", "--key", "note", "--text", "a plain review note"])
+        _ = try sqlite("UPDATE review SET updated_at = 1 WHERE key = 'note';")
+        let pointers = "SELECT COUNT(*) FROM review WHERE key LIKE 'point:%';"
+        XCTAssertEqual(try sqlite(pointers), ["20"])
+
+        try store(mux: ["point", "acme-app", "--reason", "needs your approval"])
+        XCTAssertEqual(try sqlite(pointers), ["20"])
+        let keys = try sqlite("SELECT key FROM review;")
+        XCTAssertFalse(keys.contains("point:localhost:old-1"), "the oldest pointer is dropped")
+        XCTAssertTrue(keys.contains("point:localhost:old-2"))
+        XCTAssertTrue(keys.contains("point:localhost:acme-app"))
+        XCTAssertTrue(keys.contains("note"), "only pointers are capped")
+
+        // Updating a pointer that is already there drops nothing.
+        try store(mux: ["point", "acme-app", "--reason", "asks a question"])
+        XCTAssertTrue(try sqlite("SELECT key FROM review;").contains("point:localhost:old-2"))
+        // Two more drop the next two oldest.
+        try store(mux: ["point", "acme-app:1", "--reason", "needs your approval"])
+        try store(mux: ["point", "billing", "--host", "devbox", "--reason", "needs your approval"])
+        XCTAssertEqual(try sqlite(pointers), ["20"])
+        let later = try sqlite("SELECT key FROM review;")
+        XCTAssertFalse(later.contains("point:localhost:old-2"))
+        XCTAssertFalse(later.contains("point:localhost:old-3"))
+        XCTAssertTrue(later.contains("point:localhost:old-4"))
+        XCTAssertEqual(ManagerReviewItem.maxPointers, 20)
+    }
+
+    func testMuxPointRefusesDirectionAndZeroWidthCharacters() throws {
+        try seedPointSessions()
+        let ranges: [ClosedRange<UInt32>] = [0x200B...0x200F, 0x202A...0x202E, 0x2066...0x2069]
+        for value in ranges.joined() {
+            let scalar = try XCTUnwrap(Unicode.Scalar(value))
+            let result = runMux(["point", "acme-app", "--reason", "needs \(scalar)your approval"])
+            XCTAssertEqual(result.status, 2, String(value, radix: 16))
+            XCTAssertEqual(
+                result.output,
+                "mux: point: --reason must not contain zero-width or text-direction characters\n",
+                String(value, radix: 16))
+        }
+        XCTAssertEqual(try sqlite("SELECT COUNT(*) FROM review;"), ["0"])
+
+        // Their neighbours are text: "…" is E2 80 A6, "—" is E2 80 94.
+        try store(mux: ["point", "acme-app", "--reason", "waits… on you — ‘now’"])
+        XCTAssertEqual(try sqlite("SELECT COUNT(*) FROM review;"), ["1"])
+    }
+
+    func testMuxReviewAddRefusesAPointerKey() throws {
+        try seedPointSessions()
+        let result = runMux(["review", "add", "--key", "point:localhost:acme-app", "--text", "t"])
+        XCTAssertEqual(result.status, 2)
+        XCTAssertTrue(result.output.contains("reserved for mux point"), result.output)
+        XCTAssertEqual(runMux(["review", "add", "--key", "point:x", "--text", "t"]).status, 2)
+        XCTAssertEqual(try sqlite("SELECT COUNT(*) FROM review;"), ["0"])
+    }
+
+    func testOnlyAPointKeyIsAPointer() {
+        func item(_ key: String) -> ManagerReviewItem {
+            ManagerReviewItem(
+                key: key, host: "localhost", session: "acme-app", window: nil,
+                severity: .blocked, text: "needs your approval", updatedAt: 1, dismissed: false)
+        }
+        XCTAssertEqual(ManagerReviewItem.pointerPrefix, "point:")
+        XCTAssertTrue(item("point:localhost:acme-app").isPointer)
+        XCTAssertFalse(item("acme-app-perms").isPointer)
+        XCTAssertFalse(item("appoint:x").isPointer)
     }
 
     // MARK: CLI helpers

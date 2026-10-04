@@ -781,6 +781,53 @@ final class TmuxServiceTests: XCTestCase {
             statusProvider: StaticStatusProvider())
     }
 
+    func testAPhoneActionOnARemoteHostGoesThroughSshWithEachArgumentQuoted() {
+        let runner = FakeRunner()
+        let service = TmuxService(
+            host: Host(name: "devbox", sshAlias: "devbox"),
+            transport: SshTmuxTransport(host: "devbox", moshPath: nil),
+            runner: runner, statusProvider: StaticStatusProvider())
+        let ran = service.phoneTmux(["rename-window", "-t", "%3", "deploy fix"])
+        XCTAssertEqual(ran?.ok, true)
+        XCTAssertEqual(runner.calls.count, 1)
+        XCTAssertEqual(runner.calls[0].path, Ssh.sshPath)
+        let args = runner.calls[0].args
+        XCTAssertTrue(args.contains("devbox"))
+        // ssh joins the remote command and the remote shell reads it again:
+        // each tmux argument is one quoted word, so a space stays in the name.
+        let remote = args.joined(separator: " ")
+        for word in ["rename-window", "-t", "%3", "deploy fix"] {
+            XCTAssertTrue(remote.contains(Ssh.shellQuote(word)), word)
+        }
+        XCTAssertTrue(remote.hasSuffix(Ssh.shellQuote("deploy fix")))
+
+        // tmux refused the call and the host still answers: a failure of
+        // tmux, not of the way there.
+        let probe = (Ssh.opts(host: "devbox") + ["true"]).joined(separator: " ")
+        runner.defaultResponse = nil
+        runner.responses[probe] = ""
+        XCTAssertEqual(service.phoneTmux(["kill-window", "-t", "%3"])?.ok, false)
+        XCTAssertEqual(runner.calls.last?.args.last, "true")
+
+        // ssh does not get there: there is no tmux to call.
+        runner.responses[probe] = .some(nil)
+        XCTAssertNil(service.phoneTmux(["kill-window", "-t", "%3"]))
+    }
+
+    func testTheTreeCarriesEachSessionsIdAndGroupsKeepTheirOwn() {
+        // `a` and `a-view` are one group; the tree keeps `a`, with a's id.
+        let out = "a\t1\ta\t100\t$0\na-view\t0\ta\t90\t$1\nother\t0\t\t80\t$2\nold\t0\t\t70\n"
+        XCTAssertEqual(TmuxModel.parseSessionIds(out), ["a": "$0", "a-view": "$1", "other": "$2"])
+        XCTAssertTrue(TmuxModel.sessionsFormat.hasSuffix("\t#{session_id}"))
+        let runner = FakeRunner()
+        runner.responses["list-sessions -F \(TmuxModel.sessionsFormat)"] = out
+        let tree = makeService(runner).loadTree() ?? []
+        XCTAssertEqual(tree.map(\.name).sorted(), ["a", "old", "other"])
+        XCTAssertEqual(tree.first { $0.name == "a" }?.id, "$0")
+        XCTAssertEqual(tree.first { $0.name == "other" }?.id, "$2")
+        XCTAssertEqual(tree.first { $0.name == "old" }?.id, "")
+    }
+
     func testRemoteAttachUsesMoshWhenRequestedAndAvailable() {
         let cmd = remoteMoshService("/opt/homebrew/bin/mosh")
             .attachCommand(session: "api", useMosh: true)!
@@ -822,7 +869,7 @@ final class TmuxServiceTests: XCTestCase {
         let runner = FakeRunner()
         let name = makeService(runner).renameWindow(session: "web", window: 2, to: "  editor  ")
         XCTAssertEqual(name, "editor")
-        XCTAssertEqual(runner.argSequences, [["rename-window", "-t", "=web:2", "editor"]])
+        XCTAssertEqual(runner.argSequences, [["rename-window", "-t", "=web:2", "--", "editor"]])
     }
 
     func testRenameWindowRejectsEmptyName() {

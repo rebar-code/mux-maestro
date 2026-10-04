@@ -39,6 +39,34 @@
 		A00B1021 /* MobileAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00B1001 /* MobileAPI.swift */; };
 		A00B1012 /* MobileServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00B1002 /* MobileServer.swift */; };
 		A00B1022 /* MobileServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00B1002 /* MobileServer.swift */; };
+		A00B1019 /* MobileManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00B1009 /* MobileManager.swift */; };
+		A00B1029 /* MobileManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00B1009 /* MobileManager.swift */; };
+		A00B102A /* MobileManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00B100A /* MobileManagerTests.swift */; };
+		A00C1011 /* MobileVoice.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00C1001 /* MobileVoice.swift */; };
+		A00C1021 /* MobileVoice.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00C1001 /* MobileVoice.swift */; };
+		A00C1022 /* MobileVoiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00C1002 /* MobileVoiceTests.swift */; };
+		A0AB1022 /* LoopbackClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0AB1002 /* LoopbackClient.swift */; };
+		A00D1011 /* MobileReply.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00D1001 /* MobileReply.swift */; };
+		A00D1021 /* MobileReply.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00D1001 /* MobileReply.swift */; };
+		A00D1022 /* MobileReplyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00D1002 /* MobileReplyTests.swift */; };
+		A00D2011 /* MobileActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00D2001 /* MobileActions.swift */; };
+		A00D3011 /* MobileArtifacts.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00D3001 /* MobileArtifacts.swift */; };
+		A00D4011 /* MobileServing.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00D4001 /* MobileServing.swift */; };
+		A00E1011 /* MobilePush.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00E1001 /* MobilePush.swift */; };
+		A0121011 /* MobileTerminal.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0121001 /* MobileTerminal.swift */; };
+		A0121021 /* MobileTerminal.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0121001 /* MobileTerminal.swift */; };
+		A0121022 /* MobileTerminalTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0121002 /* MobileTerminalTests.swift */; };
+		A0111011 /* MobileSocket.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0111001 /* MobileSocket.swift */; };
+		A0111021 /* MobileSocket.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0111001 /* MobileSocket.swift */; };
+		A0111022 /* MobileSocketTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0111002 /* MobileSocketTests.swift */; };
+		A00D2021 /* MobileActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00D2001 /* MobileActions.swift */; };
+		A00D3021 /* MobileArtifacts.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00D3001 /* MobileArtifacts.swift */; };
+		A00D4021 /* MobileServing.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00D4001 /* MobileServing.swift */; };
+		A00E1021 /* MobilePush.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00E1001 /* MobilePush.swift */; };
+		A00D2022 /* MobileActionsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00D2002 /* MobileActionsTests.swift */; };
+		A00D3022 /* MobileArtifactsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00D3002 /* MobileArtifactsTests.swift */; };
+		A00D4022 /* MobileServingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00D4002 /* MobileServingTests.swift */; };
+		A00E1022 /* MobilePushTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00E1002 /* MobilePushTests.swift */; };
 		A00B1013 /* PhoneLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00B1003 /* PhoneLink.swift */; };
 		A00B1023 /* PhoneLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00B1003 /* PhoneLink.swift */; };
 		A00B1014 /* PhoneSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00B1004 /* PhoneSettingsView.swift */; };
@@ -74,6 +102,7 @@
 		C4B1E0A1 /* HostAddress.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4B1E0A3 /* HostAddress.swift */; };
 		C4B1E013 /* RunningViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4B1E003 /* RunningViewController.swift */; };
 		A0000F03 /* CloseWindowPrompt.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000F01 /* CloseWindowPrompt.swift */; };
+		A0AC0F03 /* WindowArchive.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0AC0F01 /* WindowArchive.swift */; };
 		A0000D08 /* WindowPRs.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000D06 /* WindowPRs.swift */; };
 		A00001B0 /* Diag.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00007B0 /* Diag.swift */; };
 		A0000301 /* TmuxModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000013 /* TmuxModelTests.swift */; };
@@ -152,7 +181,9 @@
 		C4B1E024 /* RunningTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4B1E004 /* RunningTests.swift */; };
 		C4B1E0A5 /* HostAddressTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4B1E0A4 /* HostAddressTests.swift */; };
 		A0000F04 /* CloseWindowPrompt.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000F01 /* CloseWindowPrompt.swift */; };
+		A0AC0F04 /* WindowArchive.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0AC0F01 /* WindowArchive.swift */; };
 		A0000F05 /* CloseWindowPromptTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000F02 /* CloseWindowPromptTests.swift */; };
+		A0AC0F05 /* WindowArchiveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0AC0F02 /* WindowArchiveTests.swift */; };
 		A0000D09 /* WindowPRs.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000D06 /* WindowPRs.swift */; };
 		A0000D0A /* WindowPRsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000D07 /* WindowPRsTests.swift */; };
 		A0000338 /* SettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000714 /* SettingsTests.swift */; };
@@ -187,6 +218,7 @@
 		B0D00021 /* BundledTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0D00001 /* BundledTools.swift */; };
 		B0D00022 /* SetupTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0D00002 /* SetupTools.swift */; };
 		B0D00025 /* BundledToolsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0D00005 /* BundledToolsTests.swift */; };
+		B0E00002 /* UserFacingTextTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0E00001 /* UserFacingTextTests.swift */; };
 		B0D00026 /* SetupToolsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0D00006 /* SetupToolsTests.swift */; };
 		A0071E11 /* ThreadLinks.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0071E01 /* ThreadLinks.swift */; };
 		A0071E12 /* ThreadLinks.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0071E01 /* ThreadLinks.swift */; };
@@ -250,6 +282,25 @@
 		A0057003 /* HostStatsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStatsTests.swift; sourceTree = "<group>"; };
 		A00B1001 /* MobileAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileAPI.swift; sourceTree = "<group>"; };
 		A00B1002 /* MobileServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileServer.swift; sourceTree = "<group>"; };
+		A00B1009 /* MobileManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileManager.swift; sourceTree = "<group>"; };
+		A00B100A /* MobileManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileManagerTests.swift; sourceTree = "<group>"; };
+		A00C1001 /* MobileVoice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileVoice.swift; sourceTree = "<group>"; };
+		A00C1002 /* MobileVoiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileVoiceTests.swift; sourceTree = "<group>"; };
+		A0AB1002 /* LoopbackClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoopbackClient.swift; sourceTree = "<group>"; };
+		A00D1001 /* MobileReply.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileReply.swift; sourceTree = "<group>"; };
+		A00D1002 /* MobileReplyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileReplyTests.swift; sourceTree = "<group>"; };
+		A00D2001 /* MobileActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileActions.swift; sourceTree = "<group>"; };
+		A00D3001 /* MobileArtifacts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileArtifacts.swift; sourceTree = "<group>"; };
+		A00D4001 /* MobileServing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileServing.swift; sourceTree = "<group>"; };
+		A00E1001 /* MobilePush.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobilePush.swift; sourceTree = "<group>"; };
+		A0121001 /* MobileTerminal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileTerminal.swift; sourceTree = "<group>"; };
+		A0121002 /* MobileTerminalTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileTerminalTests.swift; sourceTree = "<group>"; };
+		A0111001 /* MobileSocket.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileSocket.swift; sourceTree = "<group>"; };
+		A0111002 /* MobileSocketTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileSocketTests.swift; sourceTree = "<group>"; };
+		A00D2002 /* MobileActionsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileActionsTests.swift; sourceTree = "<group>"; };
+		A00D3002 /* MobileArtifactsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileArtifactsTests.swift; sourceTree = "<group>"; };
+		A00D4002 /* MobileServingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileServingTests.swift; sourceTree = "<group>"; };
+		A00E1002 /* MobilePushTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobilePushTests.swift; sourceTree = "<group>"; };
 		A00B1003 /* PhoneLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneLink.swift; sourceTree = "<group>"; };
 		A00B1004 /* PhoneSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneSettingsView.swift; sourceTree = "<group>"; };
 		A00B1005 /* MobileAPITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileAPITests.swift; sourceTree = "<group>"; };
@@ -278,6 +329,7 @@
 		C4B1E004 /* RunningTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunningTests.swift; sourceTree = "<group>"; };
 		C4B1E0A4 /* HostAddressTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostAddressTests.swift; sourceTree = "<group>"; };
 		A0000F02 /* CloseWindowPromptTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloseWindowPromptTests.swift; sourceTree = "<group>"; };
+		A0AC0F02 /* WindowArchiveTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowArchiveTests.swift; sourceTree = "<group>"; };
 		A0000D07 /* WindowPRsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowPRsTests.swift; sourceTree = "<group>"; };
 		A0000025 /* AddServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddServer.swift; sourceTree = "<group>"; };
 		A0000026 /* AddServerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddServerTests.swift; sourceTree = "<group>"; };
@@ -330,6 +382,7 @@
 		C4B1E0A3 /* HostAddress.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostAddress.swift; sourceTree = "<group>"; };
 		C4B1E003 /* RunningViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunningViewController.swift; sourceTree = "<group>"; };
 		A0000F01 /* CloseWindowPrompt.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloseWindowPrompt.swift; sourceTree = "<group>"; };
+		A0AC0F01 /* WindowArchive.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowArchive.swift; sourceTree = "<group>"; };
 		A0000D06 /* WindowPRs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowPRs.swift; sourceTree = "<group>"; };
 		A00007B0 /* Diag.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Diag.swift; sourceTree = "<group>"; };
 		A0000714 /* SettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsTests.swift; sourceTree = "<group>"; };
@@ -357,6 +410,7 @@
 		B0D00003 /* SetupWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupWindowController.swift; sourceTree = "<group>"; };
 		B0D00004 /* tools */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Resources/tools; sourceTree = "<group>"; };
 		B0D00005 /* BundledToolsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BundledToolsTests.swift; sourceTree = "<group>"; };
+		B0E00001 /* UserFacingTextTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserFacingTextTests.swift; sourceTree = "<group>"; };
 		B0D00006 /* SetupToolsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupToolsTests.swift; sourceTree = "<group>"; };
 		A0071E01 /* ThreadLinks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadLinks.swift; sourceTree = "<group>"; };
 		A0071E02 /* ThreadLinksTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadLinksTests.swift; sourceTree = "<group>"; };
@@ -431,6 +485,15 @@
 				A0057002 /* HostStatsCard.swift */,
 				A00B1001 /* MobileAPI.swift */,
 				A00B1002 /* MobileServer.swift */,
+				A00B1009 /* MobileManager.swift */,
+				A00C1001 /* MobileVoice.swift */,
+				A00D1001 /* MobileReply.swift */,
+				A00D2001 /* MobileActions.swift */,
+				A00D3001 /* MobileArtifacts.swift */,
+				A00D4001 /* MobileServing.swift */,
+				A00E1001 /* MobilePush.swift */,
+				A0121001 /* MobileTerminal.swift */,
+				A0111001 /* MobileSocket.swift */,
 				A00B1003 /* PhoneLink.swift */,
 				A00B1004 /* PhoneSettingsView.swift */,
 				A0000015 /* DetailViewController.swift */,
@@ -448,6 +511,7 @@
 				C4B1E0A3 /* HostAddress.swift */,
 				C4B1E003 /* RunningViewController.swift */,
 				A0000F01 /* CloseWindowPrompt.swift */,
+				A0AC0F01 /* WindowArchive.swift */,
 				A0000D06 /* WindowPRs.swift */,
 				A00007B0 /* Diag.swift */,
 				A0000018 /* SidebarDiff.swift */,
@@ -538,9 +602,20 @@
 				A0057003 /* HostStatsTests.swift */,
 				A00B1005 /* MobileAPITests.swift */,
 				A00B1006 /* MobileServerTests.swift */,
+				A00B100A /* MobileManagerTests.swift */,
+				A00C1002 /* MobileVoiceTests.swift */,
+				A0AB1002 /* LoopbackClient.swift */,
+				A00D1002 /* MobileReplyTests.swift */,
+				A00D2002 /* MobileActionsTests.swift */,
+				A00D3002 /* MobileArtifactsTests.swift */,
+				A00D4002 /* MobileServingTests.swift */,
+				A00E1002 /* MobilePushTests.swift */,
+				A0121002 /* MobileTerminalTests.swift */,
+				A0111002 /* MobileSocketTests.swift */,
 				A00B1007 /* PhoneLinkTests.swift */,
 				C4B1E0A4 /* HostAddressTests.swift */,
 				A0000F02 /* CloseWindowPromptTests.swift */,
+				A0AC0F02 /* WindowArchiveTests.swift */,
 				A0000D07 /* WindowPRsTests.swift */,
 				A0000714 /* SettingsTests.swift */,
 				DF1A7E5C0B2E4D6F00000002 /* DefaultsMigrationTests.swift */,
@@ -560,6 +635,7 @@
 				A00C4002 /* SessionSwitcherTests.swift */,
 				A0000793 /* ManagerStoreTests.swift */,
 				B0D00005 /* BundledToolsTests.swift */,
+				B0E00001 /* UserFacingTextTests.swift */,
 				B0D00006 /* SetupToolsTests.swift */,
 				A0071E02 /* ThreadLinksTests.swift */,
 				A11C0002 /* LinkRouteTests.swift */,
@@ -709,6 +785,15 @@
 				A0057012 /* HostStatsCard.swift in Sources */,
 				A00B1011 /* MobileAPI.swift in Sources */,
 				A00B1012 /* MobileServer.swift in Sources */,
+				A00B1019 /* MobileManager.swift in Sources */,
+				A00C1011 /* MobileVoice.swift in Sources */,
+				A00D1011 /* MobileReply.swift in Sources */,
+				A00D2011 /* MobileActions.swift in Sources */,
+				A00D3011 /* MobileArtifacts.swift in Sources */,
+				A00D4011 /* MobileServing.swift in Sources */,
+				A00E1011 /* MobilePush.swift in Sources */,
+				A0121011 /* MobileTerminal.swift in Sources */,
+				A0111011 /* MobileSocket.swift in Sources */,
 				A00B1013 /* PhoneLink.swift in Sources */,
 				A00B1014 /* PhoneSettingsView.swift in Sources */,
 				A00F6011 /* ManagerPaneDriver.swift in Sources */,
@@ -727,6 +812,7 @@
 				C4B1E0A1 /* HostAddress.swift in Sources */,
 				C4B1E013 /* RunningViewController.swift in Sources */,
 				A0000F03 /* CloseWindowPrompt.swift in Sources */,
+				A0AC0F03 /* WindowArchive.swift in Sources */,
 				A0000D08 /* WindowPRs.swift in Sources */,
 				A00001B0 /* Diag.swift in Sources */,
 				A0000113 /* SidebarDiff.swift in Sources */,
@@ -805,6 +891,25 @@
 				A0057023 /* HostStatsTests.swift in Sources */,
 				A00B1021 /* MobileAPI.swift in Sources */,
 				A00B1022 /* MobileServer.swift in Sources */,
+				A00B1029 /* MobileManager.swift in Sources */,
+				A00B102A /* MobileManagerTests.swift in Sources */,
+				A00C1021 /* MobileVoice.swift in Sources */,
+				A00C1022 /* MobileVoiceTests.swift in Sources */,
+				A0AB1022 /* LoopbackClient.swift in Sources */,
+				A00D1021 /* MobileReply.swift in Sources */,
+				A00D1022 /* MobileReplyTests.swift in Sources */,
+				A00D2021 /* MobileActions.swift in Sources */,
+				A00D3021 /* MobileArtifacts.swift in Sources */,
+				A00D4021 /* MobileServing.swift in Sources */,
+				A00E1021 /* MobilePush.swift in Sources */,
+				A0121021 /* MobileTerminal.swift in Sources */,
+				A0111021 /* MobileSocket.swift in Sources */,
+				A00D2022 /* MobileActionsTests.swift in Sources */,
+				A00D3022 /* MobileArtifactsTests.swift in Sources */,
+				A00D4022 /* MobileServingTests.swift in Sources */,
+				A00E1022 /* MobilePushTests.swift in Sources */,
+				A0121022 /* MobileTerminalTests.swift in Sources */,
+				A0111022 /* MobileSocketTests.swift in Sources */,
 				A00B1023 /* PhoneLink.swift in Sources */,
 				A00B1025 /* MobileAPITests.swift in Sources */,
 				A00B1026 /* MobileServerTests.swift in Sources */,
@@ -837,7 +942,9 @@
 				C4B1E024 /* RunningTests.swift in Sources */,
 				C4B1E0A5 /* HostAddressTests.swift in Sources */,
 				A0000F04 /* CloseWindowPrompt.swift in Sources */,
+				A0AC0F04 /* WindowArchive.swift in Sources */,
 				A0000F05 /* CloseWindowPromptTests.swift in Sources */,
+				A0AC0F05 /* WindowArchiveTests.swift in Sources */,
 				A0000D09 /* WindowPRs.swift in Sources */,
 				A0000D0A /* WindowPRsTests.swift in Sources */,
 				A0000337 /* Settings.swift in Sources */,
@@ -877,6 +984,7 @@
 				B0D00021 /* BundledTools.swift in Sources */,
 				B0D00022 /* SetupTools.swift in Sources */,
 				B0D00025 /* BundledToolsTests.swift in Sources */,
+				B0E00002 /* UserFacingTextTests.swift in Sources */,
 				B0D00026 /* SetupToolsTests.swift in Sources */,
 				A0071E12 /* ThreadLinks.swift in Sources */,
 				A0071E13 /* ThreadLinksTests.swift in Sources */,

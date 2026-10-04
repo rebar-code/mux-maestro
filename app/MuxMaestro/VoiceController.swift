@@ -35,6 +35,48 @@ protocol VoiceSpeech: AnyObject {
     func transcribe(_ samples: [Float]) async throws -> String
     func speak(_ text: AsyncStream<String>) async throws
     func stopSpeaking() async
+    /// Synthesize a reply as it streams in and hand over each sentence's audio
+    /// with its text, in order, instead of playing it. The phone plays it.
+    func synthesize(
+        _ text: AsyncStream<String>, onAudio: @escaping (SpeechAudio, String) -> Void
+    ) async throws
+}
+
+/// Loads that must not overlap: one runs at a time, and every caller waits
+/// until what it needs is there. A caller that needed more than the running
+/// load brought starts the next load itself.
+///
+/// Whoever wakes first after a load clears it. A waiter that only awaited the
+/// finished task again would never suspend, and on an actor that never lets
+/// the loader run to clear it.
+actor SerialLoads {
+    private var loading: Task<Void, Error>?
+
+    /// Run `load` until `ready` holds. `load`'s error goes to the caller that
+    /// started it; a waiter then tries its own load.
+    func ensure(
+        ready: @escaping () async -> Bool, load: @escaping () async throws -> Void
+    ) async throws {
+        while await !ready() {
+            if let running = loading {
+                _ = await running.result
+                if loading == running { loading = nil }
+                continue
+            }
+            let task = Task { try await load() }
+            loading = task
+            let result = await task.result
+            if loading == task { loading = nil }
+            try result.get()
+        }
+    }
+}
+
+/// Synthesized speech: mono floats and their rate.
+struct SpeechAudio: Equatable {
+    let samples: [Float]
+    let sampleRate: Double
+    var seconds: Double { Double(samples.count) / sampleRate }
 }
 
 /// Push-to-talk: one press starts a take, the next ends it. The take goes

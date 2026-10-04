@@ -1,6 +1,23 @@
+import { drafts } from './drafts';
 import { tokenFrom, withoutPair } from './pairing';
-import { frameParser, type Frame } from './sse';
-import type { ChatPage, Config, Host, Thread } from './types';
+import { frameParser, readOrStall, STALLED, type Frame } from './sse';
+import type {
+	ActionTarget,
+	ArtifactList,
+	ChatPage,
+	Command,
+	Config,
+	FindResult,
+	Host,
+	ManagerHome,
+	Mapping,
+	MappingList,
+	PromptState,
+	RunningList,
+	Thread,
+	TmuxAction,
+	TurnEnd
+} from './types';
 
 const TOKEN_KEY = 'mm.token';
 const TOKEN_HEADER = 'X-MuxMaestro-Token';
@@ -17,6 +34,8 @@ export function hasToken(): boolean {
 }
 
 export function setToken(value: string | null): void {
+	// Unpaired, or paired anew: what was typed under the old pairing does not stay.
+	if (value !== token) drafts.clear();
 	token = value;
 	try {
 		if (value === null) localStorage.removeItem(TOKEN_KEY);
@@ -49,9 +68,15 @@ export class ApiError extends Error {
 	constructor(
 		readonly status: number,
 		/** The `error` word in the response body, if it had one. */
-		readonly code: string | null
+		readonly code: string | null,
+		/** The sentence the server sent for the human, if it sent one. */
+		readonly detail: string | null = null,
+		/** Why a `not_sent` text was not submitted. */
+		readonly reason: string | null = null,
+		/** A `not_sent` text was taken out of the pane's input box again. */
+		readonly cleared: boolean | null = null
 	) {
-		super(`HTTP ${status}${code ? ` ${code}` : ''}`);
+		super(detail ?? `HTTP ${status}${code ? ` ${code}` : ''}`);
 	}
 
 	/**
@@ -68,36 +93,100 @@ export class ApiError extends Error {
 	}
 }
 
-async function errorCode(response: Response): Promise<string | null> {
+async function failure(response: Response): Promise<ApiError> {
 	try {
-		const body = (await response.json()) as { error?: unknown };
-		return typeof body.error === 'string' ? body.error : null;
+		const body = (await response.json()) as Record<string, unknown>;
+		return new ApiError(
+			response.status,
+			typeof body.error === 'string' ? body.error : null,
+			typeof body.message === 'string' ? body.message : null,
+			typeof body.reason === 'string' ? body.reason : null,
+			typeof body.cleared === 'boolean' ? body.cleared : null
+		);
 	} catch {
-		return null;
+		return new ApiError(response.status, null);
 	}
 }
 
+/** What a write sends: JSON, or bytes of a named type (or nothing). */
+type Write = { json: unknown } | { bytes: BodyInit | null; type?: string };
+
+/**
+ * Open the live terminal of thread `id`. A socket carries no header, and the
+ * token must never be in a URL, so it goes as the first message. It is sent
+ * here, so no other module holds it.
+ */
+export function openTerminal(id: string): WebSocket {
+	const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
+	const socket = new WebSocket(
+		`${scheme}//${location.host}/api/terminal/${encodeURIComponent(id)}`
+	);
+	socket.binaryType = 'arraybuffer';
+	socket.addEventListener('open', () => socket.send(token ?? ''), { once: true });
+	return socket;
+}
+
+/** Every API call goes through here, so every one carries the pairing token. */
 async function request(
 	path: string,
 	accept: string,
 	as?: string,
 	signal?: AbortSignal,
-	extra: Record<string, string> = {}
+	extra: Record<string, string> = {},
+	write?: Write
 ): Promise<Response> {
 	const sent = as ?? token;
+	const type = write && ('json' in write ? 'application/json' : write.type);
 	const response = await fetch(path, {
 		cache: 'no-store',
-		headers: { accept, ...extra, ...(sent ? { [TOKEN_HEADER]: sent } : {}) },
+		headers: {
+			accept,
+			...extra,
+			...(sent ? { [TOKEN_HEADER]: sent } : {}),
+			// The server refuses a write without this header, and a page on
+			// another origin cannot send it.
+			...(write ? { 'x-muxmaestro': '1' } : {}),
+			...(type ? { 'content-type': type } : {})
+		},
+		...(write
+			? { method: 'POST', body: 'json' in write ? JSON.stringify(write.json) : write.bytes }
+			: {}),
 		signal
 	});
 	// "Not modified": the answer to a request that named what it already has.
 	if (response.status === 304) return response;
-	if (!response.ok) throw new ApiError(response.status, await errorCode(response));
+	if (!response.ok) throw await failure(response);
 	return response;
 }
 
-async function get<T>(path: string, as?: string): Promise<T> {
-	return (await (await request(path, 'application/json', as)).json()) as T;
+/**
+ * A write whose body is a recording, or nothing. It carries the token and the
+ * write header like every other write; the answer is an event stream.
+ */
+export function postAudio(
+	path: string,
+	audio: ArrayBuffer | null,
+	signal?: AbortSignal
+): Promise<Response> {
+	return request(
+		path,
+		'text/event-stream',
+		undefined,
+		signal,
+		{},
+		{
+			bytes: audio,
+			...(audio ? { type: 'audio/wav' } : {})
+		}
+	);
+}
+
+function post(path: string, body: unknown, accept = 'application/json'): Promise<Response> {
+	return request(path, accept, undefined, undefined, {}, { json: body });
+}
+
+async function get<T>(path: string, as?: string, signal?: AbortSignal): Promise<T> {
+	return (await (await request(path, 'application/json', as, signal)).json()) as T;
 }
 
 /**
@@ -120,7 +209,10 @@ export async function readEvents(
 	}
 }
 
-const threadPath = (id: string): string => `/api/threads/${encodeURIComponent(id)}`;
+/** Where a thread's chat and screen are read from. */
+export const threadPath = (id: string): string => `/api/threads/${encodeURIComponent(id)}`;
+/** The manager pane is read the same way, from its own routes. */
+export const MANAGER_PATH = '/api/manager';
 
 export async function fetchThreads(): Promise<Thread[]> {
 	return (await get<{ threads: Thread[] }>('/api/threads')).threads;
@@ -130,8 +222,9 @@ export async function fetchHosts(): Promise<Host[]> {
 	return (await get<{ hosts: Host[] }>('/api/hosts')).hosts;
 }
 
-export function fetchChat(id: string, after?: number): Promise<ChatPage> {
-	return get<ChatPage>(`${threadPath(id)}/chat${after === undefined ? '' : `?after=${after}`}`);
+/** `base`: `threadPath(id)` or `MANAGER_PATH`. */
+export function fetchChat(base: string, after?: number): Promise<ChatPage> {
+	return get<ChatPage>(`${base}/chat${after === undefined ? '' : `?after=${after}`}`);
 }
 
 export interface ScreenPage {
@@ -149,12 +242,12 @@ export interface ScreenPage {
  * `etag`: the tag of the text already held; null comes back when it has not changed.
  */
 export async function fetchScreen(
-	id: string,
+	base: string,
 	lines?: number,
 	etag?: string | null
 ): Promise<ScreenPage | null> {
 	const response = await request(
-		`${threadPath(id)}/screen${lines === undefined ? '' : `?lines=${lines}`}`,
+		`${base}/screen${lines === undefined ? '' : `?lines=${lines}`}`,
 		'application/json',
 		undefined,
 		undefined,
@@ -173,4 +266,248 @@ export async function fetchScreen(
 /** `as`: ask with this token, not the stored one (to test a token before keeping it). */
 export function fetchConfig(as?: string): Promise<Config> {
 	return get<Config>('/api/config', as);
+}
+
+/** Type `text` into the thread's pane and submit it. */
+export async function sendText(id: string, text: string): Promise<void> {
+	await post(`${threadPath(id)}/text`, { text });
+}
+
+/**
+ * Press one key in a pane. `base`: `threadPath(id)` or `MANAGER_PATH`. `key`
+ * is a name from `reply.ts`. `prompt` names the prompt the phone shows: a
+ * pane that waits on another one answers 409 `stale` and takes no key.
+ * `terminal`: the pane's own text was on screen at the tap, so the human could
+ * read a prompt the card cannot hold.
+ */
+export async function sendKey(
+	base: string,
+	key: string,
+	prompt: string | null,
+	terminal: boolean
+): Promise<void> {
+	await post(`${base}/key`, {
+		key,
+		...(prompt ? { prompt } : {}),
+		...(terminal ? { terminal } : {})
+	});
+}
+
+/** What a pane asks now. `base`: `threadPath(id)` or `MANAGER_PATH`. */
+export async function fetchPrompt(base: string): Promise<PromptState> {
+	const body = await get<Partial<PromptState>>(`${base}/prompt`);
+	const prompt = body.prompt ?? null;
+	return { prompt, id: body.id ?? prompt?.id ?? null };
+}
+
+/**
+ * Answer the prompt `prompt` with one of its options, or cancel it. A prompt
+ * that changed answers 409 `stale`. `base`: `threadPath(id)` or `MANAGER_PATH`.
+ */
+export async function answerPrompt(
+	base: string,
+	prompt: string,
+	choice: { option: number } | { cancel: true }
+): Promise<void> {
+	await post(`${base}/answer`, { prompt, ...choice });
+}
+
+export async function fetchCommands(id: string): Promise<Command[]> {
+	return (await get<{ commands: Command[] }>(`${threadPath(id)}/commands`)).commands;
+}
+
+/** What the Mac says of a file it saved. */
+export interface Uploaded {
+	/** Where the file is on the Mac. A name that was taken got a number. */
+	path: string;
+	/** The path as it is typed into a pane: quoted when it has to be. */
+	text: string;
+}
+
+function refusalOf(xhr: XMLHttpRequest): ApiError {
+	try {
+		const body = JSON.parse(xhr.responseText) as Record<string, unknown>;
+		return new ApiError(
+			xhr.status,
+			typeof body.error === 'string' ? body.error : null,
+			typeof body.message === 'string' ? body.message : null,
+			typeof body.reason === 'string' ? body.reason : null,
+			typeof body.cleared === 'boolean' ? body.cleared : null
+		);
+	} catch {
+		return new ApiError(xhr.status, null);
+	}
+}
+
+/**
+ * Put `file` in the thread's directory under `name`. Nothing is typed into
+ * the pane: the caller gets the path, to put it in the reply.
+ *
+ * The one request that is not a `fetch`: `fetch` cannot say how much of a
+ * body has gone out, and a photo over a phone link needs a progress bar. It
+ * carries the token and the write header like every other write, and a
+ * refusal is the same `ApiError`. No answer at all (offline, or the Mac out
+ * of reach) rejects with a plain `Error`; `signal` aborts it.
+ */
+export function uploadFile(
+	id: string,
+	file: Blob,
+	name: string,
+	onProgress: (sent: number, total: number) => void,
+	signal: AbortSignal
+): Promise<Uploaded> {
+	return new Promise((resolve, reject) => {
+		if (signal.aborted) return reject(new DOMException('Aborted', 'AbortError'));
+		const xhr = new XMLHttpRequest();
+		xhr.open('POST', `${threadPath(id)}/upload?name=${encodeURIComponent(name)}&paste=0`);
+		xhr.setRequestHeader('accept', 'application/json');
+		xhr.setRequestHeader('content-type', 'application/octet-stream');
+		xhr.setRequestHeader('x-muxmaestro', '1');
+		if (token) xhr.setRequestHeader(TOKEN_HEADER, token);
+		const abort = (): void => xhr.abort();
+		signal.addEventListener('abort', abort, { once: true });
+		const settle = (): void => signal.removeEventListener('abort', abort);
+		xhr.upload.onprogress = (event) => {
+			if (event.lengthComputable) onProgress(event.loaded, event.total);
+		};
+		xhr.onload = () => {
+			settle();
+			if (xhr.status < 200 || xhr.status >= 300) return reject(refusalOf(xhr));
+			try {
+				const body = JSON.parse(xhr.responseText) as Partial<Uploaded>;
+				const path = body.path ?? '';
+				resolve({ path, text: body.text ?? path });
+			} catch {
+				reject(new ApiError(xhr.status, null));
+			}
+		};
+		xhr.onerror = () => {
+			settle();
+			reject(new Error('No answer'));
+		};
+		xhr.onabort = () => {
+			settle();
+			reject(new DOMException('Aborted', 'AbortError'));
+		};
+		xhr.send(file);
+	});
+}
+
+/** What a session action answers: the new window's thread, or the new session's name. */
+export interface ActionResult {
+	thread?: string;
+	session?: string;
+}
+
+/**
+ * Run one session action on the Mac. A kill must carry `confirm: true`; the
+ * Mac refuses it otherwise.
+ */
+export async function tmuxAction(
+	action: TmuxAction,
+	body: (ActionTarget | { host: string }) & { name?: string; dir?: string; confirm?: true }
+): Promise<ActionResult> {
+	return (await (await post(`/api/tmux/${action}`, body)).json()) as ActionResult;
+}
+
+/** The directories a host offers for a new session. */
+export async function fetchDirs(host: string): Promise<string[]> {
+	return (await get<{ dirs: string[] }>(`/api/hosts/${encodeURIComponent(host)}/dirs`)).dirs;
+}
+
+/** Find `query` in the thread's scrollback. */
+export function fetchFind(id: string, query: string, signal?: AbortSignal): Promise<FindResult> {
+	return get<FindResult>(
+		`${threadPath(id)}/find?q=${encodeURIComponent(query)}`,
+		undefined,
+		signal
+	);
+}
+
+export function fetchArtifacts(id: string): Promise<ArtifactList> {
+	return get<ArtifactList>(`${threadPath(id)}/artifacts`);
+}
+
+/**
+ * One artifact's bytes. The file is named by the id the Mac gave it, never by
+ * a path. It is fetched (the token rides in a header) and never linked to.
+ */
+export async function fetchFile(id: string, file: string, signal?: AbortSignal): Promise<Blob> {
+	const path = `${threadPath(id)}/file?id=${encodeURIComponent(file)}`;
+	return (await request(path, '*/*', undefined, signal)).blob();
+}
+
+export function fetchRunning(id: string): Promise<RunningList> {
+	return get<RunningList>(`${threadPath(id)}/running`);
+}
+
+export function fetchMappings(): Promise<MappingList> {
+	return get<MappingList>('/api/servers');
+}
+
+/** Ask the Mac to publish one of the thread's local ports on the tailnet. */
+export async function openServer(id: string, port: number): Promise<Mapping> {
+	return (await (await post('/api/servers/open', { thread: id, port })).json()) as Mapping;
+}
+
+export async function closeServer(port: number): Promise<void> {
+	await post('/api/servers/close', { port });
+}
+
+/** The Mac's push key: what this phone subscribes with. */
+export function fetchPushKey(): Promise<{ key: string }> {
+	return get<{ key: string }>('/api/push/key');
+}
+
+/** Hand the Mac this phone's push subscription, as the browser wrote it. */
+export async function subscribePush(subscription: PushSubscriptionJSON): Promise<void> {
+	await post('/api/push/subscribe', subscription);
+}
+
+export async function unsubscribePush(endpoint: string): Promise<void> {
+	await post('/api/push/unsubscribe', { endpoint });
+}
+
+/** Say which thread this phone shows (`null`: none), so it sends no push here. */
+export async function focusPush(endpoint: string, thread: string | null): Promise<void> {
+	await post('/api/push/focus', { endpoint, thread });
+}
+
+export function fetchManager(): Promise<ManagerHome> {
+	return get<ManagerHome>('/api/manager');
+}
+
+export async function dismissReview(key: string): Promise<void> {
+	await post('/api/manager/dismiss', { key });
+}
+
+/** The Mac pings a quiet turn stream every 15 s; three missed pings is a dead stream. */
+const TURN_STALL_MS = 45_000;
+
+/**
+ * Run one manager turn. `onDelta` gets the reply as it is written. A turn the
+ * Mac refuses to start throws an `ApiError` whose `detail` says why.
+ */
+export async function sendManagerText(
+	text: string,
+	onDelta: (text: string) => void
+): Promise<TurnEnd> {
+	const response = await post('/api/manager/text', { text }, 'text/event-stream');
+	const reader = response.body?.pipeThrough(new TextDecoderStream()).getReader();
+	const parse = frameParser();
+	while (reader) {
+		const chunk = await readOrStall(() => reader.read(), TURN_STALL_MS);
+		if (chunk === STALLED) {
+			void reader.cancel();
+			break;
+		}
+		const { done, value } = chunk;
+		if (done) break;
+		for (const frame of parse(value)) {
+			if (frame.event === 'delta') onDelta((JSON.parse(frame.data) as { text: string }).text);
+			else if (frame.event === 'end') return JSON.parse(frame.data) as TurnEnd;
+		}
+	}
+	// The stream closed with no end: the turn may still be running on the Mac.
+	return { outcome: 'timeout', reply: '', message: 'Connection lost' };
 }
