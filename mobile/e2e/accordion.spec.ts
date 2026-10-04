@@ -85,14 +85,13 @@ test('the + on the header does not toggle the session', async ({ page }) => {
 	const add = head(page).getByRole('button', { name: 'New window in acme-app' });
 	// It is its own button beside the header button, not inside it.
 	await expect(fold(page).locator('.add')).toHaveCount(0);
+	// With session actions off on the Mac the ＋ is disabled: a tap does nothing.
 	await add.click({ force: true });
-	await add.dispatchEvent('click');
 	await expect(fold(page)).toHaveAttribute('aria-expanded', 'true');
 	await expect(rows(page).first()).toBeVisible();
 
 	await fold(page).click();
 	await add.click({ force: true });
-	await add.dispatchEvent('click');
 	await expect(fold(page)).toHaveAttribute('aria-expanded', 'false');
 });
 
@@ -116,8 +115,10 @@ test('opening a thread from elsewhere expands its session', async ({ page }) => 
 	await expect(fold(page)).toHaveAttribute('aria-expanded', 'false');
 	await page.mouse.click(380, 400); // the scrim: close the drawer
 
-	// The home list is "elsewhere": it opens the thread without the sidebar.
-	await page.locator(`.item[data-thread="${WAITING}"]`).click();
+	// The home board is "elsewhere": it opens the thread without the sidebar.
+	// The board sits below the footer now, so the link is followed directly:
+	// how the board is reached is the manager home's own test.
+	await page.locator(`.item[data-thread="${WAITING}"]`).dispatchEvent('click');
 	await expect(page).toHaveURL(/\/t\/localhost(:|%3A)1$/);
 	await openDrawer(page);
 	await expect(fold(page)).toHaveAttribute('aria-expanded', 'true');
