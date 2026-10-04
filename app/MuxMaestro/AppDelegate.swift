@@ -113,6 +113,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             screen: { [registry] lines in
                 registry.local.captureScrollback(target: ManagerHome.sessionName, lines: lines)
+            },
+            io: { [registry] in
+                // The server takes the manager's state from `pane` above; the
+                // per-thread state source is not used for it.
+                let io = registry.local.phonePane(target: ManagerHome.sessionName) { thread in
+                    MobilePaneState(status: thread.status, since: thread.since)
+                }
+                return (ManagerHome.sessionName, io)
             }),
         // The phone's takes use the Mac's own engine. Nothing plays here: the
         // phone gets the samples.

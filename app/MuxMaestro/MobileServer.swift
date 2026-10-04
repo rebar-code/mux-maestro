@@ -39,6 +39,9 @@ final class MobileServer {
         /// The pane's last `lines` lines and its screen, with colour escapes.
         /// Called off the server queue and may block.
         var screen: (_ lines: Int) -> String?
+        /// The manager's pane, to answer a prompt it waits on: its tmux
+        /// target and what may be done to it. nil where there is none.
+        var io: () -> (target: String, io: MobilePaneIO)? = { nil }
     }
 
     /// Speech for the phone: the Mac's own engine. nil where there is none
@@ -247,7 +250,7 @@ final class MobileServer {
             where (thread.status == .waiting) != (self.snapshot.thread(id: thread.id)?.status == .waiting) {
                 self.promptSeen[thread.id] = nil
             }
-            let live = Set(snapshot.threads.map(\.id))
+            let live = Set(snapshot.threads.map(\.id)).union([Self.managerKey])
             self.promptSequence = self.promptSequence.filter { live.contains($0.key) }
             self.promptSeen = self.promptSeen.filter { live.contains($0.key) }
             self.snapshot = snapshot
@@ -604,6 +607,28 @@ final class MobileServer {
             }
             manager.dismiss(key)
             send(.json(["ok": true]), to: client, head: head)
+        case .managerPrompt:
+            guard let (manager, _, io) = managerPane(client) else { return }
+            reply(to: client) {
+                .json(MobileReply.promptBody(state: Self.state(manager.pane().status), io: io))
+            }
+        case .managerAnswer:
+            guard let answer = MobileReply.answer(in: request.body) else {
+                return send(.error(400, "bad_request"), to: client, head: head)
+            }
+            managerWrite(client) { target, io, state in
+                MobileReply.answer(
+                    prompt: answer.prompt, option: answer.option, target: target, io: io, state: state)
+            }
+        case .managerKey:
+            guard let press = MobileReply.key(in: request.body) else {
+                return send(.error(400, "bad_key"), to: client, head: head)
+            }
+            managerWrite(client) { target, io, state in
+                MobileReply.press(
+                    press.key, prompt: press.prompt, terminal: press.terminal, target: target, io: io,
+                    state: state)
+            }
         case .voice:
             startVoice(request, client: client)
         case .voiceReplay:
@@ -632,7 +657,8 @@ final class MobileServer {
             // between another write's paste and its Enter.
             write(to: id, client: client) { thread, io, state in
                 MobileReply.press(
-                    press.key, prompt: press.prompt, target: thread.pane, io: io, state: state())
+                    press.key, prompt: press.prompt, terminal: press.terminal, target: thread.pane,
+                    io: io, state: state())
             }
         case .prompt(let id):
             guard let (_, io) = pane(id, client: client) else { return }
@@ -661,6 +687,57 @@ final class MobileServer {
                 MobileReply.upload(
                     request.body, name: name, thread: thread, io: io, limit: limit, paste: paste,
                     state: state)
+            }
+        }
+    }
+
+    // MARK: The manager's own prompt
+
+    /// The lock and the prompt counter of the manager's pane are kept under
+    /// this name; no thread id has this shape.
+    private static let managerKey = "manager"
+
+    /// The manager's pane, to answer what it waits on. Answers the client and
+    /// returns nil when there is none.
+    private func managerPane(_ client: Client) -> (manager: Manager, target: String, io: MobilePaneIO)? {
+        guard let manager, var pane = manager.io() else {
+            send(.error(503, "unavailable", message: MobileManager.offMessage), to: client, head: false)
+            return nil
+        }
+        pane.io.sequence = sequence(of: Self.managerKey)
+        return (manager, pane.target, pane.io)
+    }
+
+    /// What the manager's pane is doing, as the reply rules take it. nil when
+    /// the manager is not running.
+    private static func state(_ status: MobileManagerStatus) -> MobilePaneState? {
+        switch status {
+        case .off: return nil
+        case .unknown: return MobilePaneState(status: .unknown)
+        case .idle: return MobilePaneState(status: .idle)
+        case .busy: return MobilePaneState(status: .busy)
+        case .waiting: return MobilePaneState(status: .waiting)
+        }
+    }
+
+    /// One write to the manager's pane, off the server queue and one at a time.
+    private func managerWrite(
+        _ client: Client, _ body: @escaping (String, MobilePaneIO, MobilePaneState?) -> MobileResponse
+    ) {
+        guard let (manager, target, io) = managerPane(client) else { return }
+        guard writing.insert(Self.managerKey).inserted else {
+            return send(.error(409, "busy", message: MobileReply.sending), to: client, head: false)
+        }
+        work.async { [weak self, weak client] in
+            let state = Self.state(manager.pane().status)
+            let response = state == nil
+                ? MobileResponse.error(503, "unavailable", message: MobileManager.offMessage)
+                : body(target, io, state)
+            self?.queue.async {
+                guard let self else { return }
+                self.writing.remove(Self.managerKey)
+                guard let client, self.clients[ObjectIdentifier(client)] != nil else { return }
+                self.send(response, to: client, head: false)
             }
         }
     }

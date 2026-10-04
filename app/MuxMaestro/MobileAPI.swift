@@ -193,6 +193,12 @@ enum MobileEndpoint: Equatable {
     case managerChat(after: UInt64?)
     /// The manager pane's terminal text, like a thread's screen.
     case managerScreen(lines: Int)
+    /// The prompt the manager's own pane waits on, as choices.
+    case managerPrompt
+    /// Pick one choice of that prompt, or back out of it.
+    case managerAnswer
+    /// Press one whitelisted key in the manager's pane.
+    case managerKey
     /// One voice take: audio in; transcript, reply and audio stream back.
     case voice
     /// Read the target's last reply again.
@@ -216,7 +222,9 @@ enum MobileEndpoint: Equatable {
     var capability: MobileCapability {
         switch self {
         case .config, .threads, .hosts, .events, .chat, .screen: return .access
-        case .manager, .managerText, .managerDismiss, .managerChat, .managerScreen: return .manager
+        case .manager, .managerText, .managerDismiss, .managerChat, .managerScreen, .managerPrompt,
+             .managerAnswer, .managerKey:
+            return .manager
         case .voice, .voiceReplay, .voiceWarm: return .voice
         case .text, .prompt, .answer, .commands: return .replies
         case .key: return .keyBar
@@ -229,11 +237,22 @@ enum MobileEndpoint: Equatable {
     var method: String {
         switch self {
         case .config, .threads, .hosts, .events, .chat, .screen, .manager, .managerChat,
-             .managerScreen, .prompt, .commands:
+             .managerScreen, .managerPrompt, .prompt, .commands:
             return "GET"
-        case .managerText, .managerDismiss, .voice, .voiceReplay, .voiceWarm, .text, .key, .answer,
-             .upload:
+        case .managerText, .managerDismiss, .managerAnswer, .managerKey, .voice, .voiceReplay,
+             .voiceWarm, .text, .key, .answer, .upload:
             return "POST"
+        }
+    }
+
+    /// A second feature the endpoint needs besides its own. Answering the
+    /// manager's prompt types into its pane, as a reply to a thread does, so
+    /// it needs the switch for that too.
+    var also: MobileCapability? {
+        switch self {
+        case .managerAnswer: return .replies
+        case .managerKey: return .keyBar
+        default: return nil
         }
     }
 }
@@ -375,6 +394,9 @@ enum MobileAPI {
             endpoint = .managerChat(after: request.query["after"].flatMap(UInt64.init))
         case 3 where segments[1] == "manager" && segments[2] == "screen":
             endpoint = .managerScreen(lines: screenLines(request.query["lines"]))
+        case 3 where segments[1] == "manager" && segments[2] == "prompt": endpoint = .managerPrompt
+        case 3 where segments[1] == "manager" && segments[2] == "answer": endpoint = .managerAnswer
+        case 3 where segments[1] == "manager" && segments[2] == "key": endpoint = .managerKey
         case 2 where segments[1] == "voice": endpoint = .voice
         case 3 where segments[1] == "voice" && segments[2] == "replay": endpoint = .voiceReplay
         case 3 where segments[1] == "voice" && segments[2] == "warm": endpoint = .voiceWarm
@@ -399,6 +421,11 @@ enum MobileAPI {
         }
         guard config.allows(endpoint.capability) || promptForKeys else {
             return .disabled(endpoint.capability)
+        }
+        if let also = endpoint.also, !config.allows(also) { return .disabled(also) }
+        // The manager's prompt is read by whichever can act on it.
+        if endpoint == .managerPrompt, !config.allows(.replies), !config.allows(.keyBar) {
+            return .disabled(.replies)
         }
         return request.method == endpoint.method ? .api(endpoint) : .methodNotAllowed
     }

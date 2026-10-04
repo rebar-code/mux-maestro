@@ -32,6 +32,9 @@ final class MobileServerTests: XCTestCase {
             set { lock.lock(); _screen = newValue; lock.unlock() }
         }
 
+        /// The manager's own pane, for a prompt it waits on.
+        let pane = FakePane()
+
         var status: MobileManagerStatus {
             get { lock.lock(); defer { lock.unlock() }; return _status }
             set { lock.lock(); _status = newValue; lock.unlock() }
@@ -51,7 +54,8 @@ final class MobileServerTests: XCTestCase {
                     }
                 },
                 dismiss: { [self] key in lock.lock(); _dismissed.append(key); lock.unlock() },
-                screen: { [self] _ in screen })
+                screen: { [self] _ in screen },
+                io: { [self] in ("mux-manager", pane.io) })
         }
     }
     /// What the fake pane shows, and the line counts the server asked it for.
@@ -1736,5 +1740,154 @@ final class MobileServerTests: XCTestCase {
         repliesOn()
         pane.status = .busy
         XCTAssertEqual(post(Self.thread + "/upload?name=b.png", json: "demo").status, 409)
+    }
+
+    // MARK: the manager's own prompt
+
+    private func managerPrompt() throws -> [String: Any] {
+        try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(get("/api/manager/prompt").body.utf8)) as? [String: Any])
+    }
+
+    func testTheManagerHomeShowsTheManagersPromptAndTakesATappedAnswer() throws {
+        server.configure(MobileConfig(capabilities: [.manager, .replies]))
+        manager.status = .waiting
+        manager.pane.screen = DemoPrompt.question
+        manager.pane.cursor = .lastLine
+        let shown = try managerPrompt()
+        let prompt = try XCTUnwrap(shown["prompt"] as? [String: Any])
+        XCTAssertEqual(prompt["question"] as? String, "Which store should the cache use?")
+        XCTAssertEqual(prompt["selected"] as? Int, 1)
+        XCTAssertEqual((prompt["options"] as? [[String: Any]])?.count, 3)
+        let id = try XCTUnwrap(shown["id"] as? String)
+
+        // The same guards as a thread's card: the id, and a choice on the card.
+        XCTAssertEqual(post("/api/manager/answer", json: #"{"prompt":"9f2c","option":1}"#).status, 409)
+        XCTAssertEqual(post("/api/manager/answer", json: #"{"prompt":"\#(id)","option":7}"#).status, 400)
+        XCTAssertEqual(manager.pane.argv.count, 0)
+        XCTAssertEqual(post("/api/manager/answer", json: #"{"prompt":"\#(id)","option":2}"#).status, 200)
+        XCTAssertEqual(manager.pane.argv, [["send-keys", "-t", "mux-manager", "2"]])
+        // Answered: the same words after this are another prompt.
+        XCTAssertNotEqual(try XCTUnwrap(try managerPrompt()["id"] as? String), id)
+        XCTAssertEqual(post("/api/manager/answer", json: #"{"prompt":"\#(id)","option":1}"#).status, 409)
+        // It typed into the manager's pane and no other, and sent no turn.
+        XCTAssertEqual(pane.argv.count, 0)
+        XCTAssertEqual(manager.sent, [])
+        // A manager that waits on nothing has no card.
+        manager.status = .idle
+        manager.pane.screen = DemoPrompt.claudeIdle
+        manager.pane.cursor = .inBox
+        XCTAssertEqual(get("/api/manager/prompt").body, #"{"id":null,"prompt":null}"#)
+    }
+
+    func testCancelBacksOutOfThePromptTheCardShows() throws {
+        server.configure(MobileConfig(capabilities: [.manager, .replies]))
+        manager.status = .waiting
+        manager.pane.screen = DemoPrompt.question
+        manager.pane.cursor = .lastLine
+        let id = try XCTUnwrap(try managerPrompt()["id"] as? String)
+        XCTAssertEqual(post("/api/manager/answer", json: #"{"prompt":"9f2c","cancel":true}"#).status, 409)
+        XCTAssertEqual(manager.pane.argv.count, 0)
+        XCTAssertEqual(post("/api/manager/answer", json: #"{"prompt":"\#(id)","cancel":true}"#).status, 200)
+        XCTAssertEqual(manager.pane.argv, [["send-keys", "-t", "mux-manager", "Escape"]])
+
+        // The same for a thread's card.
+        pane.status = .waiting
+        pane.screen = DemoPrompt.permission
+        pane.cursor = .lastLine
+        let thread = try promptID()
+        XCTAssertEqual(post(Self.thread + "/answer", json: #"{"prompt":"\#(thread)","cancel":true}"#).status, 200)
+        XCTAssertEqual(pane.argv, [["send-keys", "-t", "%12", "Escape"]])
+        // Neither an option and a cancel, nor a cancel that is not true.
+        for body in [#"{"prompt":"x","cancel":false}"#, #"{"prompt":"x","cancel":"yes"}"#, #"{"prompt":"x"}"#] {
+            XCTAssertEqual(post("/api/manager/answer", json: body).status, 400, body)
+        }
+    }
+
+    func testTheManagersPromptRoutesNeedTheManagerSwitchAndTheirOwn() {
+        manager.status = .waiting
+        manager.pane.screen = DemoPrompt.question
+        manager.pane.cursor = .lastLine
+        let answer = #"{"prompt":"9f2c","option":1}"#
+        let key = #"{"key":"Escape"}"#
+        // Replies and the key bar without the manager switch, and the reverse.
+        for capabilities in [[MobileCapability.replies, .keyBar], [.manager], [.manager, .voice, .upload]] {
+            server.configure(MobileConfig(capabilities: Set(capabilities)))
+            for refused in [
+                get("/api/manager/prompt"), post("/api/manager/answer", json: answer),
+                post("/api/manager/key", json: key),
+            ] {
+                XCTAssertEqual(refused.status, 403, "\(capabilities)")
+                XCTAssertEqual(refused.body, #"{"error":"disabled"}"#)
+            }
+        }
+        // The key bar alone reads the prompt and presses keys, but answers nothing.
+        server.configure(MobileConfig(capabilities: [.manager, .keyBar]))
+        XCTAssertEqual(get("/api/manager/prompt").status, 200)
+        XCTAssertEqual(post("/api/manager/answer", json: answer).status, 403)
+        server.configure(MobileConfig(capabilities: [.manager, .replies]))
+        XCTAssertEqual(post("/api/manager/key", json: key).status, 403)
+        // The token and the origin, as for every write.
+        server.configure(MobileConfig(capabilities: [.manager, .replies, .keyBar]))
+        for path in ["/api/manager/answer", "/api/manager/key"] {
+            let body = path.hasSuffix("key") ? key : answer
+            XCTAssertEqual(post(path, json: body, token: nil).status, 401, path)
+            XCTAssertEqual(post(path, json: body, origin: "https://evil.example.com").status, 403, path)
+            XCTAssertEqual(post(path, json: body, writeHeader: false).status, 403, path)
+        }
+        XCTAssertEqual(get("/api/manager/prompt", token: nil).status, 401)
+        XCTAssertEqual(manager.pane.argv.count, 0)
+        // A manager that is not running has no pane.
+        manager.status = .off
+        XCTAssertEqual(post("/api/manager/key", json: key).status, 503)
+    }
+
+    func testAPromptThatCannotBeReadIsAnsweredFromTheTerminalViewWithTheKeyBar() throws {
+        server.configure(MobileConfig(capabilities: [.manager, .replies, .keyBar]))
+        manager.status = .waiting
+        manager.pane.screen = DemoPrompt.yesNo
+        manager.pane.cursor = .lastLine
+        let shown = try managerPrompt()
+        XCTAssertTrue(shown["prompt"] is NSNull)
+        let id = try XCTUnwrap(shown["id"] as? String)
+        // No card: Enter is refused, unless the phone shows the terminal,
+        // where the human reads the prompt itself.
+        let unseen = post("/api/manager/key", json: #"{"key":"Enter","prompt":"\#(id)"}"#)
+        XCTAssertEqual(unseen.status, 409)
+        XCTAssertEqual(unseen.body, #"{"error":"unseen","message":"Open the terminal to answer"}"#)
+        XCTAssertEqual(
+            post("/api/manager/key", json: #"{"key":"Enter","prompt":"\#(id)","terminal":true}"#).status, 200)
+        // The terminal view does not lift the id check.
+        XCTAssertEqual(
+            post("/api/manager/key", json: #"{"key":"Enter","prompt":"9f2c","terminal":true}"#).status, 409)
+        XCTAssertEqual(post("/api/manager/key", json: #"{"key":"Enter","terminal":true}"#).status, 409)
+        XCTAssertEqual(manager.pane.argv, [["send-keys", "-t", "mux-manager", "Enter"]])
+
+        // The same for a thread.
+        repliesOn()
+        pane.status = .waiting
+        pane.screen = DemoPrompt.yesNo
+        pane.cursor = .lastLine
+        let thread = try promptID()
+        XCTAssertEqual(post(Self.thread + "/key", json: #"{"key":"Enter","prompt":"\#(thread)"}"#).status, 409)
+        XCTAssertEqual(
+            post(Self.thread + "/key", json: #"{"key":"Enter","prompt":"\#(thread)","terminal":true}"#).status,
+            200)
+    }
+
+    func testAQuestionDrawnInColumnsGivesACardThatPointsToTheTerminal() throws {
+        server.configure(MobileConfig(capabilities: [.manager, .replies]))
+        manager.status = .waiting
+        manager.pane.screen = DemoPrompt.columns
+        manager.pane.cursor = .lastLine
+        let prompt = try XCTUnwrap(try managerPrompt()["prompt"] as? [String: Any])
+        let labels = (prompt["options"] as? [[String: Any]])?.compactMap { $0["label"] as? String } ?? []
+        XCTAssertEqual(labels.count, 3)
+        XCTAssertEqual(labels.first, "Sidebar on the")
+        // No piece of the preview box in a label, and the card says it does
+        // not hold everything.
+        XCTAssertFalse(labels.joined().unicodeScalars.contains { (0x2500...0x259F).contains($0.value) })
+        XCTAssertEqual(prompt["truncated"] as? Bool, true)
+        XCTAssertEqual(prompt["question"] as? String, "Which layout should the page use?")
     }
 }

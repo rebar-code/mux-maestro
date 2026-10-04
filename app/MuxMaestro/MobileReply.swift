@@ -136,7 +136,7 @@ struct MobileScreen: Equatable {
     static let headerLines = 60
     /// Lines between two choices that are not a choice: a question's option
     /// may carry a description.
-    static let maxGap = 2
+    static let maxGap = 4
     static let maxDetailLength = 1200
     /// The tallest input box that is looked for.
     static let maxBoxLines = 40
@@ -188,6 +188,8 @@ struct MobileScreen: Equatable {
         /// `↓` on its last.
         var above = false
         var below = false
+        /// Something was drawn beside it: the choices are laid out in columns.
+        var boxed = false
     }
 
     /// `❯ 1. Yes` → row 1 "Yes", selected. `↓ 9. More` → row 9, more below.
@@ -213,9 +215,16 @@ struct MobileScreen: Equatable {
               rest.dropFirst(digits.count).hasPrefix(". ")
         else { return nil }
         var label = rest.dropFirst(digits.count + 2).trimmingCharacters(in: .whitespaces)
+        // A box drawn beside the choices (a preview) is not part of the label.
+        var boxed = false
+        if let edge = label.unicodeScalars.firstIndex(where: { (0x2500...0x259F).contains($0.value) }) {
+            label = String(label.unicodeScalars[..<edge]).trimmingCharacters(in: .whitespaces)
+            boxed = true
+        }
         if label.hasSuffix("(esc)") { label = String(label.dropLast(5)).trimmingCharacters(in: .whitespaces) }
         guard !label.isEmpty else { return nil }
-        return Row(n: n, label: label, selected: row.selected, above: row.above, below: row.below)
+        return Row(
+            n: n, label: label, selected: row.selected, above: row.above, below: row.below, boxed: boxed)
     }
 
     /// `cursorRow` is the row the terminal cursor is on. `pasted` is text of
@@ -399,6 +408,9 @@ struct MobileScreen: Equatable {
             detail = String(detail.prefix(maxDetailLength))
             truncated = true
         }
+        // Choices beside a preview box wrap over rows the card does not join:
+        // the card may hold only the start of each.
+        if found.contains(where: \.row.boxed) { truncated = true }
         let permission = question.lowercased().hasPrefix("do you want")
             || question.lowercased().contains("allow")
         let prompt = MobilePrompt(
@@ -446,10 +458,11 @@ enum MobileReply {
 
     /// The `key` of a key request, and the prompt the phone was showing; nil
     /// when the key is not on the whitelist.
-    static func key(in body: Data) -> (key: String, prompt: String?)? {
+    static func key(in body: Data) -> (key: String, prompt: String?, terminal: Bool)? {
         guard let object = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any],
               let key = object["key"] as? String, keys.contains(key) else { return nil }
-        return (key, object["prompt"] as? String)
+        // `terminal`: the phone shows the pane's own screen, not a card.
+        return (key, object["prompt"] as? String, object["terminal"] as? Bool == true)
     }
 
     static func keyArgv(target: String, key: String) -> [String] {
@@ -506,8 +519,14 @@ enum MobileReply {
     /// on every pane and whatever its status says: a status can be old, and
     /// a shell or a question may be in front. Keys that move or cancel stay
     /// allowed for a prompt the phone names, and for the box.
+    ///
+    /// `terminal` says the phone shows the pane's own screen. There the human
+    /// reads a prompt that could not be made into a card, so a key that can
+    /// answer is allowed for it. The id is still checked: it names what the
+    /// screen showed when the phone last read it.
     static func press(
-        _ key: String, prompt sent: String?, target: String, io: MobilePaneIO, state: MobilePaneState?
+        _ key: String, prompt sent: String?, terminal: Bool = false, target: String, io: MobilePaneIO,
+        state: MobilePaneState?
     ) -> MobileResponse {
         guard keys.contains(key) else { return .error(400, "bad_key") }
         guard let state else { return .error(404, "not_found") }
@@ -518,9 +537,12 @@ enum MobileReply {
         if let current = card?.id ?? waitingID(state: state, seen: seen, io: io) {
             guard current == sent else { return .error(409, "stale") }
             if answers(key) {
-                guard let card else { return .error(409, "unseen", message: unseenMessage) }
-                if case .digit(let n) = effect, !card.options.contains(where: { $0.n == n }) {
-                    return .error(409, "no_option", message: noOptionMessage)
+                if let card {
+                    if case .digit(let n) = effect, !card.options.contains(where: { $0.n == n }) {
+                        return .error(409, "no_option", message: noOptionMessage)
+                    }
+                } else if !terminal {
+                    return .error(409, "unseen", message: unseenMessage)
                 }
             }
         } else if !seen.inputBox {
@@ -691,9 +713,16 @@ enum MobileReply {
     }
 
     /// `{"prompt": "<id>", "option": <n>}`.
-    static func answer(in body: Data) -> (prompt: String, option: Int)? {
+    /// Or `{"prompt": "<id>", "cancel": true}` to back out: `option` is nil.
+    static func answer(in body: Data) -> (prompt: String, option: Int?)? {
         guard let object = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any],
-              let prompt = object["prompt"] as? String, !prompt.isEmpty,
+              let prompt = object["prompt"] as? String, !prompt.isEmpty
+        else { return nil }
+        if object["option"] == nil, object["cancel"] as? Bool == true,
+           let cancel = object["cancel"] as? NSNumber, CFGetTypeID(cancel) == CFBooleanGetTypeID() {
+            return (prompt, nil)
+        }
+        guard object["cancel"] == nil,
               let number = object["option"] as? NSNumber,
               // A JSON `true` is an NSNumber too.
               CFGetTypeID(number) != CFBooleanGetTypeID(),
@@ -704,10 +733,15 @@ enum MobileReply {
 
     /// Pick `option` of the prompt the phone showed. The pane's screen is read
     /// again first: when it shows another prompt, or none, nothing is sent.
+    /// With no `option` it backs out instead: Escape, for the prompt the
+    /// phone showed, card or not.
     static func answer(
-        prompt id: String, option: Int, target: String, io: MobilePaneIO, state: MobilePaneState?
+        prompt id: String, option: Int?, target: String, io: MobilePaneIO, state: MobilePaneState?
     ) -> MobileResponse {
-        guard state != nil else { return .error(404, "not_found") }
+        guard let state else { return .error(404, "not_found") }
+        guard let option else {
+            return press("Escape", prompt: id, target: target, io: io, state: state)
+        }
         guard let prompt = prompt(state: state, seen: look(io), io: io), prompt.id == id else {
             return .error(409, "stale")
         }

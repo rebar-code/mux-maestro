@@ -238,6 +238,23 @@ enum DemoPrompt {
         ────────────────────────────────────────
         """
 
+    /// A question in a narrow pane: the choices wrap over several rows and
+    /// a preview box stands beside them.
+    static let columns = """
+        ────────────────────────────────────────────
+         ☐ Layout
+
+        Which layout should the page use?
+
+        ❯ 1. Sidebar on the      ┌──────────────┐
+             left, content       │ ▌▌ ░░░░░░░░  │
+             on the right        │ ▌▌ ░░░░░░░░  │
+          2. Top bar with        │ ▌▌ ░░░░░░░░  │
+             tabs under it       └──────────────┘
+          3. Type something.
+        ────────────────────────────────────────────
+        """
+
     /// Claude Code's model menu as 2.1.289 draws it: the dialog's top edge is
     /// a row of upper-block characters, not a line rule, and rows that do not
     /// fit are counted on a line under the last one, with no arrow.
