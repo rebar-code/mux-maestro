@@ -147,6 +147,9 @@ class Manager {
 		// This phone's own turn is followed on its own stream.
 		if (!this.sending) this.setTurn(body.turn);
 		this.save();
+		// The board has no status of its own: ask for it with each board, so a
+		// state such as "waiting" does not outlive the pane's.
+		if (!this.sending && body.turn === null) void this.load();
 	}
 
 	/** The `manager-delta` event: the reply grew, so the chat has more to read. */
@@ -166,6 +169,10 @@ class Manager {
 			const home: ManagerHome = await fetchManager();
 			this.setCards(home);
 			this.status = home.status;
+			// A refusal that named the pane's state is over once the pane is idle.
+			if (home.status === 'idle' && Object.values(STATUS_NOTES).includes(this.note ?? '')) {
+				this.note = null;
+			}
 			if (!this.sending) this.setTurn(home.turn);
 			this.save();
 		} catch (error) {
