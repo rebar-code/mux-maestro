@@ -118,6 +118,7 @@
 
 <div
 	class="pager"
+	data-thread-pages
 	style:--term-size="{text.size}px"
 	style:--chat-size="{text.chat}px"
 	{@attach pages(TAB_KEYS)}
