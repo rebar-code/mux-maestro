@@ -13,7 +13,7 @@ interface Received {
 }
 
 const box = (page: Page): Locator => page.getByRole('textbox', { name: 'Reply' });
-const ask = (page: Page): Locator => page.getByRole('textbox', { name: 'Ask the manager' });
+const ask = (page: Page): Locator => page.getByRole('textbox', { name: 'Ask the Maestro' });
 const sendButton = (page: Page): Locator => page.getByRole('button', { name: '↑ Send' });
 const note = (page: Page): Locator => page.locator('[data-note]');
 const keybar = (page: Page): Locator => page.locator('[data-keybar]');

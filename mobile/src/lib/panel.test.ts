@@ -7,6 +7,7 @@ import {
 	panelStops,
 	PEEK_BLOCK,
 	pointCards,
+	POINTS_MAX,
 	REASON_MAX,
 	settlePanel
 } from './panel';
@@ -149,6 +150,21 @@ describe('pointCards', () => {
 		expect(card.reason.length).toBe(REASON_MAX);
 		expect(card.reason.startsWith('a <b>b</b> x')).toBe(true);
 		expect(card.reason.endsWith('…')).toBe(true);
+	});
+
+	it('removes zero-width and direction characters from the reason and the name', () => {
+		const sly = {
+			...point('point:a', null, 'needs\u202E lavorppa\u200B \u2066your\u2069'),
+			title: 'acme\u200F-app'
+		};
+		const [card] = pointCards([sly], threads);
+		expect(card.reason).toBe('needs lavorppa your');
+		expect(card.title).toBe('acme-app');
+	});
+
+	it('lists no more than the cap', () => {
+		const many = Array.from({ length: 300 }, (_, n) => point(`point:${n}`, 'localhost:1'));
+		expect(pointCards(many, threads)).toHaveLength(POINTS_MAX);
 	});
 
 	it('drops a pointer with no key', () => {

@@ -34,8 +34,7 @@ export class ThreadFeed {
 	private next: number | undefined;
 	/** The chat has not been read from the server yet. */
 	private unread = true;
-	/** The elements that scroll each mode: the Maestro's chat can show on a page and in the panel. */
-	private scrollers: Record<Mode, HTMLElement[]> = { chat: [], terminal: [] };
+	private scrollers: Partial<Record<Mode, HTMLElement>> = {};
 	private inflight: Partial<Record<Mode, Promise<void>>> = {};
 	/** The terminal text as last received, to line the next one up with. */
 	private raw: string[] = [];
@@ -62,7 +61,7 @@ export class ThreadFeed {
 	/** Attachment for the element that scrolls `mode`'s content. */
 	scroller(mode: Mode): (node: HTMLElement) => () => void {
 		return (node) => {
-			this.scrollers[mode].push(node);
+			this.scrollers[mode] = node;
 			node.scrollTop = node.scrollHeight;
 			const onScroll = (): void => {
 				this.atBottom = atEnd(node, AT_BOTTOM);
@@ -84,7 +83,7 @@ export class ThreadFeed {
 			return () => {
 				resized.disconnect();
 				node.removeEventListener('scroll', onScroll);
-				this.scrollers[mode] = this.scrollers[mode].filter((el) => el !== node);
+				if (this.scrollers[mode] === node) delete this.scrollers[mode];
 			};
 		};
 	}
@@ -145,7 +144,7 @@ export class ThreadFeed {
 	};
 
 	jumpToBottom = (): void => {
-		const el = this.scrollers.terminal.at(-1);
+		const el = this.scrollers.terminal;
 		if (!el) return;
 		const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
 		el.scrollTo({ top: el.scrollHeight, behavior: still ? 'auto' : 'smooth' });
@@ -178,7 +177,7 @@ export class ThreadFeed {
 		if (shift !== null) this.base -= shift;
 		const { lines, cols } = viewLines(page.text, this.base);
 
-		const before = this.scrollers.terminal.at(-1);
+		const before = this.scrollers.terminal;
 		const follow = first || !before || (atEnd(before, AT_BOTTOM) && !older);
 		const topBefore = before?.querySelector('[data-lines]')?.getBoundingClientRect().top;
 
@@ -193,7 +192,7 @@ export class ThreadFeed {
 		};
 		await tick();
 
-		const el = this.scrollers.terminal.at(-1);
+		const el = this.scrollers.terminal;
 		if (!el) return;
 		if (follow) {
 			el.scrollTop = el.scrollHeight;
@@ -209,13 +208,13 @@ export class ThreadFeed {
 
 	/** Apply `change`; stay at the end if the reader was there (or on first load). */
 	async keepEnd(mode: Mode, force: boolean, change: () => void): Promise<void> {
-		const was = this.scrollers[mode].map((el) => ({ el, end: force || atEnd(el, STICK) }));
+		const before = this.scrollers[mode];
+		const atEnd =
+			force || !before || before.scrollHeight - before.scrollTop - before.clientHeight < STICK;
 		change();
 		await tick();
-		// A scroller that is new since the change starts at the end.
-		for (const el of this.scrollers[mode]) {
-			if (was.find((row) => row.el === el)?.end ?? true) el.scrollTop = el.scrollHeight;
-		}
+		const el = this.scrollers[mode];
+		if (atEnd && el) el.scrollTop = el.scrollHeight;
 	}
 }
 

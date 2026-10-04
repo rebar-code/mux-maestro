@@ -1,14 +1,24 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import { drag, expectDrawerOpen, fresh, threadPath, TOKEN_HEADER, touchDrag } from './helpers';
+import {
+	drag,
+	expectDrawerClosed,
+	expectDrawerOpen,
+	fakeMic,
+	fresh,
+	threadPath,
+	TOKEN_HEADER,
+	touchDrag
+} from './helpers';
 
 /** A session that waits on a permission prompt, one that runs, and one with a chat. */
 const WAITING = 'localhost:1';
 const RUNNING = 'localhost:3';
+const ALSO_RUNNING = 'localhost:4';
 
 const button = (page: Page): Locator => page.locator('[data-maestro]');
 const panel = (page: Page): Locator => page.locator('[data-panel]');
 const grab = (page: Page): Locator => page.locator('[data-panel-grab]');
-const ask = (page: Page): Locator => panel(page).getByRole('textbox', { name: 'Ask the manager' });
+const ask = (page: Page): Locator => panel(page).getByRole('textbox', { name: 'Ask the Maestro' });
 const said = (page: Page): Locator => panel(page).locator('[data-view="chat"]');
 const point = (page: Page, scope: Locator = panel(page)): Locator => scope.locator('[data-point]');
 
@@ -199,16 +209,20 @@ for (const viewport of [
 			await onThread(page, WAITING);
 			await settled(page, 0);
 			await expect(page.locator('.tbar .title b')).toHaveText('acme-app · checkout-fix');
-			// The way back is pointed out, until the first touch.
-			await expect(page.locator('[data-maestro-back]')).toBeVisible();
+			// The way back is above the reply box, and a touch elsewhere leaves it there.
+			const back = page.locator('[data-dock] [data-maestro-back]');
+			await expect(back).toBeVisible();
 			await page.locator('[data-view="chat"]').first().click();
-			await expect(page.locator('[data-maestro-back]')).toHaveCount(0);
+			await expect(back).toBeVisible();
 
 			await button(page).click();
 			await settled(page, 3);
+			await expect(back).toHaveCount(0);
 			await expect(point(page)).toBeVisible();
 			await button(page).click();
 			await settled(page, 0);
+			// The panel's own history entry is gone before the next Back.
+			await page.waitForTimeout(200);
 
 			// Back returns to the page the jump left from, with the panel as it was.
 			await page.goBack();
@@ -216,24 +230,38 @@ for (const viewport of [
 			await settled(page, 3);
 		});
 
-		test('the chip under the header goes back to the Maestro', async ({ page }) => {
+		test('the way back above the reply box opens the panel, or is dismissed', async ({ page }) => {
 			await fresh(page);
 			await hook(page, `/__fixture/point?thread=${WAITING}`);
 			await page.locator('[data-grab]').click();
 			await point(page, page.locator('[data-board]')).locator('[data-go]').click();
 			await onThread(page, WAITING);
-			await page.locator('[data-maestro-back]').click();
+			const back = page.locator('[data-dock] [data-maestro-back]');
+			// In reach of a thumb: in the lower part of the screen.
+			expect((await back.boundingBox())?.y).toBeGreaterThan(viewport.height * 0.6);
+			await back.getByRole('button', { name: 'Back to Maestro' }).click();
 			await settled(page, 1);
-			await expect(page.locator('[data-maestro-back]')).toHaveCount(0);
+			await expect(back).toHaveCount(0);
+
+			await page.goto('/');
+			await page.locator('[data-grab]').click();
+			await point(page, page.locator('[data-board]')).locator('[data-go]').click();
+			await onThread(page, WAITING);
+			await back.getByRole('button', { name: 'Dismiss' }).click();
+			await expect(back).toHaveCount(0);
+			await settled(page, 0);
 		});
 
 		test('a stale pointer says so and never leads nowhere', async ({ page }) => {
-			await fresh(page);
+			await fresh(page, threadPath(RUNNING));
 			// One session that no longer waits, one that is gone.
-			await hook(page, `/__fixture/point?key=point:a&thread=${RUNNING}&reason=needs your approval`);
 			await hook(
 				page,
-				'/__fixture/point?key=point:b&title=compass&reason=asks <b>which</b> database'
+				`/__fixture/point?key=point:a&thread=${ALSO_RUNNING}&reason=needs your approval`
+			);
+			await hook(
+				page,
+				'/__fixture/point?key=point:b&title=acme-app&reason=asks <b>which</b> database'
 			);
 			await openPanel(page, 3);
 			const done = panel(page).locator('[data-point="point:a"]');
@@ -241,7 +269,7 @@ for (const viewport of [
 			await expect(done).toHaveAttribute('data-stale', 'done');
 			await expect(done.locator('[data-reason]')).toHaveCSS('text-decoration-line', 'line-through');
 			await expect(gone).toHaveAttribute('data-stale', 'gone');
-			await expect(gone).toContainText('compass');
+			await expect(gone).toContainText('acme-app');
 			await expect(gone).toContainText('Closed');
 			// The reason is text, never markup.
 			await expect(gone.locator('[data-reason]')).toHaveText('asks <b>which</b> database');
@@ -251,14 +279,15 @@ for (const viewport of [
 			// Neither counts as a session that needs the user.
 			await expect(button(page).locator('[data-count]')).toHaveText('2');
 			await gone.locator('[data-go]').click();
-			expect(new URL(page.url()).pathname).toBe('/');
+			await onThread(page, RUNNING);
+			await settled(page, 3);
 
 			// It can be cleared from the phone.
-			await gone.getByRole('button', { name: 'Dismiss compass' }).click();
+			await gone.getByRole('button', { name: 'Dismiss acme-app' }).click();
 			await expect(gone).toHaveCount(0);
 			// The one that no longer waits still opens its session.
 			await done.locator('[data-go]').click();
-			await onThread(page, RUNNING);
+			await onThread(page, ALSO_RUNNING);
 		});
 
 		test('a session that waits has Go on the board without a pointer', async ({ page }) => {
@@ -268,7 +297,7 @@ for (const viewport of [
 			await expect(card.locator('[data-go]')).toHaveText('Go');
 			await card.locator('[data-go]').click();
 			await onThread(page, WAITING);
-			await expect(page.locator('[data-maestro-back]')).toBeVisible();
+			await expect(page.locator('[data-dock] [data-maestro-back]')).toBeVisible();
 		});
 
 		test('a session draft and its scroll survive the panel', async ({ page }) => {
@@ -289,18 +318,93 @@ for (const viewport of [
 			expect(await chat.evaluate((el) => el.scrollTop)).toBe(top);
 			// The Maestro's own draft is kept too, and is the home page's.
 			await page.goto('/');
-			await expect(page.getByRole('textbox', { name: 'Ask the manager' })).toHaveValue(
+			await expect(page.getByRole('textbox', { name: 'Ask the Maestro' })).toHaveValue(
 				'and one for the Maestro'
 			);
 		});
 
-		test('text typed in the panel shows in the home page box', async ({ page }) => {
+		test("on the home page the button goes to the page's own text box", async ({ page }) => {
 			await fresh(page);
+			const box = page.locator('[data-foot]').getByRole('textbox', { name: 'Ask the Maestro' });
+			await expect(box).not.toBeFocused();
+			await button(page).click();
+			await expect(box).toBeFocused();
+			// No copy of the page opens over it, by a tap or by a pull.
+			await expect(panel(page)).toHaveAttribute('data-stop', '0');
+			await box.blur();
+			await drag(page, [150, 20], [150, 300]);
+			await expect(panel(page)).toHaveAttribute('data-stop', '0');
+			await expect(page.locator('[data-view="chat"]')).toHaveCount(1);
+		});
+
+		test('half and full are modal: Escape and Back close the panel, not the page', async ({
+			page
+		}) => {
+			await fresh(page, threadPath(RUNNING));
+			const view = page.locator('.view');
+
 			await openPanel(page);
-			await ask(page).fill('same words');
-			await expect(
-				page.locator('[data-foot]').getByRole('textbox', { name: 'Ask the manager' })
-			).toHaveValue('same words');
+			// The peek leaves the page in use; the focus is in the panel.
+			await expect(view).not.toHaveAttribute('inert');
+			await expect(panel(page)).toBeFocused();
+			await grab(page).click();
+			await settled(page, 2);
+			await expect(view).toHaveAttribute('inert');
+
+			await page.keyboard.press('Escape');
+			await settled(page, 0);
+			await expect(view).not.toHaveAttribute('inert');
+			// The focus goes back to what opened the panel.
+			await expect(button(page)).toBeFocused();
+			await onThread(page, RUNNING);
+
+			await button(page).click();
+			await settled(page, 2);
+			await page.goBack();
+			await settled(page, 0);
+			await onThread(page, RUNNING);
+			// The page's own history is as it was: one more Back leaves it.
+			await button(page).click();
+			await settled(page, 2);
+			await button(page).click();
+			await settled(page, 0);
+			await onThread(page, RUNNING);
+		});
+
+		test("a long press on a session's Talk button opens the peek", async ({ page }) => {
+			await fakeMic(page);
+			await fresh(page, threadPath(RUNNING));
+			await hook(page, '/__fixture/capability?name=replies&on=1');
+			await hook(page, '/__fixture/capability?name=voice&on=1');
+			const talk = page.locator('[data-dock] [data-compose] [data-primary="talk"]');
+			await expect(talk).toBeEnabled();
+			const [x, y] = await center(talk);
+			await page.mouse.move(x, y);
+			await page.mouse.down();
+			await page.waitForTimeout(650);
+			await page.mouse.up();
+			await settled(page, 1);
+			// The press is not also a tap: no take began.
+			expect(await page.evaluate(() => window.__mic.opened)).toBe(0);
+		});
+
+		test('voice on the page under the panel survives opening and closing it', async ({ page }) => {
+			await fakeMic(page);
+			await fresh(page, threadPath(RUNNING));
+			await hook(page, '/__fixture/capability?name=replies&on=1');
+			await hook(page, '/__fixture/capability?name=voice&on=1');
+			const live = (): Promise<number> => page.evaluate(() => window.__mic.live());
+			const dock = page.locator('[data-dock]');
+			await dock.getByRole('button', { name: 'Auto' }).click();
+			await expect(dock.locator('[data-voicebar]').first()).toContainText('Listening…');
+			expect(await live()).toBe(1);
+
+			await openPanel(page);
+			await button(page).click();
+			await settled(page, 0);
+			await expect(ask(page)).toHaveCount(0);
+			expect(await live()).toBe(1);
+			await expect(dock.locator('[data-voicebar]').first()).toContainText('Listening…');
 		});
 
 		test('the panel leaves the other gestures alone', async ({ page }) => {
@@ -317,15 +421,30 @@ for (const viewport of [
 				await expect(tabs.first()).toHaveAttribute('aria-selected', 'true');
 			}
 
+			// A sideways drag that begins on the header opens the sidebar, not the panel.
+			await drag(page, [20, 22], [300, 30]);
+			await expectDrawerOpen(page);
+			await expect(panel(page)).toHaveAttribute('data-stop', '0');
+			await drag(page, [300, 400], [20, 400]);
+			await expectDrawerClosed(page);
+
 			await openPanel(page, 2);
 			const [x, y] = await center(said(page));
 			// Sideways in the panel does not turn the page under it.
 			await drag(page, [x + 120, y], [x - 120, y]);
 			await expect(tabs.first()).toHaveAttribute('aria-selected', 'true');
 			await settled(page, 2);
-			// A scroll in the panel's chat does not move the panel.
-			await touchDrag(page, [x, y - 40], [x, y + 60]);
+			// A pull down in the panel's chat reloads the Maestro's chat, and moves
+			// neither the panel nor the page's own pull indicator.
+			const reload = page.waitForRequest((request) => request.url().includes('/api/manager/chat'));
+			await touchDrag(page, [x, y - 60], [x, y + 120]);
+			await reload;
 			await settled(page, 2);
+			expect(
+				await page
+					.locator('.view [data-view="chat"] .pull')
+					.evaluate((el) => el.getBoundingClientRect().height)
+			).toBe(0);
 			await touchDrag(page, [x, y + 60], [x, y - 40]);
 			await settled(page, 2);
 			await expect(tab).toBeVisible();
@@ -333,15 +452,6 @@ for (const viewport of [
 			await drag(page, [20, y], [300, y]);
 			await expectDrawerOpen(page);
 			await settled(page, 2);
-		});
-
-		test('the home board drawer still rises under an open-and-closed panel', async ({ page }) => {
-			await fresh(page);
-			await openPanel(page);
-			await button(page).click();
-			await settled(page, 0);
-			await page.locator('[data-grab]').click();
-			await expect(page.locator('[data-board]')).toHaveAttribute('data-stop', '1');
 		});
 
 		test('with little room, as with the keyboard open, the text box stays in view', async ({

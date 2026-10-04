@@ -66,14 +66,11 @@
 	{:else if live.forbidden}
 		<div class="denied" role="alert">Not allowed</div>
 	{:else}
-		<div class="view" inert={ui.drawerOpen}>
+		<div class="view" inert={ui.drawerOpen || maestro.stop >= 2}>
 			{@render children()}
 		</div>
 		{#if can('manager')}<MaestroPanel />{/if}
 		<MaestroButton />
-		{#if maestro.jumped && !maestro.open}
-			<button class="back" data-maestro-back onclick={maestro.toggle}>✦ Back to Maestro</button>
-		{/if}
 		<button
 			class="scrim"
 			class:anim={!ui.dragging}
@@ -113,25 +110,6 @@
 	.app :global([data-maestro-grab]),
 	.app :global([data-maestro-grab] *) {
 		touch-action: none;
-	}
-
-	/* Under the header, only on the page a jump opened, until the first touch. */
-	.back {
-		position: absolute;
-		/* Below the header and the tabs: it covers no control. */
-		top: calc(env(safe-area-inset-top) + var(--hit) + 58px);
-		left: 50%;
-		transform: translateX(-50%);
-		white-space: nowrap;
-		z-index: 28;
-		min-height: var(--hit);
-		padding: 0 14px;
-		border-radius: 999px;
-		background: #2a2440;
-		border: 1px solid var(--purple);
-		color: #e6dcff;
-		font-size: 13px;
-		box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
 	}
 
 	.view {

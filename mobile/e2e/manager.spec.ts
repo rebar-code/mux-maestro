@@ -34,7 +34,7 @@ async function openBoard(page: Page, stop: 1 | 2 = 2): Promise<void> {
 		})
 		.toBe(true);
 }
-const box = (page: Page) => page.getByRole('textbox', { name: 'Ask the manager' });
+const box = (page: Page) => page.getByRole('textbox', { name: 'Ask the Maestro' });
 /**
  * Submit the text box's form, as its Send button does. (On a phone, Return in
  * the box is a new line; `compose.spec.ts` covers the keys.)
@@ -198,7 +198,7 @@ test('a right swipe on the home still opens the sidebar, over a review card too'
 test('Manager switch on: the text box is enabled and asks for a message', async ({ page }) => {
 	await fresh(page);
 	await expect(box(page)).toBeEnabled();
-	await expect(box(page)).toHaveAttribute('placeholder', 'Ask the manager');
+	await expect(box(page)).toHaveAttribute('placeholder', 'Ask the Maestro');
 	await expect(offBox(page)).toHaveCount(0);
 	await expect(page.getByRole('button', { name: 'Talk', exact: true })).toBeVisible();
 });

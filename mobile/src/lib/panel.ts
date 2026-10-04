@@ -93,8 +93,14 @@ export interface PointCard {
 	stale: 'gone' | 'done' | null;
 }
 
+/** The most pointers the board lists. The Mac caps them too. */
+export const POINTS_MAX = 20;
+
+/** Zero-width and direction characters: they can hide or reorder what a line says. */
+const UNSEEN = /[\u200B-\u200F\u202A-\u202E\u2066-\u2069]/g;
+
 function capped(text: string, max = REASON_MAX): string {
-	const flat = text.replace(/\s+/g, ' ').trim();
+	const flat = text.replace(UNSEEN, '').replace(/\s+/g, ' ').trim();
 	return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
@@ -103,7 +109,7 @@ function capped(text: string, max = REASON_MAX): string {
  * loaded: nothing is called closed before that.
  */
 export function pointCards(points: ManagerItem[], threads: Thread[] | null): PointCard[] {
-	return points.flatMap((point) => {
+	return points.slice(0, POINTS_MAX).flatMap((point) => {
 		if (point.key === null) return [];
 		const thread = threads?.find((row) => row.id === point.thread) ?? null;
 		const stale = thread ? (thread.status === 'waiting' ? null : 'done') : threads ? 'gone' : null;

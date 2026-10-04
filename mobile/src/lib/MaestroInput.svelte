@@ -19,7 +19,7 @@
 	// A take goes to the manager, so voice needs the manager's switch too.
 	const voiceOn = $derived(managerOn && can('voice'));
 	const keysOn = $derived(managerOn && can('keyBar'));
-	const boxLabel = $derived(isOff('manager') ? OFF_LABEL : 'Ask the manager');
+	const boxLabel = $derived(isOff('manager') ? OFF_LABEL : 'Ask the Maestro');
 	const reply = maestro.reply;
 
 	function send(): void {

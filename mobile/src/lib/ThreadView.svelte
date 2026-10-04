@@ -15,6 +15,8 @@
 	import { can, live, OFF_LABEL } from './live.svelte';
 	import LiveTerminal from './LiveTerminal.svelte';
 	import { LiveTerm } from './liveterm.svelte';
+	import { maestro } from './maestro.svelte';
+	import MaestroBack from './MaestroBack.svelte';
 	import Marked from './Marked.svelte';
 	import NextBar from './NextBar.svelte';
 	import NoteLine from './NoteLine.svelte';
@@ -456,6 +458,8 @@
 		{@attach (repliesOn || keysOn) && reply.watch}
 		{@attach reply.files.watch}
 	>
+		<!-- The page was opened by a jump from the Maestro: the way back is in reach of a thumb. -->
+		{#if maestro.jumped}<MaestroBack />{/if}
 		{#if next}<NextBar thread={next} />{/if}
 		{#if liveShown}
 			<!-- The keyboard types into the pane itself: the bar is all it lacks. -->

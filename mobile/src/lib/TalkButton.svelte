@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { longPress } from './longpress';
+	import { maestro } from './maestro.svelte';
 	import { keepFocus } from './focus';
 	import Icon from './Icon.svelte';
 	import { voice, type PrimaryKind, type VoiceSink, type VoiceTarget } from './voice.svelte';
@@ -87,6 +89,7 @@
 		onpointerdown={press}
 		onpointermove={move}
 		onclick={tap}
+		{@attach target !== 'manager' && longPress(maestro.peek)}
 		><span class="icon {kind}"
 			>{#if kind === 'talk'}<Icon name="mic" size={17} />{:else}{face.icon}{/if}</span
 		>

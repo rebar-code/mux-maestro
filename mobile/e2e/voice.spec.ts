@@ -16,7 +16,7 @@ const status = (page: Page): Locator => page.locator('[data-voice-status]');
 const primary = (page: Page): Locator => page.locator('[data-primary]');
 /** The manager's thread: its chat rows. */
 const said = (page: Page): Locator => page.locator('[data-view="chat"]');
-const box = (page: Page): Locator => page.getByRole('textbox', { name: 'Ask the manager' });
+const box = (page: Page): Locator => page.getByRole('textbox', { name: 'Ask the Maestro' });
 const bar = (page: Page, name: string): Locator =>
 	page.locator('[data-voicebar]').getByRole('button', { name, exact: true });
 

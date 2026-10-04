@@ -32,7 +32,7 @@ const keybar = (page: Page): Locator => page.locator('[data-keybar]');
 const key = (page: Page, name: string): Locator =>
 	keybar(page).getByRole('button', { name, exact: true });
 const note = (page: Page): Locator => page.locator('[data-note]');
-const ask = (page: Page): Locator => page.getByRole('textbox', { name: 'Ask the manager' });
+const ask = (page: Page): Locator => page.getByRole('textbox', { name: 'Ask the Maestro' });
 const tab = (page: Page): Locator => page.locator('[data-tab="main"]');
 
 async function received(page: Page): Promise<Received> {

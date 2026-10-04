@@ -1457,7 +1457,7 @@ test('the manager home is not a listed thread: it gets no dock and no reply rout
 		if (path.startsWith('/api/threads/manager')) asked.push(path);
 	});
 	await page.goto(pairingLink());
-	const ask = page.getByRole('textbox', { name: 'Ask the manager' });
+	const ask = page.getByRole('textbox', { name: 'Ask the Maestro' });
 	await expect(ask).toBeVisible();
 	await expect(page.locator('.a').first()).toBeVisible();
 	// Its own text box, and nothing of a thread's reply bar.

@@ -54,6 +54,7 @@
 	style:height="{maestro.height}px"
 	aria-label="Maestro"
 	inert={!maestro.open}
+	tabindex="-1"
 	data-maestro-panel
 	data-panel
 	data-stop={maestro.stop}
@@ -118,6 +119,7 @@
 	}
 
 	.panel {
+		outline: none;
 		position: absolute;
 		top: 0;
 		left: 0;

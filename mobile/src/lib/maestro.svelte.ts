@@ -1,3 +1,6 @@
+import { tick } from 'svelte';
+import { pushState } from '$app/navigation';
+import { page } from '$app/state';
 import { ui } from './gestures.svelte';
 import { can } from './live.svelte';
 import { manager } from './manager.svelte';
@@ -27,8 +30,8 @@ class Maestro {
 	jumped = $state(false);
 	/** The stop the button opens the panel at: the one it was last on. */
 	private last: PanelStop = 1;
-	/** A jump is on its way: the navigation that follows is its own. */
-	private jumping = false;
+	/** The page a jump is on its way to. */
+	private to: string | null = null;
 	/** Where a jump left from, and the stop the panel had: Back opens it there again. */
 	private from: { path: string; stop: PanelStop } | null = null;
 
@@ -56,26 +59,77 @@ class Maestro {
 		return this.stop > 0;
 	}
 
-	private go(stop: PanelStop): void {
+	/** The panel, to move the focus into it. */
+	private node: HTMLElement | null = null;
+	/** What had the focus when the panel opened: it gets it back. */
+	private focused: HTMLElement | null = null;
+	/** The panel has its own history entry: Back closes the panel, not the page. */
+	private entry = false;
+
+	/**
+	 * Move to a stop. `how` is what closes it: a control (`ui`, the entry is
+	 * taken back), the browser's Back (`back`, it is gone already), or a link
+	 * that leaves from it (`forward`, the entry stays behind the new page).
+	 */
+	private go(stop: PanelStop, how: 'ui' | 'back' | 'forward' = 'ui'): void {
+		const was = this.stop;
 		if (stop > 0) {
 			this.shown = true;
 			this.last = stop;
 			this.jumped = false;
-		} else if (still()) {
-			// Nothing animates, so no transition ends: the content goes now.
-			this.shown = false;
+			if (!this.entry) {
+				pushState('', { maestro: true });
+				this.entry = true;
+			}
+			if (was === 0) {
+				this.focused =
+					document.activeElement instanceof HTMLElement ? document.activeElement : null;
+				void tick().then(() => this.node?.focus({ preventScroll: true }));
+			}
+		} else {
+			// Nothing animates or nothing is left to: no transition ends, so the content goes now.
+			if (still() || this.height < 1) this.shown = false;
+			if (this.entry) {
+				this.entry = false;
+				if (how === 'ui') history.back();
+			}
+			// After the page under the panel is in use again: it takes no focus while it is inert.
+			const focused = this.focused;
+			if (was > 0 && how !== 'forward' && focused) {
+				void tick().then(() => focused.isConnected && focused.focus({ preventScroll: true }));
+			}
+			this.focused = null;
 		}
 		this.stop = stop;
 		this.down = 0;
 	}
 
-	/** The header button: open at the stop it was last on, or close. */
+	/**
+	 * The header button: open at the stop it was last on, or close. The home
+	 * page is the Maestro's own page: there the button goes to the page's text box.
+	 */
 	toggle = (): void => {
 		if (!can('manager')) return;
+		if (onHome()) {
+			const box = document.querySelector<HTMLElement>('[data-foot] textarea');
+			box?.scrollIntoView({ block: 'nearest' });
+			box?.focus();
+			return;
+		}
 		this.go(this.open ? 0 : this.last);
 	};
 
 	close = (): void => this.go(0);
+
+	/** A long press on a session's Talk button: the peek, in reach of a thumb. */
+	peek = (): void => {
+		if (can('manager') && !onHome() && !this.open) this.go(1);
+	};
+
+	/** The way back after a jump: the panel, at the stop it was last on. */
+	back = (): void => {
+		if (can('manager')) this.go(this.last);
+	};
 
 	/** The grabber's tap: one stop down, and from full back to the peek. */
 	step = (): void => this.go(nextStop(this.stop));
@@ -87,35 +141,42 @@ class Maestro {
 
 	/**
 	 * A Go control was tapped: the link it is on opens the session. The panel
-	 * closes, and the session's page points the way back.
+	 * closes, and the session's page shows the way back.
 	 */
 	jump = (href: string): void => {
 		const here = location.pathname;
+		const to = decodeURI(href);
+		if (to === decodeURI(here)) return this.go(0);
 		const stop = this.stop;
-		const last = this.last;
-		this.go(0);
-		this.last = stop > 0 ? stop : last;
-		if (decodeURI(href) === decodeURI(here)) return;
+		this.go(0, 'forward');
 		this.from = { path: here, stop };
-		this.jumping = true;
-		this.jumped = true;
+		this.to = to;
 	};
 
-	/** The first touch after a jump: the way back has been seen. */
+	/** The way back was dismissed. */
 	seen = (): void => {
 		this.jumped = false;
 	};
 
-	/** A navigation ended. Back to where a jump left from opens the panel again. */
+	/**
+	 * A navigation ended. The page a jump opened shows the way back. Back to
+	 * the page a jump left from opens the panel there again.
+	 */
 	arrived = (type: string, path: string): void => {
-		if (this.jumping) {
-			this.jumping = false;
+		const to = this.to;
+		this.to = null;
+		if (to !== null && decodeURI(path) === to) {
+			this.jumped = true;
 			return;
 		}
 		this.jumped = false;
 		const from = this.from;
 		this.from = null;
+		// A link in the sidebar left from an open panel: it stays behind.
+		if (this.open) this.go(0, 'forward');
 		if (type === 'popstate' && from && from.path === path && from.stop > 0 && can('manager')) {
+			// The entry Back came to is the one the panel had.
+			this.entry = true;
 			this.go(from.stop);
 		}
 	};
@@ -123,6 +184,7 @@ class Maestro {
 	/** Attachment for the panel: its stops follow the room the app has. */
 	measure = (node: HTMLElement): (() => void) => {
 		const app = node.parentElement ?? node;
+		this.node = node;
 		const fit = (): void => {
 			this.viewport = app.clientHeight;
 			const fixed = [...node.querySelectorAll<HTMLElement>('[data-panel-chrome]')];
@@ -132,7 +194,10 @@ class Maestro {
 		observer.observe(app);
 		for (const el of node.querySelectorAll('[data-panel-chrome]')) observer.observe(el);
 		fit();
-		return () => observer.disconnect();
+		return () => {
+			observer.disconnect();
+			this.node = null;
+		};
 	};
 
 	/**
@@ -155,9 +220,8 @@ class Maestro {
 			start = null;
 			active = false;
 			const target = event.target as Element;
-			if (this.jumped && !target.closest('[data-maestro-back]')) this.seen();
 			if (!event.isPrimary || (event.pointerType === 'mouse' && event.button !== 0)) return;
-			if (!can('manager') || ui.drawer > 0) return;
+			if (!can('manager') || ui.drawer > 0 || onHome()) return;
 			if (!target.closest('[data-maestro-grab]') || target.closest('input, textarea')) return;
 			start = { id: event.pointerId, x: event.clientX, y: event.clientY };
 			lastY = event.clientY;
@@ -209,12 +273,26 @@ class Maestro {
 			event.stopPropagation();
 		};
 
+		const onKey = (event: KeyboardEvent): void => {
+			if (event.key !== 'Escape' || !this.open || ui.drawer > 0) return;
+			event.preventDefault();
+			this.go(0);
+		};
+		// The browser's Back took the panel's entry: the panel closes, the page stays.
+		const onPop = (): void => {
+			if (this.entry && this.open) this.go(0, 'back');
+		};
+
+		window.addEventListener('keydown', onKey);
+		window.addEventListener('popstate', onPop);
 		node.addEventListener('pointerdown', onDown);
 		node.addEventListener('pointermove', onMove);
 		node.addEventListener('pointerup', onEnd);
 		node.addEventListener('pointercancel', onEnd);
 		node.addEventListener('click', onClick, true);
 		return () => {
+			window.removeEventListener('keydown', onKey);
+			window.removeEventListener('popstate', onPop);
 			node.removeEventListener('pointerdown', onDown);
 			node.removeEventListener('pointermove', onMove);
 			node.removeEventListener('pointerup', onEnd);
@@ -222,6 +300,11 @@ class Maestro {
 			node.removeEventListener('click', onClick, true);
 		};
 	};
+}
+
+/** The home page is the Maestro's own page: no panel opens over it. */
+function onHome(): boolean {
+	return page.route.id === '/';
 }
 
 function still(): boolean {
