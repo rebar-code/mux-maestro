@@ -9,12 +9,17 @@
 	import { sheetHeight } from '$lib/pager';
 	import { manager } from '$lib/manager.svelte';
 	import PullIndicator from '$lib/PullIndicator.svelte';
+	import TalkButton from '$lib/TalkButton.svelte';
 	import ThreadView from '$lib/ThreadView.svelte';
+	import { voice } from '$lib/voice.svelte';
+	import VoiceBar from '$lib/VoiceBar.svelte';
 
 	const PULL = 'home';
 
 	const tally = $derived(live.threads ? counts(live.threads) : null);
 	const managerOn = $derived(can('manager'));
+	// A take goes to the manager, so voice needs the manager's switch too.
+	const voiceOn = $derived(managerOn && can('voice'));
 	const boxLabel = $derived(isOff('manager') ? OFF_LABEL : 'Ask the manager');
 	const waiting = $derived(needsYouCards(live.threads ?? [], []));
 	const canSend = $derived(manager.draft.trim() !== '');
@@ -44,6 +49,8 @@
 
 	function submit(event: SubmitEvent): void {
 		event.preventDefault();
+		// A typed turn takes over: a reply that is still being read stops.
+		if (voiceOn) voice.skip();
 		void manager.send();
 	}
 </script>
@@ -112,9 +119,7 @@
 	<div class="scroll home" data-pull={PULL} {@attach pullToRefresh(PULL, live.refresh)}>
 		<PullIndicator key={PULL} />
 		<div class="hero">
-			<button class="orb" disabled aria-disabled="true" aria-label="Talk to the manager">
-				<span>🎙</span>
-			</button>
+			<TalkButton target="manager" sink={manager.voice} orb off />
 		</div>
 		{#if waiting.length}
 			<div class="sect">Needs you · {waiting.length}</div>
@@ -156,20 +161,7 @@
 			<span class="bar"></span>
 			<span class="sum">{summary}</span>
 		</button>
-		<!-- Voice arrives later: its controls are drawn and do nothing. -->
-		<div class="vbar" data-voicebar>
-			<span class="wave" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
-			<div class="vrow">
-				<div class="vseg" role="group" aria-label="Voice mode">
-					<button disabled aria-disabled="true">Auto</button>
-					<button class="on" disabled aria-disabled="true">Manual</button>
-				</div>
-				<button class="ip" disabled aria-disabled="true" aria-label="Speaker">🔊</button>
-				<button class="ip" disabled aria-disabled="true" aria-label="Replay">↻</button>
-				<button class="ip" disabled aria-disabled="true" aria-label="Skip">⏭</button>
-				<button class="ip" disabled aria-disabled="true" aria-label="Microphone">🎙</button>
-			</div>
-		</div>
+		<VoiceBar target="manager" sink={manager.voice} off={!voiceOn} />
 	{/if}
 	<form class="compose" onsubmit={submit}>
 		{#if managerOn}
@@ -190,9 +182,7 @@
 		{#if managerOn && canSend}
 			<button class="pill send grow" type="submit" disabled={manager.busy}>↑ Send</button>
 		{:else}
-			<button class="pill grow" type="button" disabled aria-disabled="true" aria-label="Talk"
-				>🎙 Talk</button
-			>
+			<TalkButton target="manager" sink={manager.voice} off={!voiceOn} />
 		{/if}
 	</form>
 </div>
@@ -210,20 +200,6 @@
 		flex-direction: column;
 		align-items: center;
 		padding: 22px 0 10px;
-	}
-
-	.orb {
-		width: 148px;
-		height: 148px;
-		border-radius: 50%;
-		background: radial-gradient(circle at 35% 30%, #b99cff, #6b3fd6);
-		font-size: 52px;
-		color: #fff;
-	}
-
-	.orb:disabled {
-		opacity: 0.28;
-		filter: grayscale(0.6);
 	}
 
 	.note {
@@ -287,65 +263,6 @@
 		height: 24px;
 	}
 
-	.vbar {
-		flex: none;
-		padding: 3px 12px 2px;
-	}
-
-	.wave {
-		display: flex;
-		align-items: center;
-		gap: 2px;
-		height: 14px;
-		margin: 0 2px 7px;
-		opacity: 0.4;
-	}
-
-	.wave i {
-		width: 3px;
-		height: 5px;
-		border-radius: 2px;
-		background: #666;
-	}
-
-	.vrow {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-	}
-
-	.vseg {
-		display: flex;
-		width: 136px;
-		margin-right: auto;
-		padding: 2px;
-		border-radius: 9px;
-		background: var(--surface);
-	}
-
-	.vseg button {
-		flex: 1;
-		padding: 5px 0;
-		border-radius: 7px;
-		font-size: 12px;
-		color: var(--muted);
-	}
-
-	.vseg button.on {
-		background: #2a2a2a;
-		color: var(--text);
-	}
-
-	.ip {
-		flex: none;
-		width: 36px;
-		height: 36px;
-		border-radius: 50%;
-		background: var(--surface);
-		border: 1px solid var(--border);
-		font-size: 15px;
-	}
-
 	/*
 	 * The bottom inset is counted once: here while the footer is the last row,
 	 * and on the board once the board shows under it.
@@ -400,6 +317,8 @@
 		font-weight: 600;
 		font-size: 14px;
 		white-space: nowrap;
+		/* As wide as the Talk button it replaces, so the text box does not move. */
+		min-width: 104px;
 	}
 
 	.pill.send {
@@ -431,6 +350,13 @@
 	.foot.drawer,
 	.foot.drawer :global(*:not(input)) {
 		touch-action: none;
+	}
+
+	/* In the footer the grabber is the top edge: the voice bar draws none. */
+	.foot :global(.vbar) {
+		padding-top: 3px;
+		border-top: 0;
+		background: none;
 	}
 
 	.grab {

@@ -308,10 +308,24 @@ enum Settings {
         defaults.set(on, forKey: "phone.capability.\(capability.rawValue)")
     }
 
+    /// The voice mode and speaker a phone starts with until it picks its own.
+    static func phoneVoice(defaults: UserDefaults = .standard) -> MobileVoiceDefaults {
+        MobileVoiceDefaults(
+            mode: defaults.string(forKey: "phone.voice.mode").flatMap(MobileVoiceMode.init) ?? .manual,
+            // Stored as "input only", so an unset key reads as two-way.
+            speaker: !defaults.bool(forKey: "phone.voice.inputOnly"))
+    }
+
+    static func setPhoneVoice(_ voice: MobileVoiceDefaults, defaults: UserDefaults = .standard) {
+        defaults.set(voice.mode.rawValue, forKey: "phone.voice.mode")
+        defaults.set(!voice.speaker, forKey: "phone.voice.inputOnly")
+    }
+
     /// The phone settings as the server enforces them.
     static func phoneConfig(defaults: UserDefaults = .standard) -> MobileConfig {
         MobileConfig(
             capabilities: Set(MobileCapability.allCases.filter { phoneCapability($0, defaults: defaults) }),
-            grouping: phoneGrouping(defaults: defaults))
+            grouping: phoneGrouping(defaults: defaults),
+            voice: phoneVoice(defaults: defaults))
     }
 }

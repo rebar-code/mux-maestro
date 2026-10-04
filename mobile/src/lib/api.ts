@@ -112,6 +112,31 @@ async function request(
 	return response;
 }
 
+/**
+ * A write whose body is a recording, or nothing. It carries the token and the
+ * write header like every other write; the answer is an event stream.
+ */
+export async function postAudio(
+	path: string,
+	audio: ArrayBuffer | null,
+	signal?: AbortSignal
+): Promise<Response> {
+	const response = await fetch(path, {
+		method: 'POST',
+		cache: 'no-store',
+		headers: {
+			accept: 'text/event-stream',
+			...(token ? { [TOKEN_HEADER]: token } : {}),
+			'x-muxmaestro': '1',
+			...(audio ? { 'content-type': 'audio/wav' } : {})
+		},
+		body: audio,
+		signal
+	});
+	if (!response.ok) throw await failure(response);
+	return response;
+}
+
 function post(path: string, body: unknown, accept = 'application/json'): Promise<Response> {
 	return request(path, accept, undefined, undefined, {}, body);
 }

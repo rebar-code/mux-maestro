@@ -12,6 +12,7 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
     var onKeepAwake: ((Bool) -> Void)?
     /// A feature's switch was flipped.
     var onCapability: ((MobileCapability, Bool) -> Void)?
+    var onVoice: ((MobileVoiceDefaults) -> Void)?
     /// "New Pairing Code" was confirmed.
     var onRotate: (() -> Void)?
     /// The view's height changed; the window refits.
@@ -26,6 +27,9 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
     private let grouping = NSPopUpButton()
     private let keepAwake = NSSwitch()
     private let manager = NSSwitch()
+    private let voice = NSSwitch()
+    private let voiceMode = NSPopUpButton()
+    private let voiceSpeaker = NSPopUpButton()
     private let url = NSTextField(labelWithString: "")
     private let copy = NSButton(title: "Copy Pairing Link", target: nil, action: nil)
     private let rotate = NSButton(title: "New Pairing Code…", target: nil, action: nil)
@@ -39,6 +43,8 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
     private static let groupings: [(MobileGrouping, String)] = [
         (.recent, "Most Recent"), (.host, "Host"), (.directory, "Directory"),
     ]
+    private static let voiceModes: [(MobileVoiceMode, String)] = [(.manual, "Manual"), (.auto, "Auto")]
+    private static let voiceSpeakers: [(Bool, String)] = [(true, "Two-way"), (false, "Input only")]
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -52,13 +58,14 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
         status.textColor = theme.muted
         status.lineBreakMode = .byTruncatingTail
         status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        for control in [toggle, keepAwake, manager] {
+        for control in [toggle, keepAwake, manager, voice] {
             control.controlSize = .small
             control.target = self
         }
         toggle.action = #selector(toggled)
         keepAwake.action = #selector(keepAwakeToggled)
         manager.action = #selector(managerToggled)
+        voice.action = #selector(voiceToggled)
 
         port.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
         port.alignment = .right
@@ -79,6 +86,15 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
         grouping.addItems(withTitles: Self.groupings.map(\.1))
         grouping.target = self
         grouping.action = #selector(groupingPicked)
+        for (popup, titles) in [
+            (voiceMode, Self.voiceModes.map(\.1)), (voiceSpeaker, Self.voiceSpeakers.map(\.1)),
+        ] {
+            popup.controlSize = .small
+            popup.font = .systemFont(ofSize: 12)
+            popup.addItems(withTitles: titles)
+            popup.target = self
+            popup.action = #selector(voicePicked)
+        }
 
         let grid = NSGridView()
         grid.rowSpacing = 8
@@ -90,6 +106,9 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
             ("Default grouping", NSGridCell.emptyContentView, grouping),
             ("Keep Mac awake", NSGridCell.emptyContentView, keepAwake),
             ("Run manager agent", NSGridCell.emptyContentView, manager),
+            ("Voice", NSGridCell.emptyContentView, voice),
+            ("Voice mode", NSGridCell.emptyContentView, voiceMode),
+            ("Voice speaker", NSGridCell.emptyContentView, voiceSpeaker),
         ]
         for (title, middle, control) in rows {
             let name = NSTextField(labelWithString: title)
@@ -102,7 +121,7 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
         grid.column(at: 2).xPlacement = .trailing
         grid.row(at: 0).rowAlignment = .none
         grid.row(at: 0).yPlacement = .center
-        for row in [3, 4] {
+        for row in [3, 4, 5] {
             grid.row(at: row).rowAlignment = .none
             grid.row(at: row).yPlacement = .center
         }
@@ -166,6 +185,10 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
         grouping.selectItem(at: Self.groupings.firstIndex { $0.0 == current } ?? 0)
         keepAwake.state = Settings.phoneKeepAwake() ? .on : .off
         manager.state = Settings.phoneCapability(.manager) ? .on : .off
+        voice.state = Settings.phoneCapability(.voice) ? .on : .off
+        let defaults = Settings.phoneVoice()
+        voiceMode.selectItem(at: Self.voiceModes.firstIndex { $0.0 == defaults.mode } ?? 0)
+        voiceSpeaker.selectItem(at: Self.voiceSpeakers.firstIndex { $0.0 == defaults.speaker } ?? 0)
     }
 
     func render(_ state: PhoneLink.State) {
@@ -223,6 +246,17 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
 
     @objc private func managerToggled() {
         onCapability?(.manager, manager.state == .on)
+    }
+
+    @objc private func voiceToggled() {
+        onCapability?(.voice, voice.state == .on)
+    }
+
+    @objc private func voicePicked() {
+        let mode = voiceMode.indexOfSelectedItem, speaker = voiceSpeaker.indexOfSelectedItem
+        guard Self.voiceModes.indices.contains(mode), Self.voiceSpeakers.indices.contains(speaker)
+        else { return }
+        onVoice?(MobileVoiceDefaults(mode: Self.voiceModes[mode].0, speaker: Self.voiceSpeakers[speaker].0))
     }
 
     @objc private func groupingPicked() {

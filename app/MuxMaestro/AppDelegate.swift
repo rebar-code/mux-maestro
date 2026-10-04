@@ -105,6 +105,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             screen: { [registry] lines in
                 registry.local.captureScrollback(target: ManagerHome.sessionName, lines: lines)
+            }),
+        // The phone's takes use the Mac's own engine. Nothing plays here: the
+        // phone gets the samples.
+        voice: MobileServer.Voice(
+            speech: EngineSpeech(),
+            warm: { speaker in
+                Task { try? await VoiceEngine.shared.loadIfNeeded(speaker ? .all : .whisper) }
             }))
     private lazy var phoneLink: PhoneLink = {
         let link = PhoneLink(server: mobileServer)
@@ -963,6 +970,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             setup.phone.onGrouping = { [weak self] grouping in
                 Settings.setPhoneGrouping(grouping)
+                self?.mobileServer.configure(Settings.phoneConfig())
+            }
+            setup.phone.onVoice = { [weak self] voice in
+                Settings.setPhoneVoice(voice)
                 self?.mobileServer.configure(Settings.phoneConfig())
             }
             setup.phone.onRotate = { [weak self] in self?.phoneLink.rotateToken() }

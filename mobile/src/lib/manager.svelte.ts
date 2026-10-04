@@ -10,8 +10,11 @@ import type {
 	ManagerLive,
 	ManagerStatus,
 	ManagerTurn,
-	ManagerUpdate
+	ManagerUpdate,
+	TurnEnd,
+	VoiceEnd
 } from './types';
+import type { VoiceSink } from './voice.svelte';
 
 const KEY = 'mm.manager';
 /** How often the home asks again: the pane's status has no event. */
@@ -182,27 +185,19 @@ class Manager {
 		return () => clearInterval(timer);
 	};
 
-	send = async (): Promise<void> => {
-		const text = this.draft.trim();
-		// A turn is running, here or on the Mac: Enter must not send a second one.
-		if (!text || this.sending || this.busy) return;
+	private begin(text: string): void {
 		this.sending = true;
-		this.draft = '';
 		this.note = null;
 		this.setTurn({ prompt: text, reply: '' }, true);
-		let refused: string | null = null;
-		let note: string | null = null;
-		try {
-			const end = await sendManagerText(text, () => void this.feed.load('chat'));
-			if (end.outcome === 'refused' || end.outcome === 'unreachable') {
-				refused = end.message ?? 'The manager did not take the message';
-			} else {
-				note = end.message;
-			}
-		} catch (error) {
-			live.fail(error);
-			refused = refusalText(error);
-		}
+	}
+
+	/**
+	 * A turn of this phone is over. `refused` is why it did not land; its text
+	 * then goes back in the box, to send again. `note` is what a turn that did
+	 * land leaves to say.
+	 */
+	private async finish(refused: string | null, note: string | null): Promise<void> {
+		const text = this.turn?.prompt ?? '';
 		// The reply is in the transcript now: read it before the turn's line goes.
 		if (refused === null) await this.feed.load('chat');
 		this.sending = false;
@@ -210,6 +205,40 @@ class Manager {
 		this.note = refused ?? note;
 		if (refused !== null && !this.draft) this.draft = text;
 		void this.load();
+	}
+
+	/** How the Mac ended a turn, as `finish` takes it. */
+	private ended(end: TurnEnd | VoiceEnd): Promise<void> {
+		return end.outcome === 'refused' || end.outcome === 'unreachable'
+			? this.finish(end.message ?? 'The manager did not take the message', null)
+			: this.finish(null, end.message);
+	}
+
+	send = async (): Promise<void> => {
+		const text = this.draft.trim();
+		// A turn is running, here or on the Mac: Enter must not send a second one.
+		if (!text || this.sending || this.busy) return;
+		this.draft = '';
+		this.begin(text);
+		try {
+			await this.ended(await sendManagerText(text, () => void this.feed.load('chat')));
+		} catch (error) {
+			live.fail(error);
+			await this.finish(refusalText(error), null);
+		}
+	};
+
+	/** A turn this phone spoke: drawn and kept like one it typed. */
+	readonly voice: VoiceSink = {
+		begin: (prompt) => this.begin(prompt),
+		delta: () => void this.feed.load('chat'),
+		end: (end) => void this.ended(end),
+		fail: (message) => void this.finish(message, null),
+		// The Mac still runs the turn: its events draw the rest.
+		detach: () => {
+			this.sending = false;
+			void this.load();
+		}
 	};
 
 	dismiss = async (key: string): Promise<void> => {

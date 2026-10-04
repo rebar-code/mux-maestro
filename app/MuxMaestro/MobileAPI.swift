@@ -81,6 +81,12 @@ enum MobileHTTP {
     static let maxHeaderBytes = 32_768
     static let maxBodyBytes = 1_048_576
 
+    /// The largest body a request to `path` may carry. Only a voice take, which
+    /// is audio, gets more than `maxBodyBytes`.
+    static func bodyLimit(method: String, path: String) -> Int {
+        method == "POST" && path == "/api/voice" ? MobileVoice.maxBodyBytes : maxBodyBytes
+    }
+
     enum Parsed: Equatable {
         /// More bytes are needed.
         case incomplete
@@ -91,7 +97,12 @@ enum MobileHTTP {
     }
 
     /// Parse one request from the front of `buffer`.
-    static func parse(_ buffer: Data) -> Parsed {
+    ///
+    /// `precheck` sees a request that asks for more than `maxBodyBytes` (a
+    /// voice take) when its headers are in and before any of its body is
+    /// waited for. A status it returns ends the request there, so only a
+    /// caller that is allowed in gets the server to hold megabytes for it.
+    static func parse(_ buffer: Data, precheck: ((MobileRequest) -> Int?)? = nil) -> Parsed {
         let terminator = Data("\r\n\r\n".utf8)
         guard let end = buffer.range(of: terminator) else {
             return buffer.count > maxHeaderBytes ? .invalid(431) : .incomplete
@@ -120,17 +131,21 @@ enum MobileHTTP {
         var length = 0
         if let raw = headers["content-length"] {
             guard let n = Int(raw), n >= 0 else { return .invalid(400) }
-            guard n <= maxBodyBytes else { return .invalid(413) }
+            let limit = bodyLimit(
+                method: String(requestLine[0]),
+                path: String(requestLine[1].split(separator: "?", maxSplits: 1).first ?? ""))
+            guard n <= limit else { return .invalid(413) }
             length = n
         }
-        let bodyStart = headBytes + terminator.count
-        guard buffer.count >= bodyStart + length else { return .incomplete }
-
         let target = String(requestLine[1])
         let parts = target.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
         var request = MobileRequest(method: String(requestLine[0]), path: String(parts[0]))
         if parts.count == 2 { request.query = parseQuery(String(parts[1])) }
         request.headers = headers
+        if length > maxBodyBytes, let status = precheck?(request) { return .invalid(status) }
+
+        let bodyStart = headBytes + terminator.count
+        guard buffer.count >= bodyStart + length else { return .incomplete }
         let from = buffer.index(buffer.startIndex, offsetBy: bodyStart)
         request.body = Data(buffer[from..<buffer.index(from, offsetBy: length)])
         return .request(request, consumed: bodyStart + length)
@@ -171,11 +186,18 @@ enum MobileEndpoint: Equatable {
     case managerChat(after: UInt64?)
     /// The manager pane's terminal text, like a thread's screen.
     case managerScreen(lines: Int)
+    /// One voice take: audio in; transcript, reply and audio stream back.
+    case voice
+    /// Read the target's last reply again.
+    case voiceReplay
+    /// A take has started: load the models while the human talks.
+    case voiceWarm
 
     var capability: MobileCapability {
         switch self {
         case .config, .threads, .hosts, .events, .chat, .screen: return .access
         case .manager, .managerText, .managerDismiss, .managerChat, .managerScreen: return .manager
+        case .voice, .voiceReplay, .voiceWarm: return .voice
         }
     }
 
@@ -186,7 +208,7 @@ enum MobileEndpoint: Equatable {
         case .config, .threads, .hosts, .events, .chat, .screen, .manager, .managerChat,
              .managerScreen:
             return "GET"
-        case .managerText, .managerDismiss: return "POST"
+        case .managerText, .managerDismiss, .voice, .voiceReplay, .voiceWarm: return "POST"
         }
     }
 }
@@ -233,6 +255,7 @@ struct MobileConfig: Equatable {
     /// Nothing is on unless its switch was turned on.
     var capabilities: Set<MobileCapability> = []
     var grouping = MobileGrouping.recent
+    var voice = MobileVoiceDefaults()
 
     func allows(_ capability: MobileCapability) -> Bool {
         capability == .access || capabilities.contains(capability)
@@ -245,6 +268,7 @@ struct MobileConfig: Equatable {
                 ($0.rawValue, allows($0))
             }),
             "grouping": grouping.rawValue,
+            "voice": voice.json,
         ]
         return (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]))
             ?? Data("{}".utf8)
@@ -314,6 +338,9 @@ enum MobileAPI {
             endpoint = .managerChat(after: request.query["after"].flatMap(UInt64.init))
         case 3 where segments[1] == "manager" && segments[2] == "screen":
             endpoint = .managerScreen(lines: screenLines(request.query["lines"]))
+        case 2 where segments[1] == "voice": endpoint = .voice
+        case 3 where segments[1] == "voice" && segments[2] == "replay": endpoint = .voiceReplay
+        case 3 where segments[1] == "voice" && segments[2] == "warm": endpoint = .voiceWarm
         case 4 where segments[1] == "threads" && segments[3] == "chat":
             endpoint = .chat(id: segments[2], after: request.query["after"].flatMap(UInt64.init))
         case 4 where segments[1] == "threads" && segments[3] == "screen":
