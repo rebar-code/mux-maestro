@@ -41,21 +41,36 @@ class Ui {
 	pull = $state(0);
 	pulling = $state(false);
 	refreshing = $state<string | null>(null);
-	/** The board sheet: its stop, its three heights, and a drag in progress. */
+	/**
+	 * The board drawer: its stop, how much of the board each stop shows, and a
+	 * drag in progress. The footer is its top edge; the board is below it.
+	 */
 	sheet = $state<SheetStop>(0);
-	sheetHeights = $state.raw<[number, number, number]>([46, 280, 560]);
-	/** How far above its stop a finger holds the sheet, in pixels. */
+	sheetHeights = $state.raw<[number, number, number]>([0, 250, 560]);
+	/** How far above its stop a finger holds the drawer, in pixels. */
 	sheetUp = $state(0);
 	sheetDragging = $state(false);
+	/** The text box has the keyboard: the footer sits on it and the board stays shut. */
+	sheetLocked = $state(false);
 
-	/** The sheet's handle: one stop up, and from the top back to rest. */
+	/** The grabber: one stop up, and from the top back to rest. */
 	stepSheet(): void {
+		if (this.sheetLocked) return;
 		this.sheet = this.sheet === 2 ? 0 : ((this.sheet + 1) as SheetStop);
 	}
 
 	/** The thread was swiped up at its end: bring the board up from rest. */
 	riseSheet(): void {
-		if (this.sheet === 0) this.sheet = 1;
+		if (this.sheet === 0 && !this.sheetLocked) this.sheet = 1;
+	}
+
+	/** The text box took or lost the keyboard. */
+	lockSheet(locked: boolean): void {
+		this.sheetLocked = locked;
+		if (locked) {
+			this.sheet = 0;
+			this.sheetUp = 0;
+		}
 	}
 
 	get drawerOpen(): boolean {
@@ -185,7 +200,11 @@ export function gestures(node: HTMLElement): () => void {
 		downZoom = (event.target as Element).closest('[data-zoom]') !== null;
 		hscroll = (event.target as Element).closest<HTMLElement>('[data-hscroll]');
 		swiped = (event.target as Element).closest<HTMLElement>('[data-swipe]');
-		onSheet = (event.target as Element).closest('[data-sheet]') !== null;
+		// A drag that begins in the text box is typing or moving the caret, not the drawer.
+		onSheet =
+			!ui.sheetLocked &&
+			(event.target as Element).closest('[data-sheet]') !== null &&
+			(event.target as Element).closest('input, textarea') === null;
 		sheetList = (event.target as Element).closest<HTMLElement>('[data-sheet-list]');
 		lastY = event.clientY;
 		vy = 0;
@@ -221,7 +240,7 @@ export function gestures(node: HTMLElement): () => void {
 			if (multi) return;
 			if (Math.max(Math.abs(dx), Math.abs(dy)) < SLOP) return;
 			if (Math.abs(dy) > Math.abs(dx)) {
-				// The board sheet is the one thing a vertical drag moves; all
+				// The board drawer is the one thing a vertical drag moves; all
 				// other vertical movement is the browser's scrolling.
 				if (!onSheet || ui.drawer > 0) {
 					kind = 'vertical';

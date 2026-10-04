@@ -581,25 +581,61 @@ test('an interruption ends a take with a label and holds a reply for Resume', as
 	await expect(status(page)).toHaveText('Start talking', { timeout: 8000 });
 });
 
-test('a tap on Talk starts a take; a drag that crosses it does not', async ({ page }) => {
+test('on the footer a tap never drags the board and a drag never starts a take', async ({
+	page
+}) => {
 	await open(page);
-	const box = (await primary(page).boundingBox())!;
-	const x = box.x + box.width / 2;
-	const y = box.y + box.height / 2;
+	const board = page.locator('[data-board]');
+	const foot = page.locator('[data-foot]');
 	const opened = (): Promise<number> => page.evaluate(() => window.__mic.opened);
+	const centre = async (target: Locator): Promise<[number, number]> => {
+		const box = (await target.boundingBox())!;
+		return [box.x + box.width / 2, box.y + box.height / 2];
+	};
+	const lower = async (): Promise<void> => {
+		while ((await board.getAttribute('data-stop')) !== '0') {
+			await page.locator('[data-grab]').click();
+			await page.waitForTimeout(350);
+		}
+	};
 
-	// A drag up from the button and back down onto it: the browser calls that
-	// a click on the button. It is not a tap.
+	// A drag up that starts on Talk raises the board. It is not a take.
+	let [x, y] = await centre(primary(page));
+	await page.mouse.move(x, y);
+	await page.mouse.down();
+	await page.mouse.move(x, y - 160, { steps: 12 });
+	await page.waitForTimeout(120);
+	await page.mouse.up();
+	await expect(board).not.toHaveAttribute('data-stop', '0');
+	await expect(primary(page)).toHaveText('🎙 Talk');
+	expect(await opened()).toBe(0);
+	await lower();
+
+	// Up and back down onto the button, which a browser calls a click: still no take.
+	[x, y] = await centre(primary(page));
 	await page.mouse.move(x, y);
 	await page.mouse.down();
 	await page.mouse.move(x, y - 80, { steps: 8 });
 	await page.mouse.move(x, y, { steps: 8 });
 	await page.mouse.up();
-	await page.waitForTimeout(200);
+	await page.waitForTimeout(350);
 	await expect(primary(page)).toHaveText('🎙 Talk');
 	expect(await opened()).toBe(0);
+	await lower();
 
-	// A drag to the side that starts on the button is the sidebar's, not a take.
+	// The same on the other voice controls: a drag from Auto does not switch the mode.
+	[x, y] = await centre(bar(page, 'Auto'));
+	await page.mouse.move(x, y);
+	await page.mouse.down();
+	await page.mouse.move(x, y - 160, { steps: 12 });
+	await page.waitForTimeout(120);
+	await page.mouse.up();
+	await expect(bar(page, 'Manual')).toHaveAttribute('aria-pressed', 'true');
+	expect(await opened()).toBe(0);
+	await lower();
+
+	// A drag to the side that starts on the button is not a take either.
+	[x, y] = await centre(primary(page));
 	await page.mouse.move(x, y);
 	await page.mouse.down();
 	await page.mouse.move(x - 160, y, { steps: 10 });
@@ -610,19 +646,26 @@ test('a tap on Talk starts a take; a drag that crosses it does not', async ({ pa
 	if (await page.locator('[data-drawer]').isVisible()) {
 		await page.getByRole('button', { name: 'Close sidebar' }).click();
 	}
-	await expect(status(page)).toHaveText('Start talking');
+	await lower();
 	await expect(primary(page)).toHaveText('🎙 Talk');
 
-	// A tap, with the small slip a finger makes, starts the take and moves nothing.
-	const sheet = (await page.locator('[data-sheet]').boundingBox())!;
+	// A tap, with the small slip a finger makes, starts the take and the
+	// footer stays where it is.
+	const rest = (await foot.boundingBox())!.y;
+	[x, y] = await centre(primary(page));
 	await page.mouse.move(x, y);
 	await page.mouse.down();
 	await page.mouse.move(x + 3, y - 3);
 	await page.mouse.up();
 	await expect(primary(page)).toHaveText('↑ Submit');
 	expect(await opened()).toBe(1);
-	expect((await page.locator('[data-sheet]').boundingBox())!.y).toBe(sheet.y);
-	await expect(page.locator('[data-sheet]')).toHaveAttribute('data-stop', '0');
+	await expect(board).toHaveAttribute('data-stop', '0');
+	expect((await foot.boundingBox())!.y).toBe(rest);
+	// And the tap to send does not move it either.
+	await say(page, 500);
+	await primary(page).click();
+	await expect(primary(page)).toHaveText('■ Stop');
+	await expect(board).toHaveAttribute('data-stop', '0');
 });
 
 test('the delays of a turn are measured', async ({ page }) => {
@@ -708,36 +751,43 @@ test('every voice control has a 44pt touch area, clear of its neighbours', async
 	expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);
 });
 
-test('the voice bar stays in place, clear of the board sheet at every stop', async ({ page }) => {
+test('the voice controls rise with the footer and work at every stop of the board', async ({
+	page
+}) => {
 	await open(page);
-	const sheet = page.locator('[data-sheet]');
-	const voicebar = page.locator('[data-voicebar]');
-	const rest = (await voicebar.boundingBox())!;
+	const board = page.locator('[data-board]');
+	const foot = page.locator('[data-foot]');
 	for (const stop of [1, 2]) {
-		await sheet.locator('.grip').click();
-		await expect(sheet).toHaveAttribute('data-stop', String(stop));
-		await page.waitForTimeout(400);
-		// The bar has not moved, and a tap on it reaches it: the sheet, which
-		// is clipped to the stage above, does not cover it.
-		const now = (await voicebar.boundingBox())!;
-		expect(now.y).toBe(rest.y);
-		expect(now.height).toBe(rest.height);
-		for (const name of ['Auto', 'Speaker', 'Microphone']) {
-			const reached = await bar(page, name).evaluate((element) => {
+		await page.locator('[data-grab]').click();
+		await expect(board).toHaveAttribute('data-stop', String(stop));
+		await expect
+			.poll(async () => {
+				const first = (await foot.boundingBox())?.y;
+				await page.waitForTimeout(80);
+				return (await foot.boundingBox())?.y === first;
+			})
+			.toBe(true);
+		// The bar is on the footer, above the board, and a tap reaches each control.
+		const voicebar = (await page.locator('[data-voicebar]').boundingBox())!;
+		const list = (await board.boundingBox())!;
+		expect(voicebar.y + voicebar.height).toBeLessThanOrEqual(list.y + 60);
+		for (const control of [bar(page, 'Auto'), bar(page, 'Speaker'), primary(page)]) {
+			const reached = await control.evaluate((element) => {
 				const box = element.getBoundingClientRect();
 				const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
 				return hit === element || element.contains(hit);
 			});
-			expect(reached, `${name} at stop ${stop}`).toBe(true);
+			expect(reached, `stop ${stop}`).toBe(true);
 		}
 	}
-	// A take works with the sheet up.
+	// A take works with the board up.
 	await primary(page).click();
 	await expect(status(page)).toHaveText('Recording — tap to send');
 	await say(page, 600);
 	await primary(page).click();
 	await expect(primary(page)).toHaveText('■ Stop');
 	expect(await takes(page)).toHaveLength(1);
+	await expect(board).toHaveAttribute('data-stop', '2');
 });
 
 test('with reduced motion nothing in the bar animates', async ({ page }) => {

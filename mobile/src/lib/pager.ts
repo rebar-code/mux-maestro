@@ -80,34 +80,39 @@ export function clamp(value: number, min: number, max: number): number {
 	return Math.min(Math.max(value, min), max);
 }
 
-/** The board sheet's stops: rest (a peek), open, tall. */
+/**
+ * The board drawer's stops. The footer (the text box and its controls) is the
+ * drawer's top edge and the board hangs below it: at rest the footer is at the
+ * bottom of the screen and the board is off screen; open shows the first
+ * cards; tall gives the board most of the screen.
+ */
 export type SheetStop = 0 | 1 | 2;
 
-/** What a vertical drag that began on the sheet moves: the sheet or its list. */
+/** What a vertical drag that began on the drawer moves: the drawer or the board's list. */
 export function resolveSheetDrag(context: {
 	stop: SheetStop;
 	/** Finger movement so far: negative is a swipe up. */
 	dy: number;
-	/** The drag began on the sheet's list. */
+	/** The drag began on the board's list, not on the footer. */
 	inList: boolean;
 	/** How far the list is scrolled from its top. */
 	listTop: number;
 }): 'sheet' | 'sheet-list' {
 	// The list scrolls only at the tall stop. There a swipe up reads on, and a
-	// swipe down scrolls back to the top first; from the top it moves the sheet.
+	// swipe down scrolls back to the top first; from the top it moves the drawer.
 	if (context.stop === 2 && context.inList && (context.dy < 0 || context.listTop > 0)) {
 		return 'sheet-list';
 	}
 	return 'sheet';
 }
 
-/** The sheet's height while a finger holds it, `up` pixels above where it rested. */
+/** How much of the board shows while a finger holds the drawer `up` pixels above its stop. */
 export function sheetHeight(heights: readonly number[], stop: SheetStop, up: number): number {
-	const [rest, , tall] = heights;
+	const tall = heights[2];
 	const wanted = heights[stop] + up;
+	// Past the tall stop it resists; below rest there is nothing to pull.
 	if (wanted > tall) return tall + (wanted - tall) * RUBBER;
-	if (wanted < rest) return rest - (rest - wanted) * RUBBER;
-	return wanted;
+	return Math.max(wanted, heights[0]);
 }
 
 /** How far a drag must go to change the stop. */
@@ -121,10 +126,25 @@ export function settleSheet(stop: SheetStop, up: number, vy: number): SheetStop 
 	return stop;
 }
 
-/** The sheet's three heights for a stage this tall, on a screen this tall. */
-export function sheetStops(stage: number, viewport: number): [number, number, number] {
-	const rest = 46;
-	const tall = Math.max(rest, Math.min(Math.round(viewport * 0.7), stage - 8));
-	const open = Math.max(rest, Math.min(Math.round(stage * 0.45), tall));
-	return [rest, open, tall];
+/**
+ * How much of the board shows at each stop. `room` is the height the thread
+ * has at rest, which is all the footer can rise; `viewport` is the screen.
+ */
+export function sheetStops(room: number, viewport: number): [number, number, number] {
+	const tall = Math.max(0, Math.min(Math.round(viewport * 0.7), Math.floor(room)));
+	const open = Math.min(Math.round(viewport * 0.3), tall);
+	return [0, open, tall];
+}
+
+/** Less than this of the screen lost is a toolbar, not a keyboard. */
+const KEYBOARD_MIN = 120;
+
+/**
+ * The height an on-screen keyboard covers, from the layout height and the
+ * visible height; 0 when there is none. The page is made that much shorter, so
+ * its last row sits on the keyboard.
+ */
+export function keyboardInset(layout: number, visible: number): number {
+	const covered = Math.round(layout - visible);
+	return covered >= KEYBOARD_MIN ? covered : 0;
 }

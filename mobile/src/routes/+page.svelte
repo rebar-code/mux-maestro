@@ -5,7 +5,8 @@
 	import { pullToRefresh, ui } from '$lib/gestures.svelte';
 	import { counts } from '$lib/group';
 	import { can, isOff, live, OFF_LABEL } from '$lib/live.svelte';
-	import { needsYouCards, thinkingText } from '$lib/manager';
+	import { boardSummary, needsYouCards, thinkingText } from '$lib/manager';
+	import { sheetHeight } from '$lib/pager';
 	import { manager } from '$lib/manager.svelte';
 	import PullIndicator from '$lib/PullIndicator.svelte';
 	import TalkButton from '$lib/TalkButton.svelte';
@@ -22,6 +23,17 @@
 	const boxLabel = $derived(isOff('manager') ? OFF_LABEL : 'Ask the manager');
 	const waiting = $derived(needsYouCards(live.threads ?? [], []));
 	const canSend = $derived(manager.draft.trim() !== '');
+	/** What the board holds, on the footer's grabber. */
+	const summary = $derived(
+		boardSummary({
+			needsYou: needsYouCards(live.threads ?? [], manager.needsYou).length,
+			review: manager.review?.length ?? 0,
+			updates: Math.min(manager.updates.length, 5)
+		})
+	);
+	const STOPS = ['closed', 'open', 'full'] as const;
+	/** How much of the board shows: the footer's bottom inset gives way to it. */
+	const shown = $derived(sheetHeight(ui.sheetHeights, ui.sheet, ui.sheetUp));
 	/** The manager thread shows its terminal, not its chat. */
 	let terminal = $state(false);
 	/** Ticks while a turn runs, for the time beside the dots. */
@@ -101,11 +113,7 @@
 			pending={manager.pending}
 			bind:terminal
 		/>
-		<BoardSheet />
 	</div>
-
-	<!-- Below the stage, so the board sheet never covers it. -->
-	<VoiceBar target="manager" sink={manager.voice} off={!voiceOn} />
 {:else}
 	{@render header()}
 	<div class="scroll home" data-pull={PULL} {@attach pullToRefresh(PULL, live.refresh)}>
@@ -128,26 +136,59 @@
 		<div class="end"></div>
 	</div>
 {/if}
-<!-- With the Manager switch off the box stays, disabled, and says where the switch is. -->
-<form class="compose" class:bare={!managerOn} onsubmit={submit}>
+
+<!--
+	The footer. With the manager on it is the top edge of the board drawer: a
+	swipe up on it raises it, and the board shows below. With the Manager switch
+	off the box stays, disabled, and says where the switch is.
+-->
+<div
+	class="foot"
+	class:bare={!managerOn}
+	class:drawer={managerOn}
+	style:--board="{managerOn ? shown : 0}px"
+	data-foot
+	data-sheet={managerOn ? '' : undefined}
+>
 	{#if managerOn}
-		<input
-			bind:value={manager.draft}
-			placeholder="Ask the manager"
-			aria-label="Ask the manager"
-			enterkeyhint="send"
-			autocomplete="off"
-			autocapitalize="sentences"
-		/>
-	{:else}
-		<input disabled placeholder={boxLabel} aria-label={boxLabel} data-off={isOff('manager')} />
+		<button
+			class="grab"
+			aria-label="Board, {summary}, {STOPS[ui.sheet]}"
+			aria-expanded={ui.sheet > 0}
+			data-grab
+			onclick={() => ui.stepSheet()}
+		>
+			<span class="bar"></span>
+			<span class="sum">{summary}</span>
+		</button>
+		<VoiceBar target="manager" sink={manager.voice} off={!voiceOn} />
 	{/if}
-	{#if managerOn && canSend}
-		<button class="pill send grow" type="submit" disabled={manager.busy}>↑ Send</button>
-	{:else}
-		<TalkButton target="manager" sink={manager.voice} off={!voiceOn} />
-	{/if}
-</form>
+	<form class="compose" onsubmit={submit}>
+		{#if managerOn}
+			<!-- With the keyboard open the footer sits on it and the board stays shut. -->
+			<input
+				bind:value={manager.draft}
+				placeholder="Ask the manager"
+				aria-label="Ask the manager"
+				enterkeyhint="send"
+				autocomplete="off"
+				autocapitalize="sentences"
+				onfocus={() => ui.lockSheet(true)}
+				onblur={() => ui.lockSheet(false)}
+			/>
+		{:else}
+			<input disabled placeholder={boxLabel} aria-label={boxLabel} data-off={isOff('manager')} />
+		{/if}
+		{#if managerOn && canSend}
+			<button class="pill send grow" type="submit" disabled={manager.busy}>↑ Send</button>
+		{:else}
+			<TalkButton target="manager" sink={manager.voice} off={!voiceOn} />
+		{/if}
+	</form>
+</div>
+{#if managerOn}
+	<BoardSheet />
+{/if}
 
 <style>
 	.home {
@@ -222,15 +263,18 @@
 		height: 24px;
 	}
 
+	/*
+	 * The bottom inset is counted once: here while the footer is the last row,
+	 * and on the board once the board shows under it.
+	 */
 	.compose {
-		flex: none;
 		display: flex;
 		align-items: center;
 		gap: 8px;
 		margin: 0;
-		padding: 6px max(10px, env(safe-area-inset-right)) calc(10px + env(safe-area-inset-bottom))
+		padding: 6px max(10px, env(safe-area-inset-right))
+			calc(10px + max(0px, env(safe-area-inset-bottom) - var(--board, 0px)))
 			max(10px, env(safe-area-inset-left));
-		background: var(--bar);
 	}
 
 	.compose input {
@@ -248,9 +292,8 @@
 		outline: none;
 	}
 
-	.compose.bare {
+	.foot.bare .compose {
 		padding-top: 8px;
-		border-top: 1px solid var(--border);
 	}
 
 	.compose input:disabled {
@@ -283,16 +326,71 @@
 		color: #fff;
 	}
 
-	/* The manager's thread, with the board sheet over its lower part. */
+	/* The manager's thread. It gets shorter as the footer rises. */
 	.stage {
-		position: relative;
 		flex: 1;
 		min-height: 0;
 		display: flex;
 		flex-direction: column;
 		overflow: hidden;
-		/* The board's peek covers this much of the thread's end. */
-		--below: 46px;
+		/* The footer is under the thread: the thread itself needs no bottom inset. */
+		--below: 0px;
+	}
+
+	.foot {
+		flex: none;
+		background: var(--bar);
+		border-top: 1px solid var(--border);
+	}
+
+	/*
+	 * A drag on the footer moves the drawer. The text box is left to the
+	 * browser, so typing and moving the caret work as usual.
+	 */
+	.foot.drawer,
+	.foot.drawer :global(*:not(input)) {
+		touch-action: none;
+	}
+
+	/* In the footer the grabber is the top edge: the voice bar draws none. */
+	.foot :global(.vbar) {
+		padding-top: 3px;
+		border-top: 0;
+		background: none;
+	}
+
+	.grab {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: 4px;
+		width: 100%;
+		height: 30px;
+		position: relative;
+	}
+
+	/* 44pt of touch area on a 30pt strip, reaching up over the thread's edge. */
+	.grab::after {
+		content: '';
+		position: absolute;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		height: var(--hit);
+	}
+
+	.bar {
+		width: 36px;
+		height: 4px;
+		border-radius: 2px;
+		background: #4a4a5e;
+	}
+
+	.sum {
+		font-size: 11.5px;
+		line-height: 1.2;
+		color: var(--muted);
 	}
 
 	.think {
