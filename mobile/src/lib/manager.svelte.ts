@@ -61,6 +61,8 @@ class Manager {
 	/** `null`: nothing to show yet, draw skeleton cards. */
 	review = $state.raw<ManagerItem[] | null>(this.start?.review ?? null);
 	needsYou = $state.raw<ManagerItem[]>(this.start?.needsYou ?? []);
+	/** Sessions the Maestro points the user at. */
+	points = $state.raw<ManagerItem[]>([]);
 	updates = $state.raw<ManagerUpdate[]>([]);
 	status = $state<ManagerStatus>('idle');
 	turn = $state.raw<ManagerTurn | null>(null);
@@ -145,10 +147,13 @@ class Manager {
 	}
 
 	private setCards(body: ManagerLive): void {
+		const points = body.points ?? [];
 		for (const key of this.dismissed) {
-			if (!body.review.some((item) => item.key === key)) this.dismissed.delete(key);
+			if (![...body.review, ...points].some((item) => item.key === key)) this.dismissed.delete(key);
 		}
-		this.review = body.review.filter((item) => item.key === null || !this.dismissed.has(item.key));
+		const kept = (item: ManagerItem): boolean => item.key === null || !this.dismissed.has(item.key);
+		this.review = body.review.filter(kept);
+		this.points = points.filter(kept);
 		this.needsYou = body.needsYou;
 		this.updates = body.updates;
 	}
@@ -292,6 +297,7 @@ class Manager {
 	dismiss = async (key: string): Promise<void> => {
 		this.dismissed.add(key);
 		this.review = (this.review ?? []).filter((item) => item.key !== key);
+		this.points = this.points.filter((item) => item.key !== key);
 		this.save();
 		try {
 			await dismissReview(key);

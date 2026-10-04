@@ -1,9 +1,13 @@
 <script lang="ts">
 	import '../app.css';
+	import { afterNavigate } from '$app/navigation';
 	import ActionSheet from '$lib/ActionSheet.svelte';
 	import Drawer from '$lib/Drawer.svelte';
 	import { gestures, ui } from '$lib/gestures.svelte';
-	import { connect, live } from '$lib/live.svelte';
+	import { can, connect, live } from '$lib/live.svelte';
+	import { maestro } from '$lib/maestro.svelte';
+	import MaestroButton from '$lib/MaestroButton.svelte';
+	import MaestroPanel from '$lib/MaestroPanel.svelte';
 	import { keyboardInset } from '$lib/pager';
 	import Pair from '$lib/Pair.svelte';
 	import { notifications } from '$lib/push.svelte';
@@ -11,6 +15,9 @@
 	import { freshBuild } from '$lib/update';
 
 	const { children } = $props();
+
+	// Back to the page a jump left from opens the Maestro panel there again.
+	afterNavigate((navigation) => maestro.arrived(navigation.type, location.pathname));
 
 	/**
 	 * Attachment for the app root: while the on-screen keyboard is open the page
@@ -47,6 +54,7 @@
 	class="app"
 	data-app
 	{@attach gestures}
+	{@attach maestro.drag}
 	{@attach connect}
 	{@attach keyboard}
 	{@attach notifications}
@@ -61,6 +69,11 @@
 		<div class="view" inert={ui.drawerOpen}>
 			{@render children()}
 		</div>
+		{#if can('manager')}<MaestroPanel />{/if}
+		<MaestroButton />
+		{#if maestro.jumped && !maestro.open}
+			<button class="back" data-maestro-back onclick={maestro.toggle}>✦ Back to Maestro</button>
+		{/if}
 		<button
 			class="scrim"
 			class:anim={!ui.dragging}
@@ -94,6 +107,31 @@
 	.app,
 	.app :global(*) {
 		touch-action: pan-y;
+	}
+
+	/* The drags that move the Maestro panel begin on these: none of them scrolls. */
+	.app :global([data-maestro-grab]),
+	.app :global([data-maestro-grab] *) {
+		touch-action: none;
+	}
+
+	/* Under the header, only on the page a jump opened, until the first touch. */
+	.back {
+		position: absolute;
+		/* Below the header and the tabs: it covers no control. */
+		top: calc(env(safe-area-inset-top) + var(--hit) + 58px);
+		left: 50%;
+		transform: translateX(-50%);
+		white-space: nowrap;
+		z-index: 28;
+		min-height: var(--hit);
+		padding: 0 14px;
+		border-radius: 999px;
+		background: #2a2440;
+		border: 1px solid var(--purple);
+		color: #e6dcff;
+		font-size: 13px;
+		box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
 	}
 
 	.view {

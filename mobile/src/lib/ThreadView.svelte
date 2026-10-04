@@ -54,6 +54,11 @@
 		 * that gives it draws its own keys and text box.
 		 */
 		reply?: Reply;
+		/**
+		 * The view lies over another page (the Maestro panel): it leaves the
+		 * page's pager, its pull key and the board drawer alone.
+		 */
+		embedded?: boolean;
 	}
 
 	/* eslint-disable prefer-const */
@@ -65,11 +70,18 @@
 		tail,
 		pending = null,
 		terminal = $bindable(false),
-		reply: givenReply
+		reply: givenReply,
+		embedded = false
 	}: Props = $props();
 	/* eslint-enable prefer-const */
 
-	const PULL = 'thread';
+	// svelte-ignore state_referenced_locally
+	const PULL = embedded ? 'maestro' : 'thread';
+	/** The page that shows. A view over another page has one, and is not the pager's. */
+	const at = $derived(embedded ? 0 : ui.index);
+	const turn = (index: number): void => {
+		if (!embedded) ui.goTo(index);
+	};
 	const MAIN = 'main';
 	// svelte-ignore state_referenced_locally
 	const listed = given === undefined;
@@ -111,7 +123,7 @@
 	/** A tap on a file in the chat: the Artifacts tab slides in with it open. */
 	function openInline(file: ArtifactFile): void {
 		artifacts.show(file, 'chat');
-		ui.goTo(tabs.indexOf(ARTIFACTS));
+		turn(tabs.indexOf(ARTIFACTS));
 	}
 	const color = $derived(thread?.hostColor ?? '#2a2a2a');
 
@@ -167,7 +179,7 @@
 		// What a key was told before ("open the terminal") is done now.
 		reply.note = null;
 		terminal = true;
-		ui.goTo(0);
+		turn(0);
 	}
 	const spoken = $derived(liveLines(feed.messages ?? [], reply.turn));
 
@@ -180,11 +192,11 @@
 	function selectTab(index: number): void {
 		// The first tab is also a switch: a tap while it is showing flips the
 		// page between the chat and the pane's terminal.
-		if (index === 0 && ui.index === 0 && canChat) {
+		if (index === 0 && at === 0 && canChat) {
 			terminal = !terminal;
 			if (finding) find.switched(mode);
 		}
-		ui.goTo(index);
+		turn(index);
 	}
 </script>
 
@@ -205,6 +217,7 @@
 {:else}
 	<header
 		class="tbar thread"
+		data-maestro-grab
 		style:border-bottom-color={color}
 		style:background="linear-gradient({color}3a, {color}14), var(--bar)"
 	>
@@ -244,9 +257,9 @@
 			{#if tab === MAIN}
 				<button
 					class="grow"
-					class:on={ui.index === index}
+					class:on={at === index}
 					role="tab"
-					aria-selected={ui.index === index}
+					aria-selected={at === index}
 					aria-label={canChat ? `${mode === 'chat' ? 'Chat' : 'Terminal'}, switch` : 'Terminal'}
 					data-tab={tab}
 					data-mode={mode}
@@ -258,9 +271,9 @@
 			{:else}
 				<button
 					class="grow"
-					class:on={ui.index === index}
+					class:on={at === index}
 					role="tab"
-					aria-selected={ui.index === index}
+					aria-selected={at === index}
 					data-tab={tab}
 					onclick={() => selectTab(index)}>{LABELS[tab]}</button
 				>
@@ -271,17 +284,17 @@
 		class="tb"
 		aria-label="Refresh"
 		disabled={ui.refreshing !== null}
-		onclick={() => ui.refresh(ui.index === 0 ? PULL : tabs[ui.index])}>↻</button
+		onclick={() => ui.refresh(at === 0 ? PULL : tabs[at])}>↻</button
 	>
 </div>
 
 <div
 	class="pager"
 	class:docked
-	data-thread-pages
+	data-thread-pages={embedded ? undefined : ''}
 	style:--term-size="{text.size}px"
 	style:--chat-size="{text.chat}px"
-	{@attach pages(tabs, landed)}
+	{@attach !embedded && pages(tabs, landed)}
 	{@attach feed.watch(mode)}
 	{@attach listed && push.watching(id)}
 	{@attach artifactsOn && artifacts.watch}
@@ -291,10 +304,10 @@
 	<div
 		class="track"
 		class:anim={!ui.dragging}
-		style:transform="translate3d(calc({-ui.index * 100}% + {ui.dragX}px), 0, 0)"
+		style:transform="translate3d(calc({-at * 100}% + {embedded ? 0 : ui.dragX}px), 0, 0)"
 	>
 		{#each tabs as tab, index (tab)}
-			<section class="page" inert={ui.index !== index} data-page={tab}>
+			<section class="page" inert={at !== index} data-page={tab}>
 				{#if closed}
 					<div class="empty">Closed</div>
 				{:else if tab === ARTIFACTS}
@@ -306,7 +319,7 @@
 						class="scroll"
 						data-pull={PULL}
 						data-view="chat"
-						data-rise
+						data-rise={embedded ? undefined : ''}
 						{@attach feed.scroller('chat')}
 						{@attach pullToRefresh(PULL, () => feed.load('chat'))}
 					>
@@ -374,7 +387,7 @@
 							class="scroll"
 							data-view="terminal"
 							data-zoom
-							data-rise
+							data-rise={embedded ? undefined : ''}
 							{@attach feed.scroller('terminal')}
 						>
 							{#if feed.screen === null}
