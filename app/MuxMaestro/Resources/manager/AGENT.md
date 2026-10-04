@@ -156,8 +156,8 @@ mux point <session>[:<window>] --done [--host <host>]
 ## The request list
 
 `requests.json`, beside this file, is the list of what the human asked for. You
-keep it. The human reads it on the phone and ticks requests done there, and the
-app writes that tick into the same file.
+keep it. The human reads it on the phone and in the Mac app and ticks requests
+done there, and the app writes that tick into the same file.
 
 ```sh
 mux requests          # state|id|project|asked|title, newest first
@@ -172,7 +172,7 @@ mux requests --json   # the same requests whole, with their history, plus
 - **Add a request when the human asks for something**, not later. Newest first.
   Each has `id`, `title`, `project`, `asked`, `state`, `detail`, `blocked_by`,
   `history`. The top-level fields are the request as it stands **now**. The
-  phone's list shows only `title` and `state`, so keep the title short.
+  human's list shows only `title` and `state`, so keep the title short.
   `project` is the tmux session name, as `mux sessions` prints it. `state` is
   one of `todo`, `in_progress`, `blocked`, `review`, `done`. Keep `"schema": 2`.
 - **`history` is append-only.** It is the record of what was asked and how it
@@ -183,7 +183,7 @@ mux requests --json   # the same requests whole, with their history, plus
   changed. When a request changes, update the top-level fields and **add** an
   entry. Never rewrite or drop one, your own mistakes included: they are there
   to be audited. The app adds an entry of its own when the human changes a
-  state on the phone.
+  state on the phone or on the Mac.
 - **Write the whole file to a temporary file beside it, then `mv` it over
   `requests.json`.** Read the file again just before you write. A file written
   in place is half a file for a moment; the app then shows an error and
