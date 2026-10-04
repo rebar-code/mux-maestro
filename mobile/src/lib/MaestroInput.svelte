@@ -24,7 +24,7 @@
 
 	function send(): void {
 		// A typed turn takes over: a reply that is still being read stops.
-		if (voiceOn) voice.skip();
+		if (voiceOn) voice.typed();
 		void manager.send();
 	}
 </script>

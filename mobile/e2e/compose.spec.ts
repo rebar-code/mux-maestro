@@ -637,15 +637,19 @@ test('the hide-keyboard key gives the focus up; every other control keeps it', a
 	await box(page).tap();
 	await page.keyboard.type('hello');
 	await shot(page, 'keys-hide');
-	// The voice controls, a key, attach: the box keeps the focus through each.
-	await page.locator('[data-voicebar]').getByRole('button', { name: 'Speaker' }).tap();
-	await expect(box(page)).toBeFocused();
-	await page.locator('[data-voicebar]').getByRole('button', { name: 'Manual' }).tap();
-	await expect(box(page)).toBeFocused();
+	// No take is open: the voice controls are not drawn.
+	await expect(page.locator('[data-voicebar]').getByRole('button')).toHaveCount(0);
+	// A key, attach: the box keeps the focus through each.
 	await keybar(page).getByRole('button', { name: 'Escape', exact: true }).tap();
 	await expect(box(page)).toBeFocused();
+	// Attach is in the key bar, fixed at its start, with the file icon.
+	const attach = keybar(page).getByRole('button', { name: 'Attach' });
+	await expect(attach.locator('svg[data-icon="fileUp"]')).toBeVisible();
+	const first = await keybar(page).locator('.keys button').first().boundingBox();
+	const at = await attach.boundingBox();
+	expect((at?.x ?? 0) + (at?.width ?? 0)).toBeLessThanOrEqual(first?.x ?? 0);
 	const chooser = page.waitForEvent('filechooser');
-	await page.getByRole('button', { name: 'Attach' }).tap();
+	await attach.tap();
 	await chooser;
 	await expect(box(page)).toBeFocused();
 

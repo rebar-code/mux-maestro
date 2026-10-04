@@ -395,6 +395,8 @@ for (const viewport of [
 			await hook(page, '/__fixture/capability?name=voice&on=1');
 			const live = (): Promise<number> => page.evaluate(() => window.__mic.live());
 			const dock = page.locator('[data-dock]');
+			// A take starts talk mode: only then are the voice controls drawn.
+			await dock.locator('[data-primary="talk"]').click();
 			await dock.getByRole('button', { name: 'Auto' }).click();
 			await expect(dock.locator('[data-voicebar]').first()).toContainText('Listening…');
 			expect(await live()).toBe(1);

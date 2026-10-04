@@ -319,7 +319,8 @@ test('with the Voice switch off the Talk button is drawn, off, and says where to
 	await page.request.post('/__fixture/capability?name=voice&on=1');
 	await expect(talk).toBeEnabled();
 	await expect(bar).toContainText('Start talking');
-	await expect(bar.getByRole('button', { name: 'Auto' })).toBeVisible();
+	// Its controls wait for talk mode.
+	await expect(bar.locator('button')).toHaveCount(0);
 	// And off again.
 	await page.request.post('/__fixture/capability?name=voice&on=0');
 	await expect(talk).toBeDisabled();

@@ -219,7 +219,7 @@
 
 	function send(): void {
 		// A typed reply takes over: a reply that is still being read stops.
-		if (voiceOn) voice.skip();
+		if (voiceOn) voice.typed();
 		void reply.send();
 	}
 
@@ -488,6 +488,19 @@
 
 <ServeConfirm {servers} />
 
+{#snippet attach()}
+	{#if repliesOn}
+		<AttachButton
+			slim={keysOn}
+			off={!can('upload')}
+			onpick={reply.files.add}
+			onoff={reply.uploadOff}
+		/>
+	{:else}
+		<AttachButton slim={keysOn} disabled />
+	{/if}
+{/snippet}
+
 {#if docked}
 	<div
 		class="dock"
@@ -513,7 +526,8 @@
 			{#if repliesOn && voiceOn && keysOn}
 				<VoiceBar target={id} sink={reply.voice} part="status" />
 			{/if}
-			{#if keysOn}<KeyBar {reply} composer={repliesOn} />{/if}
+			<!-- With a key bar the attach button is at its start; without one it is beside the text box. -->
+			{#if keysOn}<KeyBar {reply} composer={repliesOn} leading={attach} />{/if}
 			<!-- Voice switched off on the Mac: the bar stays and says so, like the manager's. -->
 			{#if repliesOn}
 				<VoiceBar
@@ -543,7 +557,7 @@
 						{#if reply.files.items.length}<AttachTiles files={reply.files} />{/if}
 					{/snippet}
 					{#snippet leading()}
-						<AttachButton off={!can('upload')} onpick={reply.files.add} onoff={reply.uploadOff} />
+						{#if !keysOn}{@render attach()}{/if}
 					{/snippet}
 				</Composer>
 			{:else}
@@ -559,7 +573,7 @@
 					onsend={() => {}}
 				>
 					{#snippet leading()}
-						<AttachButton disabled />
+						{#if !keysOn}{@render attach()}{/if}
 					{/snippet}
 				</Composer>
 			{/if}
