@@ -227,7 +227,9 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
         grid.column(at: 2).xPlacement = .trailing
         grid.row(at: 0).rowAlignment = .none
         grid.row(at: 0).yPlacement = .center
-        for row in [3, 4, 5, 8, 9, 10, 12, 13, 14, 15, 16, 17] {
+        // A row whose control is a switch is centred on it. Found by the
+        // control, not by a list of row numbers that a new row would shift.
+        for (row, entry) in rows.enumerated() where entry.2 is NSSwitch {
             grid.row(at: row).rowAlignment = .none
             grid.row(at: row).yPlacement = .center
         }
