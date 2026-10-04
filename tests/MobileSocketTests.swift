@@ -241,16 +241,16 @@ final class MobileSocketTests: XCTestCase {
 
     func testALengthWithItsTopBitSetIsAProtocolError() {
         var reader = reader()
-        var bytes = Data([0x82, 0x80 | 127])
+        var bytes = Data([0x82, 0xFF] as [UInt8])
         bytes.append(contentsOf: [0xFF, 0, 0, 0, 0, 0, 0, 0])
         XCTAssertEqual(reader.feed(bytes), .failed([], .protocolError))
     }
 
     func testALengthThatIsNotTheShortestFormIsAProtocolError() {
         var reader = reader(1 << 20)
-        XCTAssertEqual(reader.feed(Data([0x82, 0x80 | 126, 0, 5])), .failed([], .protocolError))
+        XCTAssertEqual(reader.feed(Data([0x82, 0xFE, 0, 5] as [UInt8])), .failed([], .protocolError))
         var other = self.reader(1 << 20)
-        var bytes = Data([0x82, 0x80 | 127])
+        var bytes = Data([0x82, 0xFF] as [UInt8])
         bytes.append(contentsOf: [0, 0, 0, 0, 0, 0, 1, 0])
         XCTAssertEqual(other.feed(bytes), .failed([], .protocolError))
     }
