@@ -12,6 +12,8 @@
 	import KeyBar from './KeyBar.svelte';
 	import { overKeyboard } from './keyboard';
 	import { can, live } from './live.svelte';
+	import LiveTerminal from './LiveTerminal.svelte';
+	import { LiveTerm } from './liveterm.svelte';
 	import Marked from './Marked.svelte';
 	import NextBar from './NextBar.svelte';
 	import PromptCard from './PromptCard.svelte';
@@ -92,11 +94,23 @@
 	);
 	const finding = $derived(find.open && can('find'));
 
+	// svelte-ignore state_referenced_locally
+	const term = new LiveTerm(id);
+	const liveOn = $derived(can('liveTerminal') && mode === 'terminal' && !closed);
+	/** The pane's own screen is drawn: its keys go down the socket. */
+	const liveShown = $derived(liveOn && term.active && term.shown);
+	const LIVE_LABELS = {
+		off: 'Live',
+		connecting: 'Connecting',
+		live: 'Live',
+		reconnecting: 'Reconnecting'
+	};
+
 	const repliesOn = $derived(can('replies'));
 	const keysOn = $derived(can('keyBar'));
 	// A take goes to the thread as a reply, so voice needs that switch too.
 	const voiceOn = $derived(repliesOn && can('voice'));
-	const docked = $derived(!closed && (repliesOn || keysOn));
+	const docked = $derived(!closed && (repliesOn || keysOn || liveShown));
 	const next = $derived(repliesOn ? nextWaiting(live.threads ?? [], id) : null);
 	// The pane can ask while its status says nothing of it: the prompt decides.
 	// With the key bar alone the card is read-only: it shows what a key would answer.
@@ -289,55 +303,75 @@
 						</div>
 					</div>
 				{:else}
-					<div class="scroll" data-view="terminal" data-zoom {@attach feed.scroller('terminal')}>
-						{#if feed.screen === null}
-							<div class="chat">
-								{#each [90, 70, 82, 55, 76] as width (width)}
-									<span class="skel" style:width="{width}%" style:height="11px"></span>
-								{/each}
-							</div>
-						{:else if finding && find.result}
-							<!-- The pane's scrollback, as the Mac searched it. -->
-							<pre class="screen mono" data-hscroll data-find-text><Marked
-									text={find.result.text}
-									hits={find.terminal}
-									current={find.current}
-								/></pre>
-						{:else}
-							{#if feed.screen.hasOlder}
-								<button class="older" disabled={feed.loadingOlder} onclick={feed.loadOlder}>
-									Load older
-								</button>
-							{/if}
-							<div class="screen mono" data-hscroll>
-								<div class="lines" data-lines style:min-width="{feed.screen.cols}ch">
-									{#each feed.screen.blocks as block (block.key)}
-										<div class="blk" style:--n={block.lines.length}>
-											{#each block.lines as line (line.n)}
-												<div class="ln">
-													{#each line.spans as span, at (at)}
-														<span
-															class:sb={span.bold}
-															class:sd={span.dim}
-															class:si={span.italic}
-															class:su={span.underline}
-															style:color={span.color}
-															style:background-color={span.background}>{span.text}</span
-														>
-													{/each}
-												</div>
-											{/each}
-										</div>
+					{#if liveOn}
+						<button
+							class="livechip"
+							class:on={term.active}
+							aria-pressed={term.active}
+							data-live={term.active ? term.state : 'off'}
+							onclick={term.toggle}
+						>
+							<i></i>{term.active ? LIVE_LABELS[term.state] : (term.note ?? 'Live')}
+						</button>
+					{/if}
+					{#if liveOn && term.active}
+						<LiveTerminal {term} />
+						{#if term.shown && !term.following}
+							<button class="jump" aria-label="Jump to bottom" onclick={term.jump}>↓</button>
+						{/if}
+					{/if}
+					{#if !liveShown}
+						<div class="scroll" data-view="terminal" data-zoom {@attach feed.scroller('terminal')}>
+							{#if feed.screen === null}
+								<div class="chat">
+									{#each [90, 70, 82, 55, 76] as width (width)}
+										<span class="skel" style:width="{width}%" style:height="11px"></span>
 									{/each}
 								</div>
-							</div>
+							{:else if finding && find.result}
+								<!-- The pane's scrollback, as the Mac searched it. -->
+								<pre class="screen mono" data-hscroll data-find-text><Marked
+										text={find.result.text}
+										hits={find.terminal}
+										current={find.current}
+									/></pre>
+							{:else}
+								{#if feed.screen.hasOlder}
+									<button class="older" disabled={feed.loadingOlder} onclick={feed.loadOlder}>
+										Load older
+									</button>
+								{/if}
+								<div class="screen mono" data-hscroll>
+									<div class="lines" data-lines style:min-width="{feed.screen.cols}ch">
+										{#each feed.screen.blocks as block (block.key)}
+											<div class="blk" style:--n={block.lines.length}>
+												{#each block.lines as line (line.n)}
+													<div class="ln">
+														{#each line.spans as span, at (at)}
+															<span
+																class:sb={span.bold}
+																class:sd={span.dim}
+																class:si={span.italic}
+																class:su={span.underline}
+																style:color={span.color}
+																style:background-color={span.background}>{span.text}</span
+															>
+														{/each}
+													</div>
+												{/each}
+											</div>
+										{/each}
+									</div>
+								</div>
+							{/if}
+							{#if cardId !== null}
+								<div class="chat">{@render promptCard(cardId)}</div>
+							{/if}
+						</div>
+						{#if !feed.atBottom}
+							<button class="jump" aria-label="Jump to bottom" onclick={feed.jumpToBottom}>↓</button
+							>
 						{/if}
-						{#if cardId !== null}
-							<div class="chat">{@render promptCard(cardId)}</div>
-						{/if}
-					</div>
-					{#if !feed.atBottom}
-						<button class="jump" aria-label="Jump to bottom" onclick={feed.jumpToBottom}>↓</button>
 					{/if}
 				{/if}
 			</section>
@@ -348,37 +382,42 @@
 <ServeConfirm {servers} />
 
 {#if docked}
-	<div class="dock" data-dock {@attach overKeyboard} {@attach reply.watch}>
+	<div class="dock" data-dock {@attach overKeyboard} {@attach (repliesOn || keysOn) && reply.watch}>
 		{#if next}<NextBar thread={next} />{/if}
-		{#if repliesOn && reply.matches.length}
-			<SlashList commands={reply.matches} onpick={reply.pick} />
-		{/if}
-		{#if !repliesOn && reply.note}
-			<!-- With no composer below, the bar's own refusals are said here. -->
-			<div class="knote" class:bad={reply.note.bad} role="alert" data-note>{reply.note.text}</div>
-		{/if}
-		{#if keysOn}<KeyBar {reply} composer={repliesOn} />{/if}
-		{#if voiceOn}<VoiceBar target={id} sink={reply.voice} />{/if}
-		{#if repliesOn}
-			<Composer
-				bind:value={reply.draft}
-				box={reply.box}
-				label="Reply"
-				target={id}
-				sink={reply.voice}
-				{voiceOn}
-				blocked={reply.blocked || reply.sending}
-				note={reply.note}
-				onsend={send}
-				oninput={reply.typed}
-				onbeforeinput={reply.beforeInput}
-			>
-				{#snippet leading()}
-					{#if can('upload')}
-						<AttachButton busy={reply.uploading} disabled={reply.blocked} onpick={reply.upload} />
-					{/if}
-				{/snippet}
-			</Composer>
+		{#if liveShown}
+			<!-- The keyboard types into the pane itself: the bar is all it lacks. -->
+			<div class="livebar"><KeyBar reply={term} composer /></div>
+		{:else}
+			{#if repliesOn && reply.matches.length}
+				<SlashList commands={reply.matches} onpick={reply.pick} />
+			{/if}
+			{#if !repliesOn && reply.note}
+				<!-- With no composer below, the bar's own refusals are said here. -->
+				<div class="knote" class:bad={reply.note.bad} role="alert" data-note>{reply.note.text}</div>
+			{/if}
+			{#if keysOn}<KeyBar {reply} composer={repliesOn} />{/if}
+			{#if voiceOn}<VoiceBar target={id} sink={reply.voice} />{/if}
+			{#if repliesOn}
+				<Composer
+					bind:value={reply.draft}
+					box={reply.box}
+					label="Reply"
+					target={id}
+					sink={reply.voice}
+					{voiceOn}
+					blocked={reply.blocked || reply.sending}
+					note={reply.note}
+					onsend={send}
+					oninput={reply.typed}
+					onbeforeinput={reply.beforeInput}
+				>
+					{#snippet leading()}
+						{#if can('upload')}
+							<AttachButton busy={reply.uploading} disabled={reply.blocked} onpick={reply.upload} />
+						{/if}
+					{/snippet}
+				</Composer>
+			{/if}
 		{/if}
 	</div>
 {/if}
@@ -633,6 +672,50 @@
 
 	.docked .jump {
 		bottom: 14px;
+	}
+
+	/* The live switch: over the terminal's top right corner. */
+	.livechip {
+		position: absolute;
+		z-index: 2;
+		top: 6px;
+		right: max(8px, env(safe-area-inset-right));
+		min-height: var(--hit);
+		min-width: var(--hit);
+		display: flex;
+		align-items: center;
+		gap: 7px;
+		padding: 0 12px;
+		border-radius: 22px;
+		background: var(--surface);
+		border: 1px solid var(--border);
+		font-size: 13px;
+		color: var(--muted);
+	}
+
+	.livechip.on {
+		color: #ededed;
+	}
+
+	.livechip i {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		background: var(--muted);
+	}
+
+	.livechip[data-live='live'] i {
+		background: var(--green);
+	}
+
+	.livechip[data-live='connecting'] i,
+	.livechip[data-live='reconnecting'] i {
+		background: var(--amber);
+	}
+
+	/* Nothing below the bar in live mode: it keeps clear of the home indicator. */
+	.livebar {
+		padding-bottom: var(--safe-bottom, env(safe-area-inset-bottom));
 	}
 
 	.jump:active {

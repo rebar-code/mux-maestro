@@ -32,8 +32,9 @@ struct MobileResponse: Equatable {
     var body = Data()
 
     static let reasons = [
-        200: "OK", 304: "Not Modified", 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found",
+        101: "Switching Protocols", 200: "OK", 304: "Not Modified", 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found",
         405: "Method Not Allowed", 409: "Conflict", 413: "Payload Too Large",
+        426: "Upgrade Required",
         431: "Request Header Fields Too Large", 500: "Internal Server Error",
         503: "Service Unavailable",
     ]
@@ -232,6 +233,9 @@ enum MobileEndpoint: Equatable {
     case pushUnsubscribe
     /// The phone says which thread it shows, so that thread sends it nothing.
     case pushFocus
+    /// The live terminal of one thread: a WebSocket, never a plain request.
+    /// `MobileSocket.upgrade` answers it before the routes are read.
+    case terminal(id: String)
 
     var capability: MobileCapability {
         switch self {
@@ -247,6 +251,7 @@ enum MobileEndpoint: Equatable {
         case .artifacts, .file: return .artifacts
         case .running, .servers, .serverOpen, .serverClose: return .localServers
         case .pushKey, .pushSubscribe, .pushUnsubscribe, .pushFocus: return .notifications
+        case .terminal: return .liveTerminal
         }
     }
 
@@ -255,7 +260,7 @@ enum MobileEndpoint: Equatable {
     var method: String {
         switch self {
         case .config, .threads, .hosts, .events, .chat, .screen, .manager, .prompt, .commands,
-             .dirs, .find, .artifacts, .file, .running, .servers, .pushKey:
+             .dirs, .find, .artifacts, .file, .running, .servers, .pushKey, .terminal:
             return "GET"
         case .managerText, .managerDismiss, .voice, .voiceReplay, .voiceWarm, .text, .key, .answer,
              .upload, .tmux, .serverOpen, .serverClose, .pushSubscribe, .pushUnsubscribe, .pushFocus:
@@ -442,6 +447,7 @@ enum MobileAPI {
         case 3 where segments[1] == "push" && segments[2] == "subscribe": endpoint = .pushSubscribe
         case 3 where segments[1] == "push" && segments[2] == "unsubscribe": endpoint = .pushUnsubscribe
         case 3 where segments[1] == "push" && segments[2] == "focus": endpoint = .pushFocus
+        case 3 where segments[1] == "terminal": endpoint = .terminal(id: segments[2])
         case 4 where segments[1] == "hosts" && segments[3] == "dirs":
             endpoint = .dirs(host: segments[2])
         case 3 where segments[1] == "tmux":
@@ -505,7 +511,14 @@ enum MobileAPI {
     /// the loopback port; the token is the secret only a paired phone holds.
     /// Compared in constant time. No token set means nothing is paired.
     static func hasToken(_ request: MobileRequest, token: String?) -> Bool {
-        guard let token, !token.isEmpty, let sent = request.header(tokenHeader) else { return false }
+        guard let sent = request.header(tokenHeader) else { return false }
+        return sameToken(sent, token: token)
+    }
+
+    /// Whether `sent` is the pairing token. The time it takes depends on the
+    /// token's length alone, never on how much of `sent` is right.
+    static func sameToken(_ sent: String, token: String?) -> Bool {
+        guard let token, !token.isEmpty else { return false }
         let a = Array(sent.utf8), b = Array(token.utf8)
         var difference = UInt8(a.count == b.count ? 0 : 1)
         for index in b.indices { difference |= b[index] ^ (index < a.count ? a[index] : 0) }
@@ -532,14 +545,31 @@ enum MobileAPI {
         else { return .denied("host") }
         guard request.method != "GET", request.method != "HEAD" else { return .allowed }
         guard request.header(writeHeader) != nil else { return .denied("write header") }
-        // The origin is this Mac's name on the port the request came to: another
-        // `tailscale serve` mapping on the same name is another origin.
-        guard let origin = request.header("origin"),
+        guard sameOrigin(request, identity: identity) else { return .denied("origin") }
+        return .allowed
+    }
+
+    /// Whether the request's `Origin` is the app's own. The origin is this
+    /// Mac's name on the port the request came to: another `tailscale serve`
+    /// mapping on the same name is another origin. A request with no `Origin`
+    /// is not the app's.
+    static func sameOrigin(_ request: MobileRequest, identity: MobileIdentity) -> Bool {
+        guard let host = request.header("host"), let origin = request.header("origin"),
               let url = URL(string: origin), url.scheme == "https",
               (url.host ?? "").caseInsensitiveCompare(identity.dnsName) == .orderedSame,
               (url.port ?? 443) == hostPort(host)
-        else { return .denied("origin") }
-        return .allowed
+        else { return false }
+        return true
+    }
+
+    /// The one WebSocket address the shell may open: this Mac's name on the
+    /// port the request came to. `'self'` already means it in a current
+    /// browser; an older one reads `'self'` as `https:` only.
+    static func socketOrigin(_ request: MobileRequest, identity: MobileIdentity?) -> String? {
+        guard let identity, let host = request.header("host"), let port = hostPort(host),
+              (1...65535).contains(port)
+        else { return nil }
+        return port == 443 ? "wss://\(identity.dnsName)" : "wss://\(identity.dnsName):\(port)"
     }
 
     /// The port of a `host[:port]` header; 443 when it names none, as HTTPS does.
@@ -609,7 +639,7 @@ enum MobileAPI {
     /// text, read from `html`; no other inline script runs. A page made from a
     /// `blob:` address takes the policy of the page that made it, so a file
     /// with a script in it runs nothing even when it is opened as a page.
-    static func shellPolicy(html: String) -> String {
+    static func shellPolicy(html: String, socket: String? = nil) -> String {
         var hashes: [String] = []
         let whole = NSRange(html.startIndex..., in: html)
         for match in scriptTag.matches(in: html, range: whole) {
@@ -622,9 +652,13 @@ enum MobileAPI {
             hashes.append("'sha256-\(digest)'")
         }
         return shellDirectives.map { directive in
-            directive.name == "script-src"
-                ? ([directive.name, directive.value] + hashes).joined(separator: " ")
-                : "\(directive.name) \(directive.value)"
+            switch directive.name {
+            case "script-src": return ([directive.name, directive.value] + hashes).joined(separator: " ")
+            // The live terminal's socket: the app's own address and no other.
+            case "connect-src": return ([directive.name, directive.value] + [socket].compactMap { $0 })
+                .joined(separator: " ")
+            default: return "\(directive.name) \(directive.value)"
+            }
         }.joined(separator: "; ")
     }
 

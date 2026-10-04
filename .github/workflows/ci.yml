@@ -85,7 +85,51 @@ jobs:
         env:
           DEVELOPER_DIR: /Applications/Xcode_16.2.app/Contents/Developer
 
+      # The live terminal's tests run against a tmux server of their own
+      # (`tmux -L`). Without tmux they are skipped.
+      - name: Install tmux
+        run: brew install tmux
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: 1
+
       - name: Run tests
         run: make test
         env:
           DEVELOPER_DIR: /Applications/Xcode_16.2.app/Contents/Developer
+
+  # The phone web app: its unit tests, and the live terminal's end-to-end
+  # tests in a browser against the committed bundle (the one the app ships).
+  mobile:
+    name: phone app (unit + live terminal e2e)
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: mobile/pnpm-lock.yaml
+
+      - name: Install
+        run: pnpm -C mobile install --frozen-lockfile
+
+      - name: Unit tests
+        run: pnpm -C mobile test
+
+      - name: Type check
+        run: pnpm -C mobile check
+
+      - name: Install the browser
+        run: pnpm -C mobile exec playwright install --with-deps chromium
+
+      - name: Live terminal e2e
+        run: pnpm -C mobile exec playwright test e2e/live.spec.ts
+        env:
+          PORT: 5199

@@ -19,6 +19,9 @@
 // /__fixture/prompt-delay?ms=,
 // /__fixture/append?count= (adds lines to pane buildbox:8),
 // /__fixture/screen?default=&max= (the screen endpoint's default and cap)
+// /__fixture/terminal (what the live terminal's sockets were sent, and how they were opened),
+// /__fixture/terminal-drop (cut every live socket), /__fixture/terminal-say?text=,
+// /__fixture/terminal-refuse?code= (close the next sockets with that code; 0 to stop)
 //
 // Every /api/ request needs the header `X-MuxMaestro-Token: demo-token`.
 import { createHash } from 'node:crypto';
@@ -27,6 +30,7 @@ import { readFile } from 'node:fs/promises';
 import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { crc32, deflateSync } from 'node:zlib';
+import { WebSocketServer } from 'ws';
 
 const ROOT = resolve(
 	fileURLToPath(new URL('.', import.meta.url)),
@@ -532,6 +536,10 @@ let pushSubs, pushFocus, pushLimit;
 // How many finds the Mac refuses as busy before it answers one.
 let findBusy;
 const streams = new Set();
+// The live terminal: its open sockets, what they typed (as text), how each
+// was opened, and the close code the next ones get.
+const terminals = new Set();
+let terminalTyped, terminalOpens, terminalRefuse;
 
 function reset() {
 	started = Math.floor(Date.now() / 1000);
@@ -549,8 +557,14 @@ function reset() {
 		find: false,
 		artifacts: false,
 		localServers: false,
-		notifications: false
+		notifications: false,
+		liveTerminal: false
 	};
+	for (const socket of terminals) socket.terminate();
+	terminals.clear();
+	terminalTyped = '';
+	terminalOpens = [];
+	terminalRefuse = 0;
 	pushSubs = [];
 	pushFocus = {};
 	pushLimit = false;
@@ -725,7 +739,7 @@ const configBody = () => ({
 		localServers: capabilities.localServers,
 		stopServers: false,
 		notifications: capabilities.notifications,
-		liveTerminal: false
+		liveTerminal: capabilities.liveTerminal
 	},
 	grouping,
 	voice: { mode: voice.mode, speaker: voice.speaker, maxSeconds: 120 },
@@ -1649,6 +1663,22 @@ function hook(res, url) {
 			token = url.searchParams.get('value') ?? 'rotated-token';
 			dropStreams();
 			return send(res, 200, { ok: true });
+		case '/__fixture/terminal':
+			return send(res, 200, {
+				typed: terminalTyped,
+				opens: terminalOpens,
+				sockets: terminals.size
+			});
+		case '/__fixture/terminal-drop':
+			for (const socket of terminals) socket.terminate();
+			terminals.clear();
+			return send(res, 200, { ok: true });
+		case '/__fixture/terminal-say':
+			for (const socket of terminals) socket.send(Buffer.from(url.searchParams.get('text') ?? ''));
+			return send(res, 200, { ok: true });
+		case '/__fixture/terminal-refuse':
+			terminalRefuse = Number(url.searchParams.get('code')) || 0;
+			return send(res, 200, { ok: true });
 		case '/__fixture/drop':
 			dropStreams();
 			return send(res, 200, { ok: true });
@@ -1719,7 +1749,8 @@ async function policy() {
 		"img-src 'self' data: blob:",
 		"media-src 'self' data: blob:",
 		"font-src 'self' data:",
-		"connect-src 'self'",
+		// As the Mac does: the app's own socket address, named.
+		`connect-src 'self' ws://127.0.0.1:${PORT}`,
 		"worker-src 'self'",
 		"manifest-src 'self'",
 		"frame-src 'none'",
@@ -1751,7 +1782,81 @@ async function asset(res, url) {
 	}
 }
 
-createServer((req, res) => {
+// The live terminal: a pane of 100 x 30 with some scrollback and a prompt.
+// What is typed is echoed, and Enter "runs" the line.
+const TERMINAL = { cols: 100, rows: 30 };
+function terminalScreen() {
+	const lines = [];
+	for (let n = 1; n <= 80; n += 1) {
+		lines.push(
+			`${E}[${31 + (n % 6)}mbuild ${String(n).padStart(3, '0')}${E}[0m compiling acme-app`
+		);
+	}
+	return `${lines.join('\r\n')}\r\nme@devbox acme-app % `;
+}
+
+const sockets = new WebSocketServer({ noServer: true, maxPayload: 4096 });
+
+function terminal(socket) {
+	let paired = false;
+	let line = '';
+	const timer = setTimeout(() => !paired && socket.close(4401), 2000);
+	socket.on('close', () => {
+		clearTimeout(timer);
+		terminals.delete(socket);
+	});
+	socket.on('message', (data, binary) => {
+		if (!paired) {
+			// The first message is the pairing token, as text. Nothing else is.
+			if (binary || String(data) !== token) return socket.close(4401);
+			paired = true;
+			if (terminalRefuse) return socket.close(terminalRefuse);
+			if (!threads.some((t) => t.id === socket.thread)) return socket.close(4404);
+			terminals.add(socket);
+			socket.send(JSON.stringify({ type: 'ready', ...TERMINAL }));
+			socket.send(Buffer.from(terminalScreen()));
+			return;
+		}
+		if (!binary) return socket.close(1003);
+		const text = String(data);
+		terminalTyped += text;
+		let skip = 0;
+		for (const char of text) {
+			// An arrow is three bytes: none of them is part of the line.
+			if (char === '\x1b') skip = 3;
+			if (skip > 0) skip -= 1;
+			else if (char === '\r') {
+				socket.send(Buffer.from(`\r\nran: ${line}\r\nme@devbox acme-app % `));
+				line = '';
+			} else if (char >= ' ') {
+				line += char;
+				socket.send(Buffer.from(char));
+			}
+		}
+	});
+}
+
+function upgrade(req, socket, head) {
+	const url = new URL(req.url, `http://${req.headers.host}`);
+	const refuse = (status) => socket.end(`HTTP/1.1 ${status} Refused\r\nConnection: close\r\n\r\n`);
+	const made = /^\/api\/terminal\/([^/]+)$/.exec(url.pathname);
+	if (!made) return refuse(404);
+	terminalOpens.push({
+		url: req.url,
+		token: req.headers['x-muxmaestro-token'] ?? null,
+		protocol: req.headers['sec-websocket-protocol'] ?? null
+	});
+	if (!capabilities.liveTerminal) return refuse(403);
+	// The one check that keeps another site's page out.
+	if (req.headers.origin !== `http://${req.headers.host}`) return refuse(403);
+	if (url.search) return refuse(400);
+	sockets.handleUpgrade(req, socket, head, (ws) => {
+		ws.thread = decodeURIComponent(made[1]);
+		terminal(ws);
+	});
+}
+
+const server = createServer((req, res) => {
 	const url = new URL(req.url, `http://${req.headers.host}`);
 	if (url.pathname.startsWith('/api/')) {
 		// A take is audio: the body stays bytes until a route wants text.
@@ -1771,7 +1876,9 @@ createServer((req, res) => {
 	if (url.pathname.startsWith('/__fixture/'))
 		return req.method === 'POST' ? hook(res, url) : send(res, 405, { error: 'method' });
 	return asset(res, url);
-}).listen(PORT, '127.0.0.1', () => console.log(`fixture server on http://127.0.0.1:${PORT}`));
+});
+server.on('upgrade', upgrade);
+server.listen(PORT, '127.0.0.1', () => console.log(`fixture server on http://127.0.0.1:${PORT}`));
 
 setInterval(() => {
 	for (const res of streams) res.write(': ping\n\n');

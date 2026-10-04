@@ -1,12 +1,12 @@
 <script lang="ts">
-	import { barKeys } from './reply';
-	import { keepFocus, type Reply } from './reply.svelte';
+	import { barKeys, type KeySink } from './reply';
+	import { keepFocus } from './reply.svelte';
 
 	/**
 	 * The keys a phone keyboard lacks, in one pill that scrolls sideways. With
 	 * no text box there is nothing to type into: only the pane's keys show.
 	 */
-	const { reply, composer }: { reply: Reply; composer: boolean } = $props();
+	const { reply, composer }: { reply: KeySink; composer: boolean } = $props();
 
 	const keys = $derived(barKeys(composer));
 </script>

@@ -485,8 +485,9 @@ final class MobileServerTests: XCTestCase {
         XCTAssertEqual(get("/api/manager").status, 403)
 
         server.configure(MobileConfig(capabilities: [.liveTerminal], grouping: .host))
-        // On, but its route arrives in a later PR: past the gate, not found.
-        XCTAssertEqual(get("/api/terminal/localhost%3A12").status, 404)
+        // On: past the gate. The route is a WebSocket, so a plain request
+        // is told to upgrade and is given nothing.
+        XCTAssertEqual(get("/api/terminal/localhost%3A12").status, 426)
         XCTAssertEqual(get("/api/manager").status, 403)
         XCTAssertTrue(get("/api/config").body.contains(#""liveTerminal":true"#))
     }
@@ -563,8 +564,12 @@ final class MobileServerTests: XCTestCase {
     func testEveryBundleResponseCarriesTheShellsContentSecurityPolicy() throws {
         try Data("<html><script>start()</script>shell</html>".utf8)
             .write(to: root.appendingPathComponent("index.html"))
-        let policy = MobileAPI.shellPolicy(html: "<html><script>start()</script>shell</html>")
+        // The one socket address in it is the app's own, on the request's port.
+        let policy = MobileAPI.shellPolicy(
+            html: "<html><script>start()</script>shell</html>",
+            socket: "wss://devmac.example.ts.net:7433")
         XCTAssertTrue(policy.contains("script-src 'self' 'sha256-"), policy)
+        XCTAssertTrue(policy.contains("connect-src 'self' wss://devmac.example.ts.net:7433;"), policy)
         for path in ["/", "/_app/immutable/a.js", "/t/localhost%3A12"] {
             let served = get(path)
             XCTAssertEqual(served.status, 200, path)
