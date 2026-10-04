@@ -3,6 +3,11 @@
 # Milestone 1: build the embedded terminal engine (GhosttyKit.xcframework).
 # Milestone 2: build/run the native AppKit app (MuxMaestro.app).
 
+# Per-developer settings, never committed (see .gitignore). Read before the
+# defaults below, so a `SIGN_IDENTITY = ...` line here wins over them. The file
+# is optional: the build works without it.
+-include local.mk
+
 .PHONY: libghostty clean-libghostty app run install signing-identity test clean-app diff-bundle mobile vendor-beam beam-selftest vendor-tools tools-selftest
 
 # Xcode to build with. Overridable so CI can point at its Xcode_16.2.app; the
@@ -29,7 +34,7 @@ HAVE_IDENTITY = security find-identity -v -p codesigning 2>/dev/null | grep -q '
 # on the command line would apply to every project in the build, and xcodebuild
 # then tries to sign the Swift packages' object files, which codesign refuses.
 SIGN_FLAGS = $(shell $(HAVE_IDENTITY) \
-	&& echo 'MM_CODE_SIGN_IDENTITY=$(SIGN_IDENTITY) OTHER_CODE_SIGN_FLAGS=--timestamp=none' \
+	&& echo 'MM_CODE_SIGN_IDENTITY="$(SIGN_IDENTITY)" OTHER_CODE_SIGN_FLAGS=--timestamp=none' \
 	|| echo 'MM_CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO')
 
 # Create the stable local signing identity. Run once per Mac; see the script
