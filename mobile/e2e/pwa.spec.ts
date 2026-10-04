@@ -266,7 +266,9 @@ test('a new build does not cut a voice turn', async ({ page }) => {
 	await expect(status).toHaveText('Thinking…');
 	await page.waitForTimeout(1500);
 	expect(await build(page)).toBeNull();
-	// The reply is drawn and spoken on the page that asked.
+	// The reply is spoken on the page that asked: still no reload while it speaks.
+	await expect(status).toHaveText('Speaking…', { timeout: 15_000 });
+	expect(await build(page)).toBeNull();
 	await expect(page.locator('[data-view="chat"] .a').last()).toContainText('2 threads need you', {
 		timeout: 15_000
 	});
