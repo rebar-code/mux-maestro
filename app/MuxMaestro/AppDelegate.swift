@@ -95,10 +95,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         return link
     }()
-    /// The 🤖 Manager rail: the far-right split column, its item (collapse),
-    /// the machinery behind it, and the toast overlay. Main-thread only.
+    /// The 🤖 Manager: its tab in the right sidebar, the machinery behind it,
+    /// and the toast overlay. Main-thread only.
     private var managerRailVC: ManagerRailViewController?
-    private var managerRailItem: NSSplitViewItem?
     private var managerController: ManagerController?
     private var managerToast: ManagerToastOverlay?
     /// Push-to-talk, built on first press. The manager pane is its only target
@@ -265,7 +264,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let artifacts = ArtifactsViewController()
         artifacts.delegate = self
         self.artifactsVC = artifacts
-        let rightSidebar = RightSidebarViewController(diff: diff, tree: tree, artifacts: artifacts)
+        // The 🤖 Manager tab. Its view is cheap until first reveal (the terminal
+        // surface installs lazily).
+        let managerRail = ManagerRailViewController()
+        self.managerRailVC = managerRail
+        let rightSidebar = RightSidebarViewController(
+            diff: diff, tree: tree, artifacts: artifacts, manager: managerRail)
         let detail = DetailViewController(
             terminal: terminal, rightSidebar: rightSidebar, runningDrawer: drawer)
         self.detailVC = detail
@@ -288,24 +292,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Keep the detail side from collapsing the window to a sliver.
         detailItem.minimumThickness = 560
 
-        // The 🤖 Manager rail: a third, collapsible far-right column. Its view
-        // is cheap until first reveal (the terminal surface installs lazily).
-        let managerRail = ManagerRailViewController()
-        self.managerRailVC = managerRail
-        let managerItem = NSSplitViewItem(viewController: managerRail)
-        managerItem.canCollapse = true
-        managerItem.minimumThickness = 300
-        // Wide enough for the list and the chat side by side.
-        managerItem.maximumThickness = 1100
-        // Hold the rail's width on window resizes — extra space goes to detail.
-        managerItem.holdingPriority = NSLayoutConstraint.Priority(261)
-        self.managerRailItem = managerItem
-
         let split = NSSplitViewController()
         split.addSplitViewItem(sidebarItem)
         split.addSplitViewItem(detailItem)
-        split.addSplitViewItem(managerItem)
-        managerItem.isCollapsed = !Settings.managerRailShown()
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
@@ -358,9 +347,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             actionShowSetup()
         }
 
-        // Wire the manager machinery (started lazily — on first rail reveal, or
-        // right away when the rail was open last quit / a manager session from a
-        // previous run is still alive; see managerAutoStartCheck).
+        // Wire the manager machinery (started lazily — on first reveal of the tab,
+        // or right away when the tab was open last quit / a manager session from
+        // a previous run is still alive; see managerAutoStartCheck).
         let manager = ManagerController(service: registry.local)
         manager.onSnapshot = { [weak managerRail] in managerRail?.setSnapshot($0) }
         manager.onToast = { [weak self] notification, extra in
@@ -376,7 +365,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         managerRail.onTalk = { [weak self] in self?.actionTalk() }
         managerRail.onShowTerminal = { [weak self] in self?.installManagerTerminalIfNeeded() }
         self.managerController = manager
-        if Settings.managerRailShown() { startManagerMachinery() }
+        if Settings.managerTabShown() { revealManager() }
 
         // Drive libghostty. wakeup_cb also ticks on demand, but a steady timer
         // keeps animations/cursor blink and the renderer healthy.
@@ -411,6 +400,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if ProcessInfo.processInfo.environment["SIDEKICK_SCROLL_SELFTEST"] == "1" {
             runScrollSelfTest()
+        }
+        if let shots = ProcessInfo.processInfo.environment["MUXMAESTRO_MANAGER_TAB_SELFTEST"] {
+            runManagerTabSelfTest(shots: shots)
         }
     }
 
@@ -470,6 +462,199 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+    }
+
+    /// Manager-tab self-test (`MUXMAESTRO_MANAGER_TAB_SELFTEST=<shots dir>`):
+    /// drives the real window through the Manager tab's whole life — open it,
+    /// show its terminal, hide it, re-show it, share the rail with the other
+    /// three tabs, flip the rail's layout, collapse the whole sidebar — and
+    /// checks after each step that the `mux-manager` terminal is still the same
+    /// live surface on the same tmux client, scrollback included. Then fires the
+    /// three voice callbacks through the real wiring.
+    ///
+    /// **Run it through `scripts/manager-tab-selftest.sh`**, which gives it a
+    /// scratch tmux server, a scratch home, its own defaults domain (this test
+    /// moves the window and toggles saved settings), and a `mux-manager` session
+    /// that is a plain shell with known scrollback instead of a real agent.
+    private func runManagerTabSelfTest(shots: String) {
+        let service = registry.local
+        let session = ManagerHome.sessionName
+        var lines = ["MANAGER TAB SELFTEST"]
+        var ok = true
+        func check(_ label: String, _ passed: Bool, _ detail: String = "") {
+            ok = ok && passed
+            lines.append("  \(passed ? "PASS" : "FAIL")  \(label)\(detail.isEmpty ? "" : "  \(detail)")")
+        }
+        func tmux(_ args: [String]) -> String {
+            service.runTmux(args)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        }
+        /// The tmux client behind the manager surface. A rebuilt surface is a
+        /// new client with a new pid.
+        func client() -> String { tmux(["list-clients", "-t", "=\(session)", "-F", "#{client_pid}"]) }
+        func history() -> Int {
+            Int(tmux(["display-message", "-p", "-t", "=\(session):", "#{history_size}"])) ?? -1
+        }
+        func surface() -> TerminalSurfaceView? { managerRailVC?.terminal?.surfaceView }
+        func shown(_ side: DetailViewController.SidePanel) -> Bool { detailVC?.isShown(side) == true }
+        func texts(_ view: NSView) -> [String] {
+            let own = (view as? NSTextField)?.stringValue ?? (view as? NSTextView)?.string
+            return (own.map { [$0] } ?? []) + view.subviews.flatMap(texts)
+        }
+        func chat() -> [String] { managerRailVC.map { texts($0.view) } ?? [] }
+        func talkLabel() -> String {
+            managerRailVC?.talkButtonSlot.subviews.compactMap { ($0 as? NSButton)?.toolTip }.first ?? ""
+        }
+        func views<T: NSView>(_ type: T.Type, in root: NSView) -> [T] {
+            ((root as? T).map { [$0] } ?? []) + root.subviews.flatMap { views(type, in: $0) }
+        }
+        /// The window as a PNG, rendered in-process: `screencapture` needs a
+        /// Screen Recording grant an agent's shell does not have. AppKit's own
+        /// capture skips the IOSurface libghostty draws into, so each terminal
+        /// on screen is painted in from its surface afterwards.
+        func shoot(_ name: String) {
+            guard let window, let frame = window.contentView?.superview,
+                  let bitmap = frame.bitmapImageRepForCachingDisplay(in: frame.bounds) else { return }
+            window.displayIfNeeded()
+            frame.cacheDisplay(in: frame.bounds, to: bitmap)
+            if let context = NSGraphicsContext(bitmapImageRep: bitmap) {
+                for terminal in views(TerminalSurfaceView.self, in: frame)
+                where !terminal.isHiddenOrHasHiddenAncestor {
+                    guard let contents = terminal.layer?.contents as AnyObject?,
+                          CFGetTypeID(contents) == IOSurfaceGetTypeID() else { continue }
+                    let image = CIImage(ioSurface: unsafeBitCast(contents, to: IOSurfaceRef.self))
+                    guard let pixels = CIContext().createCGImage(image, from: image.extent) else { continue }
+                    context.cgContext.draw(pixels, in: terminal.convert(terminal.bounds, to: frame))
+                }
+            }
+            try? bitmap.representation(using: .png, properties: [:])?
+                .write(to: URL(fileURLWithPath: "\(shots)/\(name).png"))
+        }
+
+        // The terminal the tab installed, as it was before anything hid it.
+        var firstSurface: TerminalSurfaceView?
+        var firstClient = ""
+        var firstHistory = -1
+        /// Still the same live surface, on the same tmux client, with at least
+        /// the scrollback it had, and drawing what the pane last printed.
+        func checkTerminal(_ when: String, shows text: String) {
+            check("\(when): same terminal surface", surface() != nil && surface() === firstSurface)
+            check("\(when): same tmux client", !firstClient.isEmpty && client() == firstClient,
+                  "pid \(firstClient) → \(client())")
+            check("\(when): scrollback kept", history() >= firstHistory && firstHistory > 0,
+                  "\(firstHistory) → \(history()) lines")
+            check("\(when): surface draws \"\(text)\"", surface()?.readScreenText().contains(text) == true)
+        }
+
+        let steps: [(wait: TimeInterval, run: () -> Void)] = [
+            (0, { [self] in
+                // A desktop-sized window, so the rail has a rail's usual width.
+                guard let window, let screen = window.screen?.visibleFrame else { return }
+                let size = NSSize(width: min(1480, screen.width), height: min(920, screen.height))
+                window.setFrame(NSRect(origin: screen.origin, size: size), display: true)
+            }),
+            (4, { [self] in
+                let columns = (window?.contentViewController as? NSSplitViewController)?.splitViewItems.count
+                check("the window's top-level split is sidebar + detail", columns == 2, "\(columns ?? -1) items")
+                let toolbar = window?.toolbar?.items.map(\.itemIdentifier) ?? []
+                let tabs = [Self.tbTree, Self.tbDiff, Self.tbArtifacts, Self.tbManager]
+                let first = toolbar.firstIndex(of: Self.tbTree) ?? toolbar.count
+                check("toolbar: Manager sits beside Tree, Diff and Artifacts",
+                      Array(toolbar.dropFirst(first).prefix(tabs.count)) == tabs)
+                check("the Manager tab starts hidden", !shown(.manager))
+                actionToggleManager()
+                check("⌘⇧M opens the Manager tab in the rail", shown(.manager))
+                check("the open tab is remembered", Settings.managerTabShown())
+                managerRailVC?.beginTurn("which PR needs me most?")
+                managerRailVC?.endTurn(.done(reply: "acme-app PR 12, the access model."))
+            }),
+            (1.5, { [self] in
+                shoot("1-manager-tab")
+                managerRailVC?.showTerminal(true)
+            }),
+            (3, { [self] in
+                firstSurface = surface()
+                firstClient = client()
+                firstHistory = history()
+                check("the terminal toggle installs the surface", firstSurface != nil)
+                check("the surface attached to \(session)", !firstClient.isEmpty, "client pid \(firstClient)")
+                check("the pane has scrollback", firstHistory > 100, "\(firstHistory) lines")
+                check("the surface draws the pane", surface()?.readScreenText().contains("scrollback line 300") == true)
+                shoot("2-manager-terminal")
+                actionToggleManager()
+                check("⌘⇧M hides the tab", !shown(.manager))
+                check("the hidden tab is remembered", !Settings.managerTabShown())
+                check("hidden: the surface left the window but is still alive",
+                      surface() === firstSurface && surface()?.window == nil)
+                _ = tmux(["send-keys", "-t", "=\(session):", "echo printed while hidden", "Enter"])
+            }),
+            (1.5, { [self] in
+                checkTerminal("hidden", shows: "printed while hidden")
+                actionToggleManager()
+            }),
+            (2, { [self] in
+                check("⌘⇧M shows the tab again", shown(.manager) && surface()?.window != nil)
+                checkTerminal("re-shown", shows: "printed while hidden")
+                check("re-shown: the chat kept its messages",
+                      chat().contains { $0.contains("which PR needs me most?") })
+                shoot("3-after-hide-and-reshow")
+                actionToggleTree()
+                actionToggleDiff()
+                actionToggleArtifacts()
+            }),
+            (2, { [self] in
+                check("all four tabs share the rail",
+                      shown(.tree) && shown(.diff) && shown(.artifacts) && shown(.manager))
+                // A quarter of the rail's height is a two-row terminal: the last
+                // output has scrolled off it, the live prompt has not.
+                checkTerminal("four tabs, rows", shows: "$")
+                shoot("4-four-tabs-rows")
+                actionToggleSidebarLayout()
+            }),
+            (2, { [self] in
+                checkTerminal("four tabs, columns", shows: "printed while hidden")
+                shoot("5-four-tabs-columns")
+                actionToggleSidebarLayout()
+                actionToggleTree()
+                actionToggleDiff()
+                actionToggleArtifacts()
+                actionToggleSidebar()
+                check("⌘B hides the Manager with the rail", !shown(.manager) && !Settings.managerTabShown())
+                actionToggleSidebar()
+                check("⌘B brings it back", shown(.manager) && Settings.managerTabShown())
+            }),
+            (2, { [self] in
+                checkTerminal("after ⌘B", shows: "printed while hidden")
+                MainActor.assumeIsolated { voice.onState?(.replying) }
+                check("voice state reaches the talk button", talkLabel() == "Stop reading", talkLabel())
+                MainActor.assumeIsolated {
+                    voice.onState?(.idle)
+                    voice.onNote?("Didn't catch that")
+                }
+                check("a voice note lands in the chat", chat().contains("Didn't catch that"))
+                MainActor.assumeIsolated { voice.onSpeechFailed?(NSError(domain: "selftest", code: 1)) }
+                check("a failed reading brings the chat forward",
+                      managerRailVC?.isTerminalShown == false && chat().contains("Voice failed"))
+            }),
+            (1, { [self] in
+                shoot("6-voice-note-in-chat")
+                managerRailVC?.showTerminal(true)
+            }),
+            (1.5, {
+                checkTerminal("terminal toggled back on", shows: "printed while hidden")
+            }),
+        ]
+        func run(_ index: Int) {
+            guard index < steps.count else {
+                lines.append(ok ? "MANAGER TAB SELFTEST PASSED" : "MANAGER TAB SELFTEST FAILED")
+                FileHandle.standardError.write(Data((lines.joined(separator: "\n") + "\n").utf8))
+                exit(ok ? 0 : 1)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + steps[index].wait) {
+                steps[index].run()
+                run(index + 1)
+            }
+        }
+        run(0)
     }
 
     /// Session-recovery self-test: snapshot a live tmux tree, kill the server,
@@ -811,6 +996,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let showArtifacts = NSMenuItem(
             title: "Show Artifacts", action: #selector(actionToggleArtifacts), keyEquivalent: "")
         sessionMenu.addItem(showArtifacts)
+        let showManager = NSMenuItem(
+            title: "Show Manager", action: #selector(actionToggleManager), keyEquivalent: "m")
+        showManager.keyEquivalentModifierMask = [.command, .shift]
+        sessionMenu.addItem(showManager)
         let showRunning = NSMenuItem(
             title: "Show Running", action: #selector(actionToggleRunning), keyEquivalent: "")
         sessionMenu.addItem(showRunning)
@@ -822,10 +1011,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             title: "Toggle Sidebar Layout", action: #selector(actionToggleSidebarLayout), keyEquivalent: "l")
         sidebarLayout.keyEquivalentModifierMask = [.command, .control]
         sessionMenu.addItem(sidebarLayout)
-        let toggleManager = NSMenuItem(
-            title: "Toggle Manager", action: #selector(actionToggleManager), keyEquivalent: "m")
-        toggleManager.keyEquivalentModifierMask = [.command, .shift]
-        sessionMenu.addItem(toggleManager)
         let talk = NSMenuItem(title: "Talk to Manager", action: #selector(actionTalk), keyEquivalent: "t")
         talk.keyEquivalentModifierMask = [.command, .shift]
         sessionMenu.addItem(talk)
@@ -2527,6 +2712,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// sidebar (Tree/Diff rail), VS Code / Zed style. Remembers what was shown.
     @objc private func actionToggleSidebar() {
         detailVC?.toggleSidebar()
+        managerTabChanged()
     }
 
     /// Menu "Toggle Sidebar Layout" (⌃⌘L) — flip the right sidebar's Tree/Diff
@@ -2535,27 +2721,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         detailVC?.toggleOrientation()
     }
 
-    // MARK: - Manager rail (🤖)
+    // MARK: - Manager tab (🤖)
 
-    /// Toolbar 🤖 / menu "Toggle Manager" (⌘⇧M) — collapse/expand the far-right
-    /// manager rail. First reveal boots the machinery + installs the terminal
-    /// (whose attach-or-create command spawns the `mux-manager` claude session).
+    /// Toolbar 🤖 / menu "Show Manager" (⌘⇧M) — open/close the Manager tab in
+    /// the right sidebar. First reveal boots the machinery + installs the
+    /// terminal (whose attach-or-create command spawns the `mux-manager` claude
+    /// session).
     @objc private func actionToggleManager() {
-        guard let managerRailItem else { return }
-        let showing = managerRailItem.isCollapsed
-        managerRailItem.animator().isCollapsed = !showing
-        Settings.setManagerRailShown(showing)
-        if showing { startManagerMachinery() }
+        detailVC?.toggle(.manager)
+        managerTabChanged()
     }
 
-    /// Menu "Restart Manager Agent" / the rail header's ↻ — kill the manager
-    /// session and re-attach the rail terminal, which recreates it fresh.
-    @objc private func actionRestartManager() {
-        if managerRailItem?.isCollapsed == true {
-            managerRailItem?.animator().isCollapsed = false
-            Settings.setManagerRailShown(true)
-        }
+    /// The Manager tab may have come or gone (its own toggle, or the whole
+    /// sidebar's): remember where it ended up, and boot what it shows.
+    private func managerTabChanged() {
+        let shown = detailVC?.isShown(.manager) == true
+        Settings.setManagerTabShown(shown)
+        if shown { startManagerMachinery() }
+    }
+
+    /// Bring the Manager tab on screen (a no-op when it already is) and boot
+    /// what it shows.
+    private func revealManager() {
+        detailVC?.show(.manager)
+        Settings.setManagerTabShown(true)
         startManagerMachinery()
+    }
+
+    /// Menu "Restart Manager Agent" / the chat header's ↻ — kill the manager
+    /// session and re-attach the tab's terminal, which recreates it fresh.
+    @objc private func actionRestartManager() {
+        revealManager()
         managerController?.restart { [weak self] command in
             // With the terminal behind the toggle there may be nothing to swap
             // yet; the controller recreated the session, so the next install
@@ -2565,22 +2761,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Menu "Talk to Manager" (⌘⇧T) / the rail header's mic. One press starts a
+    /// Menu "Talk to Manager" (⌘⇧T) / the chat header's mic. One press starts a
     /// take, the next sends it, and a press during the spoken reply stops it.
-    /// Opens the rail first, so the take's text has somewhere to show.
+    /// Opens the tab first, so the take's text has somewhere to show.
     @MainActor @objc private func actionTalk() {
-        if managerRailItem?.isCollapsed == true {
-            managerRailItem?.animator().isCollapsed = false
-            Settings.setManagerRailShown(true)
-        }
-        startManagerMachinery()
+        revealManager()
         voice.press(target: VoiceTarget(acknowledgement: "Got it, checking. ") { [weak self] text, onReply, done in
             guard let self else { return done(nil) }
             self.runManagerTurn(text, onDelta: onReply) { done($0.readback) }
         })
     }
 
-    /// One turn with the manager pane, drawn in the rail's chat. The input field
+    /// One turn with the manager pane, drawn in the tab's chat. The input field
     /// and the voice take both come through here.
     private func runManagerTurn(
         _ text: String,
@@ -2610,13 +2802,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         installManagerTerminalIfNeeded()
     }
 
-    /// Build the rail's terminal surface, but only once the rail is actually
+    /// Build the tab's terminal surface, but only once the tab is actually
     /// showing it: the chat talks to the `mux-manager` session through tmux, so a
     /// hidden terminal is a surface nobody is looking at.
     private func installManagerTerminalIfNeeded() {
         guard let managerRailVC, !managerRailVC.hasTerminal,
               managerRailVC.isTerminalShown,
-              managerRailItem?.isCollapsed == false,
+              detailVC?.isShown(.manager) == true,
               let ghostty,
               let command = managerController?.attachCommand() else { return }
         let managerTerminal = TerminalViewController(
@@ -2633,7 +2825,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Launch-time reattach: when a `mux-manager` session from a previous run is
-    /// still alive, start the machinery even with the rail collapsed so the
+    /// still alive, start the machinery even with the tab hidden so the
     /// session snapshot + toasts keep flowing. Retries each sidebar refresh
     /// until the local tree has loaded once (only then is the session visible).
     private func managerAutoStartCheck() {
@@ -4197,11 +4389,11 @@ extension AppDelegate: NSToolbarDelegate {
     // Only the Diff toggle lives in the header (top-right). Everything else is in
     // the Session menu (and the per-row "+" buttons).
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [Self.tbBreadcrumb, .flexibleSpace, Self.tbCommit, Self.tbPRs, Self.tbGitHub, Self.tbGroup, Self.tbOpenDir, Self.tbTree, Self.tbDiff, Self.tbArtifacts, Self.tbSidebar, Self.tbManager]
+        [Self.tbBreadcrumb, .flexibleSpace, Self.tbCommit, Self.tbPRs, Self.tbGitHub, Self.tbGroup, Self.tbOpenDir, Self.tbTree, Self.tbDiff, Self.tbArtifacts, Self.tbManager, Self.tbSidebar]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [Self.tbBreadcrumb, Self.tbCommit, Self.tbPRs, Self.tbGitHub, Self.tbGroup, Self.tbOpenDir, Self.tbTree, Self.tbDiff, Self.tbArtifacts, Self.tbSidebar, Self.tbManager, .flexibleSpace, .space]
+        [Self.tbBreadcrumb, Self.tbCommit, Self.tbPRs, Self.tbGitHub, Self.tbGroup, Self.tbOpenDir, Self.tbTree, Self.tbDiff, Self.tbArtifacts, Self.tbManager, Self.tbSidebar, .flexibleSpace, .space]
     }
 
     func toolbar(

@@ -1,14 +1,18 @@
 import Cocoa
 
-/// The 🤖 Manager rail: a far-right collapsible column that IS the manager view.
+/// The 🤖 Manager: a tab in the right sidebar (`RightSidebarViewController`),
+/// beside the Tree, the Diff and the Artifacts.
 /// Two cards. One lists the agent's read of the fleet (what needs you, what the
 /// agents have been doing, what they said); the other is the chat with the
-/// `mux-manager` pane. The cards stack or sit side by side, and the divider
-/// between them drags.
+/// `mux-manager` pane. The divider between them drags.
+///
+/// The rail hands this pane whatever width is left beside the other tabs, so
+/// the cards stack by default and whenever the pane is under
+/// `sideBySideMinWidth`. Side by side is a choice only a wider pane offers.
 ///
 /// The pane's terminal lives behind the chat header's toggle. It is installed
 /// once (lazily, on first reveal) and never torn down, so the agent's scrollback
-/// survives every toggle and every collapse of the rail.
+/// survives every toggle, and every time the tab or the whole rail is hidden.
 final class ManagerRailViewController: NSViewController, NSTextFieldDelegate, NSSplitViewDelegate {
     private let split = RailSplitView()
     private let listScroll = NSScrollView()
@@ -36,11 +40,15 @@ final class ManagerRailViewController: NSViewController, NSTextFieldDelegate, NS
     /// The reply of the turn in flight: its message view and the text so far.
     private var replyMessage: ChatMessageView?
     private var replyText = ""
-    /// Whether the saved divider position has been applied. It needs real
-    /// bounds, which the rail only has once it is shown and laid out.
-    private var positionApplied = false
+    /// The split's size when the cards were last fitted to it. Zero until the
+    /// tab is first shown and laid out, because fitting needs real bounds.
+    private var fittedSize = NSSize.zero
+    /// The talk button's trailing edge: against the layout toggle, or against
+    /// the terminal toggle while the layout toggle is hidden.
+    private var talkBesideLayoutToggle: NSLayoutConstraint?
+    private var talkBesideTerminalToggle: NSLayoutConstraint?
 
-    /// The terminal, once installed. Owned here so collapse/expand never tears
+    /// The terminal, once installed. Owned here so hiding the tab never tears
     /// down the surface; the AppDelegate swaps its attach command on restart.
     private(set) var terminal: TerminalViewController?
 
@@ -65,47 +73,55 @@ final class ManagerRailViewController: NSViewController, NSTextFieldDelegate, NS
 
     /// The list card's height when stacked, until the divider is dragged.
     private static let defaultListHeight: CGFloat = 400
-    /// Neither card can be dragged smaller than this.
+    /// What that default leaves the chat at least. A pane too short to give
+    /// both splits in half instead (a rail in rows shares its height).
+    private static let defaultChatHeight: CGFloat = 240
+    /// Neither card can be dragged narrower than this when side by side.
     private static let minCardSize: CGFloat = 120
+    /// The floors when stacked. The list reads down to a heading and one row.
+    /// The chat spends 84pt on its header and its input before the first
+    /// message, so its floor is the taller one: four lines of messages or
+    /// terminal. The rail in rows shares its height between the open tabs, so a
+    /// short pane is the normal case here, not a corner.
+    private static let minListHeight: CGFloat = 80
+    private static let minChatHeight: CGFloat = 160
+    /// Below this pane width the cards always stack and the layout toggle is
+    /// hidden: side by side, each card would be under 290pt, where a row's
+    /// title is squeezed out by its PR numbers and time and the chat wraps to a
+    /// few words a line.
+    static let sideBySideMinWidth: CGFloat = 600
 
     override func loadView() {
-        split.isVertical = Settings.managerRailSideBySide()
+        // Stacked until the pane is laid out and known to be wide enough.
+        split.isVertical = false
         split.delegate = self
         split.addArrangedSubview(buildListCard())
         split.addArrangedSubview(buildChatCard())
         split.translatesAutoresizingMaskIntoConstraints = false
         updateLayoutToggle()
 
-        // A full-height hairline on the leading edge separates the rail from the
-        // main terminal; the cards sit inset from it.
+        // The cards sit inset from the pane's edges; the rail draws the dividers
+        // between this pane, its neighbours and the terminal.
         let container = NSView()
-        let divider = NSView()
-        divider.wantsLayer = true
-        divider.layer?.backgroundColor = SidebarPalette.border.cgColor
-        divider.translatesAutoresizingMaskIntoConstraints = false
-
-        container.addSubview(divider)
         container.addSubview(split)
         NSLayoutConstraint.activate([
-            divider.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            divider.topAnchor.constraint(equalTo: container.topAnchor),
-            divider.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            divider.widthAnchor.constraint(equalToConstant: 1),
-
-            // Pin the top below the titlebar (fullSizeContentView).
-            split.leadingAnchor.constraint(equalTo: divider.trailingAnchor, constant: 10),
-            split.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -10),
-            split.topAnchor.constraint(equalTo: container.safeAreaLayoutGuide.topAnchor, constant: 10),
-            split.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -10),
+            split.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 8),
+            split.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -8),
+            split.topAnchor.constraint(equalTo: container.topAnchor, constant: 8),
+            split.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -8),
         ])
         self.view = container
     }
 
+    /// The rail resizes this pane whenever a neighbouring tab opens or closes,
+    /// the rail's layout flips or a divider drags, so the cards are refitted on
+    /// every change of size, not once.
     override func viewDidLayout() {
         super.viewDidLayout()
-        guard !positionApplied, split.bounds.width > 1, split.bounds.height > 1 else { return }
-        positionApplied = true
-        applyListSize()
+        let size = split.bounds.size
+        guard size.width > 1, size.height > 1, size != fittedSize else { return }
+        fittedSize = size
+        fitCards()
     }
 
     // MARK: Build
@@ -189,6 +205,9 @@ final class ManagerRailViewController: NSViewController, NSTextFieldDelegate, NS
         let title = NSTextField(labelWithString: "MANAGER")
         title.font = .systemFont(ofSize: 11, weight: .semibold)
         title.textColor = SidebarPalette.muted
+        // In a narrow pane the title gives way to the buttons.
+        title.lineBreakMode = .byTruncatingTail
+        title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         layoutToggle.isBordered = false
         layoutToggle.bezelStyle = .regularSquare
@@ -239,8 +258,6 @@ final class ManagerRailViewController: NSViewController, NSTextFieldDelegate, NS
             title.trailingAnchor.constraint(
                 lessThanOrEqualTo: talkButtonSlot.leadingAnchor, constant: -6),
 
-            talkButtonSlot.trailingAnchor.constraint(
-                equalTo: layoutToggle.leadingAnchor, constant: -6),
             talkButtonSlot.centerYAnchor.constraint(equalTo: header.centerYAnchor),
             talkButtonSlot.widthAnchor.constraint(equalToConstant: 22),
             talkButtonSlot.heightAnchor.constraint(equalToConstant: 22),
@@ -268,6 +285,11 @@ final class ManagerRailViewController: NSViewController, NSTextFieldDelegate, NS
             restart.widthAnchor.constraint(equalToConstant: 18),
             restart.heightAnchor.constraint(equalToConstant: 18),
         ])
+        talkBesideLayoutToggle = talkButtonSlot.trailingAnchor.constraint(
+            equalTo: layoutToggle.leadingAnchor, constant: -6)
+        talkBesideTerminalToggle = talkButtonSlot.trailingAnchor.constraint(
+            equalTo: terminalToggle.leadingAnchor, constant: -6)
+        talkBesideLayoutToggle?.isActive = true
         return header
     }
 
@@ -332,59 +354,94 @@ final class ManagerRailViewController: NSViewController, NSTextFieldDelegate, NS
         layoutToggle.toolTip = name
     }
 
-    /// Put the divider where the human last dragged it for this layout: 400pt of
-    /// list when stacked, half and half side by side, until they drag it.
+    /// Fit the cards to the pane's current size: side by side only when the
+    /// human chose it AND the pane is wide enough, stacked otherwise. The choice
+    /// is kept while the pane is narrow, so widening the rail brings it back.
+    private func fitCards() {
+        let roomy = view.bounds.width >= Self.sideBySideMinWidth
+        let sideBySide = roomy && Settings.managerRailSideBySide()
+        layoutToggle.isHidden = !roomy
+        // Off before on: both at once would pin the talk button to two places.
+        (roomy ? talkBesideTerminalToggle : talkBesideLayoutToggle)?.isActive = false
+        (roomy ? talkBesideLayoutToggle : talkBesideTerminalToggle)?.isActive = true
+        if split.isVertical != sideBySide {
+            split.isVertical = sideBySide
+            split.adjustSubviews()
+            split.layoutSubtreeIfNeeded()
+        }
+        updateLayoutToggle()
+        applyListSize()
+    }
+
+    /// The room the two cards share along the split's axis.
+    private var cardRoom: CGFloat {
+        (split.isVertical ? split.bounds.width : split.bounds.height) - split.dividerThickness
+    }
+
+    /// The least each card keeps along the split's axis. A pane too small to
+    /// give both their floor shrinks the two floors in proportion, so the
+    /// floors never ask for more room than there is (see
+    /// `RightSidebarViewController.paneFloor`).
+    private var cardFloors: (list: CGFloat, chat: CGFloat) {
+        let list = split.isVertical ? Self.minCardSize : Self.minListHeight
+        let chat = split.isVertical ? Self.minCardSize : Self.minChatHeight
+        let scale = max(0, min(1, cardRoom / (list + chat)))
+        return (list * scale, chat * scale)
+    }
+
+    /// Put the divider where the human last dragged it for this layout, as far
+    /// as the pane allows. Until they drag it: half and half side by side; when
+    /// stacked, 400pt of list if that leaves the chat 240pt, else half and half.
     private func applyListSize() {
-        let length = split.isVertical ? split.bounds.width : split.bounds.height
-        let available = length - split.dividerThickness
-        let saved = Settings.managerRailListSize(sideBySide: split.isVertical)
-        let wanted = saved ?? (split.isVertical ? available / 2 : Self.defaultListHeight)
-        let position = min(max(wanted, Self.minCardSize), available - Self.minCardSize)
-        split.setPosition(position, ofDividerAt: 0)
+        let room = cardRoom
+        let wanted: CGFloat
+        if let saved = Settings.managerRailListSize(sideBySide: split.isVertical) {
+            wanted = saved
+        } else if split.isVertical {
+            wanted = room / 2
+        } else {
+            wanted = min(Self.defaultListHeight, max(room / 2, room - Self.defaultChatHeight))
+        }
+        let floors = cardFloors
+        split.setPosition(min(max(wanted, floors.list), room - floors.chat), ofDividerAt: 0)
     }
 
     @objc private func layoutToggled() {
-        split.isVertical.toggle()
-        Settings.setManagerRailSideBySide(split.isVertical)
-        updateLayoutToggle()
-        split.adjustSubviews()
-        split.layoutSubtreeIfNeeded()
-        applyListSize()
+        Settings.setManagerRailSideBySide(!split.isVertical)
+        fitCards()
     }
 
     func splitView(
         _ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat,
         ofSubviewAt dividerIndex: Int
     ) -> CGFloat {
-        max(proposedMinimumPosition, Self.minCardSize)
+        max(proposedMinimumPosition, cardFloors.list)
     }
 
     func splitView(
         _ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat,
         ofSubviewAt dividerIndex: Int
     ) -> CGFloat {
-        let length = splitView.isVertical ? splitView.bounds.width : splitView.bounds.height
-        return min(proposedMaximumPosition, length - splitView.dividerThickness - Self.minCardSize)
+        min(proposedMaximumPosition, cardRoom - cardFloors.chat)
     }
 
-    /// The list keeps its size when the window resizes; the chat takes the rest.
+    /// The list keeps its size when the pane resizes; the chat takes the rest.
     func splitView(_ splitView: NSSplitView, shouldAdjustSizeOfSubview view: NSView) -> Bool {
         view !== splitView.arrangedSubviews.first
     }
 
-    /// Remember a drag of the divider. Only a drag: a window resize or a rail
-    /// collapse also resizes the cards, and that is not the human choosing a size.
+    /// Remember a drag of the divider between the cards. Only that drag: a
+    /// window resize, a rail divider, or a neighbouring tab opening also resizes
+    /// the cards, and none of those is the human choosing a size.
     func splitViewDidResizeSubviews(_ notification: Notification) {
-        guard positionApplied, NSApp.currentEvent?.type == .leftMouseDragged,
-              let list = split.arrangedSubviews.first
-        else { return }
+        guard split.isDraggingDivider, let list = split.arrangedSubviews.first else { return }
         let size = split.isVertical ? list.frame.width : list.frame.height
         Settings.setManagerRailListSize(size, sideBySide: split.isVertical)
     }
 
     // MARK: Data
 
-    /// Replace what the rail renders (no-op when unchanged, so the 1.5s DB poll
+    /// Replace what the list renders (no-op when unchanged, so the 1.5s DB poll
     /// doesn't churn the view).
     func setSnapshot(_ new: ManagerSnapshot) {
         guard new != snapshot else { return }
@@ -516,8 +573,8 @@ final class ManagerRailViewController: NSViewController, NSTextFieldDelegate, NS
 
     var hasTerminal: Bool { terminal != nil }
 
-    /// Install the manager terminal (once). Kept as a child so collapse/expand
-    /// never disturbs the surface.
+    /// Install the manager terminal (once). Kept as a child so hiding and
+    /// re-showing the tab never disturbs the surface.
     func installTerminal(_ vc: TerminalViewController) {
         guard terminal == nil else { return }
         loadViewIfNeeded()
@@ -769,11 +826,21 @@ private final class FlippedStackView: NSStackView {
     override var isFlipped: Bool { true }
 }
 
-/// The rail's split: the gap between the cards is the divider, and it draws
+/// The cards' split: the gap between the cards is the divider, and it draws
 /// nothing, so the two cards read as two cards.
 private final class RailSplitView: NSSplitView {
     override var dividerThickness: CGFloat { 10 }
     override func drawDivider(in rect: NSRect) {}
+
+    /// True while the human drags this split's own divider. AppKit tracks that
+    /// drag inside `mouseDown`, so it brackets exactly the drag.
+    private(set) var isDraggingDivider = false
+
+    override func mouseDown(with event: NSEvent) {
+        isDraggingDivider = true
+        defer { isDraggingDivider = false }
+        super.mouseDown(with: event)
+    }
 }
 
 /// One chat message. Yours sits on a tinted block; the manager's reply is

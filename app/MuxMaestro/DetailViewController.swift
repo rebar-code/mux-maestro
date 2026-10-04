@@ -2,10 +2,11 @@ import Cocoa
 
 /// The detail (right) side. The terminal is ALWAYS visible; the right sidebar opens
 /// as a collapsible split to the RIGHT of the terminal rather than replacing it.
-/// The sidebar (`RightSidebarViewController`) hosts the Diff and/or the Tree — one
-/// or both at once, arranged as columns or rows. When the sidebar is empty it's
-/// removed from the split so the terminal fills the detail area. The terminal and
-/// sidebar view controllers are children, so toggling never disturbs their state.
+/// The sidebar (`RightSidebarViewController`) hosts the Tree, the Diff, the
+/// Artifacts and the Manager — any of them at once, arranged as columns or rows.
+/// When the sidebar is empty it's removed from the split so the terminal fills
+/// the detail area. The terminal and sidebar view controllers are children, so
+/// toggling never disturbs their state.
 final class DetailViewController: NSViewController {
     let terminal: TerminalViewController
     let rightSidebar: RightSidebarViewController
@@ -15,10 +16,10 @@ final class DetailViewController: NSViewController {
     /// Commands for carrying the current agent turn into a fresh conversation.
     let handoffCommands = HandoffCommandButton()
 
-    /// Names the two side contents. Kept as a stable enum so the toolbar/menu call
+    /// Names the side contents. Kept as a stable enum so the toolbar/menu call
     /// sites (`toggle(.diff)`, `show(.tree)`, …) read the same as before, even
     /// though each shows/hides independently instead of swapping one slot.
-    enum SidePanel { case diff, tree, artifacts }
+    enum SidePanel { case diff, tree, artifacts, manager }
 
     private let split = NSSplitView()
     private let terminalPane = NSView()  // holds the terminal (left, always shown)
@@ -217,6 +218,7 @@ final class DetailViewController: NSViewController {
         case .diff: return .diff
         case .tree: return .tree
         case .artifacts: return .artifacts
+        case .manager: return .manager
         }
     }
 
@@ -262,6 +264,8 @@ final class DetailViewController: NSViewController {
     func showDiff() { show(.diff) }
 
     private func focus(_ side: SidePanel) {
+        // The manager is ambient: opening it leaves the keyboard in the terminal.
+        guard side != .manager else { return }
         view.window?.makeFirstResponder(rightSidebar.controller(for: item(side)).view)
     }
 

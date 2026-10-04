@@ -1,10 +1,13 @@
 import Cocoa
 
-// Drives the REAL ManagerRailViewController with synthesized mouse events that go
-// through AppKit's own dispatch (NSApp event queue → NSWindow.sendEvent →
-// gesture recognizers / hit-tested view). No handler is called directly: a
-// dismiss or an open only happens if AppKit routes the click to it. Built and
-// run by scripts/manager-rail-click-selftest.sh.
+// Drives the REAL ManagerRailViewController, hosted the way the right sidebar
+// hosts its Manager tab (in a wrapper view that leaves the window when the tab
+// is hidden), with synthesized mouse events that go through AppKit's own
+// dispatch (NSApp event queue → NSWindow.sendEvent → gesture recognizers /
+// hit-tested view). No handler is called directly: a dismiss or an open only
+// happens if AppKit routes the click to it. Then resizes the pane the way the
+// rail does and checks how the two cards lay out at each width. Built and run
+// by scripts/manager-rail-click-selftest.sh.
 
 let app = NSApplication.shared
 app.setActivationPolicy(.regular)
@@ -17,9 +20,28 @@ for key in ["managerRailSideBySide", "managerRailListHeight", "managerRailListWi
 let window = NSWindow(contentRect: NSRect(x: 200, y: 200, width: 420, height: 700),
                       styleMask: [.titled], backing: .buffered, defer: false)
 let rail = ManagerRailViewController()
-window.contentViewController = rail
+// The same wrapper `RightSidebarViewController.embed` gives each tab.
+let host = NSView()
+rail.view.translatesAutoresizingMaskIntoConstraints = false
+host.addSubview(rail.view)
+NSLayoutConstraint.activate([
+    rail.view.topAnchor.constraint(equalTo: host.topAnchor),
+    rail.view.bottomAnchor.constraint(equalTo: host.bottomAnchor),
+    rail.view.leadingAnchor.constraint(equalTo: host.leadingAnchor),
+    rail.view.trailingAnchor.constraint(equalTo: host.trailingAnchor),
+])
+host.autoresizingMask = [.width, .height]
+window.contentView!.addSubview(host)
+host.frame = window.contentView!.bounds
 window.setContentSize(NSSize(width: 420, height: 700))
 window.orderFrontRegardless()
+
+/// Resize the pane, as the rail does when a tab opens or a divider drags.
+func resize(_ width: CGFloat, _ height: CGFloat) {
+    window.setContentSize(NSSize(width: width, height: height))
+    window.layoutIfNeeded()
+    pump(0.3)
+}
 
 var dismissed: [String] = []
 var opened = 0
@@ -152,13 +174,72 @@ DispatchQueue.main.async {
 
     print("\n== grow the window")
     let held = list.frame.height
-    window.setContentSize(NSSize(width: 420, height: 820))
-    window.layoutIfNeeded()
-    pump(0.3)
+    resize(420, 820)
     print("  list height \(held) → \(list.frame.height)")
     expect(abs(list.frame.height - held) <= 1, "a taller window grows the chat, not the list")
-    window.setContentSize(NSSize(width: 420, height: 700))
+
+    print("\n== a short pane (the rail in rows, shared with other tabs)")
+    let chat = railSplit().arrangedSubviews[1]
+    resize(420, 380)
+    print("  list \(list.frame.height), chat \(chat.frame.height)")
+    expect(chat.frame.height >= 160, "the chat keeps its 160pt floor when the pane is short")
+    expect(Settings.managerRailListSize(sideBySide: false).map { abs($0 - held) <= 1 } == true,
+           "a pane resize does not overwrite the dragged height")
+    resize(420, 220)
+    print("  list \(list.frame.height), chat \(chat.frame.height)")
+    expect(list.frame.height > 40 && abs(chat.frame.height - 2 * list.frame.height) <= 2,
+           "a pane too short for both floors shrinks them in proportion: the chat stays twice the list")
+    resize(420, 820)
+    expect(abs(list.frame.height - held) <= 1, "the dragged height comes back with the room")
+    UserDefaults.standard.removeObject(forKey: "managerRailListHeight")
+    resize(420, 400)
+    resize(420, 380)
+    print("  default list \(list.frame.height), chat \(chat.frame.height)")
+    expect(abs(list.frame.height - chat.frame.height) <= 1,
+           "with no dragged height, a short pane splits evenly instead of starving the chat")
+
+    print("\n== width decides whether side by side is on offer")
+    func layoutToggle() -> NSButton? {
+        views(NSButton.self, in: rail.view).first { ["Side by side", "Stack"].contains($0.toolTip ?? "") }
+    }
+    resize(420, 700)
+    expect(layoutToggle()?.isHidden == true, "420pt: the layout toggle is hidden")
+    Settings.setManagerRailSideBySide(true)
+    resize(599, 700)
+    expect(!railSplit().isVertical, "599pt: stacked, even with side by side chosen")
+    resize(860, 700)
+    expect(railSplit().isVertical, "860pt: the chosen side by side layout applies")
+    expect(layoutToggle()?.isHidden == false, "860pt: the layout toggle is offered")
+    expect(abs(list.frame.width - chat.frame.width) <= 1, "side by side starts half and half")
+    resize(420, 700)
+    expect(!railSplit().isVertical, "back to 420pt: stacked again")
+    expect(Settings.managerRailSideBySide(), "the narrow pane keeps the choice for a wider one")
+    resize(860, 700)
+    layoutToggle()?.performClick(nil)
     pump(0.3)
+    expect(!railSplit().isVertical && !Settings.managerRailSideBySide(),
+           "860pt: the toggle switches back to stacked and remembers it")
+
+    print("\n== hide the tab and show it again")
+    rail.beginTurn("still here?")
+    rail.endTurn(.done(reply: "Still here."))
+    let terminal = TerminalViewController()
+    rail.installTerminal(terminal)
+    rail.showTerminal(true)
+    host.removeFromSuperview()
+    pump(0.3)
+    expect(rail.view.window == nil, "the hidden tab is out of the window")
+    window.contentView!.addSubview(host)
+    host.frame = window.contentView!.bounds
+    resize(420, 700)
+    expect(rail.terminal === terminal && terminal.view.window === window,
+           "the installed terminal is back in the window, not rebuilt")
+    expect(rail.isTerminalShown, "the chat card still shows the terminal")
+    rail.showTerminal(false)
+    func texts(_ view: NSView) -> [String] {
+        ((view as? NSTextView).map { [$0.string] } ?? []) + view.subviews.flatMap(texts)
+    }
+    expect(texts(rail.view).contains("still here?"), "the chat kept its messages")
 
     if let dir = ProcessInfo.processInfo.environment["RAIL_SHOT"] {
         print("\n== screenshots")
@@ -172,13 +253,13 @@ DispatchQueue.main.async {
                     text: "PR 623 access model needs your review", updatedAt: now - 3_600, dismissed: false)),
                     link: nil, title: "acme-app", detail: "PR 623 access model needs your review"),
                 NeedsYouItem(kind: .review(ManagerReviewItem(
-                    key: "b", host: "localhost", session: "rcc", window: nil, severity: .warn,
+                    key: "b", host: "localhost", session: "devbox", window: nil, severity: .warn,
                     text: "Orphan commit 4405c890 needs a decision", updatedAt: now - 7_200, dismissed: false)),
-                    link: nil, title: "rcc", detail: "Orphan commit 4405c890 needs a decision"),
+                    link: nil, title: "devbox", detail: "Orphan commit 4405c890 needs a decision"),
             ],
             recentWork: [
-                WorkLogRow(id: 1, sessionId: "s1", agent: "claude", repo: "front-range-windows",
-                           branch: "feat/po-log", prs: [1214], host: "localhost", session: "frw",
+                WorkLogRow(id: 1, sessionId: "s1", agent: "claude", repo: "acme-web",
+                           branch: "feat/po-log", prs: [1214], host: "localhost", session: "acme-web",
                            window: 3, pane: "%1", cwd: "", lastState: "busy",
                            firstSeen: now - 900, lastSeen: now - 300),
             ],
@@ -186,12 +267,13 @@ DispatchQueue.main.async {
         rail.beginTurn("which PR needs me most?")
         rail.appendReply("Acme PR 623, the access model. It is the only item that cannot move without you.")
         rail.endTurn(.done(reply: "Acme PR 623, the access model. It is the only item that cannot move without you."))
-        rail.beginTurn("spin an agent to merge prod into the FRW branches")
+        rail.beginTurn("spin an agent to merge main into the release branches")
         rail.endTurn(.unreachable(ManagerTurnWatcher.neverStarted))
-        window.setContentSize(NSSize(width: 420, height: 820))
-        rail.view.needsLayout = true
+        resize(420, 820)
         shot("rail-stacked.png", dir: dir)
-        window.setContentSize(NSSize(width: 860, height: 620))
+        resize(420, 330)
+        shot("rail-short.png", dir: dir)
+        resize(860, 620)
         let toggle = views(NSButton.self, in: rail.view).first { $0.toolTip == "Side by side" }!
         toggle.performClick(nil)
         shot("rail-side-by-side.png", dir: dir)

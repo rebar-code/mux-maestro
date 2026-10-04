@@ -1,27 +1,29 @@
 import Cocoa
 
 /// The right sidebar: a collapsible rail to the RIGHT of the terminal that hosts
-/// the Diff and/or the Tree browser. Unlike the old single-slot side panel,
-/// both can be shown at once, split as columns (side by side) OR
-/// rows (stacked) — the orientation flips at runtime, the same way tmux panes
-/// split horizontally or vertically. Empty (none shown) ⇒ the host
-/// (`DetailViewController`) collapses the whole rail so the terminal fills the
-/// detail area.
+/// the Tree browser, the Diff, the Artifacts and the Manager. Unlike the old
+/// single-slot side panel, any of them can be shown at once, split as columns
+/// (side by side) OR rows (stacked) — the orientation flips at runtime, the
+/// same way tmux panes split horizontally or vertically. Empty (none shown) ⇒
+/// the host (`DetailViewController`) collapses the whole rail so the terminal
+/// fills the detail area.
 ///
-/// The two view controllers are children, kept alive across show/hide so
-/// toggling never drops their state (the diff keeps its render, the tree its
-/// expansion). Each lives in a stable wrapper (`treeHost`/`diffHost`) so it can be added to / removed from the split without disturbing
-/// the others and always in the canonical order below.
+/// The view controllers are children, kept alive across show/hide so toggling
+/// never drops their state (the diff keeps its render, the tree its expansion,
+/// the manager its chat and its terminal surface). Each lives in a stable
+/// wrapper (`treeHost`/`diffHost`/…) so it can be added to / removed from the
+/// split without disturbing the others and always in the canonical order below.
 final class RightSidebarViewController: NSViewController {
     let diff: DiffViewController
     let tree: TreeViewController
     let artifacts: ArtifactsViewController
+    let manager: ManagerRailViewController
 
-    enum Item { case diff, tree, artifacts }
+    enum Item { case diff, tree, artifacts, manager }
 
     /// Top-to-bottom (or left-to-right) order, regardless of which was toggled on
     /// first.
-    private static let order: [Item] = [.tree, .diff, .artifacts]
+    private static let order: [Item] = [.tree, .diff, .artifacts, .manager]
 
     /// Floor for any one pane while dragging, and the room the others are
     /// guaranteed by the divider constraints.
@@ -31,15 +33,18 @@ final class RightSidebarViewController: NSViewController {
     private let treeHost = NSView()
     private let diffHost = NSView()
     private let artifactsHost = NSView()
+    private let managerHost = NSView()
 
     /// Whether the two panes lay out as columns (side by side) vs rows (stacked).
     /// A vertical divider means columns. Restored from the persisted preference.
     private(set) var isColumns: Bool = Settings.rightSidebarColumns()
 
-    init(diff: DiffViewController, tree: TreeViewController, artifacts: ArtifactsViewController) {
+    init(diff: DiffViewController, tree: TreeViewController, artifacts: ArtifactsViewController,
+         manager: ManagerRailViewController) {
         self.diff = diff
         self.tree = tree
         self.artifacts = artifacts
+        self.manager = manager
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -49,9 +54,11 @@ final class RightSidebarViewController: NSViewController {
         addChild(diff)
         addChild(tree)
         addChild(artifacts)
+        addChild(manager)
         embed(tree.view, in: treeHost)
         embed(diff.view, in: diffHost)
         embed(artifacts.view, in: artifactsHost)
+        embed(manager.view, in: managerHost)
 
         split.isVertical = isColumns
         split.dividerStyle = .thin
@@ -92,6 +99,7 @@ final class RightSidebarViewController: NSViewController {
         case .tree: return treeHost
         case .diff: return diffHost
         case .artifacts: return artifactsHost
+        case .manager: return managerHost
         }
     }
 
@@ -130,6 +138,7 @@ final class RightSidebarViewController: NSViewController {
         case .tree: return tree
         case .diff: return diff
         case .artifacts: return artifacts
+        case .manager: return manager
         }
     }
 

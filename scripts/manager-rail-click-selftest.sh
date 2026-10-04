@@ -2,13 +2,16 @@
 #
 # manager-rail-click-selftest.sh — clicks a Needs-you row's dismiss checkbox and
 # body with real NSEvents dispatched through AppKit, against the real
-# ManagerRailViewController.swift.
+# ManagerRailViewController.swift, then resizes the pane as the right sidebar
+# does and checks how the two cards lay out at each width and height.
 # `make test` never compiles AppKit views, and calling a click handler directly
 # proves nothing about which view AppKit hands the click to (that is how the
 # checkbox shipped dead). Exit 0 = every expectation held.
 #
 # Usage:  scripts/manager-rail-click-selftest.sh
-# Requires: Xcode (swiftc). Opens a rail window on screen for about a second.
+#         RAIL_SHOT=/tmp/shots scripts/manager-rail-click-selftest.sh   (also PNGs)
+# Requires: Xcode (swiftc). Opens a window on screen for a few seconds. The
+# real terminal is stubbed out here; scripts/manager-tab-selftest.sh covers it.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."

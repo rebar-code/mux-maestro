@@ -79,18 +79,27 @@ enum Settings {
 
     private static let pollIntervalKey = "pollInterval"
     private static let rightSidebarColumnsKey = "rightSidebarColumns"
-    private static let managerRailShownKey = "managerRailShown"
+    private static let managerTabShownKey = "managerTabShown"
+    /// What `managerTabShownKey` replaced: the manager was its own window column
+    /// then, and this said whether that column was expanded.
+    private static let legacyManagerRailShownKey = "managerRailShown"
     private static let sessionRecoveryEnabledKey = "sessionRecoveryEnabled"
     private static let sessionRecoveryAutoResumeAgentsKey = "sessionRecoveryAutoResumeAgents"
 
-    /// Whether the 🤖 Manager rail is open — so it comes back after a relaunch.
-    /// Defaults to hidden; the manager only exists once the user first opens it.
-    static func managerRailShown(defaults: UserDefaults = .standard) -> Bool {
-        defaults.object(forKey: managerRailShownKey) as? Bool ?? false
+    /// Whether the 🤖 Manager tab is on screen in the right sidebar — so it comes
+    /// back after a relaunch. Defaults to hidden; the manager only exists once
+    /// the user first opens it. Falls back to the retired column's key, so a
+    /// manager that was open before the move is still open after it.
+    static func managerTabShown(defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: managerTabShownKey) as? Bool
+            ?? defaults.object(forKey: legacyManagerRailShownKey) as? Bool ?? false
     }
 
-    static func setManagerRailShown(_ on: Bool, defaults: UserDefaults = .standard) {
-        defaults.set(on, forKey: managerRailShownKey)
+    /// Writing retires the old key: once the tab's own value exists, nothing
+    /// reads `managerRailShown` again.
+    static func setManagerTabShown(_ on: Bool, defaults: UserDefaults = .standard) {
+        defaults.set(on, forKey: managerTabShownKey)
+        defaults.removeObject(forKey: legacyManagerRailShownKey)
     }
 
     private static let runningDrawerExpandedKey = "runningDrawerExpanded"
@@ -107,8 +116,9 @@ enum Settings {
 
     private static let managerRailSideBySideKey = "managerRailSideBySide"
 
-    /// Whether the Manager rail puts its list and its chat side by side instead
-    /// of stacking the list above the chat. Defaults to stacked.
+    /// Whether the Manager tab puts its list and its chat side by side instead
+    /// of stacking the list above the chat, when the pane is wide enough to
+    /// offer the choice. Defaults to stacked.
     static func managerRailSideBySide(defaults: UserDefaults = .standard) -> Bool {
         defaults.object(forKey: managerRailSideBySideKey) as? Bool ?? false
     }
@@ -117,7 +127,7 @@ enum Settings {
         defaults.set(on, forKey: managerRailSideBySideKey)
     }
 
-    /// The size the human dragged the Manager rail's list to: its height when
+    /// The size the human dragged the Manager tab's list to: its height when
     /// stacked, its width when side by side. Kept per layout, because a height
     /// means nothing as a width. nil until the divider is first dragged.
     static func managerRailListSize(sideBySide: Bool, defaults: UserDefaults = .standard) -> CGFloat? {

@@ -38,6 +38,23 @@ final class SettingsTests: XCTestCase {
         XCTAssertFalse(Settings.sortsByRecent(session: "work", host: a, defaults: defaults))
     }
 
+    func testManagerTabDefaultsToHiddenAndRoundTrips() {
+        XCTAssertFalse(Settings.managerTabShown(defaults: defaults))
+        Settings.setManagerTabShown(true, defaults: defaults)
+        XCTAssertTrue(Settings.managerTabShown(defaults: defaults))
+        Settings.setManagerTabShown(false, defaults: defaults)
+        XCTAssertFalse(Settings.managerTabShown(defaults: defaults))
+    }
+
+    func testManagerTabInheritsTheRetiredColumnKeyUntilFirstWrite() {
+        defaults.set(true, forKey: "managerRailShown")
+        XCTAssertTrue(Settings.managerTabShown(defaults: defaults),
+                      "a manager column left open before the move opens as a tab")
+        Settings.setManagerTabShown(false, defaults: defaults)
+        XCTAssertNil(defaults.object(forKey: "managerRailShown"), "the first write retires the old key")
+        XCTAssertFalse(Settings.managerTabShown(defaults: defaults))
+    }
+
     func testManagerRailLayoutDefaultsToStacked() {
         XCTAssertFalse(Settings.managerRailSideBySide(defaults: defaults))
         Settings.setManagerRailSideBySide(true, defaults: defaults)
