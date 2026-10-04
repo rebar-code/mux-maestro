@@ -434,6 +434,10 @@ test('a reply that is still arriving renders as it grows, and only its last bloc
 	await expect(live).toContainText('Thread 5 is still');
 	await expect(live.locator('p[data-kept]')).toHaveText('Done: the audit.');
 	await expect(live).not.toContainText('Thread 30 is still running its tests.');
+	await page
+		.locator('.u')
+		.last()
+		.evaluate((el) => el.scrollIntoView({ block: 'start' }));
 	await shot(page, 'markdown-streaming');
 
 	// When it has all arrived the chat's own row takes over, with the same markdown.
@@ -468,6 +472,12 @@ test('the manager home renders the same markdown', async ({ page }) => {
 	await expect(done.getByRole('button', { name: 'Copy' })).toHaveCount(1);
 	await expect(done).toContainText('<script>window.__ran = 1</script>');
 	await expect(done.locator('a')).toHaveCount(0);
+	// The code block ends inside the page, with the chat's own margin.
+	const edges = await done.locator('.codeblock').evaluate((el) => {
+		const box = el.getBoundingClientRect();
+		return { left: box.left, right: innerWidth - box.right };
+	});
+	expect(edges.right).toBeGreaterThanOrEqual(edges.left - 1);
 	await done.locator('strong').evaluate((el) => el.scrollIntoView({ block: 'start' }));
 	await shot(page, 'markdown-manager');
 
