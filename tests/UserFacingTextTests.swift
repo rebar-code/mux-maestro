@@ -15,6 +15,7 @@ final class UserFacingTextTests: XCTestCase {
     private static let allowed: Set<String> = [
         "manager",
         "manager-delta",
+        "manager-spinner",
         "mux-manager",
         "manager.db",
         "MuxMaestro/manager",
@@ -52,8 +53,8 @@ final class UserFacingTextTests: XCTestCase {
     func testTheOldNameIsFoundInAStringLiteral() {
         XCTAssertEqual(Self.oldNames(in: #"let title = "Toggle Manager""#), ["Toggle Manager"])
         XCTAssertEqual(
-            Self.oldNames(in: "let text = \"\"\"\n    Ask the manager\n    \"\"\""),
-            ["\n    Ask the manager\n    "])
+            Self.oldNames(in: "let text = \"\"\"\n    Ask the Maestro\n    \"\"\""),
+            ["\n    Ask the Maestro\n    "])
     }
 
     func testWireNamesIdentifiersAndCommentsPass() {

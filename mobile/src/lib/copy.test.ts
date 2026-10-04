@@ -9,6 +9,7 @@ const OLD = /managers?\b/i;
 const WIRE = new Set([
 	'manager',
 	'manager-delta',
+	'manager-spinner',
 	'mm.manager',
 	'/api/manager',
 	'/api/manager/text',

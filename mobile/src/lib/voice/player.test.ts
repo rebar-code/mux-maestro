@@ -57,6 +57,7 @@ function setup(): { context: FakeContext; player: Player; events: string[] } {
 	const player = new Player(context as unknown as PlayerContext);
 	const events: string[] = [];
 	player.onStarted = () => events.push('started');
+	player.onFailed = () => events.push('failed');
 	player.onDrained = () => events.push('drained');
 	return { context, player, events };
 }
@@ -92,7 +93,8 @@ describe('Player', () => {
 		await context.decoded('two');
 		expect(context.started).toEqual(['two']);
 		context.ended('two');
-		expect(events).toEqual(['started', 'drained']);
+		// The bad clip is reported, not passed over in silence.
+		expect(events).toEqual(['failed', 'started', 'drained']);
 	});
 
 	it('stop drops the queue, the clip that plays and a clip still decoding', async () => {

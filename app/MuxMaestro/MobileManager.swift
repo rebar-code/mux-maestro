@@ -58,14 +58,63 @@ struct MobileManagerBoard: Equatable {
 struct MobileManagerTurn: Equatable {
     var prompt: String
     var reply = ""
+    /// The pane's own spinner line while it works ("Incubating… 4m 48s"); nil
+    /// when none could be read.
+    var spinner: String? = nil
 
-    var json: [String: Any] { ["prompt": prompt, "reply": reply] }
+    var json: [String: Any] {
+        ["prompt": prompt, "reply": reply, "spinner": spinner ?? NSNull()]
+    }
+}
+
+/// The line an agent's pane shows while it works: a verb and the time so far.
+enum MobileSpinner {
+    /// The glyphs Claude Code animates at the start of that line.
+    static let glyphs: Set<Character> = ["·", "✢", "✳", "✶", "✻", "✽", "*", "+", "✺", "✹", "✸"]
+    /// How far up from the end of the pane the line is looked for.
+    static let tail = 15
+
+    /// The spinner line in a pane capture as "Verb… 4m 48s" (the time is left
+    /// out when the pane shows none), or nil when the pane shows no spinner.
+    static func line(in capture: String) -> String? {
+        let lines = strip(capture).split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        for line in lines.suffix(tail).reversed() {
+            guard let glyph = line.first, glyphs.contains(glyph),
+                  let ellipsis = line.firstIndex(of: "…") else { continue }
+            let verb = line[line.index(after: line.startIndex)...ellipsis]
+                .trimmingCharacters(in: .whitespaces)
+            guard verb.count > 1, verb.count <= 60 else { continue }
+            let rest = line[line.index(after: ellipsis)...]
+            return [verb, elapsed(in: String(rest))].compactMap { $0 }.joined(separator: " ")
+        }
+        return nil
+    }
+
+    /// The time in the line's brackets: "(4m 48s · ↓ 2.1k tokens · esc to
+    /// interrupt)" gives "4m 48s".
+    static func elapsed(in text: String) -> String? {
+        guard let open = text.firstIndex(of: "(") else { return nil }
+        let inside = text[text.index(after: open)...].prefix { $0 != ")" }
+        return inside.components(separatedBy: " · ")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .first { part in
+                let words = part.split(separator: " ")
+                return !words.isEmpty && words.count <= 3 && words.allSatisfy { word in
+                    guard let unit = word.last, "hms".contains(unit) else { return false }
+                    return !word.dropLast().isEmpty && word.dropLast().allSatisfy(\.isNumber)
+                }
+            }
+    }
+
+    /// The text without its colour and cursor escapes.
+    static func strip(_ text: String) -> String {
+        text.replacingOccurrences(
+            of: "\u{1B}\\[[0-9;?]*[ -/]*[@-~]", with: "", options: .regularExpression)
+    }
 }
 
 enum MobileManager {
-    /// How many chat rows the home gets. It shows the last few lines only.
-    static let chatLimit = 20
-
     static let busyMessage = "A turn is running"
     static let paneBusyMessage = ManagerPaneDriver.busyMessage
     static let waitingMessage = ManagerPaneDriver.waitingMessage
@@ -126,18 +175,15 @@ enum MobileManager {
             options: [.sortedKeys])) ?? Data("{}".utf8)
     }
 
-    /// The `GET /api/manager` body: `live` plus the pane's status and the chat
-    /// so far, read from the manager pane's own transcript.
+    /// The `GET /api/manager` body: `live` plus the pane's status. The chat is
+    /// its own route, `/api/manager/chat`, read the way a thread's chat is.
     static func body(
         board: MobileManagerBoard, snapshot: MobileSnapshot, turn: MobileManagerTurn?,
-        status: MobileManagerStatus, chat: MobileChatPage
+        status: MobileManagerStatus
     ) -> [String: Any] {
         var out = live(board: board, snapshot: snapshot, turn: turn)
         // A turn in flight is busy, whatever the pane's hooks last wrote.
         out["status"] = (turn != nil && status != .off ? .busy : status).rawValue
-        var page = chat
-        page.messages = Array(chat.messages.filter { $0.role != .tool }.suffix(chatLimit))
-        out["chat"] = page.json
         return out
     }
 

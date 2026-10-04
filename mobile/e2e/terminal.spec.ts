@@ -211,8 +211,10 @@ test('the text size applies to the coloured lines', async ({ page }) => {
 	const size = (): Promise<string> =>
 		label(page, 500).evaluate((el) => getComputedStyle(el).fontSize);
 	expect(await size()).toBe('11px');
-	await page.getByRole('button', { name: 'Larger text' }).click();
-	await page.getByRole('button', { name: 'Larger text' }).click();
+	// The size a pinch stored on this phone.
+	await page.evaluate(() => localStorage.setItem('mm.textSize', '13'));
+	await page.reload();
+	await expect(line(page, 500)).toBeAttached();
 	expect(await size()).toBe('13px');
 	// Lines grow with it and still do not wrap.
 	expect(await line(page, 500).evaluate((el) => el.getBoundingClientRect().height)).toBe(17);

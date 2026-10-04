@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import { fresh, threadPath } from './helpers';
+import { fresh, threadPath, twoFingers } from './helpers';
 
 // A remote pane: its first tab is the terminal.
 const PANE = 'buildbox:8';
@@ -112,16 +112,32 @@ test('the terminal keeps the pane width and scrolls, sideways and into scrollbac
 	await expect(page.getByRole('button', { name: 'Jump to bottom' })).toHaveCount(0);
 });
 
-test('the text size buttons change the terminal text', async ({ page }) => {
+test('a pinch changes the terminal text, and the size is kept', async ({ page }) => {
 	await live(page);
 	const size = (): Promise<string> => rows(page).evaluate((el) => getComputedStyle(el).fontSize);
 	const before = parseFloat(await size());
-	await page.getByRole('button', { name: 'Larger text' }).click();
-	await expect.poll(async () => parseFloat(await size())).toBe(before + 1);
+	// Fingers 100px apart move to 160px apart: the size times 1.6.
+	await twoFingers(
+		page,
+		[
+			[150, 300],
+			[250, 300]
+		],
+		[
+			[120, 300],
+			[280, 300]
+		]
+	);
+	await expect.poll(async () => parseFloat(await size())).toBeCloseTo(before * 1.6, 1);
+	const after = parseFloat(await size());
+	// The pinch typed nothing into the pane.
+	expect((await fixture(page)).typed).toBe('');
+	// The pane keeps its size: the text is larger, the rows are as many.
+	expect(await page.locator('[data-view="live"] .xterm-rows > div').count()).toBe(30);
 	// The size is the stored one: a new visit starts with it.
 	await page.reload();
 	await expect(chip(page)).toHaveAttribute('data-live', 'live');
-	await expect.poll(async () => parseFloat(await size())).toBe(before + 1);
+	await expect.poll(async () => parseFloat(await size())).toBe(after);
 });
 
 test('the key bar and the keyboard type through the socket', async ({ page }) => {
@@ -132,9 +148,11 @@ test('the key bar and the keyboard type through the socket', async ({ page }) =>
 	});
 	await live(page);
 	// The bar is there with the Key bar switch off: live mode is its own switch.
+	// The strip is the slim one every thread has.
 	for (const name of ['Escape', 'Tab', 'Up', 'Control C', 'Enter']) {
 		const box = await key(page, name).boundingBox();
-		expect(box!.width).toBeGreaterThanOrEqual(44);
+		expect(box!.width).toBeGreaterThanOrEqual(28);
+		expect(box!.height).toBeGreaterThanOrEqual(22);
 	}
 	await key(page, 'Tab').click();
 	await key(page, 'Up').click();
@@ -191,7 +209,7 @@ test('what the pane prints never types: terminal queries get no answer from the 
 	await expect(rows(page)).toContainText('queries done');
 	// Focus reporting is on now: taking and losing focus sends nothing either.
 	await page.locator('[data-pin]').click();
-	await page.getByRole('button', { name: 'Hide keyboard' }).click();
+	await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
 	await page.waitForTimeout(300);
 	expect((await fixture(page)).typed).toBe('');
 	// The keyboard still types.

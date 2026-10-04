@@ -4,13 +4,32 @@
 	import Drawer from '$lib/Drawer.svelte';
 	import { gestures, ui } from '$lib/gestures.svelte';
 	import { connect, live } from '$lib/live.svelte';
+	import { keyboardInset } from '$lib/pager';
 	import Pair from '$lib/Pair.svelte';
 	import { notifications } from '$lib/push.svelte';
 
 	const { children } = $props();
+
+	/**
+	 * Attachment for the app root: while the on-screen keyboard is open the page
+	 * is as tall as what is left above it, so the last row sits on the keyboard.
+	 * The keyboard does not shrink the page by itself on a phone.
+	 */
+	function keyboard(node: HTMLElement): (() => void) | void {
+		const visible = window.visualViewport;
+		if (!visible) return;
+		const fit = (): void => {
+			const inset = keyboardInset(document.documentElement.clientHeight, visible.height);
+			node.style.setProperty('--keyboard', `${inset}px`);
+			// The browser scrolls the page to show the box; the shorter page already does.
+			if (inset) window.scrollTo(0, 0);
+		};
+		visible.addEventListener('resize', fit);
+		return () => visible.removeEventListener('resize', fit);
+	}
 </script>
 
-<div class="app" {@attach gestures} {@attach connect} {@attach notifications}>
+<div class="app" {@attach gestures} {@attach connect} {@attach keyboard} {@attach notifications}>
 	{#if live.unpaired}
 		<Pair />
 	{:else if live.forbidden}
@@ -37,7 +56,7 @@
 	.app {
 		position: relative;
 		max-width: 430px;
-		height: 100%;
+		height: calc(100% - var(--keyboard, 0px));
 		margin: 0 auto;
 		background: var(--bg);
 		overflow: hidden;

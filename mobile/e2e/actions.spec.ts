@@ -141,7 +141,10 @@ test('with the switches off, a long press does nothing and Kill is not offered',
 });
 
 test('the + on a session row adds a window and opens it', async ({ page }) => {
-	await session(page, 'localhost/docs-site').getByRole('button').click();
+	// The row also holds the button that folds the session.
+	await session(page, 'localhost/docs-site')
+		.getByRole('button', { name: 'New window in docs-site' })
+		.click();
 	await expect(page).toHaveURL(/\/t\/localhost(:|%3A)\d+$/);
 	await expect(page.locator('.tbar .title b')).toHaveText('docs-site · zsh');
 	await expect(sheet(page)).toBeHidden();

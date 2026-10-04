@@ -166,16 +166,10 @@ final class MobileManagerTests: XCTestCase {
     }
 
     func testManagerBodyShape() throws {
-        let chat = MobileChatPage(
-            messages: [
-                MobileChatMessage(n: 0, role: .user, text: "what needs me?"),
-                MobileChatMessage(n: 40, role: .tool, text: "mux sessions", tool: "Bash"),
-                MobileChatMessage(n: 41, role: .assistant, text: "Two threads need you."),
-            ], next: 90)
         let body = MobileManager.body(
-            board: board(), snapshot: snapshot(), turn: nil, status: .idle, chat: chat)
-        XCTAssertEqual(
-            Set(body.keys), ["status", "needsYou", "review", "updates", "turn", "chat"])
+            board: board(), snapshot: snapshot(), turn: nil, status: .idle)
+        // The chat is its own route, read the way a thread's chat is.
+        XCTAssertEqual(Set(body.keys), ["status", "needsYou", "review", "updates", "turn"])
         XCTAssertEqual(body["status"] as? String, "idle")
         XCTAssertTrue(body["turn"] is NSNull)
 
@@ -201,35 +195,94 @@ final class MobileManagerTests: XCTestCase {
         XCTAssertEqual(updates[0]["thread"] as? String, "localhost:13")
         XCTAssertEqual(updates[0]["text"] as? String, "Tests pass")
         XCTAssertTrue(updates[1]["thread"] is NSNull)
-
-        // Tool rows are the manager's plumbing; the home gets the conversation.
-        let page = try XCTUnwrap(body["chat"] as? [String: Any])
-        let messages = try XCTUnwrap(page["messages"] as? [[String: Any]])
-        XCTAssertEqual(messages.map { $0["role"] as? String }, ["user", "assistant"])
-        XCTAssertEqual(messages.last?["text"] as? String, "Two threads need you.")
-        XCTAssertEqual(page["next"] as? UInt64, 90)
     }
 
     func testATurnInFlightIsInTheBodyAndReadsAsBusy() throws {
-        let turn = MobileManagerTurn(prompt: "what needs me?", reply: "Two threads")
+        let turn = MobileManagerTurn(
+            prompt: "what needs me?", reply: "Two threads", spinner: "Incubating… 12s")
         let body = MobileManager.body(
-            board: MobileManagerBoard(), snapshot: MobileSnapshot(), turn: turn, status: .idle,
-            chat: MobileChatPage())
+            board: MobileManagerBoard(), snapshot: MobileSnapshot(), turn: turn, status: .idle)
         XCTAssertEqual(body["status"] as? String, "busy")
         let sent = try XCTUnwrap(body["turn"] as? [String: Any])
         XCTAssertEqual(sent["prompt"] as? String, "what needs me?")
         XCTAssertEqual(sent["reply"] as? String, "Two threads")
+        XCTAssertEqual(sent["spinner"] as? String, "Incubating… 12s")
+        XCTAssertTrue(MobileManagerTurn(prompt: "hi").json["spinner"] is NSNull)
         XCTAssertEqual((body["needsYou"] as? [Any])?.count, 0)
     }
 
-    func testTheChatIsCutToItsLastRows() throws {
-        let rows = (0..<50).map { MobileChatMessage(n: UInt64($0), role: .assistant, text: "line \($0)") }
-        let body = MobileManager.body(
-            board: MobileManagerBoard(), snapshot: MobileSnapshot(), turn: nil, status: .idle,
-            chat: MobileChatPage(messages: rows, next: 50))
-        let messages = try XCTUnwrap((body["chat"] as? [String: Any])?["messages"] as? [[String: Any]])
-        XCTAssertEqual(messages.count, MobileManager.chatLimit)
-        XCTAssertEqual(messages.last?["text"] as? String, "line 49")
+    // MARK: spinner
+
+    func testReadsTheSpinnerLineOfAWorkingPane() {
+        let pane = """
+        ⏺ Bash(mux sessions)
+          ⎿  12 sessions
+
+        ✻ Incubating… (4m 48s · ↓ 2.1k tokens · esc to interrupt)
+
+        ╭──────────────────────────────╮
+        │ >                            │
+        ╰──────────────────────────────╯
+          ? for shortcuts
+        """
+        XCTAssertEqual(MobileSpinner.line(in: pane), "Incubating… 4m 48s")
+        XCTAssertEqual(
+            MobileSpinner.line(in: "✢ Reticulating splines… (12s · esc to interrupt)"),
+            "Reticulating splines… 12s")
+        XCTAssertEqual(
+            MobileSpinner.line(in: "· Thinking… (1h 2m 3s · ↑ 14.2k tokens)"), "Thinking… 1h 2m 3s")
+        // No time in the brackets, or no brackets: the verb alone.
+        XCTAssertEqual(MobileSpinner.line(in: "✶ Compacting… (esc to interrupt)"), "Compacting…")
+        XCTAssertEqual(MobileSpinner.line(in: "* Musing…"), "Musing…")
+    }
+
+    func testTheSpinnerLineIsReadThroughColourEscapes() {
+        let pane = "\u{1B}[38;5;174m✻\u{1B}[39m \u{1B}[1mIncubating…\u{1B}[22m"
+            + " \u{1B}[2m(48s · esc to interrupt)\u{1B}[0m\n\u{1B}[2m╭───╮\u{1B}[0m\n"
+        XCTAssertEqual(MobileSpinner.line(in: pane), "Incubating… 48s")
+        XCTAssertEqual(MobileSpinner.strip("\u{1B}[1;32mok\u{1B}[0m"), "ok")
+    }
+
+    func testAPaneThatIsNotWorkingHasNoSpinnerLine() {
+        XCTAssertNil(MobileSpinner.line(in: ""))
+        XCTAssertNil(MobileSpinner.line(in: "⏺ Done. Two threads need you.\n\n│ >   │\n  ? for shortcuts"))
+        // An ellipsis in ordinary text, a bullet list, and a prompt are not it.
+        XCTAssertNil(MobileSpinner.line(in: "⏺ Still looking… (one moment)"))
+        XCTAssertNil(MobileSpinner.line(in: "> wait…"))
+        XCTAssertNil(MobileSpinner.line(in: "* a bullet with no ellipsis"))
+        // An old spinner line far up the scrollback is not the pane's state now.
+        let old = "✻ Incubating… (4m 48s)\n" + (0..<MobileSpinner.tail).map { "line \($0)" }.joined(separator: "\n")
+        XCTAssertNil(MobileSpinner.line(in: old))
+    }
+
+    func testTheElapsedTimeIsTheBracketsFirstTimePart() {
+        XCTAssertEqual(MobileSpinner.elapsed(in: " (4m 48s · ↓ 2.1k tokens · esc to interrupt)"), "4m 48s")
+        XCTAssertEqual(MobileSpinner.elapsed(in: " (esc to interrupt · 7s)"), "7s")
+        XCTAssertNil(MobileSpinner.elapsed(in: " (esc to interrupt)"))
+        XCTAssertNil(MobileSpinner.elapsed(in: " 48s"))
+        XCTAssertNil(MobileSpinner.elapsed(in: " (2.1k tokens)"))
+    }
+
+    func testTheManagerChatAndScreenAreManagerRoutes() {
+        XCTAssertEqual(
+            MobileAPI.route(request("/api/manager/chat"), config: on), .api(.managerChat(after: nil)))
+        XCTAssertEqual(
+            MobileAPI.route(request("/api/manager/chat?after=120"), config: on),
+            .api(.managerChat(after: 120)))
+        XCTAssertEqual(
+            MobileAPI.route(request("/api/manager/screen"), config: on),
+            .api(.managerScreen(lines: MobileAPI.screenLinesDefault)))
+        XCTAssertEqual(
+            MobileAPI.route(request("/api/manager/screen?lines=99999999"), config: on),
+            .api(.managerScreen(lines: MobileAPI.screenLinesMax)))
+        for path in ["/api/manager/chat", "/api/manager/screen"] {
+            XCTAssertEqual(MobileAPI.route(request(path), config: MobileConfig()), .disabled(.manager), path)
+            XCTAssertEqual(
+                MobileAPI.route(request(path, method: "POST"), config: on), .methodNotAllowed, path)
+            XCTAssertTrue(MobileAPI.needsToken(request(path)), path)
+        }
+        XCTAssertEqual(MobileEndpoint.managerChat(after: nil).capability, .manager)
+        XCTAssertEqual(MobileEndpoint.managerScreen(lines: 10).capability, .manager)
     }
 
     func testEqualStateEncodesEquallyAndATurnChangesIt() {
