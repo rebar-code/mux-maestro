@@ -417,14 +417,15 @@ test('a double tap on the chat resets the size', async ({ page }) => {
 	await expect.poll(() => size(page, '.a')).toBe(15);
 });
 
-test('a pinch at the end of the home thread changes the text size and does not raise the board', async ({
+test('a pinch at the end of the home thread changes the text size and does not leave the chat', async ({
 	page
 }) => {
 	await fresh(page);
 	const thread = page.locator('[data-view="chat"]');
 	await expect(thread.locator('.a').first()).toBeVisible();
-	const board = page.locator('[data-board]');
-	await expect(board).toHaveAttribute('data-stop', '0');
+	// The board is a tab beside the chat: the chat's own tab stays the one shown.
+	const tab = page.getByRole('tab').first();
+	await expect(tab).toHaveAttribute('aria-selected', 'true');
 	const before = await size(page, '.a');
 	// One finger goes up by more than a swipe; the other goes down.
 	const box = (await thread.boundingBox())!;
@@ -445,7 +446,7 @@ test('a pinch at the end of the home thread changes the text size and does not r
 	expect(await size(page, '.a')).toBeGreaterThan(before);
 	await lift();
 	await page.waitForTimeout(300);
-	await expect(board).toHaveAttribute('data-stop', '0');
+	await expect(tab).toHaveAttribute('aria-selected', 'true');
 });
 
 test('reduced motion: a size change is not animated', async ({ page }) => {
