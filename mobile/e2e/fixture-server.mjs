@@ -1923,7 +1923,8 @@ function hook(res, url) {
 			return send(res, 200, { ok: true });
 		case '/__fixture/deny':
 			deny = url.searchParams.get('on') === '1';
-			break;
+			// A refused device gets no events: nothing is pushed.
+			return send(res, 200, { ok: true });
 		case '/__fixture/capability':
 			capabilities[url.searchParams.get('name')] = url.searchParams.get('on') === '1';
 			push('config', configBody());
