@@ -34,7 +34,10 @@ final class MobileTerminalTests: XCTestCase {
 
     func testTheAttachCommandIsAControlClientThatIgnoresSize() {
         XCTAssertEqual(
-            MobileTerminal.attachArgv(target), ["-C", "attach-session", "-f", "ignore-size", "-t", "$3"])
+            MobileTerminal.attachArgv(target), ["-C", "attach-session", "-t", "$3"])
+        // Asked for after the attach, with flow control, in one command: a
+        // tmux that knows neither refuses it, and the bridge ends.
+        XCTAssertEqual(MobileTerminal.flowCommand, "refresh-client -f ignore-size,pause-after=1")
     }
 
     func testOverSshTheSupervisorRunsOnTheFarHostAndEveryWordIsQuoted() {
@@ -42,10 +45,10 @@ final class MobileTerminalTests: XCTestCase {
             sshPath: "/usr/bin/ssh", options: Ssh.opts(host: "devbox"), tmux: "tmux", target: target)
         XCTAssertEqual(launch.path, "/usr/bin/ssh")
         XCTAssertEqual(
-            Array(launch.args.suffix(12)),
+            Array(launch.args.suffix(10)),
             [
                 "devbox", "'sh'", "'-c'", "'\(MobileTerminal.supervisor)'", "'sh'", "'tmux'", "'-C'",
-                "'attach-session'", "'-f'", "'ignore-size'", "'-t'", "'$3'",
+                "'attach-session'", "'-t'", "'$3'",
             ])
         // Nothing keeps ssh's input open or gives it a terminal: the end of
         // input must reach the far host.
@@ -93,7 +96,7 @@ final class MobileTerminalTests: XCTestCase {
             for case .send(let text) in session.line(Data(line.utf8)) { written.append(text) }
         }
         let fixed = [
-            "refresh-client -f pause-after=1", "refresh-client -A '%12:pause'",
+            "refresh-client -f ignore-size,pause-after=1", "refresh-client -A '%12:pause'",
             "refresh-client -A '%12:continue'",
         ]
         for line in written {
@@ -218,14 +221,22 @@ final class MobileTerminalTests: XCTestCase {
     }
 
     func testTheClientAsksTmuxToHoldOutputForASlowReader() {
-        XCTAssertEqual(MobileControlSession(target: target).opening.first, "refresh-client -f pause-after=1")
-        // An old tmux that refuses the flag still gives a screen.
+        XCTAssertEqual(
+            MobileControlSession(target: target).opening.first,
+            "refresh-client -f ignore-size,pause-after=1")
+    }
+
+    func testATmuxThatRefusesFlowControlEndsTheBridge() {
+        // A tmux older than 3.2 does not know the flag. Without it tmux
+        // would keep a slow client's output, so there is no live terminal.
         var session = MobileControlSession(target: target)
         let events = run(&session, [
-            "%begin 1 1 0", "%end 1 1 0", "%begin 1 2 1", "unknown flag", "%error 1 2 1",
+            "%begin 1 1 0", "%end 1 1 0", "%begin 1 2 1", "unknown flag -- f", "%error 1 2 1",
             "%begin 1 3 1", "80 24 0 0 0 1 0 0 23", "%end 1 3 1", "%begin 1 4 1", "$", "%end 1 4 1",
+            "%output %12 x",
         ])
-        guard case .ready? = events.first else { return XCTFail("\(events)") }
+        XCTAssertEqual(events, [.unsupported])
+        XCTAssertEqual(session.keys(Data("x".utf8)), [])
     }
 
     func testOutputThatIsOldPausesThePane() {
@@ -266,6 +277,26 @@ final class MobileTerminalTests: XCTestCase {
         XCTAssertEqual(state.cols, 100)
         XCTAssertTrue(String(decoding: snapshot, as: UTF8.self).hasPrefix("new screen"))
         XCTAssertEqual(Array(events.dropFirst()), [.output(Data("late".utf8))])
+    }
+
+    func testAPipeIsBornCloseOnExec() throws {
+        let pipe = try XCTUnwrap(MobileTerminal.pipe())
+        defer {
+            close(pipe.read)
+            close(pipe.write)
+        }
+        for fd in [pipe.read, pipe.write] {
+            XCTAssertEqual(fcntl(fd, F_GETFD) & FD_CLOEXEC, FD_CLOEXEC)
+        }
+        // A pipe like any other: blocking, in order, with an end.
+        XCTAssertEqual(fcntl(pipe.read, F_GETFL) & O_NONBLOCK, 0)
+        XCTAssertEqual(write(pipe.write, "hi", 2), 2)
+        var bytes = [UInt8](repeating: 0, count: 8)
+        XCTAssertEqual(read(pipe.read, &bytes, 8), 2)
+        XCTAssertEqual(Array(bytes.prefix(2)), Array("hi".utf8))
+        // Its name is gone: nothing else can open it.
+        var info = stat()
+        XCTAssertNotEqual(stat(pipe.path, &info), 0)
     }
 
     func testTheBridgeEndsWhenTheClientExitsOrChangesSession() {
@@ -539,7 +570,8 @@ final class MobileTerminalSocketTests: XCTestCase {
     }
 
     private func startServer(
-        limits: MobileServer.Limits = MobileServer.Limits(), capabilities: Set<MobileCapability> = [.liveTerminal]
+        limits: MobileServer.Limits = MobileServer.Limits(), capabilities: Set<MobileCapability> = [.liveTerminal],
+        launch: MobileTerminalBridge.Launch? = nil
     ) {
         server?.stop()
         let (path, name) = (tmux.path, tmux.name)
@@ -549,6 +581,7 @@ final class MobileTerminalSocketTests: XCTestCase {
                 screen: { _, _ in nil }, transcript: { _ in nil },
                 terminal: { [launches] _, target in
                     launches.add()
+                    if let launch { return launch }
                     return .supervised(MobileTerminalBridge.Launch(
                         path: path, args: ["-L", name] + MobileTerminal.attachArgv(target)))
                 }),
@@ -1061,6 +1094,23 @@ final class MobileTerminalSocketTests: XCTestCase {
         bridge.stop()
         XCTAssertTrue(eventually(8) { tmux.clientCount == 0 })
         XCTAssertTrue(tmux.alive)
+    }
+
+    // MARK: an old tmux
+
+    func testATmuxTooOldForFlowControlClosesTheSocketWithItsOwnCode() throws {
+        // A stand-in for an old tmux's control client: it attaches, then
+        // refuses the first command, as tmux before 3.2 refuses the flag.
+        let script = "printf '%%begin 1 1 0\\n%%end 1 1 0\\n'; read line; "
+            + "printf '%%begin 1 2 1\\nunknown flag -- f\\n%%error 1 2 1\\n'; cat >/dev/null"
+        startServer(launch: .init(path: "/bin/sh", args: ["-c", script]))
+        let (phone, head) = connect()
+        XCTAssertTrue(head.hasPrefix("HTTP/1.1 101"), head)
+        phone.send(1, Data("demo-token".utf8))
+        // No screen is ever sent: the first frame is the close.
+        let frame = try XCTUnwrap(phone.frame())
+        XCTAssertEqual(frame.opcode, 8)
+        XCTAssertEqual(frame.payload, Data([0x11, 0x4A]))
     }
 
     // MARK: descriptors

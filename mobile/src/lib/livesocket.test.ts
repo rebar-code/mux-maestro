@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { afterClose, isFinal, MAX_TRIES, retryDelay, serverMessage } from './livesocket';
+import {
+	afterClose,
+	closeLabel,
+	isFinal,
+	MAX_TRIES,
+	retryDelay,
+	serverMessage
+} from './livesocket';
 
 describe('retryDelay', () => {
 	it('doubles to a cap', () => {
@@ -17,7 +24,7 @@ describe('afterClose', () => {
 	});
 
 	it('stops when another try would end the same way', () => {
-		for (const code of [4401, 4403, 4404, 4408, 4409, 4503]) {
+		for (const code of [4401, 4403, 4404, 4408, 4409, 4426, 4503]) {
 			expect(isFinal(code)).toBe(true);
 			expect(afterClose(code, 0)).toEqual({ stop: true });
 		}
@@ -26,6 +33,13 @@ describe('afterClose', () => {
 	it('stops after too many tries in a row', () => {
 		expect(afterClose(1006, MAX_TRIES - 1)).toEqual({ retry: 8000 });
 		expect(afterClose(1006, MAX_TRIES)).toEqual({ stop: true });
+	});
+});
+
+describe('closeLabel', () => {
+	it('names a tmux that is too old, and nothing else', () => {
+		expect(closeLabel(4426)).toBe('tmux too old for live mode');
+		for (const code of [1000, 1006, 4401, 4404, 4503]) expect(closeLabel(code)).toBeNull();
 	});
 });
 

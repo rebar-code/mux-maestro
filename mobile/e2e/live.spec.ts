@@ -245,6 +245,26 @@ test('a socket the Mac refuses falls back to the captured view', async ({ page }
 	await expect.poll(async () => (await fixture(page)).sockets).toBe(0);
 });
 
+test('a host whose tmux is too old says so and shows the captured view', async ({ page }) => {
+	await fresh(page, '/');
+	await page.request.post('/__fixture/capability?name=liveTerminal&on=1');
+	await page.request.post('/__fixture/terminal-refuse?code=4426');
+	await page.goto(threadPath(PANE));
+	await expect(chip(page)).toHaveText('tmux too old for live mode');
+	await expect(chip(page)).toHaveAttribute('aria-pressed', 'false');
+	await expect(page.locator('.ln').last()).toBeInViewport();
+	await expect(liveView(page)).toHaveCount(0);
+	// It did not try again and again: one socket was opened.
+	await page.waitForTimeout(1500);
+	expect((await fixture(page)).opens).toHaveLength(1);
+	await page.screenshot({ path: 'test-results/shots/live-too-old.png' });
+	// A tap asks again; a host that now answers goes live, and the label goes.
+	await page.request.post('/__fixture/terminal-refuse?code=0');
+	await chip(page).click();
+	await expect(chip(page)).toHaveText('Live');
+	await expect(chip(page)).toHaveAttribute('data-live', 'live');
+});
+
 test('the Mac switching live mode off closes the terminal', async ({ page }) => {
 	await live(page);
 	await page.request.post('/__fixture/capability?name=liveTerminal&on=0');

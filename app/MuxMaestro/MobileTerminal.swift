@@ -56,10 +56,33 @@ enum MobileTerminal {
             && digits.allSatisfy { $0.isASCII && $0.isNumber }
     }
 
-    /// The tmux argv of the bridge. `ignore-size` says again what a control
-    /// client already is: its size never counts towards a window's.
+    /// The tmux argv of the bridge: a control client, which has no size of
+    /// its own. `flowCommand` then says so again.
     static func attachArgv(_ target: Target) -> [String] {
-        ["-C", "attach-session", "-f", "ignore-size", "-t", target.session]
+        ["-C", "attach-session", "-t", target.session]
+    }
+
+    /// A pipe whose two ends are close-on-exec from the moment they exist.
+    /// `pipe()` and a flag set afterwards leave a moment in which a process
+    /// started by another thread inherits the ends; this system has no call
+    /// that makes a pipe with the flag. Opening a named pipe does take the
+    /// flag, so the pipe is made with a name, opened twice, and its name
+    /// removed. nil when it could not be made.
+    static func pipe() -> (read: Int32, write: Int32, path: String)? {
+        let path = NSTemporaryDirectory() + "mm-pipe-" + UUID().uuidString
+        guard mkfifo(path, 0o600) == 0 else { return nil }
+        defer { unlink(path) }
+        // The reading end first, without waiting for a writer.
+        let read = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC)
+        guard read >= 0 else { return nil }
+        let write = open(path, O_WRONLY | O_CLOEXEC)
+        guard write >= 0 else {
+            close(read)
+            return nil
+        }
+        // Blocking again: the reader is the client, which expects that.
+        _ = fcntl(read, F_SETFL, fcntl(read, F_GETFL) & ~O_NONBLOCK)
+        return (read, write, path)
     }
 
     static let stateFormat = "#{pane_width} #{pane_height} #{cursor_x} #{cursor_y} #{alternate_on} "
@@ -75,8 +98,11 @@ enum MobileTerminal {
 
     /// Asks tmux to hold a pane's output for this client once the client is
     /// a second behind, and not to keep it. Without it tmux keeps every byte
-    /// a slow client has not taken, and its memory grows with the pane.
-    static let flowCommand = "refresh-client -f pause-after=1"
+    /// a slow client has not taken, and its memory grows with the pane. The
+    /// same command says the client's size never counts towards a window's.
+    /// A tmux older than 3.2 refuses it, and the bridge then ends: see
+    /// `MobileControlSession.Event.unsupported`.
+    static let flowCommand = "refresh-client -f ignore-size,pause-after=1"
     /// Output older than this, in milliseconds, means the client is falling
     /// behind the pane: the bridge pauses the pane itself, well before tmux
     /// would.
@@ -221,15 +247,18 @@ struct MobileControlSession {
         /// way is lost. `resync()` starts it again with a new `ready`.
         case paused
         case size(cols: Int, rows: Int)
+        /// tmux refused flow control: it is too old for a live terminal. The
+        /// bridge is over.
+        case unsupported
         /// The bridge is over: the pane, its session or the client went away.
         case exit
     }
 
-    private enum Reply { case state, capture, size, keys, other }
+    private enum Reply { case flow, state, capture, size, keys, other }
 
     let target: MobileTerminal.Target
     /// The replies still to come, in the order their commands were written.
-    private var awaited: [Reply] = [.other, .state, .capture]
+    private var awaited: [Reply] = [.flow, .state, .capture]
     /// The block being read: its `%begin` arguments, and whose it is.
     private var block: (tag: Data, reply: Reply?, lines: [Data], bytes: Int)?
     private var state: MobileTerminal.State?
@@ -349,6 +378,10 @@ struct MobileControlSession {
         switch current.reply {
         case nil, .other:
             return []
+        case .flow:
+            guard failed else { return [] }
+            over = true
+            return [.unsupported]
         case .keys:
             // The pane no longer takes keys: it has gone.
             return failed ? end() : []
@@ -412,6 +445,8 @@ final class MobileTerminalBridge {
         /// Call `resume()` when there is room for more.
         case output(Data)
         case size(cols: Int, rows: Int)
+        /// The host's tmux is too old for a live terminal. The bridge is over.
+        case unsupported
         case exit
     }
 
@@ -428,8 +463,11 @@ final class MobileTerminalBridge {
         let onEvent: (Event) -> Void
         let io = DispatchQueue(label: "is.rebar.muxmaestro.mobile.terminal")
         let process = Process()
-        let input = Pipe()
-        let output = Pipe()
+        /// The client's input and output. Each end is close-on-exec from
+        /// the start, so no other process this app starts ever holds one: a
+        /// copy of the input's writing end would keep the client alive.
+        let input: (reading: FileHandle, writing: FileHandle)?
+        let output: (reading: FileHandle, writing: FileHandle)?
 
         // Confined to `io`.
         var session: MobileControlSession
@@ -447,40 +485,41 @@ final class MobileTerminalBridge {
             self.launch = launch
             self.onEvent = onEvent
             session = MobileControlSession(target: target)
-            // No other process this app starts gets these: a copy of the
-            // input's write end in a sibling would keep the client alive.
-            for handle in [
-                input.fileHandleForReading, input.fileHandleForWriting,
-                output.fileHandleForReading, output.fileHandleForWriting,
-            ] {
-                _ = fcntl(handle.fileDescriptor, F_SETFD, FD_CLOEXEC)
+            let handles = { (pipe: (read: Int32, write: Int32, path: String)?) in
+                pipe.map {
+                    (FileHandle(fileDescriptor: $0.read, closeOnDealloc: true),
+                     FileHandle(fileDescriptor: $0.write, closeOnDealloc: true))
+                }
             }
+            input = handles(MobileTerminal.pipe())
+            output = handles(MobileTerminal.pipe())
         }
 
         /// The descriptors this process keeps while the client runs.
         var descriptors: [Int32] {
-            [input.fileHandleForWriting.fileDescriptor, output.fileHandleForReading.fileDescriptor]
+            [input?.writing.fileDescriptor, output?.reading.fileDescriptor].compactMap { $0 }
         }
 
         func start() -> Bool {
+            guard let input, let output else { return false }
             process.executableURL = URL(fileURLWithPath: launch.path)
             process.arguments = launch.args
             var environment = ProcessCommandRunner.childEnvironment
             if environment["TERM"] == nil { environment["TERM"] = "xterm-256color" }
             process.environment = environment
-            process.standardInput = input
-            process.standardOutput = output
+            process.standardInput = input.reading
+            process.standardOutput = output.writing
             process.standardError = FileHandle.nullDevice
             do { try process.run() } catch {
                 io.async { self.finish(report: false) }
                 return false
             }
             // The client's own ends are the client's alone.
-            try? input.fileHandleForReading.close()
-            try? output.fileHandleForWriting.close()
+            try? input.reading.close()
+            try? output.writing.close()
             // A write to a client that has gone is an error, not a signal.
-            _ = fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
-            let fd = output.fileHandleForReading.fileDescriptor
+            _ = fcntl(input.writing.fileDescriptor, F_SETNOSIGPIPE, 1)
+            let fd = output.reading.fileDescriptor
             _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
             io.async { [self] in
                 guard !stopped else { return }
@@ -494,9 +533,9 @@ final class MobileTerminalBridge {
         }
 
         func write(_ lines: [String]) {
-            guard !stopped, !lines.isEmpty else { return }
+            guard !stopped, !lines.isEmpty, let input else { return }
             let data = Data((lines.joined(separator: "\n") + "\n").utf8)
-            let fd = input.fileHandleForWriting.fileDescriptor
+            let fd = input.writing.fileDescriptor
             let failed = data.withUnsafeBytes { raw -> Bool in
                 var offset = 0
                 while offset < raw.count {
@@ -593,6 +632,10 @@ final class MobileTerminalBridge {
                     case .paused:
                         out = Data()
                         didPause()
+                    case .unsupported:
+                        out = Data()
+                        onEvent(.unsupported)
+                        return finish(report: false)
                     case .exit:
                         ended = true
                     }
@@ -609,15 +652,15 @@ final class MobileTerminalBridge {
             stopped = true
             // Both of this process's pipe ends are closed. The end of input
             // is what the shell around the client waits for.
-            let reader = output.fileHandleForReading
+            let reader = output?.reading
             if let source {
-                source.setCancelHandler { try? reader.close() }
+                source.setCancelHandler { try? reader?.close() }
                 source.cancel()
             } else {
-                try? reader.close()
+                try? reader?.close()
             }
             source = nil
-            try? input.fileHandleForWriting.close()
+            try? input?.writing.close()
             // By its own process id, and only if the shell did not end.
             io.asyncAfter(deadline: .now() + 6) { [process] in
                 if process.isRunning { kill(process.processIdentifier, SIGKILL) }

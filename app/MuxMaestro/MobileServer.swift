@@ -1061,6 +1061,8 @@ final class MobileServer {
             flow(client)
         case .size(let cols, let rows):
             write(MobileSocket.textFrame(["type": "size", "cols": cols, "rows": rows]), to: client)
+        case .unsupported:
+            close(client, .tooOld)
         case .exit:
             close(client, .gone)
         }

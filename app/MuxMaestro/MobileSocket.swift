@@ -39,6 +39,8 @@ enum MobileSocket {
         case replaced = 4409
         /// The pane, its session or the link to its host went away.
         case gone = 4410
+        /// The host's tmux is too old for a live terminal.
+        case tooOld = 4426
         case unavailable = 4503
     }
 

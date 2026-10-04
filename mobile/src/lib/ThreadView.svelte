@@ -311,7 +311,7 @@
 							data-live={term.active ? term.state : 'off'}
 							onclick={term.toggle}
 						>
-							<i></i>{term.active ? LIVE_LABELS[term.state] : 'Live'}
+							<i></i>{term.active ? LIVE_LABELS[term.state] : (term.note ?? 'Live')}
 						</button>
 					{/if}
 					{#if liveOn && term.active}

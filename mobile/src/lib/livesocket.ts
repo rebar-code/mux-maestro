@@ -10,9 +10,16 @@ const MAX_DELAY = 8000;
 /**
  * Close codes after which another try would end the same way: the token is
  * wrong, the switch is off, the pane is not there, the socket was idle, a
- * newer socket of this phone took its place, the Mac has no tmux for it.
+ * newer socket of this phone took its place, the host's tmux is too old, the
+ * Mac has no tmux for it.
  */
-const FINAL = new Set([4401, 4403, 4404, 4408, 4409, 4503]);
+const TOO_OLD = 4426;
+const FINAL = new Set([4401, 4403, 4404, 4408, 4409, TOO_OLD, 4503]);
+
+/** What the live switch says after a close the human can do something about. */
+export function closeLabel(code: number): string | null {
+	return code === TOO_OLD ? 'tmux too old for live mode' : null;
+}
 
 export function isFinal(code: number): boolean {
 	return FINAL.has(code);

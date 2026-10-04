@@ -4,7 +4,7 @@ import { openTerminal } from './api';
 import { barKeyText, messages, Pacer, typed } from './livekeys';
 import { isReport, silenceQueries } from './livequiet';
 import { followTop, isFollowing, place, totalHeight, type Geometry } from './livescroll';
-import { afterClose, serverMessage, type LiveState } from './livesocket';
+import { afterClose, closeLabel, serverMessage, type LiveState } from './livesocket';
 import type { BarKey, KeySink } from './reply';
 import { DEFAULT_SIZE } from './textsize';
 
@@ -31,6 +31,8 @@ export class LiveTerm implements KeySink {
 	wanted = $state(stored());
 	/** The socket gave up: the captured view shows until live is asked for again. */
 	failed = $state(false);
+	/** Why it gave up, when that is worth a label. */
+	note = $state<string | null>(null);
 	/** The pane's screen is drawn: the terminal takes the captured view's place. */
 	shown = $state(false);
 	/** The view keeps to the cursor as output comes. */
@@ -60,6 +62,7 @@ export class LiveTerm implements KeySink {
 	toggle = (): void => {
 		this.wanted = !this.active;
 		this.failed = false;
+		this.note = null;
 		try {
 			localStorage.setItem(KEY, this.wanted ? '1' : '0');
 		} catch {
@@ -192,6 +195,7 @@ export class LiveTerm implements KeySink {
 					this.pacer.clear();
 					const next = afterClose(event.code, tries);
 					if ('stop' in next) {
+						this.note = closeLabel(event.code);
 						this.failed = true;
 						return;
 					}
