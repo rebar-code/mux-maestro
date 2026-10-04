@@ -165,7 +165,10 @@ export async function readEvents(
 	}
 }
 
-const threadPath = (id: string): string => `/api/threads/${encodeURIComponent(id)}`;
+/** Where a thread's chat and screen are read from. */
+export const threadPath = (id: string): string => `/api/threads/${encodeURIComponent(id)}`;
+/** The manager pane is read the same way, from its own routes. */
+export const MANAGER_PATH = '/api/manager';
 
 export async function fetchThreads(): Promise<Thread[]> {
 	return (await get<{ threads: Thread[] }>('/api/threads')).threads;
@@ -175,8 +178,9 @@ export async function fetchHosts(): Promise<Host[]> {
 	return (await get<{ hosts: Host[] }>('/api/hosts')).hosts;
 }
 
-export function fetchChat(id: string, after?: number): Promise<ChatPage> {
-	return get<ChatPage>(`${threadPath(id)}/chat${after === undefined ? '' : `?after=${after}`}`);
+/** `base`: `threadPath(id)` or `MANAGER_PATH`. */
+export function fetchChat(base: string, after?: number): Promise<ChatPage> {
+	return get<ChatPage>(`${base}/chat${after === undefined ? '' : `?after=${after}`}`);
 }
 
 export interface ScreenPage {
@@ -194,12 +198,12 @@ export interface ScreenPage {
  * `etag`: the tag of the text already held; null comes back when it has not changed.
  */
 export async function fetchScreen(
-	id: string,
+	base: string,
 	lines?: number,
 	etag?: string | null
 ): Promise<ScreenPage | null> {
 	const response = await request(
-		`${threadPath(id)}/screen${lines === undefined ? '' : `?lines=${lines}`}`,
+		`${base}/screen${lines === undefined ? '' : `?lines=${lines}`}`,
 		'application/json',
 		undefined,
 		undefined,

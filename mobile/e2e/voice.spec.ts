@@ -22,8 +22,8 @@ declare global {
 
 const status = (page: Page): Locator => page.locator('[data-voice-status]');
 const primary = (page: Page): Locator => page.locator('[data-primary]');
-const orb = (page: Page): Locator => page.locator('[data-orb]');
-const said = (page: Page): Locator => page.locator('[data-said]');
+/** The manager's thread: its chat rows. */
+const said = (page: Page): Locator => page.locator('[data-view="chat"]');
 const box = (page: Page): Locator => page.getByRole('textbox', { name: 'Ask the manager' });
 const bar = (page: Page, name: string): Locator =>
 	page.locator('[data-voicebar]').getByRole('button', { name, exact: true });
@@ -103,7 +103,6 @@ test('Manual: tap to start, tap to send, and a pause never cuts the take', async
 	await expect(primary(page)).toHaveText('↑ Submit');
 	// Red while the take is open.
 	await expect(primary(page)).toHaveCSS('background-color', 'rgb(255, 69, 58)');
-	await expect(orb(page)).toHaveClass(/recording/);
 
 	await say(page, 700);
 	// Longer than the silence that ends a take in Auto.
@@ -125,7 +124,7 @@ test('Manual: tap to start, tap to send, and a pause never cuts the take', async
 	await expect(said(page).locator('.u')).toHaveText('What needs me?');
 	await expect(status(page)).toHaveText('Speaking…');
 	await expect(primary(page)).toHaveText('❚❚ Pause');
-	await expect(said(page).locator('.m').last()).toHaveText(REPLY);
+	await expect(said(page).locator('.a').last()).toHaveText(REPLY);
 	// The reply has two sentences: two clips, played in order, then it rests.
 	await expect(status(page)).toHaveText('Start talking', { timeout: 8000 });
 	await expect(primary(page)).toHaveText('🎙 Talk');
@@ -192,14 +191,14 @@ test('input only: the speech becomes text and nothing is read back', async ({ pa
 	expect(new URL((await sent).url()).search).toBe('?target=manager&speaker=0');
 
 	await expect(said(page).locator('.u')).toHaveText('What needs me?');
-	await expect(said(page).locator('.m').last()).toHaveText(REPLY);
+	await expect(said(page).locator('.a').last()).toHaveText(REPLY);
 	await expect(status(page)).toHaveText('Start talking');
 	await expect(primary(page)).toHaveText('🎙 Talk');
 	expect(await page.evaluate(() => window.__clips)).toBe(0);
 	expect((await takes(page))[0].speaker).toBe(false);
 	// The turn is in the chat: a reload shows it.
 	await page.reload();
-	await expect(said(page).locator('.m').last()).toHaveText(REPLY);
+	await expect(said(page).locator('.a').last()).toHaveText(REPLY);
 });
 
 test('interrupt: Stop while it thinks, Pause, Resume and Skip while it speaks', async ({
@@ -237,7 +236,7 @@ test('interrupt: Stop while it thinks, Pause, Resume and Skip while it speaks', 
 	await expect(status(page)).toHaveText('Start talking');
 	await expect(bar(page, 'Skip')).toBeDisabled();
 	// The reply stays as text.
-	await expect(said(page).locator('.m').last()).toHaveText(REPLY);
+	await expect(said(page).locator('.a').last()).toHaveText(REPLY);
 });
 
 test('Replay reads the last reply again, and Talk during it starts a take', async ({ page }) => {
@@ -270,25 +269,9 @@ test('the button is Send while the box has text, and Talk when it is empty', asy
 	// Typing works while voice is on, and a typed turn is not a take.
 	await box(page).fill('what needs me?');
 	await send.click();
-	await expect(said(page).locator('.m').last()).toHaveText(REPLY);
+	await expect(said(page).locator('.a').last()).toHaveText(REPLY);
 	await expect(primary(page)).toHaveText('🎙 Talk');
 	expect(await takes(page)).toEqual([]);
-});
-
-test('the large button is the same control', async ({ page }) => {
-	await open(page);
-	await expect(orb(page)).toHaveAccessibleName('Talk to the manager');
-	await orb(page).click();
-	await expect(primary(page)).toHaveText('↑ Submit');
-	await expect(orb(page)).toHaveAccessibleName('Submit to the manager');
-	await say(page, 600);
-	// The button breathes while a take is open, so it never holds still.
-	await orb(page).click({ force: true });
-	await expect(orb(page)).toHaveClass(/thinking/);
-	await expect(orb(page)).toHaveClass(/speaking/);
-	await expect(orb(page)).toHaveAccessibleName('Pause to the manager');
-	await expect(status(page)).toHaveText('Start talking', { timeout: 8000 });
-	expect(await takes(page)).toHaveLength(1);
 });
 
 test('mode and speaker are remembered on this phone; the Mac sets the start', async ({ page }) => {
@@ -318,7 +301,6 @@ test('a muted mic takes nothing, and a refused take says why', async ({ page }) 
 	await bar(page, 'Microphone').click();
 	await expect(status(page)).toHaveText('Mic muted');
 	await expect(primary(page)).toBeDisabled();
-	await expect(orb(page)).toBeDisabled();
 	expect(await takes(page)).toEqual([]);
 	await bar(page, 'Microphone').click();
 	await expect(primary(page)).toBeEnabled();
@@ -415,8 +397,6 @@ test('every voice control has a 44pt touch area, clear of its neighbours', async
 		...['Auto', 'Manual', 'Speaker', 'Replay', 'Microphone'].map((name) => bar(page, name)),
 		primary(page)
 	];
-	// The large button is a 148pt circle.
-	expect((await orb(page).boundingBox())!.width).toBeGreaterThanOrEqual(44);
 	for (const control of controls) {
 		// The touch area: the control, or the larger box drawn around it.
 		const area = await control.evaluate((element) => {
@@ -456,6 +436,38 @@ test('every voice control has a 44pt touch area, clear of its neighbours', async
 	expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);
 });
 
+test('the voice bar stays in place, clear of the board sheet at every stop', async ({ page }) => {
+	await open(page);
+	const sheet = page.locator('[data-sheet]');
+	const voicebar = page.locator('[data-voicebar]');
+	const rest = (await voicebar.boundingBox())!;
+	for (const stop of [1, 2]) {
+		await sheet.locator('.grip').click();
+		await expect(sheet).toHaveAttribute('data-stop', String(stop));
+		await page.waitForTimeout(400);
+		// The bar has not moved, and a tap on it reaches it: the sheet, which
+		// is clipped to the stage above, does not cover it.
+		const now = (await voicebar.boundingBox())!;
+		expect(now.y).toBe(rest.y);
+		expect(now.height).toBe(rest.height);
+		for (const name of ['Auto', 'Speaker', 'Microphone']) {
+			const reached = await bar(page, name).evaluate((element) => {
+				const box = element.getBoundingClientRect();
+				const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+				return hit === element || element.contains(hit);
+			});
+			expect(reached, `${name} at stop ${stop}`).toBe(true);
+		}
+	}
+	// A take works with the sheet up.
+	await primary(page).click();
+	await expect(status(page)).toHaveText('Recording — tap to send');
+	await say(page, 600);
+	await primary(page).click();
+	await expect(primary(page)).toHaveText('■ Stop');
+	expect(await takes(page)).toHaveLength(1);
+});
+
 test('with reduced motion nothing in the bar animates', async ({ page }) => {
 	await page.emulateMedia({ reducedMotion: 'reduce' });
 	await open(page);
@@ -463,7 +475,7 @@ test('with reduced motion nothing in the bar animates', async ({ page }) => {
 	await expect(status(page)).toHaveText('Recording — tap to send');
 	const animated = await page.evaluate(
 		() =>
-			[...document.querySelectorAll('[data-voicebar] .wave i, [data-orb]')].filter(
+			[...document.querySelectorAll('[data-voicebar] .wave i')].filter(
 				(element) => getComputedStyle(element).animationName !== 'none'
 			).length
 	);

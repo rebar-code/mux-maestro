@@ -182,6 +182,10 @@ enum MobileEndpoint: Equatable {
     /// One manager turn. The reply streams back.
     case managerText
     case managerDismiss
+    /// The manager pane's transcript as chat rows, like a thread's chat.
+    case managerChat(after: UInt64?)
+    /// The manager pane's terminal text, like a thread's screen.
+    case managerScreen(lines: Int)
     /// One voice take: audio in; transcript, reply and audio stream back.
     case voice
     /// Read the target's last reply again.
@@ -192,7 +196,7 @@ enum MobileEndpoint: Equatable {
     var capability: MobileCapability {
         switch self {
         case .config, .threads, .hosts, .events, .chat, .screen: return .access
-        case .manager, .managerText, .managerDismiss: return .manager
+        case .manager, .managerText, .managerDismiss, .managerChat, .managerScreen: return .manager
         case .voice, .voiceReplay, .voiceWarm: return .voice
         }
     }
@@ -201,7 +205,9 @@ enum MobileEndpoint: Equatable {
     /// to pass the write checks in `MobileAPI.authorize`.
     var method: String {
         switch self {
-        case .config, .threads, .hosts, .events, .chat, .screen, .manager: return "GET"
+        case .config, .threads, .hosts, .events, .chat, .screen, .manager, .managerChat,
+             .managerScreen:
+            return "GET"
         case .managerText, .managerDismiss, .voice, .voiceReplay, .voiceWarm: return "POST"
         }
     }
@@ -328,6 +334,10 @@ enum MobileAPI {
         case 2 where segments[1] == "manager": endpoint = .manager
         case 3 where segments[1] == "manager" && segments[2] == "text": endpoint = .managerText
         case 3 where segments[1] == "manager" && segments[2] == "dismiss": endpoint = .managerDismiss
+        case 3 where segments[1] == "manager" && segments[2] == "chat":
+            endpoint = .managerChat(after: request.query["after"].flatMap(UInt64.init))
+        case 3 where segments[1] == "manager" && segments[2] == "screen":
+            endpoint = .managerScreen(lines: screenLines(request.query["lines"]))
         case 2 where segments[1] == "voice": endpoint = .voice
         case 3 where segments[1] == "voice" && segments[2] == "replay": endpoint = .voiceReplay
         case 3 where segments[1] == "voice" && segments[2] == "warm": endpoint = .voiceWarm

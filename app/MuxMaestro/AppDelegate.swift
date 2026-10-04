@@ -102,6 +102,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             dismiss: { [weak self] key in
                 DispatchQueue.main.async { self?.managerController?.dismiss(key: key) }
+            },
+            screen: { [registry] lines in
+                registry.local.captureScrollback(target: ManagerHome.sessionName, lines: lines)
             }),
         // The phone's takes use the Mac's own engine. Nothing plays here: the
         // phone gets the samples.

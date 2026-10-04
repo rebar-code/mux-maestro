@@ -129,7 +129,9 @@ class Live {
 		} else if (frame.event === 'manager') {
 			manager.apply(JSON.parse(frame.data) as ManagerLive);
 		} else if (frame.event === 'manager-delta') {
-			manager.append((JSON.parse(frame.data) as { text: string }).text);
+			manager.append();
+		} else if (frame.event === 'manager-spinner') {
+			manager.spin((JSON.parse(frame.data) as { text: string | null }).text);
 		}
 	}
 

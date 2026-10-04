@@ -602,7 +602,7 @@ final class MobileVoiceServerTests: XCTestCase {
                         completion(script.outcome)
                     }
                 },
-                dismiss: { _ in }),
+                dismiss: { _ in }, screen: { _ in nil }),
             voice: MobileServer.Voice(
                 speech: speech, warm: { [unowned self] speaker in locked { warmed.append(speaker) } }))
         let started = expectation(description: "listening")
