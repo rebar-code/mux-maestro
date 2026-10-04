@@ -700,34 +700,120 @@ test('with reduced motion nothing in the bar animates', async ({ page }) => {
 	expect(animated).toBe(0);
 });
 
-test('a play button under each agent message reads it aloud, one message at a time', async ({
-	page
-}) => {
-	const THREAD = 'localhost:7';
-	const playButton = (row: Locator): Locator => row.locator('[data-say]');
-	const clips = (): Promise<number> => page.evaluate(() => window.__clips);
-	const said = async (): Promise<{ target: string; n: number; cached: boolean }[]> =>
-		((await (await page.request.post('/__fixture/voice-said')).json()) as { said: never[] }).said;
+/** Two quick taps of one finger on the text of a message. */
+async function doubleTap(page: Page, row: Locator): Promise<void> {
+	const box = await row.boundingBox();
+	if (!box) throw new Error('the message is not on the screen');
+	await page.touchscreen.tap(box.x + 24, box.y + 12);
+	await page.touchscreen.tap(box.x + 24, box.y + 12);
+}
 
+async function openMessages(page: Page, thread: string): Promise<void> {
 	await fakeMic(page);
 	await reset(page);
 	// Voice alone: reading aloud types nothing, so Replies stays off.
 	await page.request.post('/__fixture/capability?name=voice&on=1');
 	await page.request.post('/__fixture/voice?delay=700');
 	await page.request.post(
-		`/__fixture/say?id=${THREAD}&text=${encodeURIComponent('Pushed to the branch. CI is green.')}`
+		`/__fixture/say?id=${thread}&text=${encodeURIComponent('Pushed to the branch. CI is green.')}`
 	);
 	await forget(page);
-	await page.goto(pairingLink(threadPath(THREAD)));
+	await page.goto(pairingLink(threadPath(thread)));
+	await expect(page.locator('.a').nth(1)).toContainText('Pushed to the branch.');
+}
+
+test('a double tap on an agent message opens its menu under it, one menu at a time', async ({
+	page,
+	context
+}) => {
+	await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+	await openMessages(page, 'localhost:7');
+	const menus = page.locator('[data-menu]');
 	const first = page.locator('.a').nth(0);
 	const second = page.locator('.a').nth(1);
-	await expect(second).toContainText('Pushed to the branch.');
-	// Under the agent's messages only, never under the human's.
-	await expect(page.locator('.a [data-say]')).toHaveCount(2);
-	await expect(page.locator('.u [data-say]')).toHaveCount(0);
+	// Nothing under a message until it is asked for.
+	await expect(menus).toHaveCount(0);
+	await expect(page.locator('[data-say]')).toHaveCount(0);
+
+	// One tap is not the gesture, and neither are two slow ones.
+	await first.tap({ position: { x: 24, y: 12 } });
+	await page.waitForTimeout(450);
+	await first.tap({ position: { x: 24, y: 12 } });
+	await page.waitForTimeout(450);
+	await expect(menus).toHaveCount(0);
+	// The human's messages have no menu.
+	await doubleTap(page, page.locator('.u').first());
+	await expect(menus).toHaveCount(0);
+
+	await doubleTap(page, first);
+	await expect(menus).toHaveCount(1);
+	await expect(first.locator('[data-menu]')).toBeVisible();
+	await expect(first.getByRole('button', { name: 'Play' })).toBeVisible();
+	await expect(first.getByRole('button', { name: 'Copy' })).toBeVisible();
+	// In the flow, between the message's text and the message after it.
+	const text = await first.locator('.prose').boundingBox();
+	const menu = await first.locator('[data-menu]').boundingBox();
+	const after = await second.boundingBox();
+	expect(menu!.y).toBeGreaterThanOrEqual(text!.y + text!.height);
+	expect(after!.y).toBeGreaterThanOrEqual(menu!.y + menu!.height);
+	// The double tap selected no word and did not zoom the page.
+	expect(await page.evaluate(() => String(getSelection()))).toBe('');
+	expect(await page.evaluate(() => window.visualViewport?.scale)).toBe(1);
+	if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/menu-open.png` });
+
+	// Each button is a full touch target.
+	for (const name of ['Play', 'Copy']) {
+		const target = await first
+			.getByRole('button', { name })
+			.evaluate((el) => getComputedStyle(el, '::after').height);
+		expect(parseFloat(target)).toBeGreaterThanOrEqual(44);
+	}
+	await first.getByRole('button', { name: 'Copy' }).tap();
+	await expect(first.getByRole('button', { name: 'Copy' })).toHaveAttribute('data-copied', '');
+	expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
+		'Done. 4 files changed, tests pass. Nothing else is needed from you.'
+	);
+	await expect(menus).toHaveCount(1);
+
+	// A double tap on another message moves the menu there.
+	await doubleTap(page, second);
+	await expect(menus).toHaveCount(1);
+	await expect(second.locator('[data-menu]')).toBeVisible();
+	// A second double tap on the message that has it closes it.
+	await doubleTap(page, second);
+	await expect(menus).toHaveCount(0);
+
+	// A tap outside closes it: on another message, on the human's, on the bar.
+	for (const outside of [first, page.locator('.u').first(), page.locator('header .title')]) {
+		await doubleTap(page, second);
+		await expect(menus).toHaveCount(1);
+		await page.waitForTimeout(350);
+		await outside.tap({ position: { x: 24, y: 12 } });
+		await expect(menus).toHaveCount(0);
+		await page.waitForTimeout(350);
+	}
+
+	// A mouse opens it the same way.
+	const box = await first.boundingBox();
+	await page.mouse.dblclick(box!.x + 24, box!.y + 12);
+	await expect(first.locator('[data-menu]')).toBeVisible();
+	expect(await page.evaluate(() => String(getSelection()))).toBe('');
+});
+
+test('Play in the menu of a message reads it aloud, one message at a time', async ({ page }) => {
+	const THREAD = 'localhost:7';
+	const playButton = (row: Locator): Locator => row.locator('[data-say]');
+	const clips = (): Promise<number> => page.evaluate(() => window.__clips);
+	const said = async (): Promise<{ target: string; n: number; cached: boolean }[]> =>
+		((await (await page.request.post('/__fixture/voice-said')).json()) as { said: never[] }).said;
+
+	await openMessages(page, THREAD);
+	const first = page.locator('.a').nth(0);
+	const second = page.locator('.a').nth(1);
+	await doubleTap(page, first);
+	await expect(page.locator('[data-say]')).toHaveCount(1);
 	await expect(playButton(first)).toHaveAccessibleName('Play');
 	await expect(playButton(first).locator('[data-icon="play"]')).toBeVisible();
-	if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/play-idle.png` });
 
 	// A tap asks the Mac for that row. Until audio comes the button shows progress, not Play.
 	const asked = page.waitForRequest((request) => request.url().includes('/api/voice/say'));
@@ -746,12 +832,19 @@ test('a play button under each agent message reads it aloud, one message at a ti
 	await expect(playButton(first)).toHaveAccessibleName('Stop');
 	await expect(playButton(first).locator('[data-icon="stop"]')).toBeVisible();
 	expect(await clips()).toBeGreaterThan(0);
-	await expect(playButton(second)).toHaveAttribute('data-say', 'idle');
 	if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/play-playing.png` });
+
+	// A tap outside closes no menu of a message that is read: its Stop stays in reach.
+	await page.locator('.u').first().tap();
+	await expect(playButton(first)).toHaveAttribute('data-say', 'playing');
+	// So does the menu of another message.
+	await doubleTap(page, second);
+	await expect(playButton(first)).toHaveAttribute('data-say', 'playing');
+	await expect(playButton(second)).toHaveAttribute('data-say', 'idle');
 
 	// Play on another message stops this one: they never talk over each other.
 	await playButton(second).tap();
-	await expect(playButton(first)).toHaveAttribute('data-say', 'idle');
+	await expect(playButton(first)).toHaveCount(0);
 	await expect(playButton(second)).toHaveAttribute('data-say', 'playing');
 	// A tap on the message that is read is its Stop: nothing new is asked for.
 	await playButton(second).tap();
@@ -759,6 +852,7 @@ test('a play button under each agent message reads it aloud, one message at a ti
 	expect((await said()).map((one) => one.cached)).toEqual([false, false]);
 
 	// The same message again comes from the Mac's cache, and starts sooner.
+	await doubleTap(page, first);
 	const again = Date.now();
 	await playButton(first).tap();
 	await expect(playButton(first)).toHaveAttribute('data-say', 'playing');

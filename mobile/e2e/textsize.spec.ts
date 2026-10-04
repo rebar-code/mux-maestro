@@ -407,11 +407,18 @@ test('a double tap on the chat resets the size', async ({ page }) => {
 	await chat(page);
 	await stored(page, 16, '.u');
 	expect(await size(page, '.a')).toBeCloseTo(21.82, 1);
-	const box = (await page.locator('[data-view="chat"] .a').first().boundingBox())!;
+	const box = (await page.locator('[data-view="chat"] .u').first().boundingBox())!;
 	const at: [number, number] = [box.x + box.width / 2, box.y + box.height / 2];
 	await page.touchscreen.tap(...at);
 	await page.waitForTimeout(500);
 	expect(await size(page, '.a')).toBeCloseTo(21.82, 1);
+	// Two taps on an agent's message are its menu: the size stays.
+	const agent = (await page.locator('[data-view="chat"] .a').first().boundingBox())!;
+	await page.touchscreen.tap(agent.x + 24, agent.y + 12);
+	await page.touchscreen.tap(agent.x + 24, agent.y + 12);
+	await expect(page.locator('[data-menu]')).toHaveCount(1);
+	expect(await size(page, '.a')).toBeCloseTo(21.82, 1);
+	await page.waitForTimeout(500);
 	await page.touchscreen.tap(...at);
 	await page.touchscreen.tap(...at);
 	await expect.poll(() => size(page, '.a')).toBe(15);

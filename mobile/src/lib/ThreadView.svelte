@@ -11,6 +11,7 @@
 	import FindBar from './FindBar.svelte';
 	import Icon from './Icon.svelte';
 	import type { Snippet } from 'svelte';
+	import { messageMenu } from './doubletap';
 	import { dotClass, statusLabel } from './format';
 	import { pages, pullToRefresh, ui } from './gestures.svelte';
 	import KeyBar from './KeyBar.svelte';
@@ -25,7 +26,7 @@
 	import NoteLine from './NoteLine.svelte';
 	import PromptCard from './PromptCard.svelte';
 	import Prose from './Prose.svelte';
-	import type { ProseLinks } from './prose';
+	import { copyText, type ProseLinks } from './prose';
 	import { renderer } from './renderer.svelte';
 	import PullIndicator from './PullIndicator.svelte';
 	import { push } from './push.svelte';
@@ -214,6 +215,8 @@
 	// Reading a message aloud types nothing: the Voice switch alone.
 	const sayOn = $derived(can('voice'));
 	const SAY = { idle: 'Play', loading: 'Stop, loading', playing: 'Stop' } as const;
+	/** The agent message whose menu a double tap opened: its row. One at a time. */
+	let menu = $state<number | null>(null);
 	// A listed thread's reply box is always there: switched off on the Mac, it says so and
 	// takes nothing. The manager pane is not a listed thread: it has no reply routes, and
 	// its page brings its own box, so it gets no dock, no card and no Next bar.
@@ -386,6 +389,10 @@
 						data-rise={embedded ? undefined : ''}
 						{@attach feed.scroller('chat')}
 						{@attach pullToRefresh(PULL, () => feed.load('chat'))}
+						{@attach messageMenu(
+							() => menu,
+							(row) => (menu = row)
+						)}
 					>
 						<PullIndicator key={PULL} />
 						<div class="chat">
@@ -406,24 +413,36 @@
 									{#if message.role === 'user'}
 										<div class="u">{@render body()}</div>
 									{:else if message.role === 'assistant'}
-										<div class="a">
+										{@const saying = sayOn ? voice.sayingOf(id, message.n) : 'idle'}
+										<div class="a" data-row={message.n}>
 											<Prose text={message.text} {hits} current={find.current} {links} />
-											{#if sayOn}
-												{@const saying = voice.sayingOf(id, message.n)}
-												<!-- Three shapes: a triangle, a turning ring, a square. -->
-												<button
-													class="say grow"
-													aria-label={SAY[saying]}
-													aria-busy={saying === 'loading'}
-													data-say={saying}
-													onclick={() => voice.say(id, message.n)}
-												>
-													{#if saying === 'loading'}
-														<i class="ring" aria-hidden="true"></i>
-													{:else}
-														<Icon name={saying === 'playing' ? 'stop' : 'play'} size={15} />
+											<!-- A message that is read keeps its menu: its Stop stays in reach. -->
+											{#if menu === message.n || saying !== 'idle'}
+												<div class="menu" data-menu>
+													{#if sayOn}
+														<!-- Three shapes: a triangle, a turning ring, a square. -->
+														<button
+															class="act grow"
+															aria-label={SAY[saying]}
+															aria-busy={saying === 'loading'}
+															data-say={saying}
+															onclick={() => voice.say(id, message.n)}
+														>
+															{#if saying === 'loading'}
+																<i class="ring" aria-hidden="true"></i>
+															{:else}
+																<Icon name={saying === 'playing' ? 'stop' : 'play'} size={15} />
+															{/if}
+														</button>
 													{/if}
-												</button>
+													<button
+														class="act grow"
+														aria-label="Copy"
+														onclick={(event) => copyText(event.currentTarget, message.text)}
+													>
+														<Icon name="copy" size={15} /><Icon name="check" size={15} />
+													</button>
+												</div>
 											{/if}
 										</div>
 									{:else}
@@ -736,23 +755,39 @@
 		overflow-wrap: anywhere;
 	}
 
-	/* Read this message aloud. Small, under the text it reads; its touch area is a full 44pt. */
-	.say {
+	/* What a double tap on a message opens: a row of small buttons under its text. */
+	.menu {
+		display: flex;
+		gap: 18px;
+		margin-top: 4px;
+	}
+
+	/* Small; its touch area is a full 44pt. */
+	.act {
 		position: relative;
 		display: flex;
 		align-items: center;
 		justify-content: center;
 		width: 30px;
 		height: 26px;
-		margin-top: 4px;
 		border-radius: 13px;
 		background: var(--surface);
 		border: 1px solid var(--border);
 		color: var(--muted);
 	}
 
-	.say[data-say='playing'] {
+	.act[data-say='playing'] {
 		color: var(--text);
+	}
+
+	/* Copied: a tick for a moment. */
+	.act:global([data-copied]) {
+		color: var(--green);
+	}
+
+	.act:global([data-copied]) :global([data-icon='copy']),
+	.act:not(:global([data-copied])) :global([data-icon='check']) {
+		display: none;
 	}
 
 	/* The Mac is making the audio. With reduced motion it is a still ring. */
