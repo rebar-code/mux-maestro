@@ -6,7 +6,7 @@
 // Test hooks (POST): /__fixture/reset, /__fixture/wait?id=, /__fixture/say?id=&text=,
 // /__fixture/grouping?value=, /__fixture/deny?on=1, /__fixture/rotate?value=, /__fixture/drop,
 // /__fixture/capability?name=&on=, /__fixture/manager-status?value=,
-// /__fixture/mac-turn?text=&reply=,
+// /__fixture/mac-turn?text=&reply=&spinner=&ms= (ms: the pause between words),
 // /__fixture/append?count= (adds lines to pane buildbox:8),
 // /__fixture/screen?default=&max= (the screen endpoint's default and cap)
 //
@@ -306,8 +306,7 @@ const managerLive = () => ({
 });
 const managerBody = () => ({
 	...managerLive(),
-	status: manager.turn ? 'busy' : manager.status,
-	chat: { messages: manager.chat, next: manager.chat.length, reset: false }
+	status: manager.turn ? 'busy' : manager.status
 });
 const say = (role, text) => manager.chat.push({ n: manager.chat.length, role, text });
 
@@ -322,8 +321,8 @@ function managerReply() {
 }
 
 /** Run one turn word by word. `onDelta` and `onEnd` are for the caller's own stream. */
-function runTurn(prompt, reply, onDelta = () => {}, onEnd = () => {}) {
-	manager.turn = { prompt, reply: '' };
+function runTurn(prompt, reply, onDelta = () => {}, onEnd = () => {}, spinner = null, ms = 40) {
+	manager.turn = { prompt, reply: '', spinner: null };
 	push('manager', managerLive());
 	const words = reply.split(/(?<= )/);
 	const mine = manager;
@@ -331,19 +330,26 @@ function runTurn(prompt, reply, onDelta = () => {}, onEnd = () => {}) {
 		// A reset between two words: the turn belongs to the test before.
 		if (manager !== mine) return onEnd();
 		const word = words.shift();
-		if (word === undefined) {
+		// The pane's transcript gets the prompt a moment after it is sent.
+		if (manager.turn.reply === '') {
 			say('user', prompt);
+			if (spinner) {
+				manager.turn.spinner = spinner;
+				push('manager-spinner', { text: spinner });
+			}
+		}
+		if (word === undefined) {
 			say('assistant', reply);
 			manager.turn = null;
 			onEnd();
 			push('manager', managerLive());
 			return;
 		}
-		manager.turn = { prompt, reply: manager.turn.reply + word };
+		manager.turn = { ...manager.turn, reply: manager.turn.reply + word };
 		onDelta(word);
 		// The reply grows by a small event; the board is not sent again.
 		push('manager-delta', { text: word });
-		setTimeout(step, 40);
+		setTimeout(step, ms);
 	};
 	setTimeout(step, 150);
 }
@@ -358,11 +364,18 @@ function sameOriginWrite(req) {
 	);
 }
 
-function managerApi(req, res, path, body) {
+function managerApi(req, res, url, body) {
+	const path = url.pathname;
 	if (!capabilities.manager) return send(res, 403, { error: 'disabled' });
 	if (path === '/api/manager') {
 		if (req.method !== 'GET') return send(res, 405, { error: 'method_not_allowed' });
 		return send(res, 200, managerBody());
+	}
+	// The manager pane is read like a thread: the same chat cursor and screen.
+	if (path === '/api/manager/chat' || path === '/api/manager/screen') {
+		if (req.method !== 'GET') return send(res, 405, { error: 'method_not_allowed' });
+		if (path === '/api/manager/chat') return send(res, 200, chatPage(manager.chat, url));
+		return sendScreen(req, res, url, managerScreen());
 	}
 	if (req.method !== 'POST') return send(res, 405, { error: 'method_not_allowed' });
 	let json = {};
@@ -462,6 +475,48 @@ const push = (event, body) => {
 	for (const res of streams) res.write(`event: ${event}\ndata: ${JSON.stringify(body)}\n\n`);
 };
 
+/** A pane's lines as the screen routes answer them. */
+function sendScreen(req, res, url, all) {
+	// Same rules as the Mac: digits only, else the default; then 1 to the cap.
+	const asked = url.searchParams.get('lines') ?? '';
+	const lines = Math.min(
+		Math.max(/^\d+$/.test(asked) ? Number(asked) : screenDefault, 1),
+		screenMax
+	);
+	const text = all.slice(-lines).join('\n');
+	const etag = `"${createHash('sha1').update(`${lines}\n${text}`).digest('hex').slice(0, 16)}"`;
+	if (req.headers['if-none-match'] === etag) {
+		res.writeHead(304, { etag, 'cache-control': 'no-store' });
+		return res.end();
+	}
+	res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store', etag });
+	return res.end(JSON.stringify({ text, lines, max: screenMax }));
+}
+
+const chatPage = (all, url) => {
+	const after = url.searchParams.get('after');
+	return {
+		messages: after === null ? all : all.slice(Number(after)),
+		next: all.length,
+		reset: false
+	};
+};
+
+/** The manager pane as a terminal shows it: its last reply, then its input box or its spinner. */
+function managerScreen() {
+	const box = '─'.repeat(52);
+	const last = manager.chat.filter((m) => m.role === 'assistant').at(-1)?.text ?? '';
+	return [
+		`${E}[32m⏺${E}[0m ${last}`,
+		'',
+		...(manager.turn ? [`✻ ${manager.turn.spinner ?? 'Thinking…'}`, ''] : []),
+		`╭${box}╮`,
+		`│ >${' '.repeat(50)}│`,
+		`╰${box}╯`,
+		manager.status === 'waiting' ? '  Do you want to proceed? ❯ 1. Yes  2. No' : '  ? for shortcuts'
+	];
+}
+
 function api(req, res, url, body) {
 	if (req.headers['x-muxmaestro-token'] !== token) return send(res, 401, { error: 'unpaired' });
 	if (deny) return send(res, 403, { error: 'forbidden' });
@@ -470,7 +525,7 @@ function api(req, res, url, body) {
 	if (path === '/api/threads') return send(res, 200, threadsBody());
 	if (path === '/api/hosts') return send(res, 200, hostsBody());
 	if (path === '/api/config') return send(res, 200, configBody());
-	if (path.startsWith('/api/manager')) return managerApi(req, res, path, body);
+	if (path.startsWith('/api/manager')) return managerApi(req, res, url, body);
 	// A later PR's endpoint, switched off: proves "disabled" is not "forbidden".
 	if (path === '/api/voice') return send(res, 403, { error: 'disabled' });
 	if (path === '/api/events') {
@@ -491,22 +546,7 @@ function api(req, res, url, body) {
 	const match = /^\/api\/threads\/([^/]+)\/(chat|screen)$/.exec(path);
 	const thread = match && threads.find((t) => t.id === decodeURIComponent(match[1]));
 	if (!thread) return send(res, 404, { error: 'not_found' });
-	if (match[2] === 'screen') {
-		// Same rules as the Mac: digits only, else the default; then 1 to the cap.
-		const asked = url.searchParams.get('lines') ?? '';
-		const lines = Math.min(
-			Math.max(/^\d+$/.test(asked) ? Number(asked) : screenDefault, 1),
-			screenMax
-		);
-		const text = screen(thread).slice(-lines).join('\n');
-		const etag = `"${createHash('sha1').update(`${lines}\n${text}`).digest('hex').slice(0, 16)}"`;
-		if (req.headers['if-none-match'] === etag) {
-			res.writeHead(304, { etag, 'cache-control': 'no-store' });
-			return res.end();
-		}
-		res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store', etag });
-		return res.end(JSON.stringify({ text, lines, max: screenMax }));
-	}
+	if (match[2] === 'screen') return sendScreen(req, res, url, screen(thread));
 	const all = chats[thread.id];
 	if (!all) return send(res, 404, { error: 'not_found' });
 	const after = url.searchParams.get('after');
@@ -593,7 +633,14 @@ function hook(res, url) {
 			break;
 		case '/__fixture/mac-turn':
 			// A turn typed into the Mac rail: the phone must follow it.
-			runTurn(url.searchParams.get('text') ?? '', url.searchParams.get('reply') ?? '');
+			runTurn(
+				url.searchParams.get('text') ?? '',
+				url.searchParams.get('reply') ?? '',
+				undefined,
+				undefined,
+				url.searchParams.get('spinner'),
+				Number(url.searchParams.get('ms') ?? 40)
+			);
 			break;
 		default:
 			return send(res, 404, { error: 'not_found' });

@@ -1,26 +1,33 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
+	import BoardSheet from '$lib/BoardSheet.svelte';
 	import { age } from '$lib/format';
-	import { pullToRefresh, swipeAway, ui } from '$lib/gestures.svelte';
+	import { pullToRefresh, ui } from '$lib/gestures.svelte';
 	import { counts } from '$lib/group';
 	import { can, isOff, live, OFF_LABEL } from '$lib/live.svelte';
-	import { needsYouCards } from '$lib/manager';
+	import { needsYouCards, thinkingText } from '$lib/manager';
 	import { manager } from '$lib/manager.svelte';
 	import PullIndicator from '$lib/PullIndicator.svelte';
+	import ThreadView from '$lib/ThreadView.svelte';
 
 	const PULL = 'home';
-	/** How many of the manager's updates the home lists. */
-	const UPDATES = 5;
 
 	const tally = $derived(live.threads ? counts(live.threads) : null);
 	const managerOn = $derived(can('manager'));
 	const boxLabel = $derived(isOff('manager') ? OFF_LABEL : 'Ask the manager');
-	const waiting = $derived(needsYouCards(live.threads ?? [], managerOn ? manager.needsYou : []));
-	const review = $derived(managerOn ? manager.review : []);
+	const waiting = $derived(needsYouCards(live.threads ?? [], []));
 	const canSend = $derived(manager.draft.trim() !== '');
+	/** The manager thread shows its terminal, not its chat. */
+	let terminal = $state(false);
+	/** Ticks while a turn runs, for the time beside the dots. */
+	let now = $state(Date.now());
+	const seconds = $derived(Math.max(0, Math.floor((now - manager.turnSince) / 1000)));
 
-	async function reload(): Promise<void> {
-		await Promise.all([live.refresh(), managerOn ? manager.load() : null]);
+	/** Attachment for the thinking line: a clock, for as long as the line is drawn. */
+	function clock(): () => void {
+		now = Date.now();
+		const timer = setInterval(() => (now = Date.now()), 1000);
+		return () => clearInterval(timer);
 	}
 
 	function submit(event: SubmitEvent): void {
@@ -29,118 +36,67 @@
 	}
 </script>
 
-<header class="tbar">
-	<button class="tb" aria-label="Menu" onclick={() => ui.openDrawer()}>☰</button>
-	<div class="chips">
-		{#if tally}
-			<button class="chip grow" class:red={tally.waiting > 0} onclick={() => ui.openDrawer()}
-				>{tally.waiting} need you</button
-			>
-			<button class="chip grow green" onclick={() => ui.openDrawer()}>{tally.busy} running</button>
-			<button class="chip grow" onclick={() => ui.openDrawer()}>💤 {tally.dozing}</button>
-		{:else}
-			<span class="skel" style:width="76px" style:height="23px" style:border-radius="999px"></span>
-			<span class="skel" style:width="72px" style:height="23px" style:border-radius="999px"></span>
-			<span class="skel" style:width="48px" style:height="23px" style:border-radius="999px"></span>
-		{/if}
-	</div>
-</header>
+{#snippet header()}
+	<header class="tbar">
+		<button class="tb" aria-label="Menu" onclick={() => ui.openDrawer()}>☰</button>
+		<div class="chips">
+			{#if tally}
+				<button class="chip grow" class:red={tally.waiting > 0} onclick={() => ui.openDrawer()}
+					>{tally.waiting} need you</button
+				>
+				<button class="chip grow green" onclick={() => ui.openDrawer()}>{tally.busy} running</button
+				>
+				<button class="chip grow" onclick={() => ui.openDrawer()}>💤 {tally.dozing}</button>
+			{:else}
+				<span class="skel" style:width="76px" style:height="23px" style:border-radius="999px"
+				></span>
+				<span class="skel" style:width="72px" style:height="23px" style:border-radius="999px"
+				></span>
+				<span class="skel" style:width="48px" style:height="23px" style:border-radius="999px"
+				></span>
+			{/if}
+		</div>
+	</header>
+{/snippet}
 
-<div class="scroll home" data-pull={PULL} {@attach pullToRefresh(PULL, reload)}>
-	<PullIndicator key={PULL} />
-	<div class="hero">
-		<button class="orb" disabled aria-disabled="true" aria-label="Talk to the manager">
-			<span>🎙</span>
-		</button>
-	</div>
-
-	{#if managerOn}
-		<div class="said" aria-live="polite" data-said {@attach manager.watch}>
-			{#each manager.lines as line, index (index)}
-				{#if line.role === 'user'}
-					<div class="u">{line.text}</div>
-				{:else if line.text}
-					<div class="m" class:old={index < manager.lines.length - 1}>{line.text}</div>
-				{:else}
-					<div class="m wait" role="status" aria-label="Thinking">
-						<i></i><i></i><i></i>
-					</div>
-				{/if}
-			{/each}
+<!-- What the manager is doing now, after the last row of its chat. -->
+{#snippet tail()}
+	{#if manager.busy}
+		<div class="think" role="status" data-thinking {@attach clock}>
+			<span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+			<span data-thinking-text>{thinkingText(manager.spinner, seconds)}</span>
+		</div>
+	{/if}
+	{#if manager.note ?? manager.statusNote}
+		<div class="state">
 			{#if manager.note}
-				<div class="note" role="alert">{manager.note}</div>
-			{:else if manager.statusNote}
-				<div class="note quiet" role="status" data-status={manager.status}>
-					{manager.statusNote}
-				</div>
+				<span class="note" role="alert">{manager.note}</span>
+			{:else}
+				<span class="note quiet" role="status" data-status={manager.status}
+					>{manager.statusNote}</span
+				>
+			{/if}
+			{#if manager.status === 'waiting'}
+				<!-- The prompt is answered in the pane: the terminal shows it. -->
+				<button class="chip grow" onclick={() => (terminal = true)}>Terminal</button>
 			{/if}
 		</div>
 	{/if}
-
-	{#if waiting.length}
-		<div class="sect">Needs you · {waiting.length}</div>
-		{#each waiting as { thread, why } (thread.id)}
-			<a class="item" href={resolve('/t/[id]', { id: thread.id })} data-thread={thread.id}>
-				<span class="sev blocked"></span>
-				<span class="body">
-					<b>{thread.session} · {thread.name}</b>
-					<span>{why ?? 'needs you'} · {age(thread.since ?? thread.lastPrompt?.at, live.now)}</span>
-				</span>
-			</a>
-		{/each}
-	{/if}
-
-	{#if review === null}
-		<div class="sect">Review</div>
-		<div class="skcard skel" aria-hidden="true"></div>
-	{:else if review.length}
-		<div class="sect">Review · {review.length}</div>
-		{#each review as item (item.key)}
-			{@const thread = item.thread ? live.byId(item.thread) : undefined}
-			{@const key = item.key ?? ''}
-			<div class="item" data-review={key} {@attach swipeAway(() => void manager.dismiss(key))}>
-				<svelte:element
-					this={thread ? 'a' : 'div'}
-					class="open"
-					href={thread ? resolve('/t/[id]', { id: thread.id }) : undefined}
-				>
-					<span class="sev {item.severity ?? 'info'}"></span>
-					<span class="body">
-						<b>{thread ? `${thread.session} · ${thread.name}` : item.title}</b>
-						<span>{item.detail}</span>
-					</span>
-				</svelte:element>
-				<button
-					class="tb done"
-					aria-label="Dismiss {thread ? `${thread.session} · ${thread.name}` : item.title}"
-					onclick={() => manager.dismiss(key)}>✓</button
-				>
-			</div>
-		{/each}
-	{/if}
-	{#if managerOn && manager.updates.length}
-		<div class="sect">Updates</div>
-		{#each manager.updates.slice(0, UPDATES) as update, index (index)}
-			{@const thread = update.thread ? live.byId(update.thread) : undefined}
-			<svelte:element
-				this={thread ? 'a' : 'div'}
-				class="upd"
-				class:grow={thread !== undefined}
-				href={thread ? resolve('/t/[id]', { id: thread.id }) : undefined}
-				data-update
-			>
-				<span class="what">
-					{#if thread}<b>{thread.session} · {thread.name}</b>{/if}
-					{update.text}
-				</span>
-				<span class="when">{age(update.at, live.now)}</span>
-			</svelte:element>
-		{/each}
-	{/if}
-	<div class="end"></div>
-</div>
+{/snippet}
 
 {#if managerOn}
+	<div class="stage" {@attach manager.watch}>
+		<ThreadView
+			id="manager"
+			feed={manager.feed}
+			{header}
+			{tail}
+			pending={manager.pending}
+			bind:terminal
+		/>
+		<BoardSheet />
+	</div>
+
 	<!-- Voice arrives later: its controls are drawn and do nothing. -->
 	<div class="vbar" data-voicebar>
 		<span class="wave" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
@@ -154,6 +110,29 @@
 			<button class="ip" disabled aria-disabled="true" aria-label="Skip">⏭</button>
 			<button class="ip" disabled aria-disabled="true" aria-label="Microphone">🎙</button>
 		</div>
+	</div>
+{:else}
+	{@render header()}
+	<div class="scroll home" data-pull={PULL} {@attach pullToRefresh(PULL, live.refresh)}>
+		<PullIndicator key={PULL} />
+		<div class="hero">
+			<button class="orb" disabled aria-disabled="true" aria-label="Talk to the manager">
+				<span>🎙</span>
+			</button>
+		</div>
+		{#if waiting.length}
+			<div class="sect">Needs you · {waiting.length}</div>
+			{#each waiting as { thread } (thread.id)}
+				<a class="item" href={resolve('/t/[id]', { id: thread.id })} data-thread={thread.id}>
+					<span class="sev"></span>
+					<span class="body">
+						<b>{thread.session} · {thread.name}</b>
+						<span>needs you · {age(thread.since ?? thread.lastPrompt?.at, live.now)}</span>
+					</span>
+				</a>
+			{/each}
+		{/if}
+		<div class="end"></div>
 	</div>
 {/if}
 <!-- With the Manager switch off the box stays, disabled, and says where the switch is. -->
@@ -205,67 +184,6 @@
 		filter: grayscale(0.6);
 	}
 
-	.said {
-		display: flex;
-		flex-direction: column;
-		gap: 10px;
-		/* Room for one line, so the cards do not jump when the first one lands. */
-		min-height: 46px;
-		padding: 10px 18px 4px;
-		text-align: center;
-	}
-
-	.u {
-		color: var(--muted);
-		font-size: 13.5px;
-		overflow-wrap: anywhere;
-	}
-
-	.m {
-		color: #dcdcf0;
-		font-size: 16px;
-		white-space: pre-wrap;
-		overflow-wrap: anywhere;
-	}
-
-	/* An older reply keeps to three lines; the newest one is read in full. */
-	.m.old {
-		display: -webkit-box;
-		-webkit-box-orient: vertical;
-		-webkit-line-clamp: 3;
-		line-clamp: 3;
-		overflow: hidden;
-	}
-
-	.wait {
-		display: flex;
-		justify-content: center;
-		gap: 5px;
-		padding: 8px 0;
-	}
-
-	.wait i {
-		width: 6px;
-		height: 6px;
-		border-radius: 50%;
-		background: var(--purple);
-		animation: think 1s ease-in-out infinite alternate;
-	}
-
-	.wait i:nth-child(2) {
-		animation-delay: 0.2s;
-	}
-
-	.wait i:nth-child(3) {
-		animation-delay: 0.4s;
-	}
-
-	@keyframes think {
-		from {
-			opacity: 0.25;
-		}
-	}
-
 	.note {
 		align-self: center;
 		font-size: 12.5px;
@@ -280,37 +198,6 @@
 		color: var(--muted);
 		background: var(--surface);
 		border-color: var(--border);
-	}
-
-	.upd {
-		position: relative;
-		display: flex;
-		align-items: baseline;
-		gap: 10px;
-		margin: 0 14px;
-		padding: 7px 2px;
-		border-bottom: 1px solid #22222e;
-		font-size: 13px;
-		color: var(--muted);
-	}
-
-	.what {
-		flex: 1;
-		min-width: 0;
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-	}
-
-	.what b {
-		color: var(--text);
-		font-weight: 600;
-		margin-right: 4px;
-	}
-
-	.when {
-		flex: none;
-		font-size: 12px;
 	}
 
 	.item {
@@ -329,25 +216,10 @@
 		filter: brightness(1.3);
 	}
 
-	.open {
-		flex: 1;
-		min-width: 0;
-		display: flex;
-		gap: 10px;
-	}
-
 	.sev {
 		flex: none;
 		width: 4px;
 		border-radius: 2px;
-		background: var(--accent);
-	}
-
-	.sev.warn {
-		background: var(--amber);
-	}
-
-	.sev.blocked {
 		background: var(--red);
 	}
 
@@ -367,19 +239,6 @@
 	.item .body span {
 		font-size: 13px;
 		color: var(--muted);
-	}
-
-	/* A 44pt touch area that does not make the card taller. */
-	.done {
-		align-self: center;
-		margin: -8px -8px -8px 0;
-		color: var(--muted);
-	}
-
-	.skcard {
-		height: 62px;
-		margin: 0 14px 8px;
-		border-radius: 12px;
 	}
 
 	.end {
@@ -402,17 +261,17 @@
 		opacity: 0.4;
 	}
 
-	.vrow {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-	}
-
 	.wave i {
 		width: 3px;
 		height: 5px;
 		border-radius: 2px;
 		background: #666;
+	}
+
+	.vrow {
+		display: flex;
+		align-items: center;
+		gap: 8px;
 	}
 
 	.vseg {
@@ -473,7 +332,6 @@
 		outline: none;
 	}
 
-	/* No voice bar above it: the box draws its own top edge. */
 	.compose.bare {
 		padding-top: 8px;
 		border-top: 1px solid var(--border);
@@ -505,5 +363,58 @@
 	.pill.send {
 		background: var(--accent);
 		color: #fff;
+	}
+
+	/* The manager's thread, with the board sheet over its lower part. */
+	.stage {
+		position: relative;
+		flex: 1;
+		min-height: 0;
+		display: flex;
+		flex-direction: column;
+		overflow: hidden;
+		/* The board's peek covers this much of the thread's end. */
+		--below: 46px;
+	}
+
+	.think {
+		display: flex;
+		align-items: center;
+		gap: 9px;
+		font-size: 13px;
+		color: #b9b9d0;
+	}
+
+	.dots {
+		display: inline-flex;
+		gap: 4px;
+	}
+
+	.dots i {
+		width: 6px;
+		height: 6px;
+		border-radius: 50%;
+		background: var(--purple);
+		animation: think 1s ease-in-out infinite alternate;
+	}
+
+	.dots i:nth-child(2) {
+		animation-delay: 0.2s;
+	}
+
+	.dots i:nth-child(3) {
+		animation-delay: 0.4s;
+	}
+
+	@keyframes think {
+		from {
+			opacity: 0.25;
+		}
+	}
+
+	.state {
+		display: flex;
+		align-items: center;
+		gap: 8px;
 	}
 </style>

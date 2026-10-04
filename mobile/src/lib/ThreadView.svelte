@@ -1,4 +1,5 @@
 <script lang="ts">
+	import type { Snippet } from 'svelte';
 	import { dotClass, statusLabel } from './format';
 	import { pages, pullToRefresh, ui } from './gestures.svelte';
 	import { live } from './live.svelte';
@@ -6,7 +7,34 @@
 	import { text } from './textsize.svelte';
 	import { ThreadFeed, type Mode } from './thread.svelte';
 
-	const { id }: { id: string } = $props();
+	interface Props {
+		id: string;
+		/**
+		 * A feed that is not a listed thread's own (the manager pane). The view
+		 * then has no thread row to read: it always has a chat and is never closed.
+		 */
+		feed?: ThreadFeed;
+		/** Drawn in place of the thread's own toolbar. */
+		header?: Snippet;
+		/** Drawn after the last chat row: what the thread is doing now. */
+		tail?: Snippet;
+		/** A prompt that was sent and is not in the chat yet. */
+		pending?: string | null;
+		/** The first tab shows the terminal, not the chat. */
+		terminal?: boolean;
+	}
+
+	/* eslint-disable prefer-const */
+	// `terminal` is bound, so the props are one `let`.
+	let {
+		id,
+		feed: given,
+		header,
+		tail,
+		pending = null,
+		terminal = $bindable(false)
+	}: Props = $props();
+	/* eslint-enable prefer-const */
 
 	const PULL = 'thread';
 	// The pages of this view, left to right. A later tab is one more entry here
@@ -15,13 +43,14 @@
 	const TAB_KEYS = TABS.map((tab) => tab.key);
 
 	// svelte-ignore state_referenced_locally
-	const feed = new ThreadFeed(id);
+	const feed = given ?? new ThreadFeed(id);
+	// svelte-ignore state_referenced_locally
+	const listed = given === undefined;
 
-	const thread = $derived(live.byId(id));
-	const canChat = $derived(thread?.chat ?? false);
-	let terminal = $state(false);
+	const thread = $derived(listed ? live.byId(id) : undefined);
+	const canChat = $derived(listed ? (thread?.chat ?? false) : true);
 	const mode: Mode = $derived(canChat && !terminal ? 'chat' : 'terminal');
-	const closed = $derived((live.threads !== null && !thread) || feed.gone);
+	const closed = $derived(listed && ((live.threads !== null && !thread) || feed.gone));
 	const color = $derived(thread?.hostColor ?? '#2a2a2a');
 
 	function selectTab(index: number): void {
@@ -32,28 +61,34 @@
 	}
 </script>
 
-<header
-	class="tbar thread"
-	style:border-bottom-color={color}
-	style:background="linear-gradient({color}3a, {color}14), var(--bar)"
->
-	<button class="tb" aria-label="Menu" onclick={() => ui.openDrawer()}>☰</button>
-	{#if thread}
-		<span class="dot {dotClass(thread)}"></span>
-		<div class="title">
-			<b>{thread.session} · {thread.name}</b>
-			<span><i class="hchip" style:background={color}>{thread.host}</i> {statusLabel(thread)}</span>
-		</div>
-	{:else if closed}
-		<div class="title"><b>Closed</b></div>
-	{:else}
-		<div class="title">
-			<span class="skel" style:width="55%" style:height="14px" style:margin-bottom="5px"></span>
-			<span class="skel" style:width="35%" style:height="11px"></span>
-		</div>
-	{/if}
-	<button class="tb" disabled aria-disabled="true" aria-label="Find">🔍</button>
-</header>
+{#if header}
+	{@render header()}
+{:else}
+	<header
+		class="tbar thread"
+		style:border-bottom-color={color}
+		style:background="linear-gradient({color}3a, {color}14), var(--bar)"
+	>
+		<button class="tb" aria-label="Menu" onclick={() => ui.openDrawer()}>☰</button>
+		{#if thread}
+			<span class="dot {dotClass(thread)}"></span>
+			<div class="title">
+				<b>{thread.session} · {thread.name}</b>
+				<span
+					><i class="hchip" style:background={color}>{thread.host}</i> {statusLabel(thread)}</span
+				>
+			</div>
+		{:else if closed}
+			<div class="title"><b>Closed</b></div>
+		{:else}
+			<div class="title">
+				<span class="skel" style:width="55%" style:height="14px" style:margin-bottom="5px"></span>
+				<span class="skel" style:width="35%" style:height="11px"></span>
+			</div>
+		{/if}
+		<button class="tb" disabled aria-disabled="true" aria-label="Find">🔍</button>
+	</header>
+{/if}
 
 <div class="tabs">
 	<div class="seg" role="tablist">
@@ -102,6 +137,7 @@
 						class="scroll"
 						data-pull={PULL}
 						data-view="chat"
+						data-rise
 						{@attach feed.scroller('chat')}
 						{@attach pullToRefresh(PULL, () => feed.load('chat'))}
 					>
@@ -121,11 +157,21 @@
 										<div class="tool"><b>{message.tool}</b> {message.text}</div>
 									{/if}
 								{/each}
+								{#if pending}
+									<div class="u" data-pending>{pending}</div>
+								{/if}
+								{@render tail?.()}
 							{/if}
 						</div>
 					</div>
 				{:else}
-					<div class="scroll" data-view="terminal" data-zoom {@attach feed.scroller('terminal')}>
+					<div
+						class="scroll"
+						data-view="terminal"
+						data-zoom
+						data-rise
+						{@attach feed.scroller('terminal')}
+					>
 						{#if feed.screen === null}
 							<div class="chat">
 								{#each [90, 70, 82, 55, 76] as width (width)}
@@ -240,7 +286,7 @@
 		display: flex;
 		flex-direction: column;
 		gap: 10px;
-		padding: 10px 14px calc(16px + env(safe-area-inset-bottom));
+		padding: 10px 14px calc(16px + var(--below, env(safe-area-inset-bottom)));
 		font-size: var(--chat-size);
 	}
 
@@ -286,7 +332,7 @@
 	}
 
 	.screen {
-		padding: 10px 12px calc(16px + env(safe-area-inset-bottom));
+		padding: 10px 12px calc(16px + var(--below, env(safe-area-inset-bottom)));
 		font-size: var(--term-size);
 		/* A whole number of pixels, so a thousand lines are exactly a thousand times one. */
 		--lh: calc(var(--term-size) * 1.3);
@@ -363,7 +409,7 @@
 	.jump {
 		position: absolute;
 		right: max(12px, env(safe-area-inset-right));
-		bottom: calc(14px + env(safe-area-inset-bottom));
+		bottom: calc(14px + var(--below, env(safe-area-inset-bottom)));
 		width: var(--hit);
 		height: var(--hit);
 		border-radius: 50%;

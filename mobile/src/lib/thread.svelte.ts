@@ -1,5 +1,5 @@
 import { tick, untrack } from 'svelte';
-import { ApiError, fetchChat, fetchScreen } from './api';
+import { ApiError, fetchChat, fetchScreen, threadPath } from './api';
 import { live } from './live.svelte';
 import { alignShift, hasOlder, rawLines, toBlocks, viewLines, type Block } from './terminal';
 import type { ChatMessage } from './types';
@@ -32,6 +32,8 @@ export class ThreadFeed {
 	gone = $state(false);
 
 	private next: number | undefined;
+	/** The chat has not been read from the server yet. */
+	private unread = true;
 	private scrollers: Partial<Record<Mode, HTMLElement>> = {};
 	private inflight: Partial<Record<Mode, Promise<void>>> = {};
 	/** The terminal text as last received, to line the next one up with. */
@@ -43,7 +45,18 @@ export class ThreadFeed {
 	private max = 0;
 	private wantOlder = false;
 
-	constructor(readonly id: string) {}
+	/** `path`: where the chat and screen are read from; a thread's own routes unless given. */
+	constructor(
+		readonly id: string,
+		private readonly path: string = threadPath(id),
+		/** Called when the chat changed, for an owner that keeps a copy. */
+		private readonly onChat: () => void = () => {}
+	) {}
+
+	/** Rows kept from the last visit, shown until the server's replace them. */
+	seed(messages: ChatMessage[]): void {
+		if (this.unread && messages.length) this.messages = messages;
+	}
 
 	/** Attachment for the element that scrolls `mode`'s content. */
 	scroller(mode: Mode): (node: HTMLElement) => () => void {
@@ -127,14 +140,16 @@ export class ThreadFeed {
 	};
 
 	private async loadChat(): Promise<void> {
-		const page = await fetchChat(this.id, this.next);
-		const first = this.messages === null;
+		const page = await fetchChat(this.path, this.next);
+		const first = this.unread;
+		this.unread = false;
 		this.next = page.next;
 		if (!first && !page.reset && page.messages.length === 0) return;
 		await this.keepEnd('chat', first, () => {
 			this.messages =
 				page.reset || first ? page.messages : [...(this.messages ?? []), ...page.messages];
 		});
+		this.onChat();
 	}
 
 	private async loadScreen(): Promise<void> {
@@ -142,7 +157,7 @@ export class ThreadFeed {
 		this.wantOlder = false;
 		const want = older ? Math.min((this.lines ?? 0) * 2, this.max) : this.lines;
 		// Unchanged text comes back as null: nothing is parsed or drawn again.
-		const page = await fetchScreen(this.id, want, older ? null : this.etag);
+		const page = await fetchScreen(this.path, want, older ? null : this.etag);
 		if (page === null) return;
 
 		const raw = rawLines(page.text);
@@ -181,7 +196,7 @@ export class ThreadFeed {
 	}
 
 	/** Apply `change`; stay at the end if the reader was there (or on first load). */
-	private async keepEnd(mode: Mode, force: boolean, change: () => void): Promise<void> {
+	async keepEnd(mode: Mode, force: boolean, change: () => void): Promise<void> {
 		const before = this.scrollers[mode];
 		const atEnd =
 			force || !before || before.scrollHeight - before.scrollTop - before.clientHeight < STICK;
