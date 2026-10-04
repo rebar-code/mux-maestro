@@ -46,6 +46,9 @@ struct RestoredWindow: Equatable {
     let index: Int
     /// Panes that ran an agent whose session id was never captured.
     let agentsWithoutSession: Int
+    /// Resume commands that were not typed, because the pane never showed a
+    /// shell prompt to type them at.
+    var unsentResumes: [String] = []
 }
 
 enum WindowRestoreFailure: Error, Equatable {
@@ -54,12 +57,18 @@ enum WindowRestoreFailure: Error, Equatable {
     /// The window's session was ended some other way after the archive. Undo
     /// only creates a session that the archive itself ended.
     case sessionGone(String)
+    /// The host did not answer, so nothing is known about the directory or the
+    /// session. Not the same as either being gone.
+    case hostUnreachable(String)
+    case nothingToRestore
     case tmux(String)
 
     var message: String {
         switch self {
         case .directoryMissing(let path): return "\(path) no longer exists."
         case .sessionGone(let session): return "The session “\(session)” no longer exists."
+        case .hostUnreachable(let host): return "\(host) did not answer."
+        case .nothingToRestore: return "The window has no pane to restore."
         case .tmux(let reason): return reason
         }
     }
@@ -67,8 +76,10 @@ enum WindowRestoreFailure: Error, Equatable {
     /// Whether the same undo can succeed later (an ssh timeout, a busy tmux).
     /// The archive stays on the undo stack for these.
     var isRetryable: Bool {
-        if case .tmux = self { return true }
-        return false
+        switch self {
+        case .tmux, .hostUnreachable: return true
+        case .directoryMissing, .sessionGone, .nothingToRestore: return false
+        }
     }
 }
 
@@ -124,7 +135,7 @@ enum WindowArchive {
         if let id = pane.codexSessionId { return (.codex, validSessionId(id)) }
         if shells.contains(pane.command), pane.attention == .unknown { return (nil, nil) }
         if let record, record.cwd == pane.path,
-           isAgentCommand(pane.command, agent: record.agent) {
+           isAgentCommand(pane.command, agent: record.agent) || pane.attention != .unknown {
             return (record.agent, validSessionId(record.sessionId))
         }
         if pane.command == "codex" { return (.codex, nil) }
@@ -137,12 +148,25 @@ enum WindowArchive {
         ClaudeSessionRecovery.isSessionId(id) ? id : nil
     }
 
-    /// Whether `command` (`#{pane_current_command}`) can be `agent`: its own
-    /// name, `node`, or a version number, which is how Claude Code names its
-    /// process.
+    /// Whether `command` (`#{pane_current_command}`) is `agent`: its own name,
+    /// or for Claude Code a bare version number, which is how it names its
+    /// process. `node` does not count: it is just as often a dev server.
     static func isAgentCommand(_ command: String, agent: RecoveryAgent) -> Bool {
-        command == agent.rawValue || command == "node"
-            || command.range(of: "^[0-9]+\\.[0-9]+\\.[0-9]+", options: .regularExpression) != nil
+        if command == agent.rawValue { return true }
+        return agent == .claude && command.range(
+            of: "^[0-9]+[.][0-9]+[.][0-9]+$", options: .regularExpression) != nil
+    }
+
+    /// Whether a pane is at a shell prompt, from `TmuxService.shellPromptFormat`
+    /// output: its foreground command is a shell and the cursor has left column
+    /// zero, so a prompt is drawn. A shell still running its login scripts, or
+    /// anything else in the foreground, is not a place to type a command.
+    static func isShellPrompt(_ probe: String) -> Bool {
+        let fields = probe.trimmingCharacters(in: .whitespacesAndNewlines)
+            .components(separatedBy: "\t")
+        guard fields.count == 2, let column = Int(fields[1]), column > 0 else { return false }
+        let command = fields[0].hasPrefix("-") ? String(fields[0].dropFirst()) : fields[0]
+        return shells.contains(command)
     }
 
     /// The window as a recovery snapshot, so `SessionRecord.restorePlan` builds
@@ -164,16 +188,22 @@ enum WindowArchive {
     /// The window to rebuild. Fails when any pane's directory is gone rather than
     /// bringing back half a window. No directory fallback for a missing agent id:
     /// such a pane comes back as a shell.
+    ///
+    /// `directoryExists` answers nil when the host could not be asked. That is
+    /// not a missing directory: the undo stays available.
     static func restorePlan(
-        _ archived: ArchivedWindow, directoryExists: (String) -> Bool
+        _ archived: ArchivedWindow, directoryExists: (String) -> Bool?
     ) -> Result<RestoreWindow, WindowRestoreFailure> {
-        if let missing = archived.panes.first(where: { !directoryExists($0.cwd) }) {
-            return .failure(.directoryMissing(missing.cwd))
+        for pane in archived.panes {
+            guard let exists = directoryExists(pane.cwd) else {
+                return .failure(.hostUnreachable(archived.host.name))
+            }
+            if !exists { return .failure(.directoryMissing(pane.cwd)) }
         }
         let plan = SessionRecord.restorePlan(
             tree: snapshot(of: archived), records: [:], directoryExists: { _ in true })
         guard let window = plan.first?.windows.first else {
-            return .failure(.tmux("The window has no pane to restore."))
+            return .failure(.nothingToRestore)
         }
         return .success(window)
     }
@@ -190,6 +220,7 @@ enum WindowArchive {
 
     /// Toast body after an undo: empty unless an agent could not be resumed.
     static func restoredNote(_ restored: RestoredWindow) -> String {
+        if let resume = restored.unsentResumes.first { return "Shell not ready. Run: \(resume)" }
         switch restored.agentsWithoutSession {
         case 0: return ""
         case 1: return "Agent session not found"
@@ -223,7 +254,8 @@ final class WindowArchiveHistory {
         /// The window's host and session, for dropping the entry when either goes.
         let host: Host
         let session: String
-        let removedSession: Bool
+        /// Whether the archive ended the session. A redo can change it.
+        private(set) var removedSession: Bool
         /// False while undo has the window back (the entry then waits on the
         /// redo stack).
         var isArchived = true
@@ -239,6 +271,11 @@ final class WindowArchiveHistory {
             self.session = archived.session
             self.removedSession = archived.removedSession
             self.worktree = worktree
+        }
+
+        /// Redo archived the window again: take what changed in the new capture.
+        func adopt(_ again: ArchivedWindow) {
+            removedSession = again.removedSession
         }
     }
 
@@ -280,14 +317,75 @@ final class WindowArchiveHistory {
         onLeave?(entry, due)
     }
 
+    /// A host's tree reloaded with the sessions `live`. An archive whose session
+    /// was ended some other way cannot be undone and leaves. One whose archive
+    /// ended the session stays: undo creates that session again.
+    func dropEndedSessions(host: Host, live: Set<String>) {
+        for entry in entries where entry.isArchived && entry.host == host
+            && !entry.removedSession && !live.contains(entry.session) {
+            remove(entry)
+        }
+    }
+
+    /// A remote host was removed from the app.
+    func dropHost(alias: String) {
+        for entry in entries where entry.host.sshAlias == alias { remove(entry) }
+    }
+
+    /// Worktrees whose cleanup is waiting on an archive, in archive order.
+    var pendingWorktrees: [String] {
+        var pending: [String] = []
+        for entry in entries where entry.isArchived {
+            if let worktree = entry.worktree, !pending.contains(worktree) { pending.append(worktree) }
+        }
+        return pending
+    }
+
     /// The app is quitting, so no undo is offered any more: empty the history
     /// and return every worktree that is due for cleanup.
     func drain() -> [String] {
-        var due: [String] = []
-        for entry in entries where entry.isArchived {
-            if let worktree = entry.worktree, !due.contains(worktree) { due.append(worktree) }
-        }
+        let due = pendingWorktrees
         entries = []
         return due
+    }
+}
+
+/// The worktrees whose cleanup is waiting on an archive, kept on disk so a crash
+/// or a kill does not forget them. Paths only: nothing about the windows. The
+/// next launch offers the list; it never cleans up by itself.
+enum PendingWorktreeCleanups {
+    static func fileURL() -> URL? {
+        guard let support = try? FileManager.default.url(
+            for: .applicationSupportDirectory, in: .userDomainMask,
+            appropriateFor: nil, create: true)
+        else { return nil }
+        return support.appendingPathComponent("MuxMaestro/pending-worktree-cleanups.json")
+    }
+
+    /// Write `paths`, or remove the file when there are none.
+    @discardableResult
+    static func save(_ paths: [String], to url: URL? = fileURL()) -> Bool {
+        guard let url else { return false }
+        guard !paths.isEmpty else {
+            try? FileManager.default.removeItem(at: url)
+            return true
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.withoutEscapingSlashes]
+        guard let data = try? encoder.encode(paths) else { return false }
+        try? FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        return (try? data.write(to: url, options: .atomic)) != nil
+    }
+
+    static func load(from url: URL? = fileURL()) -> [String] {
+        guard let url, let data = try? Data(contentsOf: url) else { return [] }
+        return (try? JSONDecoder().decode([String].self, from: data)) ?? []
+    }
+
+    static func offerTitle(_ paths: [String]) -> String {
+        paths.count == 1
+            ? "Clean up 1 worktree of an archived window?"
+            : "Clean up \(paths.count) worktrees of archived windows?"
     }
 }

@@ -33,6 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         history.onLeave = { [weak self] entry, worktree in
             self?.window?.undoManager?.removeAllActions(withTarget: entry)
             if let worktree { self?.cleanUpWorktreeUnlessInUse(worktree) }
+            self?.savePendingCleanups()
         }
         return history
     }()
@@ -396,6 +397,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.tickTimer = timer
 
         restoreAfterRebootIfNeeded()
+        // After the first tree load, so a worktree with a live pane is left alone.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+            self?.offerPendingWorktreeCleanups()
+        }
         // Voice models fetch once, in the background; nothing waits on them.
         VoiceModels.shared.start()
         VoiceSelfTest.runIfRequested()
@@ -4188,9 +4193,8 @@ extension AppDelegate: NSToolbarItemValidation, NSMenuItemValidation {
         }
         // ⌘W's label has to follow ⌘W's target — it closes the focused pane of a
         // multi-pane window and the window only when the pane *is* the window.
-        // Left as a fixed "Archive Window" it promised the wider blast radius on
-        // every press. Falls back to "Archive Window" with nothing attached, which
-        // is also what ⌘W does once a session loads.
+        // A fixed "Archive Window" would promise the wider blast radius on every
+        // press. With nothing attached the label is "Archive Window".
         if item.action == #selector(actionCloseWindow) {
             var action = CloseWindowPrompt.Action.window
             if let session = attachedSession, let service = attachedService,
@@ -5374,6 +5378,7 @@ extension AppDelegate {
             return
         }
         registerArchiveUndo(archiveHistory.push(archived, worktree: worktree), service: service)
+        savePendingCleanups()
         showArchivedToast(archived)
     }
 
@@ -5417,6 +5422,7 @@ extension AppDelegate {
                 switch result {
                 case .success(let restored):
                     entry.isArchived = false
+                    self.savePendingCleanups()
                     self.focusNew(
                         session: archived.session, window: restored.index, pane: nil,
                         service: service)
@@ -5463,30 +5469,56 @@ extension AppDelegate {
                     return
                 }
                 entry.isArchived = true
+                if let again = result.archived { entry.adopt(again) }
+                self.savePendingCleanups()
                 self.sidebarVC?.refresh()
                 self.showArchivedToast(result.archived ?? before)
             }
         }
     }
 
-    /// Drop every archive that can no longer be undone because its host was
-    /// removed or its session was ended some other way. A session the archive
-    /// itself ended stays: undo creates that one again.
-    private func dropArchives(where gone: (WindowArchiveHistory.Entry) -> Bool) {
-        for entry in archiveHistory.entries where entry.isArchived && gone(entry) {
-            archiveHistory.remove(entry)
-        }
-    }
-
     /// A host's tree reloaded: drop its archives whose session is no longer there.
     func dropArchivesOfEndedSessions(host: Host) {
         guard !archiveHistory.entries.isEmpty, let sidebarVC else { return }
-        let live = Set(sidebarVC.cachedSessions(host: host).map(\.name))
-        dropArchives { $0.host == host && !$0.removedSession && !live.contains($0.session) }
+        archiveHistory.dropEndedSessions(
+            host: host, live: Set(sidebarVC.cachedSessions(host: host).map(\.name)))
     }
 
     func dropArchives(ofHostAlias alias: String) {
-        dropArchives { $0.host.sshAlias == alias }
+        archiveHistory.dropHost(alias: alias)
+    }
+
+    /// Keep the list of waiting worktree cleanups on disk, so a crash or a kill
+    /// (`make install` stops the app with a signal) does not forget them.
+    private func savePendingCleanups() {
+        PendingWorktreeCleanups.save(archiveHistory.pendingWorktrees)
+    }
+
+    /// At launch: cleanups a previous run was killed before it could do. They are
+    /// offered, never run unasked: those archives can no longer be undone, but
+    /// the choice to delete a worktree was made in another run.
+    func offerPendingWorktreeCleanups() {
+        // A second instance must not take the list the first one is still using.
+        let instances = Bundle.main.bundleIdentifier.map {
+            NSRunningApplication.runningApplications(withBundleIdentifier: $0).count
+        } ?? 1
+        let pending = PendingWorktreeCleanups.load().filter {
+            FileManager.default.fileExists(atPath: $0)
+        }
+        guard instances <= 1 else { return }
+        PendingWorktreeCleanups.save([])
+        guard !pending.isEmpty else { return }
+        let alert = NSAlert()
+        alert.messageText = PendingWorktreeCleanups.offerTitle(pending)
+        alert.informativeText = pending.joined(separator: "\n")
+        alert.addButton(withTitle: "Clean Up")
+        alert.addButton(withTitle: "Keep")
+        let go = { [weak self] (response: NSApplication.ModalResponse) in
+            guard response == .alertFirstButtonReturn else { return }
+            pending.forEach { self?.cleanUpWorktreeUnlessInUse($0) }
+        }
+        if let window { alert.beginSheetModal(for: window, completionHandler: go) }
+        else { go(alert.runModal()) }
     }
 
     /// A deferred worktree cleanup, now due. Skipped when a pane sits in the
@@ -5507,10 +5539,13 @@ extension AppDelegate {
     /// Quitting ends every undo offer, so the deferred cleanups run now. spindown
     /// can take minutes; it is started on its own and not waited for.
     func finishArchivesAtQuit() {
+        // Without python nothing can run: the list stays on disk for the next launch.
         guard let python = FileTransfer.python3Path else { return }
         let path = NSHomeDirectory() + "/go/bin:"
             + (ProcessCommandRunner.childEnvironment["PATH"] ?? "")
-        for worktree in archiveHistory.drain() where !worktreeIsInUse(worktree) {
+        let due = archiveHistory.drain()
+        savePendingCleanups()
+        for worktree in due where !worktreeIsInUse(worktree) {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
             process.arguments = ["PATH=\(path)"] + Worktrees.spindownArgv(
@@ -5636,6 +5671,9 @@ extension AppDelegate {
             self.sidebarRequestKillWindow(session: session, window: found.index, service: service)
             after(3) {
                 check("window is archived", live() == nil)
+                check("the archive is in the undo history",
+                      self.archiveHistory.entries.count == 1
+                        && self.archiveHistory.entries.first?.isArchived == true)
                 check("Edit menu offers the undo",
                       editItem(0)?.title == "Undo Archive Window" && editItem(0)?.isEnabled == true,
                       editItem(0)?.title ?? "")
@@ -5651,6 +5689,9 @@ extension AppDelegate {
                         check("with its panes in their directories",
                               restored?.panes.map(\.path) == before.panes.map(\.path))
                         check("its row is selected", row()?.row == outline()?.selectedRow)
+                        check("the history knows the window is back",
+                              self.archiveHistory.entries.first?.isArchived == false
+                                && self.archiveHistory.pendingWorktrees.isEmpty)
                         check("Edit menu offers the redo",
                               editItem(1)?.title == "Redo Archive Window" && editItem(1)?.isEnabled == true,
                               editItem(1)?.title ?? "")
@@ -5659,6 +5700,8 @@ extension AppDelegate {
                         self.window?.undoManager?.redo()
                         after(3) {
                             check("redo archives it again", live() == nil)
+                            check("the history knows it is archived again",
+                                  self.archiveHistory.entries.first?.isArchived == true)
                             check("and it can be undone again",
                                   editItem(0)?.title == "Undo Archive Window")
                             finish()

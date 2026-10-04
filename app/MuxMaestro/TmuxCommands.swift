@@ -214,8 +214,17 @@ enum TmuxCommands {
     /// escaped, because tmux reads an argument that ends in `;` as a command
     /// separator. For a value read back from tmux, such as a restored window's
     /// name or directory.
+    ///
+    /// `#[` stays as it is: tmux copies a style marker through unexpanded and
+    /// does not collapse `##[`, so doubling it would add a `#` to the name.
     static func literal(_ text: String) -> String {
-        let escaped = text.replacingOccurrences(of: "#", with: "##")
+        var escaped = ""
+        var rest = Substring(text)
+        while let ch = rest.first {
+            rest = rest.dropFirst()
+            escaped.append(ch)
+            if ch == "#", rest.first != "[" { escaped.append("#") }
+        }
         return escaped.hasSuffix(";") ? escaped.dropLast() + "\\;" : escaped
     }
 

@@ -703,6 +703,10 @@ final class TmuxService {
     /// The poll/refresh path uses its own global queues, not this one.
     let driverQueue: DispatchQueue
 
+    /// How long an undo waits for a restored pane's shell prompt before it gives
+    /// up on typing the agent's resume command: 50 looks, 0.1 s apart.
+    var shellPromptWait: (tries: Int, pause: useconds_t) = (tries: 50, pause: 100_000)
+
     /// Guards `lastSnapshotKey`, written from whichever poll queue ran the load.
     private let snapshotLock = NSLock()
     /// Shape of the last tree written to `recovery/tree.json` — so an unchanged
@@ -1618,7 +1622,7 @@ final class TmuxService {
     /// post-reboot restore uses. `directoryExists` is injected by tests.
     /// Blocking; call off the main thread.
     func restoreArchivedWindow(
-        _ archived: ArchivedWindow, directoryExists: ((String) -> Bool)? = nil
+        _ archived: ArchivedWindow, directoryExists: ((String) -> Bool?)? = nil
     ) -> Result<RestoredWindow, WindowRestoreFailure> {
         guard transport.command(forTmux: []) != nil else {
             return .failure(.tmux("tmux is unavailable."))
@@ -1641,7 +1645,12 @@ final class TmuxService {
         }
         let session = archived.session
         let cwd = window.panes[0].cwd
-        let createdSession = !existingSessionNames().contains(session)
+        let listed = tmux(["list-sessions", "-F", "#{session_name}"])
+        // No list from a remote host is "no tmux server" only if the host answers.
+        if listed == nil, !host.isLocal, probeReachability() != .reachable {
+            return .failure(.hostUnreachable(host.name))
+        }
+        let createdSession = !(listed ?? "").split(separator: "\n").contains { $0 == session }
         // A session that was still there after the archive was ended on purpose
         // since: do not bring it back.
         if createdSession, !archived.removedSession { return .failure(.sessionGone(session)) }
@@ -1680,11 +1689,20 @@ final class TmuxService {
             window: window, target: target, resumeAgentsImmediately: true,
             pendingResumes: &pendingResumes)
         // Every pane exists before any agent starts, as in a topology restore.
+        // A command is typed only at a shell prompt, never into whatever a login
+        // script has put in the foreground.
+        var unsent: [String] = []
         if failure == nil {
-            for resume in pendingResumes where tmux(TmuxCommands.sendKeysLine(
-                session: resume.pane, line: resume.command)) == nil {
-                failure = "tmux could not run the agent’s resume command."
-                break
+            for resume in pendingResumes {
+                guard waitForShellPrompt(pane: resume.pane) else {
+                    unsent.append(resume.command)
+                    continue
+                }
+                if tmux(TmuxCommands.sendKeysLine(
+                    session: resume.pane, line: resume.command)) == nil {
+                    failure = "tmux could not run the agent’s resume command."
+                    break
+                }
             }
         }
         if let failure {
@@ -1695,17 +1713,41 @@ final class TmuxService {
         }
         return .success(RestoredWindow(
             index: index,
-            agentsWithoutSession: archived.panes.filter(\.lostAgentSession).count))
+            agentsWithoutSession: archived.panes.filter(\.lostAgentSession).count,
+            unsentResumes: unsent))
     }
 
-    /// Whether `path` is a directory on this service's host.
-    private func directoryExists(_ path: String) -> Bool {
+    /// `-F` format for the shell-prompt check: foreground command and cursor column.
+    static let shellPromptFormat = "#{pane_current_command}\t#{cursor_x}"
+    /// Prints `yes` or `no` for the directory in `$1`. A probe that prints
+    /// neither did not reach the host.
+    static let directoryProbeScript = "if [ -d \"$1\" ]; then echo yes; else echo no; fi"
+
+    /// Poll `pane` until it shows a shell prompt (see `WindowArchive.isShellPrompt`).
+    private func waitForShellPrompt(pane: String) -> Bool {
+        for attempt in 0..<shellPromptWait.tries {
+            if attempt > 0, shellPromptWait.pause > 0 { usleep(shellPromptWait.pause) }
+            if let probe = tmux(["display-message", "-p", "-t", pane, Self.shellPromptFormat]),
+               WindowArchive.isShellPrompt(probe) { return true }
+        }
+        return false
+    }
+
+    /// Whether `path` is a directory on this service's host; nil when a remote
+    /// host did not answer.
+    private func directoryExists(_ path: String) -> Bool? {
         if host.isLocal {
             var isDirectory: ObjCBool = false
             return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
                 && isDirectory.boolValue
         }
-        return runHostCommand(local: "/bin/test", remote: "test", ["-d", path]) != nil
+        switch runHostCommand(
+            local: "/bin/sh", remote: "sh", ["-c", Self.directoryProbeScript, "sh", path])?
+            .trimmingCharacters(in: .whitespacesAndNewlines) {
+        case "yes": return true
+        case "no": return false
+        default: return nil
+        }
     }
 
     /// Kill the session's currently-active window (⌘W). tmux resolves a bare

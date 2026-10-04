@@ -101,14 +101,23 @@ final class WindowArchiveTests: XCTestCase {
     }
 
     private func localService(_ runner: ScriptedRunner, _ status: StatusStub = StatusStub()) -> TmuxService {
-        TmuxService(runner: runner, statusProvider: status, tmuxPath: tmux)
+        let service = TmuxService(runner: runner, statusProvider: status, tmuxPath: tmux)
+        service.shellPromptWait = (tries: 2, pause: 0)
+        return service
+    }
+
+    /// What a pane answers once its shell has drawn a prompt.
+    private func promptProbe(_ pane: String) -> String {
+        "display-message -p -t \(pane) " + TmuxService.shellPromptFormat
     }
 
     private func remoteService(_ runner: ScriptedRunner, _ status: StatusStub = StatusStub()) -> TmuxService {
-        TmuxService(
+        let service = TmuxService(
             host: Host(name: "devbox", sshAlias: "devbox"),
             transport: SshTmuxTransport(host: "devbox"),
             runner: runner, statusProvider: status)
+        service.shellPromptWait = (tries: 2, pause: 0)
+        return service
     }
 
     private func archived(
@@ -236,6 +245,9 @@ final class WindowArchiveTests: XCTestCase {
         runner.responses["list-windows -t =acme-app -F #{window_index}"] = ["0\n1"]
         runner.responses["new-window -d -t =acme-app:2 -P -F #{window_index} -c /Users/me/acme-app"] = ["2"]
         runner.responses["display-message -p -t =acme-app:2 #{pane_id}"] = ["%20\n", "%21\n"]
+        // %20 is still starting on the first look; the command waits for its prompt.
+        runner.responses[promptProbe("%20")] = ["zsh\t0", "-zsh\t14"]
+        runner.responses[promptProbe("%21")] = ["zsh\t2"]
 
         let result = localService(runner).restoreArchivedWindow(archived()) { _ in true }
 
@@ -253,7 +265,10 @@ final class WindowArchiveTests: XCTestCase {
             ["display-message", "-p", "-t", "=acme-app:2", "#{pane_id}"],
             ["select-layout", "-t", "=acme-app:2", layout],
             ["select-pane", "-t", "=acme-app:2.1"],
+            ["display-message", "-p", "-t", "%20", TmuxService.shellPromptFormat],
+            ["display-message", "-p", "-t", "%20", TmuxService.shellPromptFormat],
             ["send-keys", "-t", "%20", "claude --resume \(claudeId)", "Enter"],
+            ["display-message", "-p", "-t", "%21", TmuxService.shellPromptFormat],
             ["send-keys", "-t", "%21", "codex resume \(codexId)", "Enter"],
         ])
     }
@@ -263,6 +278,8 @@ final class WindowArchiveTests: XCTestCase {
         runner.responses["list-sessions -F #{session_name}"] = ["lone"]
         runner.responses["display-message -p -t =acme-app: #{window_index}"] = ["0\n"]
         runner.responses["display-message -p -t =acme-app:2 #{pane_id}"] = ["%20", "%21"]
+        runner.responses[promptProbe("%20")] = ["zsh\t2"]
+        runner.responses[promptProbe("%21")] = ["zsh\t2"]
 
         let result = localService(runner)
             .restoreArchivedWindow(archived(removedSession: true)) { _ in true }
@@ -311,6 +328,10 @@ final class WindowArchiveTests: XCTestCase {
                                   "#{window_index}", "-c", "/home/me/acme-app"]))] = ["2"]
         runner.responses[key(ssh(["tmux", "display-message", "-p", "-t", "=acme-app:2", "#{pane_id}"]))]
             = ["%20"]
+        runner.responses[key(ssh(["sh", "-c", TmuxService.directoryProbeScript, "sh", "/home/me/acme-app"]))]
+            = ["yes\n"]
+        runner.responses[key(ssh(["tmux", "display-message", "-p", "-t", "%20",
+                                  TmuxService.shellPromptFormat]))] = ["bash\t9"]
         let pane = ArchivedPane(
             id: "%5", cwd: "/home/me/acme-app", command: "claude", active: true,
             agent: .claude, agentSessionId: claudeId)
@@ -321,7 +342,7 @@ final class WindowArchiveTests: XCTestCase {
         XCTAssertEqual(result, .success(RestoredWindow(index: 2, agentsWithoutSession: 0)))
         XCTAssertEqual(Set(runner.calls.map(\.path)), [Ssh.sshPath])
         XCTAssertEqual(runner.argSequences, [
-            ssh(["test", "-d", "/home/me/acme-app"]),
+            ssh(["sh", "-c", TmuxService.directoryProbeScript, "sh", "/home/me/acme-app"]),
             ssh(["tmux", "list-sessions", "-F", "#{session_name}"]),
             ssh(["tmux", "list-windows", "-t", "=acme-app", "-F", "#{window_index}"]),
             ssh(["tmux", "new-window", "-d", "-t", "=acme-app:2", "-P", "-F", "#{window_index}",
@@ -331,6 +352,7 @@ final class WindowArchiveTests: XCTestCase {
             ssh(["tmux", "set-window-option", "-t", "=acme-app:2", "allow-rename", "off"]),
             ssh(["tmux", "display-message", "-p", "-t", "=acme-app:2", "#{pane_id}"]),
             ssh(["tmux", "select-pane", "-t", "=acme-app:2.0"]),
+            ssh(["tmux", "display-message", "-p", "-t", "%20", TmuxService.shellPromptFormat]),
             ssh(["tmux", "send-keys", "-t", "%20", "claude --resume \(claudeId)", "Enter"]),
         ])
     }
@@ -474,8 +496,132 @@ final class WindowArchiveTests: XCTestCase {
 
     func testOnlyAFailureThatCanChangeIsRetryable() {
         XCTAssertTrue(WindowRestoreFailure.tmux("tmux could not create the window.").isRetryable)
+        XCTAssertTrue(WindowRestoreFailure.hostUnreachable("devbox").isRetryable)
+        XCTAssertFalse(WindowRestoreFailure.nothingToRestore.isRetryable)
+        let empty = ArchivedWindow(
+            host: .local, session: "acme-app", removedSession: false, index: 2, name: "api",
+            layout: "", panes: [])
+        XCTAssertEqual(
+            WindowArchive.restorePlan(empty) { _ in true }, .failure(.nothingToRestore))
         XCTAssertFalse(WindowRestoreFailure.directoryMissing("/Users/me/acme-app").isRetryable)
         XCTAssertFalse(WindowRestoreFailure.sessionGone("acme-app").isRetryable)
+    }
+
+    // MARK: A host that does not answer is not a missing directory
+
+    func testAnUnansweredDirectoryCheckIsRetryableNotMissing() {
+        XCTAssertEqual(
+            WindowArchive.restorePlan(archived(host: Host(name: "devbox", sshAlias: "devbox"))) { _ in nil },
+            .failure(.hostUnreachable("devbox")))
+        // ssh fails: the probe prints nothing.
+        let runner = ScriptedRunner()
+        runner.defaultResponse = nil
+        let window = archived(host: Host(name: "devbox", sshAlias: "devbox"))
+        let result = remoteService(runner).restoreArchivedWindow(window)
+        XCTAssertEqual(result, .failure(.hostUnreachable("devbox")))
+        XCTAssertEqual(runner.calls.count, 1, "nothing is created on a host that did not answer")
+    }
+
+    func testAnUnansweredSessionListOverSshIsRetryableNotAnEndedSession() {
+        let runner = ScriptedRunner()
+        func ssh(_ argv: [String]) -> String { key(Ssh.opts(host: "devbox") + argv.map(Ssh.shellQuote)) }
+        runner.responses[ssh(["tmux", "list-sessions", "-F", "#{session_name}"])] = [nil]
+        runner.responses[key(Ssh.opts(host: "devbox") + ["echo", "ok"])] = [nil]
+        let window = archived(host: Host(name: "devbox", sshAlias: "devbox"))
+        XCTAssertEqual(
+            remoteService(runner).restoreArchivedWindow(window) { _ in true },
+            .failure(.hostUnreachable("devbox")))
+
+        // The host answers but has no tmux server: the session really is gone.
+        runner.responses[key(Ssh.opts(host: "devbox") + ["echo", "ok"])] = ["ok"]
+        XCTAssertEqual(
+            remoteService(runner).restoreArchivedWindow(window) { _ in true },
+            .failure(.sessionGone("acme-app")))
+    }
+
+    // MARK: The resume command waits for a shell prompt
+
+    func testResumeIsNotTypedIntoAPaneWithNoShellPrompt() {
+        let runner = ScriptedRunner()
+        runner.responses["list-sessions -F #{session_name}"] = ["acme-app"]
+        runner.responses["new-window -d -t =acme-app:2 -P -F #{window_index} -c /Users/me/acme-app"] = ["2"]
+        runner.responses["display-message -p -t =acme-app:2 #{pane_id}"] = ["%20"]
+        // A login script still holds the foreground.
+        runner.responses[promptProbe("%20")] = ["ssh-add\t18"]
+        let pane = ArchivedPane(
+            id: "%5", cwd: "/Users/me/acme-app", command: "claude", active: true,
+            agent: .claude, agentSessionId: claudeId)
+
+        let result = localService(runner).restoreArchivedWindow(archived(panes: [pane])) { _ in true }
+
+        let resume = "claude --resume \(claudeId)"
+        XCTAssertEqual(result, .success(RestoredWindow(
+            index: 2, agentsWithoutSession: 0, unsentResumes: [resume])))
+        XCTAssertFalse(runner.argSequences.contains { $0.first == "send-keys" })
+        XCTAssertEqual(
+            WindowArchive.restoredNote(RestoredWindow(
+                index: 2, agentsWithoutSession: 0, unsentResumes: [resume])),
+            "Shell not ready. Run: \(resume)")
+    }
+
+    func testShellPromptIsAShellWithTheCursorPastColumnZero() {
+        XCTAssertTrue(WindowArchive.isShellPrompt("zsh\t2"))
+        XCTAssertTrue(WindowArchive.isShellPrompt("-bash\t11\n"))
+        XCTAssertFalse(WindowArchive.isShellPrompt("zsh\t0"), "no prompt drawn yet")
+        XCTAssertFalse(WindowArchive.isShellPrompt("vim\t4"))
+        XCTAssertFalse(WindowArchive.isShellPrompt(""))
+    }
+
+    // MARK: Entries follow their session, and pending cleanups survive a crash
+
+    func testAnArchiveOfAnEndedSessionLeavesButOneThatEndedItStays() {
+        let history = WindowArchiveHistory()
+        let kept = history.push(entryWindow(1))
+        let ended = history.push(ArchivedWindow(
+            host: .local, session: "web", removedSession: false, index: 0, name: "w", layout: "",
+            panes: []))
+        let own = history.push(ArchivedWindow(
+            host: .local, session: "lone", removedSession: true, index: 0, name: "w", layout: "",
+            panes: []))
+        history.dropEndedSessions(host: .local, live: ["acme-app"])
+        XCTAssertTrue(history.entries.contains { $0 === kept })
+        XCTAssertFalse(history.entries.contains { $0 === ended })
+        XCTAssertTrue(history.entries.contains { $0 === own }, "undo creates this session again")
+
+        // A redo that ends the session: the entry now waits on a session it ended.
+        kept.adopt(ArchivedWindow(
+            host: .local, session: "acme-app", removedSession: true, index: 1, name: "w1",
+            layout: "", panes: []))
+        history.dropEndedSessions(host: .local, live: [])
+        XCTAssertTrue(history.entries.contains { $0 === kept })
+
+        history.dropHost(alias: "devbox")
+        XCTAssertEqual(history.entries.count, 2, "local entries are not on devbox")
+    }
+
+    func testPendingCleanupsAreWrittenAndReadBack() throws {
+        let history = WindowArchiveHistory()
+        history.push(entryWindow(1, cwd: "/Users/me/wt-a"), worktree: "/Users/me/wt-a")
+        let restored = history.push(entryWindow(2, cwd: "/Users/me/wt-b"), worktree: "/Users/me/wt-b")
+        restored.isArchived = false
+        XCTAssertEqual(history.pendingWorktrees, ["/Users/me/wt-a"])
+
+        let file = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("mm-pending-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: file) }
+        XCTAssertEqual(PendingWorktreeCleanups.load(from: file), [], "no file, nothing pending")
+        XCTAssertTrue(PendingWorktreeCleanups.save(history.pendingWorktrees, to: file))
+        XCTAssertEqual(PendingWorktreeCleanups.load(from: file), ["/Users/me/wt-a"])
+        // Only paths go to disk.
+        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "[\"/Users/me/wt-a\"]")
+        XCTAssertTrue(PendingWorktreeCleanups.save([], to: file))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path), "an empty list leaves no file")
+        XCTAssertEqual(
+            PendingWorktreeCleanups.offerTitle(["/Users/me/wt-a", "/Users/me/wt-b"]),
+            "Clean up 2 worktrees of archived windows?")
+        XCTAssertEqual(
+            PendingWorktreeCleanups.offerTitle(["/Users/me/wt-a"]),
+            "Clean up 1 worktree of an archived window?")
     }
 
     // MARK: Agent ids
@@ -495,7 +641,12 @@ final class WindowArchiveTests: XCTestCase {
         XCTAssertEqual(capture(command: "claude", recordCwd: "/Users/me/acme-app")?.agentSessionId, claudeId)
         // Claude Code names its process after its version.
         XCTAssertEqual(capture(command: "2.1.34", recordCwd: "/Users/me/acme-app")?.agentSessionId, claudeId)
-        XCTAssertEqual(capture(command: "node", recordCwd: "/Users/me/acme-app")?.agentSessionId, claudeId)
+        // `node` is also a dev server, and a version number must be the whole name.
+        XCTAssertNil(capture(command: "node", recordCwd: "/Users/me/acme-app")?.agentSessionId)
+        XCTAssertNil(capture(command: "2.1.34-server", recordCwd: "/Users/me/acme-app")?.agentSessionId)
+        XCTAssertTrue(WindowArchive.isAgentCommand("codex", agent: .codex))
+        XCTAssertFalse(WindowArchive.isAgentCommand("2.1.34", agent: .codex))
+        XCTAssertFalse(WindowArchive.isAgentCommand("claude", agent: .codex))
         // An editor in a pane whose id an old record happens to carry.
         let vim = capture(command: "vim", recordCwd: "/Users/me/acme-app")
         XCTAssertNil(vim?.agent)
@@ -550,6 +701,9 @@ final class WindowArchiveTests: XCTestCase {
         XCTAssertEqual(TmuxCommands.literal("a#{session_name}#(id)"), "a##{session_name}##(id)")
         XCTAssertEqual(TmuxCommands.literal("build;"), #"build\;"#)
         XCTAssertEqual(TmuxCommands.literal("a;b"), "a;b")
+        // tmux copies a style marker through and does not collapse `##[`.
+        XCTAssertEqual(TmuxCommands.literal("#[fg=red]r"), "#[fg=red]r")
+        XCTAssertEqual(TmuxCommands.literal("a##[x"), "a###[x")
         XCTAssertEqual(
             TmuxCommands.renameWindow(target: "=web:1", to: "-n"),
             ["rename-window", "-t", "=web:1", "--", "-n"])
@@ -676,9 +830,9 @@ final class WindowArchiveTests: XCTestCase {
         // Names and directories tmux would expand or split, restored as written.
         let hostileDir = "\(real)/a#{session_name};"
         try fm.createDirectory(atPath: hostileDir, withIntermediateDirectories: true)
-        let hostileName = "-n #(echo x) #{pane_id};"
+        let hostileName = "-n #(echo x) #[fg=red]r #{pane_id};"
         XCTAssertNotNil(run(["new-window", "-d", "-t", "=acme-app:7", "-c", "\(real)/a##{session_name}" + #"\;"#]))
-        XCTAssertNotNil(run(["rename-window", "-t", "=acme-app:7", "--", #"-n ##(echo x) ##{pane_id}\;"#]))
+        XCTAssertNotNil(run(["rename-window", "-t", "=acme-app:7", "--", #"-n ##(echo x) #[fg=red]r ##{pane_id}\;"#]))
         waitFor("hostile fixture is up") { paths("=acme-app:7") == [hostileDir] }
         let hostile = try XCTUnwrap(
             service.archiveWindow(session: "acme-app", window: 7, records: [:]).archived)

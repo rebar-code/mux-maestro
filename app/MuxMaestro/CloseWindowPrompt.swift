@@ -1,7 +1,7 @@
 import Foundation
 
 /// Decision + copy for the close confirmation raised by ⌘W. The sidebar's
-/// right-click Close/Kill items skip it (`needsConfirm`). Pure string and enum building — no AppKit — so both
+/// right-click Archive Window and Kill items skip it (`needsConfirm`). Pure string and enum building — no AppKit — so both
 /// *what* a close kills and how it is worded are unit-testable and identical
 /// everywhere the confirm is raised.
 ///
@@ -103,8 +103,8 @@ enum CloseWindowPrompt {
         case mergedTrash
     }
 
-    /// Whether a close raises the confirm sheet. Choosing Kill/Close from the
-    /// sidebar's right-click menu is already a deliberate second step, so a sheet
+    /// Whether a close raises the confirm sheet. Choosing Archive Window or Kill
+    /// from the sidebar's right-click menu is already a deliberate second step, so a sheet
     /// after it is a double confirm — even for a busy agent. ⌘W sits one
     /// keystroke from typing, so it keeps the sheet (Return confirms). A window
     /// whose PR merged has nothing left to lose, so its trash skips the sheet too.
