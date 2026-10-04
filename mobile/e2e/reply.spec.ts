@@ -425,7 +425,7 @@ test('a permission card is answered with its first option', async ({ page }) => 
 		'pnpm exec playwright test tests/checkout.spec.ts'
 	);
 	await expect(card(page).locator('.q')).toHaveText('Do you want to proceed?');
-	const options = card(page).getByRole('button');
+	const options = card(page).locator('button[data-option]');
 	await expect(options).toHaveCount(3);
 	await expect(options.nth(0)).toHaveText(/Yes\s*1/);
 	await expect(options.nth(2)).toHaveText(/No, and tell Claude what to do differently\s*3/);
@@ -464,7 +464,7 @@ test('a question card shows in the terminal view and is answered', async ({ page
 	await expect(card(page).locator('pre')).toHaveCount(0);
 	// The Mac sent no heading for it.
 	await expect(card(page).locator('h3')).toHaveText('Question');
-	const options = card(page).getByRole('button');
+	const options = card(page).locator('button[data-option]');
 	await expect(options).toHaveText([
 		/Credit the unused days\s*1/,
 		/No credit until renewal\s*2/,
@@ -488,7 +488,7 @@ test('buttons are off while an answer is in flight', async ({ page }) => {
 		await held;
 		await route.continue();
 	});
-	const options = card(page).getByRole('button');
+	const options = card(page).locator('button[data-option]');
 	await options.nth(1).tap();
 	for (const option of await options.all()) await expect(option).toBeDisabled();
 	await expect(options.nth(1)).toHaveAttribute('aria-busy', 'true');
@@ -592,7 +592,7 @@ test('with the features off, the thread shows none of this', async ({ page }) =>
 	await page.request.post('/__fixture/capability?name=replies&on=1');
 	await expect(box(page)).toBeVisible();
 	await expect(card(page)).not.toHaveAttribute('data-readonly', '');
-	await expect(card(page).getByRole('button')).toHaveCount(3);
+	await expect(card(page).locator('button[data-option]')).toHaveCount(3);
 	await expect(page.getByRole('button', { name: 'Attach' })).not.toHaveAttribute('aria-disabled');
 	await expect(voiceControls(page)).toBeVisible();
 	await expect(keybar(page).locator('.keys button')).toHaveCount(14);
@@ -873,8 +873,10 @@ test('a wait with no readable choices: a small card, and Enter is refused once',
 	await expect(card(page).locator('h3')).toHaveText('Waiting on a prompt');
 	// The heading and the way to the terminal, nothing else.
 	await expect(card(page).locator('pre, .q, [data-option]')).toHaveCount(0);
-	const show = card(page).getByRole('button');
+	const show = card(page).getByRole('button', { name: 'Show terminal' });
 	await expect(show).toHaveText(['Show terminal']);
+	// The way to the terminal, and the way out of the prompt. Nothing else.
+	await expect(card(page).getByRole('button')).toHaveText(['Show terminal', 'Cancel']);
 	expect((await show.boundingBox())?.height).toBeGreaterThanOrEqual(44);
 	await expect(card(page)).toBeInViewport({ ratio: 1 });
 	await shot(page, 'bare-card');
@@ -906,7 +908,7 @@ test('a wait with no readable choices: a small card, and Enter is refused once',
 
 	await show.tap();
 	await expect(page.locator('[data-tab="main"]')).toHaveText(/Terminal\s*⇄/);
-	await expect(card(page).getByRole('button')).toHaveCount(0);
+	await expect(card(page).getByRole('button', { name: 'Show terminal' })).toHaveCount(0);
 });
 
 test('a prompt the status does not tell of shows after the refusal', async ({ page }) => {
@@ -940,7 +942,7 @@ test('a truncated card says so and opens the terminal', async ({ page }) => {
 	const show = card(page).getByRole('button', { name: 'Show terminal' });
 	expect((await show.boundingBox())?.height).toBeGreaterThanOrEqual(44);
 	// The answers are still there.
-	await expect(card(page).getByRole('button')).toHaveCount(4);
+	await expect(card(page).getByRole('button')).toHaveCount(5);
 	await show.scrollIntoViewIfNeeded();
 	await shot(page, 'truncated-card');
 
@@ -1454,7 +1456,9 @@ test('the manager home is not a listed thread: it gets no dock and no reply rout
 	await expect(page.locator('.a').first()).toBeVisible();
 	// Its own text box, and nothing of a thread's reply bar.
 	await expect(page.locator('[data-dock]')).toHaveCount(0);
-	await expect(keybar(page)).toHaveCount(0);
+	// The pane's keys only: its text box belongs to the manager's own turns.
+	await expect(keybar(page).locator('.keys button')).toHaveCount(9);
+	await expect(page.getByRole('button', { name: 'Hide keyboard' })).toHaveCount(0);
 	await expect(card(page)).toHaveCount(0);
 	await expect(nextBar(page)).toHaveCount(0);
 	await expect(page.getByRole('button', { name: 'Attach' })).toHaveCount(0);

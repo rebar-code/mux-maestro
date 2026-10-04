@@ -5,10 +5,13 @@
 	import Composer from '$lib/Composer.svelte';
 	import { pullToRefresh, ui } from '$lib/gestures.svelte';
 	import { counts } from '$lib/group';
+	import KeyBar from '$lib/KeyBar.svelte';
 	import { can, isOff, live, OFF_LABEL } from '$lib/live.svelte';
 	import { needsYouCards, thinkingText } from '$lib/manager';
 	import { manager } from '$lib/manager.svelte';
+	import NoteLine from '$lib/NoteLine.svelte';
 	import PullIndicator from '$lib/PullIndicator.svelte';
+	import { Reply } from '$lib/reply.svelte';
 	import TalkButton from '$lib/TalkButton.svelte';
 	import ThreadView from '$lib/ThreadView.svelte';
 	import { voice } from '$lib/voice.svelte';
@@ -34,6 +37,24 @@
 		const timer = setInterval(() => (now = Date.now()), 1000);
 		return () => clearInterval(timer);
 	}
+
+	// The manager pane's prompts and keys. Its text goes through the manager's own turn.
+	const reply = new Reply(
+		'manager',
+		{
+			refresh: () => {
+				// An answer or a key can end the wait: the pane's status is read again too.
+				void manager.load();
+				return manager.feed.load(terminal ? 'terminal' : 'chat');
+			},
+			// A card that comes up is what the human has to act on: it is brought into view.
+			stick: (change, appeared) =>
+				manager.feed.keepEnd(terminal ? 'terminal' : 'chat', appeared, change),
+			terminal: () => terminal
+		},
+		manager.target
+	);
+	const keysOn = $derived(managerOn && can('keyBar'));
 
 	function send(): void {
 		// A typed turn takes over: a reply that is still being read stops.
@@ -98,12 +119,16 @@
 			{header}
 			{tail}
 			pending={manager.pending}
+			{reply}
 			bind:terminal
 		/>
 		<BoardSheet />
 	</div>
 
 	<!-- Below the stage, so the board sheet never covers it. -->
+	{#if reply.note}<NoteLine note={reply.note} />{/if}
+	<!-- The pane's keys only: the text box below belongs to the manager's turns. -->
+	{#if keysOn}<KeyBar {reply} composer={false} />{/if}
 	<VoiceBar target="manager" sink={manager.voice} off={!voiceOn} />
 {:else}
 	{@render header()}

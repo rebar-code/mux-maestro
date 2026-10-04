@@ -8,6 +8,7 @@
 		readonly = false,
 		answering = null,
 		onanswer,
+		oncancel,
 		onterminal
 	}: {
 		/** Names what the pane waits on. */
@@ -16,9 +17,11 @@
 		prompt: Prompt | null;
 		/** The options are shown, not offered: this phone may not answer. */
 		readonly?: boolean;
-		/** The option an answer in flight picked. */
-		answering?: number | null;
+		/** The option an answer in flight picked, or that it cancels. */
+		answering?: number | 'cancel' | null;
 		onanswer?: (option: number) => void;
+		/** Dismiss what the pane asks. Not given on a card that only shows. */
+		oncancel?: () => void;
 		/** Open the pane's own text. Not given when it is already showing. */
 		onterminal?: () => void;
 	} = $props();
@@ -48,9 +51,9 @@
 			<pre class="mono">{prompt.detail}{#if prompt.truncated}<span class="more" data-more>…</span
 					>{/if}</pre>
 		{/if}
-		{#if prompt.question}<p class="q">{prompt.question}</p>{/if}
+		{#if prompt.question}<p class="q" class:main={!permission}>{prompt.question}</p>{/if}
 	{/if}
-	{#if prompt?.options.length || scrolled || (more && onterminal)}
+	{#if prompt?.options.length || scrolled || (more && onterminal) || oncancel}
 		<div class="opts">
 			{#each prompt?.options ?? [] as option, index (option.n)}
 				{#if readonly || !canAnswer(option.n)}
@@ -85,6 +88,15 @@
 			{#if scrolled}<p class="rest" data-rest>More choices in the terminal</p>{/if}
 			{#if more && onterminal}
 				<button type="button" class="opt term" onclick={onterminal}>Show terminal</button>
+			{/if}
+			{#if oncancel}
+				<button
+					type="button"
+					class="opt term"
+					disabled={answering !== null}
+					aria-busy={answering === 'cancel'}
+					onclick={oncancel}>Cancel</button
+				>
 			{/if}
 		</div>
 	{/if}
@@ -123,6 +135,12 @@
 
 	h3:last-child {
 		margin-bottom: 0;
+	}
+
+	/* A question is the thing to read: it stands out from the answers under it. */
+	.q.main {
+		font-size: 1.0667em;
+		font-weight: 600;
 	}
 
 	.opts {

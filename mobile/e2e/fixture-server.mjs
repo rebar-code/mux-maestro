@@ -13,7 +13,7 @@
 // /__fixture/prompt also takes truncated=1, bare=1 (an id with no choices), quiet=1,
 // scrolled=<last row> (a menu scrolled to rows 4…last, with more above and below),
 // /__fixture/not-sent?cleared=&reason=, /__fixture/no-input?id=&on=, /__fixture/pasted?on=,
-// /__fixture/prompt-delay?ms=, /__fixture/upload-slow?chunk=&answer=,
+// /__fixture/manager-prompt?kind=&bare=&scrolled=&pid=&quiet=, /__fixture/prompt-delay?ms=, /__fixture/upload-slow?chunk=&answer=,
 // /__fixture/upload-fail?status=&error=&message=,
 // /__fixture/append?count= (adds lines to pane buildbox:8),
 // /__fixture/screen?default=&max= (the screen endpoint's default and cap)
@@ -239,7 +239,17 @@ function reset() {
 	uploadFail = null;
 	promptSeq = 0;
 	uploadMax = 10485760;
-	replies = { texts: [], keys: [], answers: [], uploads: [], left: [], commandFetches: 0 };
+	replies = {
+		texts: [],
+		keys: [],
+		answers: [],
+		cancels: [],
+		uploads: [],
+		left: [],
+		commandFetches: 0,
+		// What the phone wrote to the manager pane's prompt, and how often it asked for it.
+		manager: { keys: [], answers: [], cancels: [], promptFetches: 0 }
+	};
 	// The Mac's voice defaults, what the next take is heard as, how long the
 	// Mac "thinks" before it has the transcript, and every take it was sent.
 	voice = { mode: 'manual', speaker: true, heard: 'What needs me?', delay: 300, takes: [] };
@@ -519,6 +529,125 @@ function saveOnly(req, res, thread, name, body) {
 	}, uploadSlow.answer);
 }
 
+/**
+ * `POST …/key` for a thread or the manager. `pane`: its lock, name, the prompt
+ * on it, whether it shows no input box, and where to record the key.
+ */
+function pressKey(res, json, pane) {
+	if (typeof json.key !== 'string' || !KEY_NAMES.test(json.key))
+		return send(res, 400, { error: 'bad_key' });
+	if (json.prompt !== undefined && typeof json.prompt !== 'string')
+		return send(res, 400, { error: 'bad_request' });
+	// One write to a pane at a time: a second key while one is in flight is refused.
+	if (keyLocks.has(pane.lock))
+		return send(res, 409, { error: 'busy', message: `${pane.name} is taking a key` });
+	// The pane waits on a prompt the phone did not name: the key could answer the wrong one.
+	const asked = pane.asked;
+	if (asked && asked.id !== json.prompt) return send(res, 409, { error: 'stale' });
+	// The keys that submit, and the digits, which pick a row.
+	const picks = /^(Enter|C-[mjdo]|BTab|[1-9])$/.test(json.key);
+	// Nobody could read what they would pick, unless the pane's own text was on screen.
+	if (asked?.bare && picks && json.terminal !== true)
+		return send(res, 409, { error: 'unseen', message: 'Open the terminal to answer' });
+	// No prompt and no input box in sight: the key would land nobody knows where.
+	if (!asked && picks && pane.noInput)
+		return send(res, 409, { error: 'no_input', message: 'Thread shows no input box' });
+	if (
+		asked &&
+		!asked.bare &&
+		/^[1-9]$/.test(json.key) &&
+		!asked.options.some((o) => o.n === Number(json.key))
+	)
+		return send(res, 409, { error: 'no_option', message: 'Not a choice on the card' });
+	keyLocks.add(pane.lock);
+	const locks = keyLocks;
+	setTimeout(() => {
+		locks.delete(pane.lock);
+		// An arrow moves the pane's cursor, and the prompt's id names the row it is on.
+		const step = { Up: -1, Down: 1 }[json.key];
+		if (asked && !asked.bare && step) {
+			asked.base ??= asked.id;
+			const rows = asked.options.map((o) => o.n);
+			asked.selected = Math.min(rows.at(-1), Math.max(rows[0], asked.selected + step));
+			asked.first ??= rows[0];
+			asked.id = asked.selected === asked.first ? asked.base : `${asked.base}-row${asked.selected}`;
+		}
+		pane.record({
+			key: json.key,
+			...(json.prompt === undefined ? {} : { prompt: json.prompt }),
+			...(json.terminal === true ? { terminal: true } : {})
+		});
+		send(res, 200, { ok: true });
+	}, 30);
+}
+
+/** `POST …/answer` for a thread or the manager: one option of the prompt, or its cancel. */
+function answerRoute(res, json, prompt, on) {
+	const cancel = json.cancel === true;
+	if (typeof json.prompt !== 'string' || (!cancel && !Number.isInteger(json.option)))
+		return send(res, 400, { error: 'bad_request' });
+	if (!prompt || prompt.id !== json.prompt) return send(res, 409, { error: 'stale' });
+	if (cancel) {
+		on.cancel();
+		on.done(true);
+		return send(res, 200, { ok: true });
+	}
+	// The pane has a key for 1 to 9 only, and a prompt with no readable choices has none.
+	if (prompt.bare || json.option > 9 || !prompt.options.some((option) => option.n === json.option))
+		return send(res, 400, { error: 'bad_request' });
+	on.option(json.option);
+	on.done(false);
+	return send(res, 200, { ok: true });
+}
+
+/** The prompt on the manager pane, when it waits on one. */
+function managerPrompt() {
+	return manager.status === 'waiting' ? (manager.prompt ?? null) : null;
+}
+
+/** `/api/manager/prompt|answer|key`: the manager pane's prompt, as a thread's. */
+function managerAsk(req, res, path, body) {
+	const route = path.slice('/api/manager/'.length);
+	const allowed =
+		route === 'prompt'
+			? capabilities.replies || capabilities.keyBar
+			: capabilities[route === 'key' ? 'keyBar' : 'replies'];
+	if (!allowed) return send(res, 403, { error: 'disabled' });
+	if (req.method !== (route === 'prompt' ? 'GET' : 'POST'))
+		return send(res, 405, { error: 'method_not_allowed' });
+	if (manager.status === 'off') return send(res, 503, { error: 'unavailable' });
+	const asked = managerPrompt();
+	if (route === 'prompt') {
+		replies.manager.promptFetches += 1;
+		if (!asked) return send(res, 200, { prompt: null, id: null });
+		const prompt = { ...asked };
+		for (const note of ['bare', 'full', 'base', 'first']) delete prompt[note];
+		return send(res, 200, { prompt: asked.bare ? null : prompt, id: asked.id });
+	}
+	let json = {};
+	try {
+		json = JSON.parse(String(body));
+	} catch {
+		// Not JSON: the checks below answer 400.
+	}
+	if (route === 'key')
+		return pressKey(res, json, {
+			lock: 'manager',
+			name: 'Manager',
+			asked,
+			noInput: false,
+			record: (entry) => replies.manager.keys.push(entry)
+		});
+	return answerRoute(res, json, asked, {
+		option: (option) => replies.manager.answers.push({ prompt: json.prompt, option }),
+		cancel: () => replies.manager.cancels.push({ prompt: json.prompt }),
+		done: () => {
+			manager.prompt = null;
+			manager.status = 'idle';
+		}
+	});
+}
+
 function replyApi(req, res, url, thread, route, body) {
 	const needs = route === 'key' ? 'keyBar' : route === 'upload' ? 'upload' : 'replies';
 	// The key bar names the prompt in its keys, so it may read the prompt too.
@@ -560,61 +689,21 @@ function replyApi(req, res, url, thread, route, body) {
 	} catch {
 		// Not JSON: the checks below answer 400.
 	}
-	if (route === 'key') {
-		if (typeof json.key !== 'string' || !KEY_NAMES.test(json.key))
-			return send(res, 400, { error: 'bad_key' });
-		if (json.prompt !== undefined && typeof json.prompt !== 'string')
-			return send(res, 400, { error: 'bad_request' });
-		// One write to a thread at a time: a second key while one is in flight is refused.
-		if (keyLocks.has(thread.id))
-			return send(res, 409, { error: 'busy', message: `${thread.name} is taking a key` });
-		// The pane waits on a prompt the phone did not name: the key could answer the wrong one.
-		const asked = promptOf(thread);
-		if (asked && asked.id !== json.prompt) return send(res, 409, { error: 'stale' });
-		// Nobody could read what Enter or a digit would pick.
-		// The keys that submit, and the digits, which pick a row.
-		const picks = /^(Enter|C-[mjdo]|BTab|[1-9])$/.test(json.key);
-		if (asked?.bare && picks)
-			return send(res, 409, { error: 'unseen', message: 'Open the terminal to answer' });
-		// No prompt and no input box in sight: the key would land nobody knows where.
-		if (!asked && picks && noInput.has(thread.id))
-			return send(res, 409, { error: 'no_input', message: 'Thread shows no input box' });
-		if (asked && /^[1-9]$/.test(json.key) && !asked.options.some((o) => o.n === Number(json.key)))
-			return send(res, 409, { error: 'no_option', message: 'Not a choice on the card' });
-		keyLocks.add(thread.id);
-		const locks = keyLocks;
-		return void setTimeout(() => {
-			locks.delete(thread.id);
-			// An arrow moves the pane's cursor, and the prompt's id names the row it is on.
-			const step = { Up: -1, Down: 1 }[json.key];
-			if (asked && !asked.bare && step) {
-				asked.base ??= asked.id;
-				const rows = asked.options.map((o) => o.n);
-				asked.selected = Math.min(rows.at(-1), Math.max(rows[0], asked.selected + step));
-				asked.first ??= rows[0];
-				asked.id =
-					asked.selected === asked.first ? asked.base : `${asked.base}-row${asked.selected}`;
-			}
-			replies.keys.push({
-				thread: thread.id,
-				key: json.key,
-				...(json.prompt === undefined ? {} : { prompt: json.prompt })
-			});
-			send(res, 200, { ok: true });
-		}, 30);
-	}
-	if (route === 'answer') {
-		if (typeof json.prompt !== 'string' || !Number.isInteger(json.option))
-			return send(res, 400, { error: 'bad_request' });
-		const prompt = promptOf(thread);
-		if (!prompt || prompt.id !== json.prompt) return send(res, 409, { error: 'stale' });
-		// The pane has a key for 1 to 9 only.
-		if (json.option > 9 || !prompt.options.some((option) => option.n === json.option))
-			return send(res, 400, { error: 'bad_request' });
-		replies.answers.push({ thread: thread.id, prompt: json.prompt, option: json.option });
-		setStatus(thread, 'busy');
-		return send(res, 200, { ok: true });
-	}
+	if (route === 'key')
+		return pressKey(res, json, {
+			lock: thread.id,
+			name: thread.name,
+			asked: promptOf(thread),
+			noInput: noInput.has(thread.id),
+			record: (entry) => replies.keys.push({ thread: thread.id, ...entry })
+		});
+	if (route === 'answer')
+		return answerRoute(res, json, promptOf(thread), {
+			option: (option) => replies.answers.push({ thread: thread.id, prompt: json.prompt, option }),
+			cancel: () => replies.cancels.push({ thread: thread.id, prompt: json.prompt }),
+			// Answered: the pane works on. Cancelled: it is back at its input box.
+			done: (cancelled) => setStatus(thread, cancelled ? 'idle' : 'busy')
+		});
 	// text
 	const text = typeof json.text === 'string' ? json.text.trim() : '';
 	if (!text || CONTROL.test(text)) return send(res, 400, { error: 'bad_request' });
@@ -737,6 +826,7 @@ function managerApi(req, res, url, body) {
 		if (path === '/api/manager/chat') return send(res, 200, chatPage(manager.chat, url));
 		return sendScreen(req, res, url, managerScreen());
 	}
+	if (/^\/api\/manager\/(prompt|answer|key)$/.test(path)) return managerAsk(req, res, path, body);
 	if (req.method !== 'POST') return send(res, 405, { error: 'method_not_allowed' });
 	let json = {};
 	try {
@@ -1182,6 +1272,23 @@ function hook(res, url) {
 			capabilities[url.searchParams.get('name')] = url.searchParams.get('on') === '1';
 			push('config', configBody());
 			break;
+		case '/__fixture/manager-prompt': {
+			// The manager pane asks something: `kind`, `bare=1`, `scrolled=<last row>`, `pid=`.
+			const shape = url.searchParams.get('scrolled')
+				? scrolledMenu(Number(url.searchParams.get('scrolled')))
+				: url.searchParams.get('kind') === 'permission'
+					? PERMISSION
+					: QUESTION;
+			promptSeq += 1;
+			manager.prompt = {
+				id: url.searchParams.get('pid') ?? `m${promptSeq}`,
+				...shape,
+				truncated: false,
+				...(url.searchParams.get('bare') === '1' ? { bare: true } : {})
+			};
+			if (url.searchParams.get('quiet') !== '1') manager.status = 'waiting';
+			return send(res, 200, { ok: true });
+		}
 		case '/__fixture/manager-status':
 			manager.status = url.searchParams.get('value') ?? 'idle';
 			break;

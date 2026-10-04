@@ -1,5 +1,13 @@
 import { untrack } from 'svelte';
-import { answerPrompt, ApiError, fetchCommands, fetchPrompt, sendKey, sendText } from './api';
+import {
+	answerPrompt,
+	ApiError,
+	fetchCommands,
+	fetchPrompt,
+	sendKey,
+	sendText,
+	threadPath
+} from './api';
 import { isImage, insertPath, removePath } from './attach';
 import { Attachments } from './attach.svelte';
 import { live, OFF_LABEL } from './live.svelte';
@@ -34,8 +42,41 @@ export interface Note {
 export interface ReplyHost {
 	/** Load the open view (chat or terminal) again. */
 	refresh: () => Promise<void>;
-	/** Apply `change`, and stay at the end of the view if the reader was there. */
-	stick: (change: () => void) => Promise<void>;
+	/**
+	 * Apply `change`, and stay at the end of the view if the reader was there.
+	 * `appeared`: a prompt card came up, which a host may bring into view.
+	 */
+	stick: (change: () => void, appeared: boolean) => Promise<void>;
+	/** The pane's Terminal view is the one on screen. */
+	terminal: () => boolean;
+}
+
+/**
+ * The pane a `Reply` talks to: a listed thread, or the manager. Prompts,
+ * answers and keys go to `base`; text, commands and files are a thread's only.
+ */
+export interface ReplyTarget {
+	/** `threadPath(id)` or `MANAGER_PATH`. */
+	base: string;
+	/** The pane's status word, as far as the phone knows it. */
+	state: () => string | undefined;
+	/** Changes when the pane may ask something new. */
+	stamp: () => string;
+	/** Call `listener` when `stamp` may have changed. Returns the unsubscribe. */
+	subscribe: (listener: () => void) => () => void;
+}
+
+/** A listed thread, read from the live thread list. */
+function threadTarget(id: string): ReplyTarget {
+	return {
+		base: threadPath(id),
+		state: () => live.byId(id)?.status,
+		stamp: () => {
+			const thread = live.byId(id);
+			return `${thread?.status} ${thread?.since}`;
+		},
+		subscribe: (listener) => live.onThreads(listener)
+	};
 }
 
 /** A thread's commands, asked for once. Nothing is drawn from the map itself. */
@@ -75,8 +116,8 @@ export class Reply {
 	 * card is on screen for it, and the keys carry it: never an id with no card.
 	 */
 	promptId = $state<string | null>(null);
-	/** The option an answer in flight picked. */
-	answering = $state<number | null>(null);
+	/** The option an answer in flight picked, or that it cancels. */
+	answering = $state<number | 'cancel' | null>(null);
 	/** A spoken turn in flight. */
 	turn = $state.raw<LiveTurn | null>(null);
 	/** The text box, for the keys that type into it. */
@@ -99,7 +140,7 @@ export class Reply {
 
 	/** The pane takes no free text now. Keys and answers still go. */
 	readonly blocked: boolean = $derived.by(() => {
-		const status = live.byId(this.id)?.status;
+		const status = this.target.state();
 		return status === 'busy' || status === 'waiting' || this.promptId !== null;
 	});
 
@@ -116,7 +157,9 @@ export class Reply {
 
 	constructor(
 		readonly id: string,
-		private readonly host: ReplyHost
+		private readonly host: ReplyHost,
+		/** Left out: the listed thread `id`. */
+		private readonly target: ReplyTarget = threadTarget(id)
 	) {
 		this.files = new Attachments(id, {
 			insert: (text) => (this.draft = insertPath(this.draft, text)),
@@ -189,7 +232,7 @@ export class Reply {
 	 */
 	key = (name: string): void => {
 		// The id is the card's at this tap, whatever the pane shows when the key goes.
-		this.keys = queueKey(this.keys, name, this.promptId);
+		this.keys = queueKey(this.keys, name, this.promptId, this.host.terminal());
 		void this.press();
 	};
 
@@ -198,7 +241,7 @@ export class Reply {
 		this.pressing = true;
 		try {
 			for (let next = this.keys.shift(); next !== undefined; next = this.keys.shift()) {
-				await sendKey(this.id, next.key, next.prompt);
+				await sendKey(this.target.base, next.key, next.prompt, next.terminal);
 				this.note = null;
 				// The key may have moved the pane's cursor: the card and its id follow.
 				if (next.prompt !== null) void this.loadPrompt();
@@ -267,7 +310,7 @@ export class Reply {
 		untrack(() => {
 			const sync = (): void => this.sync();
 			sync();
-			const off = live.onThreads(sync);
+			const off = this.target.subscribe(sync);
 			const timer = setInterval(() => {
 				if (document.visibilityState !== 'visible') return;
 				// A prompt that shows is asked for again, to see it go.
@@ -280,13 +323,12 @@ export class Reply {
 		});
 
 	private get waiting(): boolean {
-		return live.byId(this.id)?.status === 'waiting';
+		return this.target.state() === 'waiting';
 	}
 
 	/** The thread list changed: a new status or time can mean a new prompt, or none. */
 	private sync(): void {
-		const thread = live.byId(this.id);
-		const seen = `${thread?.status} ${thread?.since}`;
+		const seen = this.target.stamp();
 		if (seen === this.seen) return;
 		// What was answered before is not what the pane asks now.
 		if (this.seen !== undefined) this.answered = null;
@@ -308,17 +350,20 @@ export class Reply {
 		this.loadingPrompt = true;
 		this.promptAgain = false;
 		try {
-			const state = await fetchPrompt(this.id);
+			const state = await fetchPrompt(this.target.base);
 			const answered = this.answered;
 			// Just answered here: the pane has not moved on yet.
 			const gone = answered?.id === state.id && Date.now() - answered.at < ANSWERED_MS;
 			const id = gone ? null : state.id;
 			const prompt = gone ? null : state.prompt;
 			if (id !== this.promptId || JSON.stringify(prompt) !== JSON.stringify(this.prompt))
-				await this.host.stick(() => {
-					this.promptId = id;
-					this.prompt = prompt;
-				});
+				await this.host.stick(
+					() => {
+						this.promptId = id;
+						this.prompt = prompt;
+					},
+					this.promptId === null && id !== null
+				);
 		} catch (error) {
 			live.fail(error);
 		} finally {
@@ -327,14 +372,22 @@ export class Reply {
 		if (this.promptAgain) await this.loadPrompt();
 	}
 
-	answer = async (option: number): Promise<void> => {
-		const prompt = this.prompt;
-		if (!prompt || this.answering !== null) return;
-		this.answering = option;
+	/** Pick an option of the card. */
+	answer = (option: number): Promise<void> => this.settlePrompt({ option });
+
+	/** Cancel what the pane asks: the card's, or a prompt with no readable choices. */
+	cancel = (): Promise<void> => this.settlePrompt({ cancel: true });
+
+	private async settlePrompt(choice: { option: number } | { cancel: true }): Promise<void> {
+		// The id of the card on screen: a bare card has one too.
+		const id = this.promptId;
+		if (id === null || this.answering !== null) return;
+		if ('option' in choice && !this.prompt) return;
+		this.answering = 'option' in choice ? choice.option : 'cancel';
 		this.note = null;
 		try {
-			await answerPrompt(this.id, prompt.id, option);
-			this.answered = { id: prompt.id, at: Date.now() };
+			await answerPrompt(this.target.base, id, choice);
+			this.answered = { id, at: Date.now() };
 			this.prompt = null;
 			this.promptId = null;
 			void this.host.refresh();
@@ -348,7 +401,7 @@ export class Reply {
 		} finally {
 			this.answering = null;
 		}
-	};
+	}
 
 	// MARK: files
 
@@ -374,7 +427,8 @@ export class Reply {
 
 	private grow = (delta: string): void => {
 		const turn = this.turn;
-		if (turn) void this.host.stick(() => (this.turn = { ...turn, reply: turn.reply + delta }));
+		if (turn)
+			void this.host.stick(() => (this.turn = { ...turn, reply: turn.reply + delta }), false);
 	};
 
 	/** The chat has the turn now, or will not get it: stop drawing it here. */
@@ -388,7 +442,7 @@ export class Reply {
 	readonly voice: VoiceSink = {
 		begin: (prompt) => {
 			this.note = null;
-			void this.host.stick(() => (this.turn = { prompt, reply: '' }));
+			void this.host.stick(() => (this.turn = { prompt, reply: '' }), false);
 		},
 		delta: this.grow,
 		end: (end) => void this.settle(end.message ? { text: end.message, bad: true } : null),

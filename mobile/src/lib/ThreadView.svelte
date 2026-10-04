@@ -9,6 +9,7 @@
 	import { overKeyboard } from './keyboard';
 	import { can, live, OFF_LABEL } from './live.svelte';
 	import NextBar from './NextBar.svelte';
+	import NoteLine from './NoteLine.svelte';
 	import PromptCard from './PromptCard.svelte';
 	import PullIndicator from './PullIndicator.svelte';
 	import { liveLines, nextWaiting } from './reply';
@@ -34,6 +35,12 @@
 		pending?: string | null;
 		/** The first tab shows the terminal, not the chat. */
 		terminal?: boolean;
+		/**
+		 * What asks and answers prompts on a pane that is not a listed thread
+		 * (the manager). The view then draws the pane's prompt card; the page
+		 * that gives it draws its own keys and text box.
+		 */
+		reply?: Reply;
 	}
 
 	/* eslint-disable prefer-const */
@@ -44,7 +51,8 @@
 		header,
 		tail,
 		pending = null,
-		terminal = $bindable(false)
+		terminal = $bindable(false),
+		reply: givenReply
 	}: Props = $props();
 	/* eslint-enable prefer-const */
 
@@ -66,10 +74,16 @@
 	const color = $derived(thread?.hostColor ?? '#2a2a2a');
 
 	// svelte-ignore state_referenced_locally
-	const reply = new Reply(id, {
-		refresh: () => feed.load(mode),
-		stick: (change) => feed.keepEnd(mode, false, change)
-	});
+	const reply =
+		givenReply ??
+		new Reply(id, {
+			refresh: () => feed.load(mode),
+			stick: (change) => feed.keepEnd(mode, false, change),
+			terminal: () => mode === 'terminal'
+		});
+	/** The pane's prompts are shown and answered here: a listed thread, or a pane given its own `reply`. */
+	// svelte-ignore state_referenced_locally
+	const asks = listed || givenReply !== undefined;
 
 	const repliesOn = $derived(can('replies'));
 	const keysOn = $derived(can('keyBar'));
@@ -82,11 +96,13 @@
 	const next = $derived(listed && repliesOn ? nextWaiting(live.threads ?? [], id) : null);
 	// The pane can ask while its status says nothing of it: the prompt decides.
 	// With the key bar alone the card is read-only: it shows what a key would answer.
-	const cardId = $derived(listed && (repliesOn || keysOn) ? reply.promptId : null);
+	const cardId = $derived(asks && (repliesOn || keysOn) ? reply.promptId : null);
 	const card = $derived(cardId === null ? null : reply.prompt);
 
 	/** The card shows only part of the pane's text: the terminal has it all. */
 	function showTerminal(): void {
+		// What a key was told before ("open the terminal") is done now.
+		reply.note = null;
 		terminal = true;
 		ui.goTo(0);
 	}
@@ -113,6 +129,7 @@
 		readonly={!repliesOn}
 		answering={reply.answering}
 		onanswer={reply.answer}
+		oncancel={repliesOn ? reply.cancel : undefined}
 		{onterminal}
 	/>
 {/snippet}
@@ -179,6 +196,7 @@
 	style:--chat-size="{text.chat}px"
 	{@attach pages(TAB_KEYS)}
 	{@attach feed.watch(mode)}
+	{@attach !listed && asks && (repliesOn || keysOn) && reply.watch}
 >
 	<div
 		class="track"
@@ -298,7 +316,7 @@
 		{/if}
 		{#if !repliesOn && reply.note}
 			<!-- With no composer below, the bar's own refusals are said here. -->
-			<div class="knote" class:bad={reply.note.bad} role="alert" data-note>{reply.note.text}</div>
+			<NoteLine note={reply.note} />
 		{/if}
 		{#if keysOn}<KeyBar {reply} composer={repliesOn} />{/if}
 		<!-- Voice switched off on the Mac: the bar stays and says so, like the manager's. -->
@@ -429,19 +447,6 @@
 		display: flex;
 		flex-direction: column;
 		padding-bottom: var(--kb, 0px);
-	}
-
-	.knote {
-		padding: 0 max(18px, env(safe-area-inset-right)) 6px max(18px, env(safe-area-inset-left));
-		font-size: 12.5px;
-		color: var(--muted);
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-	}
-
-	.knote.bad {
-		color: var(--red);
 	}
 
 	.u {

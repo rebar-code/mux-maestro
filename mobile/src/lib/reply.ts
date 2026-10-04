@@ -71,19 +71,23 @@ export interface QueuedKey {
 	key: string;
 	/** The id of the card the human saw at the tap, or `null` with no card. */
 	prompt: string | null;
+	/** The pane's Terminal view was the one on screen at the tap. */
+	terminal: boolean;
 }
 
 /**
  * `queue` with `key` at its end. `prompt` is the card on screen now, at the
- * tap: a key answers what the human saw, not what the pane shows by the time
- * the key is sent. A full queue drops the key.
+ * tap, and `terminal` whether the pane's own text was: a key answers what the
+ * human saw, not what the pane shows by the time the key is sent. A full
+ * queue drops the key.
  */
 export function queueKey(
 	queue: readonly QueuedKey[],
 	key: string,
-	prompt: string | null
+	prompt: string | null,
+	terminal = false
 ): QueuedKey[] {
-	return queue.length >= KEY_QUEUE_MAX ? [...queue] : [...queue, { key, prompt }];
+	return queue.length >= KEY_QUEUE_MAX ? [...queue] : [...queue, { key, prompt, terminal }];
 }
 
 /**

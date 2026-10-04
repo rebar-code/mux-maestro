@@ -126,7 +126,7 @@ describe('queueKey', () => {
 	});
 
 	it('does not change the queue it was given', () => {
-		const queue: QueuedKey[] = [{ key: 'Up', prompt: null }];
+		const queue: QueuedKey[] = [{ key: 'Up', prompt: null, terminal: false }];
 		expect(queueKey(queue, 'Down', null)).toHaveLength(2);
 		expect(queue).toHaveLength(1);
 	});
@@ -139,11 +139,17 @@ describe('queueKey', () => {
 		queue = queueKey(queue, 'Enter', 'b');
 		queue = queueKey(queue, 'Escape', null);
 		expect(queue).toEqual([
-			{ key: 'Down', prompt: 'a' },
-			{ key: 'Enter', prompt: 'a' },
-			{ key: 'Enter', prompt: 'b' },
-			{ key: 'Escape', prompt: null }
+			{ key: 'Down', prompt: 'a', terminal: false },
+			{ key: 'Enter', prompt: 'a', terminal: false },
+			{ key: 'Enter', prompt: 'b', terminal: false },
+			{ key: 'Escape', prompt: null, terminal: false }
 		]);
+	});
+
+	it('stores whether the terminal was on screen at the tap', () => {
+		let queue = queueKey([], 'Enter', 'a', true);
+		queue = queueKey(queue, 'Enter', 'a', false);
+		expect(queue.map((entry) => entry.terminal)).toEqual([true, false]);
 	});
 });
 

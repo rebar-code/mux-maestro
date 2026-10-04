@@ -249,24 +249,42 @@ export async function sendText(id: string, text: string): Promise<void> {
 }
 
 /**
- * Press one key in the thread's pane. `key` is a name from `reply.ts`.
- * `prompt` names the prompt the phone shows: a pane that waits on another one
- * answers 409 `stale` and takes no key.
+ * Press one key in a pane. `base`: `threadPath(id)` or `MANAGER_PATH`. `key`
+ * is a name from `reply.ts`. `prompt` names the prompt the phone shows: a
+ * pane that waits on another one answers 409 `stale` and takes no key.
+ * `terminal`: the pane's own text was on screen at the tap, so the human could
+ * read a prompt the card cannot hold.
  */
-export async function sendKey(id: string, key: string, prompt: string | null): Promise<void> {
-	await post(`${threadPath(id)}/key`, { key, ...(prompt ? { prompt } : {}) });
+export async function sendKey(
+	base: string,
+	key: string,
+	prompt: string | null,
+	terminal: boolean
+): Promise<void> {
+	await post(`${base}/key`, {
+		key,
+		...(prompt ? { prompt } : {}),
+		...(terminal ? { terminal } : {})
+	});
 }
 
-/** What the thread's pane asks now. */
-export async function fetchPrompt(id: string): Promise<PromptState> {
-	const body = await get<Partial<PromptState>>(`${threadPath(id)}/prompt`);
+/** What a pane asks now. `base`: `threadPath(id)` or `MANAGER_PATH`. */
+export async function fetchPrompt(base: string): Promise<PromptState> {
+	const body = await get<Partial<PromptState>>(`${base}/prompt`);
 	const prompt = body.prompt ?? null;
 	return { prompt, id: body.id ?? prompt?.id ?? null };
 }
 
-/** Pick option `option` of the prompt `prompt`. A prompt that changed answers 409 `stale`. */
-export async function answerPrompt(id: string, prompt: string, option: number): Promise<void> {
-	await post(`${threadPath(id)}/answer`, { prompt, option });
+/**
+ * Answer the prompt `prompt` with one of its options, or cancel it. A prompt
+ * that changed answers 409 `stale`. `base`: `threadPath(id)` or `MANAGER_PATH`.
+ */
+export async function answerPrompt(
+	base: string,
+	prompt: string,
+	choice: { option: number } | { cancel: true }
+): Promise<void> {
+	await post(`${base}/answer`, { prompt, ...choice });
 }
 
 export async function fetchCommands(id: string): Promise<Command[]> {
