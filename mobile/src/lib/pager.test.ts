@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { pageOffset, resolveDrag, settleDrawer, settlePage, settleSwipe } from './pager';
+import {
+	pageOffset,
+	resolveDrag,
+	resolveSheetDrag,
+	settleDrawer,
+	settlePage,
+	settleSheet,
+	settleSwipe,
+	sheetHeight,
+	sheetStops,
+	SHEET_STEP
+} from './pager';
 
 const base = { drawerOpen: false, pageCount: 3, index: 0, canScrollX: false };
 
@@ -105,5 +116,56 @@ describe('settleDrawer', () => {
 		expect(settleDrawer(0.6, 0, true)).toBe(false);
 		expect(settleDrawer(0.8, 0, true)).toBe(true);
 		expect(settleDrawer(0.9, -0.8, true)).toBe(false);
+	});
+});
+
+describe('board sheet', () => {
+	const heights = [46, 280, 590];
+
+	it('has a peek, a medium stop, and 70% of the screen', () => {
+		expect(sheetStops(640, 844)).toEqual([46, 288, 591]);
+		// A short stage caps the tall stop, and the open stop never passes it.
+		expect(sheetStops(300, 844)).toEqual([46, 135, 292]);
+		expect(sheetStops(40, 844)).toEqual([46, 46, 46]);
+	});
+
+	it('moves the sheet, except at the tall stop where its list scrolls', () => {
+		const at = (stop: 0 | 1 | 2, dy: number, inList = true, listTop = 0): string =>
+			resolveSheetDrag({ stop, dy, inList, listTop });
+		expect(at(0, -12)).toBe('sheet');
+		expect(at(1, -12)).toBe('sheet');
+		expect(at(1, 12)).toBe('sheet');
+		// Tall: a swipe up reads on in the list.
+		expect(at(2, -12)).toBe('sheet-list');
+		// Tall, list at its top: a swipe down steps the sheet back.
+		expect(at(2, 12, true, 0)).toBe('sheet');
+		// Tall, list scrolled: a swipe down scrolls the list first.
+		expect(at(2, 12, true, 40)).toBe('sheet-list');
+		// On the handle the sheet always moves.
+		expect(at(2, -12, false)).toBe('sheet');
+		expect(at(2, 12, false, 40)).toBe('sheet');
+	});
+
+	it('follows the finger between the stops and resists beyond them', () => {
+		expect(sheetHeight(heights, 0, 100)).toBe(146);
+		expect(sheetHeight(heights, 1, -100)).toBe(180);
+		expect(sheetHeight(heights, 2, 40)).toBe(600);
+		expect(sheetHeight(heights, 0, -40)).toBe(36);
+		expect(sheetHeight(heights, 1, 0)).toBe(280);
+	});
+
+	it('goes one stop per swipe, and stays put on a small move', () => {
+		expect(settleSheet(0, SHEET_STEP, 0)).toBe(1);
+		expect(settleSheet(1, 400, 0)).toBe(2);
+		expect(settleSheet(2, 400, 0)).toBe(2);
+		expect(settleSheet(2, -SHEET_STEP, 0)).toBe(1);
+		expect(settleSheet(1, -400, 0)).toBe(0);
+		expect(settleSheet(0, -400, 0)).toBe(0);
+		expect(settleSheet(1, SHEET_STEP - 1, 0)).toBe(1);
+		expect(settleSheet(1, -(SHEET_STEP - 1), 0)).toBe(1);
+		// A flick counts whatever the distance, in its own direction.
+		expect(settleSheet(0, 5, -0.8)).toBe(1);
+		expect(settleSheet(2, -5, 0.8)).toBe(1);
+		expect(settleSheet(1, 60, 0.8)).toBe(0);
 	});
 });

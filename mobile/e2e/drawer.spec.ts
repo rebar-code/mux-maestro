@@ -182,6 +182,7 @@ test('hosts section: every host with colour, thread count and stats', async ({ p
 });
 
 test('controls that arrive later are drawn but do nothing', async ({ page }) => {
+	await expect(page.getByRole('button', { name: 'Talk', exact: true })).toBeDisabled();
 	await page.getByRole('button', { name: 'Menu' }).click();
 	await expect(page.getByRole('button', { name: 'New window in acme-app' })).toBeDisabled();
 	await drawer(page).locator('[data-hosts]').scrollIntoViewIfNeeded();
@@ -196,6 +197,10 @@ test('home: status chips and the threads that need you, live', async ({ page }) 
 	await expect(page.locator('.chip')).toHaveText(['2 need you', '4 running', '💤 14']);
 	const cards = page.locator('.item[data-thread]');
 	await expect(cards).toHaveCount(2);
+	// The cards are on the board sheet: bring it up.
+	await page.locator('[data-sheet] .grip').click();
+	await expect(page.locator('[data-sheet]')).toHaveAttribute('data-stop', '1');
+	await page.waitForTimeout(450);
 
 	// A live update lands without moving what is already on screen.
 	const first = cards.first();

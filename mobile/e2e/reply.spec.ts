@@ -1435,3 +1435,37 @@ test('the key bar sits above the switched-off reply box', async ({ page }) => {
 	await key(page, 'Enter').tap();
 	await expect(page.locator('[data-note]')).toHaveText(['Prompt changed']);
 });
+
+test('the manager home is not a listed thread: it gets no dock and no reply routes', async ({
+	page
+}) => {
+	await reset(page);
+	for (const name of ['replies', 'keyBar', 'upload'])
+		await page.request.post(`/__fixture/capability?name=${name}&on=1`);
+	await forget(page);
+	const asked: string[] = [];
+	page.on('request', (request) => {
+		const path = new URL(request.url()).pathname;
+		if (path.startsWith('/api/threads/manager')) asked.push(path);
+	});
+	await page.goto(pairingLink());
+	const ask = page.getByRole('textbox', { name: 'Ask the manager' });
+	await expect(ask).toBeVisible();
+	await expect(page.locator('.a').first()).toBeVisible();
+	// Its own text box, and nothing of a thread's reply bar.
+	await expect(page.locator('[data-dock]')).toHaveCount(0);
+	await expect(keybar(page)).toHaveCount(0);
+	await expect(card(page)).toHaveCount(0);
+	await expect(nextBar(page)).toHaveCount(0);
+	await expect(page.getByRole('button', { name: 'Attach' })).toHaveCount(0);
+	await expect(page.locator('form.compose')).toHaveCount(1);
+	// Longer than one prompt poll.
+	await page.waitForTimeout(3500);
+	expect(asked).toEqual([]);
+	await shot(page, 'manager-home');
+
+	// A slash is text here: the manager has no command list on the phone.
+	await ask.fill('/co');
+	await expect(slash(page)).toHaveCount(0);
+	expect(asked).toEqual([]);
+});

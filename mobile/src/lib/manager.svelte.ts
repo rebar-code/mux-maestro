@@ -1,7 +1,8 @@
 import { untrack } from 'svelte';
-import { ApiError, dismissReview, fetchManager, sendManagerText } from './api';
+import { ApiError, dismissReview, fetchManager, MANAGER_PATH, sendManagerText } from './api';
 import { live } from './live.svelte';
-import { homeLines, type HomeLine } from './manager';
+import { pendingPrompt } from './manager';
+import { ThreadFeed } from './thread.svelte';
 import type {
 	ChatMessage,
 	ManagerHome,
@@ -26,10 +27,13 @@ const STATUS_NOTES: Partial<Record<ManagerStatus, string>> = {
 	busy: 'Manager is busy'
 };
 
+/** How many chat rows are kept for the next visit's first paint. */
+const KEEP = 30;
+
 interface Cached {
 	review: ManagerItem[];
 	needsYou: ManagerItem[];
-	chat: ChatMessage[];
+	chat?: ChatMessage[];
 }
 
 function cached(): Cached | null {
@@ -42,19 +46,22 @@ function cached(): Cached | null {
 }
 
 /**
- * The manager home: the cards, the conversation and the turn in flight. It
- * starts from the copy the last visit left, like the thread list. One manager
- * pane, one conversation: a turn started on the Mac shows here too.
+ * The manager home: the board's cards, the manager pane's thread and the turn
+ * in flight. One manager pane, one conversation: a turn started on the Mac
+ * shows here too.
  */
 class Manager {
 	private start = cached();
 	/** `null`: nothing to show yet, draw skeleton cards. */
 	review = $state.raw<ManagerItem[] | null>(this.start?.review ?? null);
 	needsYou = $state.raw<ManagerItem[]>(this.start?.needsYou ?? []);
-	chat = $state.raw<ChatMessage[]>(this.start?.chat ?? []);
 	updates = $state.raw<ManagerUpdate[]>([]);
 	status = $state<ManagerStatus>('idle');
 	turn = $state.raw<ManagerTurn | null>(null);
+	/** The pane's own spinner line while a turn runs, when the Mac could read it. */
+	spinner = $state<string | null>(null);
+	/** When the turn in flight was first seen here, in epoch milliseconds. */
+	turnSince = $state(0);
 	/** What the last turn left to say: why it was refused, or that it waits. */
 	note = $state<string | null>(null);
 	/** The text box. A refused turn puts its text back here. */
@@ -62,12 +69,24 @@ class Manager {
 	/** This phone has a turn in flight. */
 	sending = $state(false);
 
-	readonly lines: HomeLine[] = $derived(homeLines(this.chat, this.turn));
+	/** The manager pane's chat and terminal, read like any thread's. */
+	readonly feed = new ThreadFeed('manager', MANAGER_PATH, () => this.save());
+	/** The last chat row there was when the turn began. */
+	private turnBase = $state(-1);
+
 	readonly busy: boolean = $derived(this.turn !== null);
+	/** The turn's prompt, until the chat holds it. */
+	readonly pending: string | null = $derived(
+		pendingPrompt(this.turn?.prompt ?? null, this.feed.messages, this.turnBase)
+	);
 	/** What the pane is doing, when a message cannot go to it now. */
 	readonly statusNote: string | null = $derived(
 		this.turn === null ? (STATUS_NOTES[this.status] ?? null) : null
 	);
+
+	constructor() {
+		this.feed.seed(this.start?.chat ?? []);
+	}
 
 	/** Review items dismissed here that the Mac has not dropped yet. */
 	private dismissed = new Set<string>();
@@ -77,7 +96,11 @@ class Manager {
 		try {
 			localStorage.setItem(
 				KEY,
-				JSON.stringify({ review: this.review ?? [], needsYou: this.needsYou, chat: this.chat })
+				JSON.stringify({
+					review: this.review ?? [],
+					needsYou: this.needsYou,
+					chat: (this.feed.messages ?? []).slice(-KEEP)
+				})
 			);
 		} catch {
 			// Storage is full or blocked: only the instant open is lost.
@@ -93,23 +116,47 @@ class Manager {
 		this.updates = body.updates;
 	}
 
+	/**
+	 * The turn in flight changed. A turn that begins or ends moves the end of
+	 * the chat, so the view stays at its end if the reader was there.
+	 */
+	private setTurn(turn: ManagerTurn | null, mine = false): void {
+		const began = turn !== null && this.turn === null;
+		const ended = turn === null && this.turn !== null;
+		if (!began && !ended) {
+			this.turn = turn;
+			return;
+		}
+		void this.feed.keepEnd('chat', mine, () => {
+			if (began) {
+				this.turnSince = Date.now();
+				this.turnBase = this.feed.messages?.at(-1)?.n ?? -1;
+				this.spinner = turn?.spinner ?? null;
+				this.note = null;
+			} else {
+				this.spinner = null;
+			}
+			this.turn = turn;
+		});
+		if (ended) void this.feed.load('chat');
+	}
+
 	/** The `manager` event. */
 	apply(body: ManagerLive): void {
 		this.setCards(body);
-		// This phone's own turn is drawn from its own stream.
-		if (!this.sending) {
-			const ended = this.turn !== null && body.turn === null;
-			this.turn = body.turn;
-			if (body.turn) this.note = null;
-			if (ended) void this.load();
-		}
+		// This phone's own turn is followed on its own stream.
+		if (!this.sending) this.setTurn(body.turn);
 		this.save();
 	}
 
-	/** The `manager-delta` event: more of the reply of a turn started elsewhere. */
-	append(text: string): void {
-		if (this.sending || !this.turn) return;
-		this.turn = { prompt: this.turn.prompt, reply: this.turn.reply + text };
+	/** The `manager-delta` event: the reply grew, so the chat has more to read. */
+	append(): void {
+		if (this.turn) void this.feed.load('chat');
+	}
+
+	/** The `manager-spinner` event. */
+	spin(text: string | null): void {
+		if (this.turn) this.spinner = text;
 	}
 
 	load = async (): Promise<void> => {
@@ -119,8 +166,7 @@ class Manager {
 			const home: ManagerHome = await fetchManager();
 			this.setCards(home);
 			this.status = home.status;
-			this.chat = home.chat.messages;
-			if (!this.sending) this.turn = home.turn;
+			if (!this.sending) this.setTurn(home.turn);
 			this.save();
 		} catch (error) {
 			live.fail(error);
@@ -142,41 +188,30 @@ class Manager {
 	private begin(text: string): void {
 		this.sending = true;
 		this.note = null;
-		this.turn = { prompt: text, reply: '' };
+		this.setTurn({ prompt: text, reply: '' }, true);
 	}
 
-	/** More of the reply of this phone's own turn. */
-	private grow = (delta: string): void => {
-		if (this.turn) this.turn = { prompt: this.turn.prompt, reply: this.turn.reply + delta };
-	};
-
 	/**
-	 * A turn of this phone is over. `end` is how the Mac ended it; `failed` is
-	 * why it never got that far. A turn that did not land leaves its text in
-	 * the box, to send again.
+	 * A turn of this phone is over. `refused` is why it did not land; its text
+	 * then goes back in the box, to send again. `note` is what a turn that did
+	 * land leaves to say.
 	 */
-	private finish(end: TurnEnd | VoiceEnd | null, failed: string | null = null): void {
+	private async finish(refused: string | null, note: string | null): Promise<void> {
 		const text = this.turn?.prompt ?? '';
-		let refused = failed;
-		if (end?.outcome === 'refused' || end?.outcome === 'unreachable') {
-			refused = end.message ?? 'The manager did not take the message';
-		} else if (end) {
-			const n = (this.chat.at(-1)?.n ?? 0) + 1;
-			const reply = this.turn?.reply || end.reply;
-			this.chat = [
-				...this.chat,
-				{ n, role: 'user', text },
-				...(reply ? [{ n: n + 1, role: 'assistant' as const, text: reply }] : [])
-			];
-			this.note = end.message;
-		}
-		this.turn = null;
+		// The reply is in the transcript now: read it before the turn's line goes.
+		if (refused === null) await this.feed.load('chat');
 		this.sending = false;
-		if (refused !== null) {
-			this.note = refused;
-			if (!this.draft) this.draft = text;
-		}
+		this.setTurn(null);
+		this.note = refused ?? note;
+		if (refused !== null && !this.draft) this.draft = text;
 		void this.load();
+	}
+
+	/** How the Mac ended a turn, as `finish` takes it. */
+	private ended(end: TurnEnd | VoiceEnd): Promise<void> {
+		return end.outcome === 'refused' || end.outcome === 'unreachable'
+			? this.finish(end.message ?? 'The manager did not take the message', null)
+			: this.finish(null, end.message);
 	}
 
 	send = async (): Promise<void> => {
@@ -186,19 +221,19 @@ class Manager {
 		this.draft = '';
 		this.begin(text);
 		try {
-			this.finish(await sendManagerText(text, this.grow));
+			await this.ended(await sendManagerText(text, () => void this.feed.load('chat')));
 		} catch (error) {
 			live.fail(error);
-			this.finish(null, refusalText(error));
+			await this.finish(refusalText(error), null);
 		}
 	};
 
 	/** A turn this phone spoke: drawn and kept like one it typed. */
 	readonly voice: VoiceSink = {
 		begin: (prompt) => this.begin(prompt),
-		delta: this.grow,
-		end: (end) => this.finish(end),
-		fail: (message) => this.finish(null, message),
+		delta: () => void this.feed.load('chat'),
+		end: (end) => void this.ended(end),
+		fail: (message) => void this.finish(message, null),
 		// The Mac still runs the turn: its events draw the rest.
 		detach: () => {
 			this.sending = false;

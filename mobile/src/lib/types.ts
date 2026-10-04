@@ -167,6 +167,8 @@ export interface ManagerUpdate {
 export interface ManagerTurn {
 	prompt: string;
 	reply: string;
+	/** The pane's own spinner line ("Incubating… 4m 48s"), when it could be read. */
+	spinner?: string | null;
 }
 
 /** The `manager` event: what changes without a request. */
@@ -179,7 +181,6 @@ export interface ManagerLive {
 
 export interface ManagerHome extends ManagerLive {
 	status: ManagerStatus;
-	chat: ChatPage;
 }
 
 /** The last event of a turn's stream. */

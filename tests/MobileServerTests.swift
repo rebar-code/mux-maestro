@@ -25,6 +25,12 @@ final class MobileServerTests: XCTestCase {
         var transcript: String?
         /// When set, a turn says nothing until this is signalled.
         var gate: DispatchSemaphore?
+        private var _screen: String? = "$ claude\n\u{1B}[32m⏺\u{1B}[0m Ready.\n\n\n"
+        /// What the manager pane shows.
+        var screen: String? {
+            get { lock.lock(); defer { lock.unlock() }; return _screen }
+            set { lock.lock(); _screen = newValue; lock.unlock() }
+        }
 
         var status: MobileManagerStatus {
             get { lock.lock(); defer { lock.unlock() }; return _status }
@@ -44,7 +50,8 @@ final class MobileServerTests: XCTestCase {
                         completion(script.outcome)
                     }
                 },
-                dismiss: { [self] key in lock.lock(); _dismissed.append(key); lock.unlock() })
+                dismiss: { [self] key in lock.lock(); _dismissed.append(key); lock.unlock() },
+                screen: { [self] _ in screen })
         }
     }
     /// What the fake pane shows, and the line counts the server asked it for.
@@ -518,8 +525,94 @@ final class MobileServerTests: XCTestCase {
         XCTAssertEqual(body["status"] as? String, "idle")
         XCTAssertEqual((body["needsYou"] as? [[String: Any]])?.first?["thread"] as? String, "localhost:12")
         XCTAssertEqual((body["review"] as? [[String: Any]])?.first?["key"] as? String, "acme-app:pr")
-        let messages = (body["chat"] as? [String: Any])?["messages"] as? [[String: Any]]
+        XCTAssertNil(body["chat"])
+
+        // The chat is its own route, with the cursor a thread's chat has.
+        let chat = get("/api/manager/chat")
+        XCTAssertEqual(chat.status, 200)
+        let page = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(chat.body.utf8)) as? [String: Any])
+        let messages = page["messages"] as? [[String: Any]]
         XCTAssertEqual(messages?.map { $0["text"] as? String }, ["what needs me?", "Two threads need you."])
+        XCTAssertEqual(messages?.map { $0["role"] as? String }, ["user", "assistant"])
+        let next = try XCTUnwrap(page["next"] as? Int)
+        XCTAssertTrue(get("/api/manager/chat?after=\(next)").body.contains(#""messages":[]"#))
+    }
+
+    func testTheManagerChatIsEmptyUntilThePaneHasATranscript() {
+        managerOn()
+        manager.transcript = nil
+        let chat = get("/api/manager/chat")
+        XCTAssertEqual(chat.status, 200)
+        XCTAssertEqual(chat.body, #"{"messages":[],"next":0,"reset":false}"#)
+    }
+
+    func testServesTheManagerPanesScreenLikeAThreads() {
+        managerOn()
+        let screen = get("/api/manager/screen?lines=50")
+        XCTAssertEqual(screen.status, 200)
+        // Colour escapes are kept, and the empty rows at the end are cut.
+        XCTAssertTrue(screen.body.contains(#""lines":50"#))
+        XCTAssertTrue(screen.body.contains("Ready."))
+        XCTAssertTrue(screen.body.contains(#"\u001b[32m"#))
+        XCTAssertFalse(screen.body.contains(#"Ready.\n"#))
+        XCTAssertTrue(screen.head.contains("ETag: "))
+
+        manager.screen = nil
+        XCTAssertEqual(get("/api/manager/screen").status, 503)
+    }
+
+    func testTheManagerChatAndScreenNeedTheSwitchAndTheToken() {
+        for path in ["/api/manager/chat", "/api/manager/screen"] {
+            let off = get(path)
+            XCTAssertEqual(off.status, 403, path)
+            XCTAssertEqual(off.body, #"{"error":"disabled"}"#, path)
+        }
+        managerOn()
+        for path in ["/api/manager/chat", "/api/manager/screen"] {
+            XCTAssertEqual(get(path, token: nil).status, 401, path)
+            XCTAssertEqual(get(path).status, 200, path)
+        }
+    }
+
+    func testTheSpinnerLineOfARunningTurnGoesOutOnTheEventStream() {
+        var limits = MobileServer.Limits()
+        limits.spinnerPoll = 0.05
+        restart(limits: limits)
+        managerOn()
+        let raw = "GET /api/events HTTP/1.1\r\nHost: devmac.example.ts.net\r\n"
+            + "Tailscale-User-Login: me@example.com\r\nX-MuxMaestro-Token: demo-token\r\n\r\n"
+        var step = 0
+        let text = exchange(raw) { [self] received in
+            if step == 0, received.contains("event: manager") {
+                step = 1
+                manager.screen = "✻ Incubating… (3s · esc to interrupt)\n│ >  │\n"
+                server.managerTurnBegan("summarise the morning")
+            }
+            if step == 1, received.contains(#"{"text":"Incubating… 3s"}"#) {
+                step = 2
+                manager.screen = "✻ Incubating… (4s · esc to interrupt)\n│ >  │\n"
+            }
+            if step == 2, received.contains(#"{"text":"Incubating… 4s"}"#) {
+                step = 3
+                // The pane stops showing a spinner: the phone is told that too.
+                manager.screen = "⏺ All quiet.\n│ >  │\n"
+            }
+            if step == 3, received.contains(#"event: manager-spinner\#ndata: {"text":null}"#) {
+                step = 4
+                server.managerTurnEnded()
+            }
+            return step == 4 && received.components(separatedBy: #""turn":null"#).count >= 3
+        }
+        XCTAssertEqual(step, 4)
+        let spinners = text.components(separatedBy: "\n\n").filter { $0.contains("event: manager-spinner") }
+        // Sent only when the line changed, not on every poll.
+        XCTAssertEqual(spinners.count, 3)
+
+        // The turn is over: the pane is no longer read.
+        manager.screen = "✻ Musing… (1s)\n"
+        usleep(200_000)
+        XCTAssertTrue(get("/api/manager").body.contains(#""turn":null"#))
     }
 
     func testAManagerTurnStreamsTheReplyThenEnds() {
@@ -752,7 +845,7 @@ final class MobileServerTests: XCTestCase {
         let events = text.components(separatedBy: "\n\n").filter { $0.contains("event: manager") }
         XCTAssertEqual(events.count, 4)
         XCTAssertTrue(events[0].contains(#""turn":null"#))
-        XCTAssertTrue(events[1].contains(#""turn":{"prompt":"summarise the morning","reply":""}"#))
+        XCTAssertTrue(events[1].contains(#""turn":{"prompt":"summarise the morning","reply":"","spinner":null}"#))
         // The reply grows by a small event of its own, not by the board again.
         XCTAssertEqual(events[2], "event: manager-delta\ndata: {\"text\":\"All quiet.\"}")
         XCTAssertTrue(events[3].hasPrefix("event: manager\n"))
@@ -766,7 +859,7 @@ final class MobileServerTests: XCTestCase {
         let raw = "GET /api/events HTTP/1.1\r\nHost: devmac.example.ts.net\r\n"
             + "Tailscale-User-Login: me@example.com\r\nX-MuxMaestro-Token: demo-token\r\n\r\n"
         let text = exchange(raw) { $0.contains("event: manager") && $0.hasSuffix("\n\n") }
-        XCTAssertTrue(text.contains(#""turn":{"prompt":"summarise the morning","reply":"All quiet"}"#))
+        XCTAssertTrue(text.contains(#""turn":{"prompt":"summarise the morning","reply":"All quiet","spinner":null}"#))
         XCTAssertTrue(get("/api/manager").body.contains(#""reply":"All quiet""#))
     }
 

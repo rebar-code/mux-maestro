@@ -79,3 +79,52 @@ export function settleDrawer(progress: number, vx: number, wasOpen: boolean): bo
 export function clamp(value: number, min: number, max: number): number {
 	return Math.min(Math.max(value, min), max);
 }
+
+/** The board sheet's stops: rest (a peek), open, tall. */
+export type SheetStop = 0 | 1 | 2;
+
+/** What a vertical drag that began on the sheet moves: the sheet or its list. */
+export function resolveSheetDrag(context: {
+	stop: SheetStop;
+	/** Finger movement so far: negative is a swipe up. */
+	dy: number;
+	/** The drag began on the sheet's list. */
+	inList: boolean;
+	/** How far the list is scrolled from its top. */
+	listTop: number;
+}): 'sheet' | 'sheet-list' {
+	// The list scrolls only at the tall stop. There a swipe up reads on, and a
+	// swipe down scrolls back to the top first; from the top it moves the sheet.
+	if (context.stop === 2 && context.inList && (context.dy < 0 || context.listTop > 0)) {
+		return 'sheet-list';
+	}
+	return 'sheet';
+}
+
+/** The sheet's height while a finger holds it, `up` pixels above where it rested. */
+export function sheetHeight(heights: readonly number[], stop: SheetStop, up: number): number {
+	const [rest, , tall] = heights;
+	const wanted = heights[stop] + up;
+	if (wanted > tall) return tall + (wanted - tall) * RUBBER;
+	if (wanted < rest) return rest - (rest - wanted) * RUBBER;
+	return wanted;
+}
+
+/** How far a drag must go to change the stop. */
+export const SHEET_STEP = 28;
+
+/** The stop a released drag lands on: one step per swipe. `vy` is negative going up. */
+export function settleSheet(stop: SheetStop, up: number, vy: number): SheetStop {
+	const flick = Math.abs(vy) >= SETTLE_VELOCITY;
+	if (flick ? vy < 0 : up >= SHEET_STEP) return Math.min(stop + 1, 2) as SheetStop;
+	if (flick ? vy > 0 : up <= -SHEET_STEP) return Math.max(stop - 1, 0) as SheetStop;
+	return stop;
+}
+
+/** The sheet's three heights for a stage this tall, on a screen this tall. */
+export function sheetStops(stage: number, viewport: number): [number, number, number] {
+	const rest = 46;
+	const tall = Math.max(rest, Math.min(Math.round(viewport * 0.7), stage - 8));
+	const open = Math.max(rest, Math.min(Math.round(stage * 0.45), tall));
+	return [rest, open, tall];
+}

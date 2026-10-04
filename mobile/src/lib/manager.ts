@@ -1,38 +1,4 @@
-import type { ChatMessage, ManagerItem, ManagerTurn, Thread } from './types';
-
-/** One line under the talk button. */
-export interface HomeLine {
-	role: 'user' | 'manager';
-	text: string;
-	/** The reply is still being written. */
-	live?: boolean;
-}
-
-/** How many lines of the conversation the home shows. */
-export const HOME_LINES = 3;
-
-/**
- * The manager's last lines: the end of the chat, then the turn in flight. The
- * transcript gets a turn's prompt before the turn ends, so a chat that already
- * ends in that prompt is cut there and the turn is not shown twice.
- */
-export function homeLines(chat: ChatMessage[], turn: ManagerTurn | null): HomeLine[] {
-	let lines: HomeLine[] = chat
-		.filter((message) => message.role !== 'tool')
-		.map((message) => ({
-			role: message.role === 'user' ? 'user' : 'manager',
-			text: message.text
-		}));
-	if (turn) {
-		const last = lines.findLastIndex((line) => line.role === 'user');
-		if (last >= 0 && lines[last].text === turn.prompt) lines = lines.slice(0, last);
-		lines.push(
-			{ role: 'user', text: turn.prompt },
-			{ role: 'manager', text: turn.reply, live: true }
-		);
-	}
-	return lines.slice(-HOME_LINES);
-}
+import type { ChatMessage, ManagerItem, Thread } from './types';
 
 export interface NeedsYouCard {
 	thread: Thread;
@@ -48,4 +14,71 @@ export function needsYouCards(threads: Thread[], items: ManagerItem[]): NeedsYou
 			thread,
 			why: items.find((item) => item.thread === thread.id)?.detail || null
 		}));
+}
+
+/**
+ * The prompt of the turn in flight, while the chat does not hold it yet. The
+ * transcript gets the prompt a moment after it is sent; until then it is drawn
+ * from here, and never twice. `base` is the last row the chat held when the
+ * turn began, so an older turn with the same words does not count.
+ */
+export function pendingPrompt(
+	prompt: string | null,
+	messages: ChatMessage[] | null,
+	base: number
+): string | null {
+	if (prompt === null) return null;
+	const landed = (messages ?? []).some(
+		(message) => message.n > base && message.role === 'user' && message.text === prompt
+	);
+	return landed ? null : prompt;
+}
+
+/** "48s", "4m 48s", "1h 2m 3s". */
+export function elapsedLabel(seconds: number): string {
+	const s = Math.max(0, Math.floor(seconds));
+	const parts = [
+		s >= 3600 ? `${Math.floor(s / 3600)}h` : null,
+		s >= 60 ? `${Math.floor((s % 3600) / 60)}m` : null,
+		`${s % 60}s`
+	];
+	return parts.filter((part) => part !== null).join(' ');
+}
+
+/** Shown in turn while an agent works and its own spinner line cannot be read. */
+export const THINKING_PHRASES = [
+	'Thinking',
+	'Reading the threads',
+	'Checking the sessions',
+	'Working it out',
+	'Putting it together',
+	'Still working'
+];
+/** How long each phrase stays. */
+export const PHRASE_SECONDS = 4;
+
+/**
+ * The line beside the dots while an agent works: its own spinner line when the
+ * Mac could read one, else a phrase that changes every few seconds with the
+ * time so far.
+ */
+export function thinkingText(spinner: string | null, seconds: number): string {
+	if (spinner) return spinner;
+	const phrase =
+		THINKING_PHRASES[Math.floor(Math.max(0, seconds) / PHRASE_SECONDS) % THINKING_PHRASES.length];
+	return `${phrase}… ${elapsedLabel(seconds)}`;
+}
+
+/** The board's one-line summary: "2 need you · 1 review · 5 updates". */
+export function boardSummary(counts: {
+	needsYou: number;
+	review: number;
+	updates: number;
+}): string {
+	const parts = [
+		counts.needsYou ? `${counts.needsYou} need you` : null,
+		counts.review ? `${counts.review} review` : null,
+		counts.updates ? `${counts.updates} ${counts.updates === 1 ? 'update' : 'updates'}` : null
+	].filter((part) => part !== null);
+	return parts.length ? parts.join(' · ') : 'Nothing waiting';
 }
