@@ -270,7 +270,7 @@ final class PhoneLink {
         // Without a stored token nothing could pair, so nothing is published.
         // A token that could not be read is not replaced: the phones hold it.
         var stored: String?
-        switch loadToken() {
+        switch readToken() {
         case .found(let token):
             stored = token
         case .failed:
@@ -305,7 +305,7 @@ final class PhoneLink {
     /// Read the stored token. The read blocks while macOS shows its Keychain
     /// dialog (every new build, until the user allows it), so a read that is
     /// still pending after `keychainNotice` says so instead of looking hung.
-    private func loadToken() -> PhoneTokenRead {
+    private func readToken() -> PhoneTokenRead {
         let pending = NSLock()
         var done = false
         DispatchQueue.global().asyncAfter(deadline: .now() + keychainNotice) { [weak self] in
@@ -313,12 +313,12 @@ final class PhoneLink {
             defer { pending.unlock() }
             if !done { self?.set(.waitingForKeychain) }
         }
-        let token = tokens.read()
+        let read = tokens.read()
         pending.lock()
         done = true
         pending.unlock()
         if state == .waitingForKeychain { set(.starting) }
-        return token
+        return read
     }
 
     private func applyKeepAwake() {

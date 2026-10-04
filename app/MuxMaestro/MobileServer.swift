@@ -234,10 +234,10 @@ final class MobileServer {
     /// Turns this server started that have not ended. The app tells the server
     /// about a running turn too, but only once the turn is on its way.
     private var phoneTurns = 0
-    /// Each thread's last status, so a change is one notification.
-    private var pushTracker = MobilePushTracker()
     /// Counts turns, so a spinner poll from an earlier turn stops.
     private var turnSerial = 0
+    /// Each thread's last status, so a change is one notification.
+    private var pushTracker = MobilePushTracker()
 
     private let activityLock = NSLock()
     private var lastRequestAt = Date.distantPast

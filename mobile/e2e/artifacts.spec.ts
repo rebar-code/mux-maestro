@@ -560,3 +560,23 @@ test('the app shell comes with a policy that runs only its own scripts', async (
 		})
 	).toBe(0);
 });
+
+test('the manager home is not a thread: it has no Artifacts or Servers tab and asks for none', async ({
+	page
+}) => {
+	const asked: string[] = [];
+	page.on('request', (request) => {
+		const path = new URL(request.url()).pathname;
+		if (/\/(artifacts|running|file)$/.test(path) || path.startsWith('/api/servers'))
+			asked.push(path);
+	});
+	await fresh(page, '/');
+	for (const name of ['artifacts', 'localServers'])
+		await page.request.post(`/__fixture/capability?name=${name}&on=1`);
+	await page.reload();
+	await expect(page.locator('[data-thread-pages]')).toBeVisible();
+	await page.waitForTimeout(500);
+	await expect(tab(page, 'artifacts')).toHaveCount(0);
+	await expect(tab(page, 'servers')).toHaveCount(0);
+	expect(asked).toEqual([]);
+});

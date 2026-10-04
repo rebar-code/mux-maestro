@@ -29,7 +29,7 @@
 	}
 </script>
 
-<div class="app" {@attach gestures} {@attach connect} {@attach notifications} {@attach keyboard}>
+<div class="app" {@attach gestures} {@attach connect} {@attach keyboard} {@attach notifications}>
 	{#if live.unpaired}
 		<Pair />
 	{:else if live.forbidden}
