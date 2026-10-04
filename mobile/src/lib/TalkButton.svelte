@@ -1,4 +1,5 @@
 <script lang="ts">
+	import Icon from './Icon.svelte';
 	import { voice, type PrimaryKind, type VoiceSink, type VoiceTarget } from './voice.svelte';
 
 	/**
@@ -12,7 +13,8 @@
 	}: { target: VoiceTarget; sink: VoiceSink; orb?: boolean } = $props();
 
 	const FACE: Record<PrimaryKind, { icon: string; label: string }> = {
-		talk: { icon: '🎙', label: 'Talk' },
+		// Drawn as an icon, not a character: see the markup.
+		talk: { icon: '', label: 'Talk' },
 		submit: { icon: '↑', label: 'Submit' },
 		stop: { icon: '■', label: 'Stop' },
 		pause: { icon: '❚❚', label: 'Pause' },
@@ -35,7 +37,9 @@
 		data-orb
 		onclick={() => voice.primary(target, sink)}
 	>
-		<span class="icon {kind}">{face.icon}</span>
+		<span class="icon {kind}"
+			>{#if kind === 'talk'}<Icon name="mic" size={44} />{:else}{face.icon}{/if}</span
+		>
 	</button>
 {:else}
 	<button
@@ -44,7 +48,10 @@
 		{disabled}
 		data-primary={kind}
 		onclick={() => voice.primary(target, sink)}
-		><span class="icon {kind}">{face.icon}</span> {face.label}</button
+		><span class="icon {kind}"
+			>{#if kind === 'talk'}<Icon name="mic" size={17} />{:else}{face.icon}{/if}</span
+		>
+		{face.label}</button
 	>
 {/if}
 
@@ -52,6 +59,9 @@
 	.pill {
 		position: relative;
 		flex: none;
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
 		height: 40px;
 		padding: 0 16px;
 		border-radius: 20px;
@@ -88,6 +98,11 @@
 		box-shadow: 0 10px 50px rgba(163, 113, 247, 0.45);
 		font-size: 52px;
 		color: #fff;
+	}
+
+	.icon {
+		display: inline-flex;
+		align-items: center;
 	}
 
 	.orb span {
