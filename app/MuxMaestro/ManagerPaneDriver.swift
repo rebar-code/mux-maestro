@@ -338,6 +338,69 @@ enum ManagerTranscript {
     }
 }
 
+/// What the manager pane shows, read to settle a status that may be stale.
+///
+/// This is the least check that is safe: an agent's input box as the last
+/// thing on screen, with the terminal cursor in it and no choices in sight.
+/// The phone's reply path has a fuller reading of a pane (`MobileScreen`); the
+/// two should become one.
+enum ManagerScreen {
+    /// The tallest input box that is looked for.
+    static let maxBoxLines = 40
+    /// Lines an agent draws under its input box: hints and a status line.
+    static let maxFooterLines = 4
+
+    static func captureArgv(target: String) -> [String] {
+        ["capture-pane", "-p", "-t", target]
+    }
+
+    static func cursorRowArgv(target: String) -> [String] {
+        ["display-message", "-p", "-t", target, "#{cursor_y}"]
+    }
+
+    private static let frame = CharacterSet(charactersIn: "│┃|").union(.whitespaces)
+    private static let cursors: Set<Character> = ["❯", "›", ">"]
+
+    /// A rule or a box edge: nothing but box-drawing characters.
+    static func isRule(_ line: String) -> Bool {
+        line.count >= 3 && line.unicodeScalars.allSatisfy { (0x2500...0x257F).contains($0.value) }
+    }
+
+    /// The line starts with the mark an input box or a list of choices shows.
+    private static func hasCursor(_ line: String) -> Bool {
+        guard let first = line.first, cursors.contains(first) else { return false }
+        return line.count == 1 || line.dropFirst().first?.isWhitespace == true
+    }
+
+    /// `❯ 1. Yes`, `2. No`: a choice of a prompt.
+    static func isChoice(_ line: String) -> Bool {
+        var rest = Substring(line)
+        if hasCursor(line) { rest = rest.dropFirst().drop(while: \.isWhitespace) }
+        let digits = rest.prefix { $0.isASCII && $0.isNumber }
+        return (1...2).contains(digits.count) && rest.dropFirst(digits.count).hasPrefix(". ")
+    }
+
+    /// Whether `screen` (the pane's visible rows) ends in an agent's input box
+    /// with the cursor in it. `cursorRow` is the row the terminal cursor is on.
+    static func showsIdleInputBox(_ screen: String, cursorRow: Int?) -> Bool {
+        let lines = screen.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { String($0).trimmingCharacters(in: frame) }
+        // The last rule on screen is the box's lower edge, with nothing under
+        // it but a short footer. A prompt draws its choices there instead.
+        guard let cursorRow, let bottom = lines.lastIndex(where: isRule) else { return false }
+        let footer = lines[(bottom + 1)...].filter { !$0.isEmpty }
+        guard footer.count <= maxFooterLines, !footer.contains(where: isChoice),
+              let top = lines[..<bottom].lastIndex(where: isRule),
+              (2...maxBoxLines).contains(bottom - top)
+        else { return false }
+        let inside = lines[(top + 1)..<bottom]
+        // The box starts with its mark, holds no choices, and has the cursor.
+        guard let first = inside.first, hasCursor(first), !inside.contains(where: isChoice)
+        else { return false }
+        return (top + 1..<bottom).contains(cursorRow)
+    }
+}
+
 /// Builds the text shared by the floating Handoff commands. This keeps the
 /// transcript formats out of the AppKit action and makes the copied block useful
 /// in any fresh Claude Code or Codex conversation.
@@ -657,8 +720,25 @@ final class ManagerPaneDriver {
     func paneStatus() -> ManagerTurnStatus? {
         guard let resolved = ManagerTranscript.session(
             forTmuxSession: config.tmuxSession, sessionsDir: sessionsDir) else { return nil }
-        if let statusOverride, let status = statusOverride(resolved.id) { return status }
-        return ManagerTranscript.status(sessionFile: resolved.file).0
+        if let statusOverride, let status = statusOverride(resolved.id) { return verified(status) }
+        return verified(ManagerTranscript.status(sessionFile: resolved.file).0)
+    }
+
+    /// A stored "waiting", or no status at all, checked against the pane
+    /// itself. Some ways out of a prompt fire no hook (a question cancelled
+    /// with Esc), so the stored status can say waiting long after the pane went
+    /// back to its input box. An input box that is verified on screen wins;
+    /// anything else on screen, or a pane that cannot be read, changes nothing.
+    /// Busy and idle are taken as they are, and the pane is not read for them.
+    private func verified(_ status: ManagerTurnStatus?) -> ManagerTurnStatus? {
+        guard status == .waiting || status == nil else { return status }
+        let target = config.tmuxSession
+        guard let screen = runner.run(config.tmuxPath, ManagerScreen.captureArgv(target: target), stdin: nil),
+              let row = runner.run(config.tmuxPath, ManagerScreen.cursorRowArgv(target: target), stdin: nil)
+                  .flatMap({ Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }),
+              ManagerScreen.showsIdleInputBox(screen, cursorRow: row)
+        else { return status }
+        return .idle
     }
 
     /// Why text must not go into a pane in `status`; nil when it may. The pane
@@ -709,7 +789,8 @@ final class ManagerPaneDriver {
             self.sessionFile = resolved?.file
             // Typing into a pane that is sitting on a permission prompt answers
             // the prompt with the prompt text. Never do that.
-            if let reason = Self.refusal(status: self.currentStatus(), requireIdle: requireIdle) {
+            if let reason = Self.refusal(
+                status: self.verified(self.currentStatus()), requireIdle: requireIdle) {
                 self.report(.refused(reason), to: completion)
                 return
             }
@@ -748,7 +829,10 @@ final class ManagerPaneDriver {
                 guard self.generation == generation, self.running else { return }
                 // A prompt that came up since the paste would take the Enter as
                 // its answer. Checked again here, as late as it can be.
-                if let reason = Self.refusal(status: self.currentStatus(), requireIdle: requireIdle) {
+                // Checked against the screen again: the box now holds the
+                // pasted text, and a prompt that came up has taken the box away.
+                if let reason = Self.refusal(
+                    status: self.verified(self.currentStatus()), requireIdle: requireIdle) {
                     // The text is in the input box already. Take it out, or
                     // the next Enter in the pane would send it.
                     let lines = text.split(separator: "\n", omittingEmptySubsequences: false).count

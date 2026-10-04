@@ -318,7 +318,9 @@ final class ManagerPaneDriverTests: XCTestCase {
             done.fulfill()
         }
         wait(for: [done], timeout: 5)
-        XCTAssertEqual(runner.recorded(), [], "nothing may be typed into a waiting pane")
+        XCTAssertEqual(typed(runner), [], "nothing may be typed into a waiting pane")
+        // The pane was read, to see whether the stored status still holds.
+        XCTAssertEqual(runner.recorded().first, ["capture-pane", "-p", "-t", "mux-manager"])
     }
 
     func testSendPastesThenReadsTheReplyBack() throws {
@@ -388,7 +390,7 @@ final class ManagerPaneDriverTests: XCTestCase {
             runner.recorded().contains(["send-keys", "-t", "mux-manager", "Enter"]),
             "Enter must not reach a pane that is now on a prompt")
         // The pasted text is taken out again, so a later Enter cannot send it.
-        XCTAssertEqual(Array(runner.recorded().suffix(2)), [
+        XCTAssertEqual(Array(typed(runner).suffix(2)), [
             ["paste-buffer", "-p", "-r", "-d", "-b", "sidekick", "-t", "mux-manager"],
             ["send-keys", "-t", "mux-manager", "C-u"],
         ])
@@ -436,7 +438,7 @@ final class ManagerPaneDriverTests: XCTestCase {
                 done.fulfill()
             }
             wait(for: [done], timeout: 5)
-            XCTAssertEqual(runner.recorded(), [], "nothing may be typed: \(reason)")
+            XCTAssertEqual(typed(runner), [], "nothing may be typed: \(reason)")
         }
     }
 
@@ -503,6 +505,189 @@ final class ManagerPaneDriverTests: XCTestCase {
             config: config(claudeDir: dir), runner: FakeRunner(),
             statusOverride: { $0 == "wanted" ? .waiting : nil }, queue: DispatchQueue(label: "test.pane"))
         XCTAssertEqual(hooked.paneStatus(), .waiting)
+    }
+
+    // MARK: a stale "waiting"
+
+    /// The manager pane, idle at its input box: what it shows after a question
+    /// was cancelled with Esc. No hook fires then, so the stored status still
+    /// says waiting.
+    private static let idleScreen = """
+    ⏺ I will wait for your answer.
+
+    ⏺ User declined to answer questions
+
+    ────────────────────────────────────────────────────────
+    ❯\u{A0}
+    ────────────────────────────────────────────────────────
+      ? for shortcuts
+    """
+    private static let idleCursorRow = 5
+
+    /// The same pane while the question is still up.
+    private static let promptScreen = """
+    ⏺ I need one thing from you.
+
+    ────────────────────────────────────────────────────────
+     ☐ Deploy
+
+    Which environment should this go to?
+
+    ❯ 1. Staging
+      2. Production
+      3. Type something.
+
+    Enter to select · ↑/↓ to navigate · Esc to cancel
+    """
+    private static let promptCursorRow = 7
+
+    /// A runner whose pane shows `screen`, with the cursor on `row`.
+    private func runner(showing screen: String, cursorRow row: Int) -> FakeRunner {
+        let runner = FakeRunner()
+        runner.output = { args in
+            if args.first == "capture-pane" { return screen + "\n" }
+            if args.last == "#{cursor_y}" { return "\(row)\n" }
+            return ""
+        }
+        return runner
+    }
+
+    private func typed(_ runner: FakeRunner) -> [[String]] {
+        runner.recorded().filter { ["load-buffer", "paste-buffer", "send-keys"].contains($0.first ?? "") }
+    }
+
+    /// The reported bug: the stored status says waiting for an hour, the pane
+    /// is idle at its input box, and the phone is refused every time.
+    func testAStoredWaitingIsNotTrustedOverAnIdleInputBoxOnScreen() throws {
+        let dir = try makeClaudeDir()
+        try seedSession(in: dir, sessionId: "wanted")
+        let transcript = try seedTranscript(
+            in: dir.appendingPathComponent("projects"), sessionId: "wanted", lines: [userPrompt])
+        let runner = runner(showing: Self.idleScreen, cursorRow: Self.idleCursorRow)
+        let status = StatusBox(.waiting)
+        runner.onRun = { args in
+            if args.last == "Enter" { status.value = .busy }
+        }
+        let driver = ManagerPaneDriver(
+            config: config(claudeDir: dir), runner: runner,
+            statusOverride: { _ in status.value }, queue: DispatchQueue(label: "test.pane"))
+        XCTAssertEqual(driver.paneStatus(), .idle, "the phone must be told the pane is idle")
+
+        let done = expectation(description: "done")
+        driver.send("what needs me?", requireIdle: true, onDelta: { _ in }) { outcome in
+            XCTAssertEqual(outcome, .done(reply: "Second part."))
+            done.fulfill()
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.append(self.textTwo, to: transcript) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { status.value = .idle }
+        wait(for: [done], timeout: 10)
+        XCTAssertEqual(typed(runner), [
+            ["load-buffer", "-b", "sidekick", "-"],
+            ["paste-buffer", "-p", "-r", "-d", "-b", "sidekick", "-t", "mux-manager"],
+            ["send-keys", "-t", "mux-manager", "Enter"],
+        ])
+    }
+
+    func testAStoredWaitingStandsWhileAPromptIsOnScreen() throws {
+        let dir = try makeClaudeDir()
+        try seedSession(in: dir, sessionId: "wanted")
+        let runner = runner(showing: Self.promptScreen, cursorRow: Self.promptCursorRow)
+        let driver = ManagerPaneDriver(
+            config: config(claudeDir: dir), runner: runner,
+            statusOverride: { _ in .waiting }, queue: DispatchQueue(label: "test.pane"))
+        XCTAssertEqual(driver.paneStatus(), .waiting)
+
+        for requireIdle in [true, false] {
+            let done = expectation(description: "refused")
+            driver.send("what needs me?", requireIdle: requireIdle, onDelta: { _ in XCTFail("no reply") }) {
+                XCTAssertEqual($0, .refused("Manager is waiting on a prompt"))
+                done.fulfill()
+            }
+            wait(for: [done], timeout: 5)
+        }
+        XCTAssertEqual(typed(runner), [], "nothing may be typed into a pane that shows a prompt")
+    }
+
+    /// No status at all (no hook row, no status in the file) with an idle
+    /// input box on screen is idle too; with anything else on screen it is not.
+    func testAnUnknownStatusIsSettledByTheScreen() throws {
+        let dir = try makeClaudeDir()
+        try seedSession(in: dir, sessionId: "wanted")
+        let idle = ManagerPaneDriver(
+            config: config(claudeDir: dir),
+            runner: runner(showing: Self.idleScreen, cursorRow: Self.idleCursorRow),
+            statusOverride: { _ in nil }, queue: DispatchQueue(label: "test.pane"))
+        // The seeded file says idle; take that away so nothing is known.
+        try Data(#"{"sessionId":"wanted","tmux":"mux-manager:@1.%5"}"#.utf8)
+            .write(to: dir.appendingPathComponent("sessions/4242.json"))
+        XCTAssertEqual(idle.paneStatus(), .idle)
+
+        let shell = ManagerPaneDriver(
+            config: config(claudeDir: dir), runner: runner(showing: "$ ls\nREADME.md\n$ ", cursorRow: 2),
+            statusOverride: { _ in nil }, queue: DispatchQueue(label: "test.pane"))
+        XCTAssertNil(shell.paneStatus())
+        // A pane that cannot be read settles nothing.
+        let dead = FakeRunner()
+        dead.failing = true
+        let unread = ManagerPaneDriver(
+            config: config(claudeDir: dir), runner: dead,
+            statusOverride: { _ in .waiting }, queue: DispatchQueue(label: "test.pane"))
+        XCTAssertEqual(unread.paneStatus(), .waiting)
+    }
+
+    /// Busy and idle are not second-guessed, and the pane is not read for them.
+    func testTheScreenIsReadOnlyForAWaitingOrUnknownStatus() throws {
+        let dir = try makeClaudeDir()
+        try seedSession(in: dir, sessionId: "wanted")
+        for status in [ManagerTurnStatus.busy, .idle] {
+            let runner = runner(showing: Self.idleScreen, cursorRow: Self.idleCursorRow)
+            let driver = ManagerPaneDriver(
+                config: config(claudeDir: dir), runner: runner,
+                statusOverride: { _ in status }, queue: DispatchQueue(label: "test.pane"))
+            XCTAssertEqual(driver.paneStatus(), status)
+            XCTAssertEqual(runner.recorded(), [])
+        }
+    }
+
+    func testAnInputBoxIsIdleOnlyAsTheLastThingOnScreenWithTheCursorInIt() {
+        XCTAssertTrue(ManagerScreen.showsIdleInputBox(Self.idleScreen, cursorRow: Self.idleCursorRow))
+        // The older, boxed input.
+        let boxed = "⏺ Done.\n\n╭──────────────╮\n│ >            │\n╰──────────────╯\n  ? for shortcuts\n"
+        XCTAssertTrue(ManagerScreen.showsIdleInputBox(boxed, cursorRow: 3))
+        // Text typed into the box, over several lines, is still an idle box.
+        let typing = "──────────\n❯ first line\n  second line\n──────────\n  ? for shortcuts"
+        XCTAssertTrue(ManagerScreen.showsIdleInputBox(typing, cursorRow: 2))
+
+        // The cursor is elsewhere (unknown, or parked by something in front).
+        XCTAssertFalse(ManagerScreen.showsIdleInputBox(Self.idleScreen, cursorRow: nil))
+        XCTAssertFalse(ManagerScreen.showsIdleInputBox(Self.idleScreen, cursorRow: 1))
+        XCTAssertFalse(ManagerScreen.showsIdleInputBox(Self.idleScreen, cursorRow: 7))
+        // A question, a permission prompt, a shell, an empty pane.
+        XCTAssertFalse(ManagerScreen.showsIdleInputBox(Self.promptScreen, cursorRow: Self.promptCursorRow))
+        let permission = """
+        ╭──────────────────────────────╮
+        │ Bash command                 │
+        │   make test                  │
+        │ Do you want to proceed?      │
+        │ ❯ 1. Yes                     │
+        │   2. No                      │
+        ╰──────────────────────────────╯
+        """
+        for row in 0..<7 {
+            XCTAssertFalse(ManagerScreen.showsIdleInputBox(permission, cursorRow: row), "row \(row)")
+        }
+        XCTAssertFalse(ManagerScreen.showsIdleInputBox("$ ls\nREADME.md\n$ ", cursorRow: 2))
+        XCTAssertFalse(ManagerScreen.showsIdleInputBox("", cursorRow: 0))
+        // Choices under the box: a menu is in front of it.
+        let menu = "──────────\n❯\n──────────\n❯ 1. Sonnet\n  2. Opus\n"
+        XCTAssertFalse(ManagerScreen.showsIdleInputBox(menu, cursorRow: 1))
+        // An old input box far up the screen, with other output under it.
+        let old = "──────────\n❯\n──────────\n" + (0..<8).map { "line \($0)" }.joined(separator: "\n")
+        XCTAssertFalse(ManagerScreen.showsIdleInputBox(old, cursorRow: 1))
+        XCTAssertTrue(ManagerScreen.isChoice("❯ 1. Yes"))
+        XCTAssertTrue(ManagerScreen.isChoice("12. Twelve"))
+        XCTAssertFalse(ManagerScreen.isChoice("1.5 seconds"))
+        XCTAssertFalse(ManagerScreen.isChoice("❯"))
     }
 
     func testSendRefusesASecondTurnWhileOneIsRunning() throws {
@@ -692,6 +877,8 @@ private final class FakeRunner: CommandRunner {
     /// Called with each argv as it runs, for a test that changes the pane's
     /// state at one step.
     var onRun: (([String]) -> Void)?
+    /// What a command prints, for a test that gives the pane a screen.
+    var output: (([String]) -> String?)?
 
     private let lock = NSLock()
     private var calls: [(path: String, args: [String], stdin: Data?)] = []
@@ -702,7 +889,7 @@ private final class FakeRunner: CommandRunner {
         let failing = self.failing
         lock.unlock()
         onRun?(args)
-        return failing ? nil : ""
+        return failing ? nil : (output?(args) ?? "")
     }
 
     func recorded() -> [[String]] {
