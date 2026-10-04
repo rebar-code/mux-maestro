@@ -419,11 +419,11 @@ final class MobileVoiceTests: XCTestCase {
     func testARefusedTurnSaysWhyAndReadsNothingBack() async {
         let speech = FakeSpeech()
         let (events, _) = await turn(
-            speech: speech, speaker: true, deltas: [], outcome: .refused("Manager is waiting on a prompt"))
+            speech: speech, speaker: true, deltas: [], outcome: .refused("Maestro is waiting on a prompt"))
         XCTAssertEqual(speech.synthesized, [])
         XCTAssertEqual(events.names, ["transcript", "end"])
         XCTAssertEqual(events.all.last?.data["outcome"] as? String, "refused")
-        XCTAssertEqual(events.all.last?.data["message"] as? String, "Manager is waiting on a prompt")
+        XCTAssertEqual(events.all.last?.data["message"] as? String, "Maestro is waiting on a prompt")
     }
 
     func testACancelledTurnEmitsNothingMore() async {
@@ -769,7 +769,7 @@ final class MobileVoiceServerTests: XCTestCase {
         locked { status = .waiting }
         let waiting = post("/api/voice?target=manager&speaker=1", body: Self.take)
         XCTAssertEqual(waiting.status, 409)
-        XCTAssertEqual(waiting.body, #"{"error":"waiting","message":"Manager is waiting on a prompt"}"#)
+        XCTAssertEqual(waiting.body, #"{"error":"waiting","message":"Maestro is waiting on a prompt"}"#)
 
         locked { status = .idle }
         server.managerTurnBegan("summarise the morning")
@@ -782,7 +782,7 @@ final class MobileVoiceServerTests: XCTestCase {
         locked { status = .busy }
         let pane = post("/api/voice?target=manager&speaker=1", body: Self.take)
         XCTAssertEqual(pane.status, 409)
-        XCTAssertEqual(pane.body, #"{"error":"busy","message":"Manager is busy"}"#)
+        XCTAssertEqual(pane.body, #"{"error":"busy","message":"Maestro is busy"}"#)
 
         locked { status = .off }
         XCTAssertEqual(post("/api/voice?target=manager&speaker=1", body: Self.take).status, 503)
@@ -839,7 +839,7 @@ final class MobileVoiceServerTests: XCTestCase {
 
     func testAPaneThatStopsBeingIdleDuringTranscriptionGetsNothing() {
         for (after, message) in [
-            (MobileManagerStatus.waiting, "Manager is waiting on a prompt"), (.busy, "Manager is busy"),
+            (MobileManagerStatus.waiting, "Maestro is waiting on a prompt"), (.busy, "Maestro is busy"),
         ] {
             locked { status = .idle }
             // Idle when the take arrives; not idle once the words are ready.

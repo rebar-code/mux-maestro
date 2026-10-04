@@ -13,7 +13,7 @@ interface Received {
 }
 
 const box = (page: Page): Locator => page.getByRole('textbox', { name: 'Reply' });
-const ask = (page: Page): Locator => page.getByRole('textbox', { name: 'Ask the manager' });
+const ask = (page: Page): Locator => page.getByRole('textbox', { name: 'Ask the Maestro' });
 const sendButton = (page: Page): Locator => page.getByRole('button', { name: '↑ Send' });
 const note = (page: Page): Locator => page.locator('[data-note]');
 const keybar = (page: Page): Locator => page.locator('[data-keybar]');
@@ -444,7 +444,7 @@ test('a keyboard that was put away stays away after Send', async ({ page }) => {
 	await expect(box(page)).toHaveValue('');
 	await expect(box(page)).not.toBeFocused();
 });
-test('the manager home has the same box: it grows, keeps its draft, and sends the lines', async ({
+test('the Maestro home has the same box: it grows, keeps its draft, and sends the lines', async ({
 	page
 }) => {
 	await open(page, '/', []);

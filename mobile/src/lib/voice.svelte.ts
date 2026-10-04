@@ -598,17 +598,24 @@ class Voice {
 		}
 	};
 
+	/** How many bars of each target are on screen. */
+	private bars: Record<VoiceTarget, number> = {};
+
 	/**
 	 * Attachment for a voice bar, the manager's or a thread's. The first tap
 	 * anywhere on the page unlocks the speaker. When the page is hidden or
-	 * left, or the bar goes away, the mic and the audio are given back, and
-	 * Auto forgets its target: speech never goes to a bar that is not on screen.
+	 * left, the mic and the audio are given back. A bar that goes away does
+	 * the same when it was the last one, or the last of the target Auto
+	 * listens for: speech never goes to a bar that is not on screen. Another
+	 * target's bar that comes and goes (the Maestro panel over a page) takes
+	 * nothing from the bar that stays.
 	 */
-	attach = (): (() => void) => {
+	attach = (target: VoiceTarget) => (): (() => void) => {
 		const unlock = (): void => this.unlock();
 		const hidden = (): void => {
 			if (document.visibilityState === 'hidden') this.release();
 		};
+		this.bars[target] = (this.bars[target] ?? 0) + 1;
 		document.addEventListener('click', unlock, { capture: true, once: true });
 		document.addEventListener('touchend', unlock, { capture: true, once: true });
 		document.addEventListener('visibilitychange', hidden);
@@ -617,9 +624,16 @@ class Voice {
 			document.removeEventListener('click', unlock, { capture: true });
 			document.removeEventListener('touchend', unlock, { capture: true });
 			document.removeEventListener('visibilitychange', hidden);
-			window.removeEventListener('pagehide', this.release);
-			this.release();
-			this.bound = null;
+			this.bars[target] -= 1;
+			if (this.bars[target] <= 0) delete this.bars[target];
+			const none = Object.keys(this.bars).length === 0;
+			if (none) window.removeEventListener('pagehide', this.release);
+			const mine =
+				this.bound?.target === target || (this.target === target && this.status !== 'idle');
+			if (none || (!(target in this.bars) && mine)) {
+				this.release();
+				this.bound = null;
+			}
 		};
 	};
 }

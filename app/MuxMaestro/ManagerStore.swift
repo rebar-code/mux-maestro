@@ -25,6 +25,15 @@ struct ManagerReviewItem: Equatable {
     let text: String
     let updatedAt: Int
     let dismissed: Bool
+
+    /// The key prefix `mux point` owns. `mux review add` refuses it, so a row
+    /// with this prefix names a session the CLI checked.
+    static let pointerPrefix = "point:"
+    /// The most pointers kept at once. `mux point` drops the oldest above it.
+    static let maxPointers = 20
+
+    /// A pointer at a session that needs the human, not a plain review note.
+    var isPointer: Bool { key.hasPrefix(Self.pointerPrefix) }
 }
 
 /// A transient toast the agent raised via `mux notify`.
@@ -140,6 +149,10 @@ struct ManagerSessionRow: Equatable {
     let windows: Int
     let panes: Int
     let cwd: String
+    /// The tmux index of every window, so `mux point` can check a window
+    /// without calling tmux. nil when the row came from a snapshot that an
+    /// older build wrote, which has no such list.
+    var windowIndexes: [Int]? = nil
 }
 
 enum ManagerStoreError: LocalizedError {
@@ -149,9 +162,9 @@ enum ManagerStoreError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .open(let m): return "manager DB open failed: \(m)"
-        case .prepare(let m): return "manager DB prepare failed: \(m)"
-        case .step(let m): return "manager DB step failed: \(m)"
+        case .open(let m): return "Maestro DB open failed: \(m)"
+        case .prepare(let m): return "Maestro DB prepare failed: \(m)"
+        case .step(let m): return "Maestro DB step failed: \(m)"
         }
     }
 }
@@ -185,6 +198,7 @@ final class ManagerStore {
             try exec("PRAGMA journal_mode=WAL;")
             try exec("PRAGMA busy_timeout=3000;")
             try exec(Self.schemaSQL)
+            try addColumn("window_indexes", "TEXT", to: "sessions")
         } catch {
             sqlite3_close(db)
             throw error
@@ -251,7 +265,7 @@ final class ManagerStore {
     /// prints it: waiting first, then active, then inactive, then by name.
     func sessions() throws -> [ManagerSessionRow] {
         let stmt = try prepare("""
-        SELECT name, host, attached, status, windows, panes, cwd
+        SELECT name, host, attached, status, windows, panes, cwd, window_indexes
         FROM sessions
         ORDER BY CASE status WHEN 'waiting' THEN 0 WHEN 'active' THEN 1 ELSE 2 END,
                  host, name;
@@ -266,7 +280,9 @@ final class ManagerStore {
                 state: ManagerSessionRow.State(rawValue: column(stmt, 3)),
                 windows: Int(sqlite3_column_int64(stmt, 4)),
                 panes: Int(sqlite3_column_int64(stmt, 5)),
-                cwd: column(stmt, 6)
+                cwd: column(stmt, 6),
+                windowIndexes: sqlite3_column_type(stmt, 7) == SQLITE_NULL
+                    ? nil : column(stmt, 7).split(separator: ",").compactMap { Int($0) }
             ))
         }
         return rows
@@ -401,8 +417,9 @@ final class ManagerStore {
         do {
             try exec("DELETE FROM sessions;")
             let stmt = try prepare("""
-            INSERT INTO sessions(name, host, attached, status, windows, panes, cwd, updated_at)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?);
+            INSERT INTO sessions(
+              name, host, attached, status, windows, panes, cwd, updated_at, window_indexes)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?);
             """)
             defer { sqlite3_finalize(stmt) }
             for row in rows {
@@ -415,6 +432,11 @@ final class ManagerStore {
                 bindInt(stmt, 6, row.panes)
                 bindText(stmt, 7, row.cwd)
                 bindInt(stmt, 8, now)
+                if let indexes = row.windowIndexes {
+                    bindText(stmt, 9, indexes.map(String.init).joined(separator: ","))
+                } else {
+                    sqlite3_bind_null(stmt, 9)
+                }
                 _ = try step(stmt)
             }
         } catch {
@@ -602,6 +624,7 @@ final class ManagerStore {
       panes INTEGER NOT NULL DEFAULT 0,
       cwd TEXT NOT NULL DEFAULT '',
       updated_at INTEGER NOT NULL,
+      window_indexes TEXT,
       PRIMARY KEY (host, name)
     );
     CREATE TABLE IF NOT EXISTS agent_events (
@@ -645,6 +668,27 @@ final class ManagerStore {
     CREATE UNIQUE INDEX IF NOT EXISTS work_log_session ON work_log(session_id) WHERE session_id <> '';
     CREATE INDEX IF NOT EXISTS work_log_last_seen ON work_log(last_seen);
     """
+
+    /// Add a column that a table made by an older build does not have:
+    /// `CREATE TABLE IF NOT EXISTS` leaves such a table as it is. The `mux`
+    /// CLI does the same in `init_db`, so losing that race is not an error.
+    /// Only for a column that is nullable or has a default.
+    private func addColumn(_ name: String, _ type: String, to table: String) throws {
+        guard try !hasColumn(name, in: table) else { return }
+        do {
+            try exec("ALTER TABLE \(table) ADD COLUMN \(name) \(type);")
+        } catch {
+            guard try hasColumn(name, in: table) else { throw error }
+        }
+    }
+
+    private func hasColumn(_ name: String, in table: String) throws -> Bool {
+        let stmt = try prepare("SELECT 1 FROM pragma_table_info(?) WHERE name = ?;")
+        defer { sqlite3_finalize(stmt) }
+        bindText(stmt, 1, table)
+        bindText(stmt, 2, name)
+        return try step(stmt) == SQLITE_ROW
+    }
 
     private func exec(_ sql: String) throws {
         var error: UnsafeMutablePointer<CChar>?

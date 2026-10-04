@@ -314,7 +314,7 @@ final class ManagerPaneDriverTests: XCTestCase {
 
         let done = expectation(description: "refused")
         driver.send("hello", onDelta: { _ in XCTFail("no reply expected") }) { outcome in
-            XCTAssertEqual(outcome, .refused("Manager is waiting on a prompt"))
+            XCTAssertEqual(outcome, .refused("Maestro is waiting on a prompt"))
             done.fulfill()
         }
         wait(for: [done], timeout: 5)
@@ -382,7 +382,7 @@ final class ManagerPaneDriverTests: XCTestCase {
 
         let done = expectation(description: "refused")
         driver.send("approve it", onDelta: { _ in XCTFail("no reply expected") }) { outcome in
-            XCTAssertEqual(outcome, .refused("Manager is waiting on a prompt"))
+            XCTAssertEqual(outcome, .refused("Maestro is waiting on a prompt"))
             done.fulfill()
         }
         wait(for: [done], timeout: 5)
@@ -399,7 +399,7 @@ final class ManagerPaneDriverTests: XCTestCase {
         status.value = .waiting
         let again = expectation(description: "refused again")
         driver.send("hello", onDelta: { _ in }) { outcome in
-            XCTAssertEqual(outcome, .refused("Manager is waiting on a prompt"))
+            XCTAssertEqual(outcome, .refused("Maestro is waiting on a prompt"))
             again.fulfill()
         }
         wait(for: [again], timeout: 5)
@@ -408,23 +408,23 @@ final class ManagerPaneDriverTests: XCTestCase {
     func testOnlyAnIdlePaneTakesATurnThatRequiresIdle() {
         XCTAssertNil(ManagerPaneDriver.refusal(status: .idle, requireIdle: true))
         XCTAssertEqual(
-            ManagerPaneDriver.refusal(status: .busy, requireIdle: true), "Manager is busy")
+            ManagerPaneDriver.refusal(status: .busy, requireIdle: true), "Maestro is busy")
         XCTAssertEqual(
-            ManagerPaneDriver.refusal(status: nil, requireIdle: true), "Manager is not ready")
+            ManagerPaneDriver.refusal(status: nil, requireIdle: true), "Maestro is not ready")
         XCTAssertEqual(
             ManagerPaneDriver.refusal(status: .waiting, requireIdle: true),
-            "Manager is waiting on a prompt")
+            "Maestro is waiting on a prompt")
         // The rail's own turns are as before: only a prompt refuses.
         XCTAssertNil(ManagerPaneDriver.refusal(status: .busy, requireIdle: false))
         XCTAssertNil(ManagerPaneDriver.refusal(status: nil, requireIdle: false))
         XCTAssertEqual(
             ManagerPaneDriver.refusal(status: .waiting, requireIdle: false),
-            "Manager is waiting on a prompt")
+            "Maestro is waiting on a prompt")
     }
 
     func testAPhoneTurnTypesNothingIntoABusyOrUnknownPane() throws {
-        for (status, reason) in [(ManagerTurnStatus.busy as ManagerTurnStatus?, "Manager is busy"),
-                                 (nil, "Manager is not ready")] {
+        for (status, reason) in [(ManagerTurnStatus.busy as ManagerTurnStatus?, "Maestro is busy"),
+                                 (nil, "Maestro is not ready")] {
             let dir = try makeClaudeDir()
             // No session file: with no hook row either, the state is not known.
             if status != nil { try seedSession(in: dir, sessionId: "wanted") }
@@ -458,7 +458,7 @@ final class ManagerPaneDriverTests: XCTestCase {
 
         let done = expectation(description: "refused")
         driver.send("first line\nsecond line", requireIdle: true, onDelta: { _ in }) {
-            XCTAssertEqual($0, .refused("Manager is busy"))
+            XCTAssertEqual($0, .refused("Maestro is busy"))
             done.fulfill()
         }
         wait(for: [done], timeout: 5)
@@ -600,7 +600,7 @@ final class ManagerPaneDriverTests: XCTestCase {
         for requireIdle in [true, false] {
             let done = expectation(description: "refused")
             driver.send("what needs me?", requireIdle: requireIdle, onDelta: { _ in XCTFail("no reply") }) {
-                XCTAssertEqual($0, .refused("Manager is waiting on a prompt"))
+                XCTAssertEqual($0, .refused("Maestro is waiting on a prompt"))
                 done.fulfill()
             }
             wait(for: [done], timeout: 5)
@@ -725,7 +725,7 @@ final class ManagerPaneDriverTests: XCTestCase {
 
         let done = expectation(description: "unreachable")
         driver.send("hello", onDelta: { _ in }) { outcome in
-            XCTAssertEqual(outcome, .unreachable("No mux-manager session"))
+            XCTAssertEqual(outcome, .unreachable("The Maestro session is not running"))
             done.fulfill()
         }
         wait(for: [done], timeout: 5)

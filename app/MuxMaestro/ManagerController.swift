@@ -81,7 +81,8 @@ extension ManagerSnapshot {
                 case .review(let review):
                     return MobileManagerItem(
                         kind: .review, key: review.key, title: item.title, detail: item.detail,
-                        severity: review.severity, at: review.updatedAt, link: item.link)
+                        severity: review.severity, at: review.updatedAt, link: item.link,
+                        pointer: review.isPointer)
                 }
             },
             updates: updates)
