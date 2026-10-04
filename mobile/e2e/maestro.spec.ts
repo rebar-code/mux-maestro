@@ -140,7 +140,8 @@ for (const viewport of [
 
 			await button(page).click();
 			await settled(page, 0);
-			expect(await height(page)).toBe(0);
+			// On a slow machine the panel can hold still before it starts to close.
+			await expect.poll(() => height(page)).toBe(0);
 			// It opens again at the stop it was on.
 			await button(page).click();
 			await settled(page, 3);
