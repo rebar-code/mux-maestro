@@ -74,6 +74,7 @@
 		C4B1E0A1 /* HostAddress.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4B1E0A3 /* HostAddress.swift */; };
 		C4B1E013 /* RunningViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4B1E003 /* RunningViewController.swift */; };
 		A0000F03 /* CloseWindowPrompt.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000F01 /* CloseWindowPrompt.swift */; };
+		A0AC0F03 /* WindowArchive.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0AC0F01 /* WindowArchive.swift */; };
 		A0000D08 /* WindowPRs.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000D06 /* WindowPRs.swift */; };
 		A00001B0 /* Diag.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00007B0 /* Diag.swift */; };
 		A0000301 /* TmuxModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000013 /* TmuxModelTests.swift */; };
@@ -152,7 +153,9 @@
 		C4B1E024 /* RunningTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4B1E004 /* RunningTests.swift */; };
 		C4B1E0A5 /* HostAddressTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4B1E0A4 /* HostAddressTests.swift */; };
 		A0000F04 /* CloseWindowPrompt.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000F01 /* CloseWindowPrompt.swift */; };
+		A0AC0F04 /* WindowArchive.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0AC0F01 /* WindowArchive.swift */; };
 		A0000F05 /* CloseWindowPromptTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000F02 /* CloseWindowPromptTests.swift */; };
+		A0AC0F05 /* WindowArchiveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0AC0F02 /* WindowArchiveTests.swift */; };
 		A0000D09 /* WindowPRs.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000D06 /* WindowPRs.swift */; };
 		A0000D0A /* WindowPRsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000D07 /* WindowPRsTests.swift */; };
 		A0000338 /* SettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000714 /* SettingsTests.swift */; };
@@ -278,6 +281,7 @@
 		C4B1E004 /* RunningTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunningTests.swift; sourceTree = "<group>"; };
 		C4B1E0A4 /* HostAddressTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostAddressTests.swift; sourceTree = "<group>"; };
 		A0000F02 /* CloseWindowPromptTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloseWindowPromptTests.swift; sourceTree = "<group>"; };
+		A0AC0F02 /* WindowArchiveTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowArchiveTests.swift; sourceTree = "<group>"; };
 		A0000D07 /* WindowPRsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowPRsTests.swift; sourceTree = "<group>"; };
 		A0000025 /* AddServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddServer.swift; sourceTree = "<group>"; };
 		A0000026 /* AddServerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddServerTests.swift; sourceTree = "<group>"; };
@@ -330,6 +334,7 @@
 		C4B1E0A3 /* HostAddress.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostAddress.swift; sourceTree = "<group>"; };
 		C4B1E003 /* RunningViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunningViewController.swift; sourceTree = "<group>"; };
 		A0000F01 /* CloseWindowPrompt.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloseWindowPrompt.swift; sourceTree = "<group>"; };
+		A0AC0F01 /* WindowArchive.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowArchive.swift; sourceTree = "<group>"; };
 		A0000D06 /* WindowPRs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowPRs.swift; sourceTree = "<group>"; };
 		A00007B0 /* Diag.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Diag.swift; sourceTree = "<group>"; };
 		A0000714 /* SettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsTests.swift; sourceTree = "<group>"; };
@@ -448,6 +453,7 @@
 				C4B1E0A3 /* HostAddress.swift */,
 				C4B1E003 /* RunningViewController.swift */,
 				A0000F01 /* CloseWindowPrompt.swift */,
+				A0AC0F01 /* WindowArchive.swift */,
 				A0000D06 /* WindowPRs.swift */,
 				A00007B0 /* Diag.swift */,
 				A0000018 /* SidebarDiff.swift */,
@@ -541,6 +547,7 @@
 				A00B1007 /* PhoneLinkTests.swift */,
 				C4B1E0A4 /* HostAddressTests.swift */,
 				A0000F02 /* CloseWindowPromptTests.swift */,
+				A0AC0F02 /* WindowArchiveTests.swift */,
 				A0000D07 /* WindowPRsTests.swift */,
 				A0000714 /* SettingsTests.swift */,
 				DF1A7E5C0B2E4D6F00000002 /* DefaultsMigrationTests.swift */,
@@ -727,6 +734,7 @@
 				C4B1E0A1 /* HostAddress.swift in Sources */,
 				C4B1E013 /* RunningViewController.swift in Sources */,
 				A0000F03 /* CloseWindowPrompt.swift in Sources */,
+				A0AC0F03 /* WindowArchive.swift in Sources */,
 				A0000D08 /* WindowPRs.swift in Sources */,
 				A00001B0 /* Diag.swift in Sources */,
 				A0000113 /* SidebarDiff.swift in Sources */,
@@ -837,7 +845,9 @@
 				C4B1E024 /* RunningTests.swift in Sources */,
 				C4B1E0A5 /* HostAddressTests.swift in Sources */,
 				A0000F04 /* CloseWindowPrompt.swift in Sources */,
+				A0AC0F04 /* WindowArchive.swift in Sources */,
 				A0000F05 /* CloseWindowPromptTests.swift in Sources */,
+				A0AC0F05 /* WindowArchiveTests.swift in Sources */,
 				A0000D09 /* WindowPRs.swift in Sources */,
 				A0000D0A /* WindowPRsTests.swift in Sources */,
 				A0000337 /* Settings.swift in Sources */,

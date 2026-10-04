@@ -1571,15 +1571,120 @@ final class TmuxService {
     /// it behind a confirmation. Routes through the transport so it kills the
     /// window on this service's host (local or remote) automatically.
     @discardableResult
-    func killWindow(session: String, window: Int) -> Bool {
+    func killWindow(session: String, window: Int, knownTree: [TmuxSession]? = nil) -> Bool {
         let tree = host.isLocal && SessionRecord.canWriteSnapshot
-            && Settings.sessionRecoveryEnabled() ? (loadTree() ?? []) : []
+            && Settings.sessionRecoveryEnabled() ? (knownTree ?? loadTree() ?? []) : []
         let removesLastSession = tree.count == 1 && tree[0].name == session
             && tree[0].windows.count == 1 && tree[0].windows[0].index == window
         let target = TmuxCommands.windowTarget(session: session, window: window)
         let killed = tmuxDestructive(TmuxCommands.killWindow(target: target))
         if killed, removesLastSession { persistSnapshot([], allowEmpty: true) }
         return killed
+    }
+
+    // MARK: Archive Window / Undo
+
+    /// Archive a window: read what undo needs, then kill it. The read has to come
+    /// first — tmux keeps nothing about a window once it is gone. `window` nil
+    /// means the session's active window (⌘W before the sidebar has loaded it).
+    /// `records` are the `SessionStart` hook's pane records; nil reads them from
+    /// disk on the local host. `archived` is nil when the kill failed or the
+    /// window could not be read, and then there is nothing to undo.
+    /// Blocking; call off the main thread.
+    func archiveWindow(
+        session: String, window: Int?, records: [String: AgentRecord]? = nil
+    ) -> (killed: Bool, archived: ArchivedWindow?) {
+        let tree = loadTree() ?? []
+        let known = records ?? (host.isLocal
+            ? SessionRecord.parseAgents(SessionRecord.agentsURL()
+                .flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? "")
+            : [:])
+        let archived = WindowArchive.capture(
+            tree: tree, host: host, session: session, window: window, records: known)
+        // Kill the window that was read, not whichever one is active by now.
+        let killed = (window ?? archived?.index).map {
+            killWindow(session: session, window: $0, knownTree: tree)
+        } ?? killActiveWindow(session: session)
+        return (killed, killed ? archived : nil)
+    }
+
+    /// Undo an archive: create the window again in its session (and the session,
+    /// when archiving ended it), at its old index when that is free, then rebuild
+    /// its panes and run each agent's resume command through the same code a
+    /// post-reboot restore uses. `directoryExists` is injected by tests.
+    /// Blocking; call off the main thread.
+    func restoreArchivedWindow(
+        _ archived: ArchivedWindow, directoryExists: ((String) -> Bool)? = nil
+    ) -> Result<RestoredWindow, WindowRestoreFailure> {
+        guard transport.command(forTmux: []) != nil else {
+            return .failure(.tmux("tmux is unavailable."))
+        }
+        let window: RestoreWindow
+        switch WindowArchive.restorePlan(
+            archived, directoryExists: directoryExists ?? self.directoryExists) {
+        case .failure(let failure): return .failure(failure)
+        case .success(let plan): window = plan
+        }
+        let session = archived.session
+        let cwd = window.panes[0].cwd
+        let createdSession = !existingSessionNames().contains(session)
+        var index = archived.index
+        if createdSession {
+            guard tmux(TmuxCommands.newSession(name: session, dir: cwd)) != nil else {
+                return .failure(.tmux("tmux could not create the session."))
+            }
+            let current = tmux(["display-message", "-p", "-t", "=\(session):", "#{window_index}"])
+                .flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            // An index tmux will not give back is not worth failing the undo for.
+            if let current, current != index, tmux(TmuxCommands.moveWindow(
+                source: "=\(session):\(current)", target: "=\(session):\(index)")) == nil {
+                index = current
+            }
+        } else {
+            let used = Set((tmux(["list-windows", "-t", "=\(session)", "-F", "#{window_index}"]) ?? "")
+                .split(separator: "\n").compactMap { Int($0) })
+            let argv = used.contains(index)
+                ? TmuxCommands.newWindow(session: session, cwd: cwd, printIndex: true)
+                : TmuxCommands.newWindow(
+                    session: session, cwd: cwd, printIndex: true, atIndex: index)
+            guard let made = TmuxCommands.parseCreatedWindow(tmux(argv)) else {
+                return .failure(.tmux("tmux could not create the window."))
+            }
+            index = made
+        }
+
+        let target = TmuxCommands.windowTarget(session: session, window: index)
+        var pendingResumes: [PendingAgentResume] = []
+        var failure = restore(
+            window: window, target: target, resumeAgentsImmediately: true,
+            pendingResumes: &pendingResumes)
+        // Every pane exists before any agent starts, as in a topology restore.
+        if failure == nil {
+            for resume in pendingResumes where tmux(TmuxCommands.sendKeysLine(
+                session: resume.pane, line: resume.command)) == nil {
+                failure = "tmux could not run the agent’s resume command."
+                break
+            }
+        }
+        if let failure {
+            _ = tmuxDestructive(createdSession
+                ? TmuxCommands.killSession(name: session)
+                : TmuxCommands.killWindow(target: target))
+            return .failure(.tmux(failure))
+        }
+        return .success(RestoredWindow(
+            index: index,
+            agentsWithoutSession: archived.panes.filter(\.lostAgentSession).count))
+    }
+
+    /// Whether `path` is a directory on this service's host.
+    private func directoryExists(_ path: String) -> Bool {
+        if host.isLocal {
+            var isDirectory: ObjCBool = false
+            return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
+                && isDirectory.boolValue
+        }
+        return runHostCommand(local: "/bin/test", remote: "test", ["-d", path]) != nil
     }
 
     /// Kill the session's currently-active window (⌘W). tmux resolves a bare
