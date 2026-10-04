@@ -1,57 +1,108 @@
 <script lang="ts">
+	import { live, OFF_LABEL } from './live.svelte';
 	import { voice, type VoiceSink, type VoiceTarget } from './voice.svelte';
 
 	/** The bar of one target: the manager, or a thread. */
-	const { target, sink }: { target: VoiceTarget; sink: VoiceSink } = $props();
+	const {
+		target,
+		sink,
+		off = false
+	}: {
+		target: VoiceTarget;
+		sink: VoiceSink;
+		/** Voice is switched off on the Mac: the bar says so and has no controls. */
+		off?: boolean;
+	} = $props();
 
 	const status = $derived(voice.statusOf(target));
+	/** The mic is open for this bar: a take, or Auto waiting for one. */
+	const hearing = $derived(
+		!off && !voice.micMuted && (status === 'recording' || (status === 'idle' && voice.listening))
+	);
+	/** The mic's loudness as the meter draws it, 0 to 1. Speech fills most of it. */
+	const level = $derived(hearing ? Math.min(1, Math.sqrt(voice.level * 8)) : 0);
 </script>
 
-<div class="vbar" data-voicebar data-status={status} {@attach voice.attach}>
-	<div class="vstat {status}" class:paused={voice.paused} role="status" data-voice-status>
-		<span class="wave" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
-		{voice.note ?? voice.label(target)}
+{#if off}
+	<div class="vbar off" data-voicebar data-voice="off">
+		<div class="vstat" role="status" data-voice-status>
+			<span class="wave" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+			<!-- Not before the Mac has answered: until then nothing is known to be off. -->
+			{live.config === null ? '' : OFF_LABEL}
+		</div>
 	</div>
-	<div class="vrow">
-		<div class="vseg" role="group" aria-label="Voice mode">
+{:else}
+	{@render controls()}
+{/if}
+
+{#snippet controls()}
+	<div
+		class="vbar"
+		data-voicebar
+		data-voice={status}
+		data-first-text-ms={voice.timing.text}
+		data-first-audio-ms={voice.timing.audio}
+		{@attach voice.attach}
+	>
+		<div class="vstat {status}" class:paused={voice.paused} role="status" data-voice-status>
+			{#if hearing}
+				<!-- The mic's level, so it is plain that the phone hears. -->
+				<span
+					class="wave meter"
+					role="meter"
+					aria-label="Mic level"
+					aria-valuemin="0"
+					aria-valuemax="100"
+					aria-valuenow={Math.round(level * 100)}
+					data-voice-level={Math.round(level * 100)}
+					style:--level={level}><i></i><i></i><i></i><i></i></span
+				>
+			{:else}
+				<span class="wave" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+			{/if}
+			{voice.note ?? voice.label(target)}
+		</div>
+		<div class="vrow">
+			<div class="vseg" role="group" aria-label="Voice mode">
+				<button
+					class="grow"
+					class:on={voice.mode === 'auto'}
+					aria-pressed={voice.mode === 'auto'}
+					onclick={() => voice.setMode('auto', target, sink)}>Auto</button
+				>
+				<button
+					class="grow"
+					class:on={voice.mode === 'manual'}
+					aria-pressed={voice.mode === 'manual'}
+					onclick={() => voice.setMode('manual', target, sink)}>Manual</button
+				>
+			</div>
 			<button
-				class="grow"
-				class:on={voice.mode === 'auto'}
-				aria-pressed={voice.mode === 'auto'}
-				onclick={() => voice.setMode('auto', target, sink)}>Auto</button
+				class="ip"
+				class:off={!voice.speaker}
+				aria-label="Speaker"
+				aria-pressed={voice.speaker}
+				onclick={() => voice.setSpeaker(!voice.speaker)}>{voice.speaker ? '🔊' : '🔇'}</button
 			>
 			<button
-				class="grow"
-				class:on={voice.mode === 'manual'}
-				aria-pressed={voice.mode === 'manual'}
-				onclick={() => voice.setMode('manual', target, sink)}>Manual</button
+				class="ip"
+				aria-label="Replay"
+				disabled={status === 'thinking' || status === 'recording'}
+				onclick={() => voice.replay(target, sink)}>↻</button
+			>
+			<button class="ip" aria-label="Skip" disabled={status !== 'speaking'} onclick={voice.skip}
+				>⏭</button
+			>
+			<button
+				class="ip"
+				class:off={voice.micMuted}
+				aria-label="Microphone"
+				aria-pressed={!voice.micMuted}
+				onclick={() => voice.toggleMic(target, sink)}>🎙</button
 			>
 		</div>
-		<button
-			class="ip"
-			class:off={!voice.speaker}
-			aria-label="Speaker"
-			aria-pressed={voice.speaker}
-			onclick={() => voice.setSpeaker(!voice.speaker)}>{voice.speaker ? '🔊' : '🔇'}</button
-		>
-		<button
-			class="ip"
-			aria-label="Replay"
-			disabled={status === 'thinking' || status === 'recording'}
-			onclick={() => voice.replay(target, sink)}>↻</button
-		>
-		<button class="ip" aria-label="Skip" disabled={status !== 'speaking'} onclick={voice.skip}
-			>⏭</button
-		>
-		<button
-			class="ip"
-			class:off={voice.micMuted}
-			aria-label="Microphone"
-			aria-pressed={!voice.micMuted}
-			onclick={() => voice.toggleMic(target, sink)}>🎙</button
-		>
 	</div>
-</div>
+{/snippet}
 
 <style>
 	.vbar {
@@ -59,6 +110,14 @@
 		padding: 7px max(12px, env(safe-area-inset-right)) 2px max(12px, env(safe-area-inset-left));
 		border-top: 1px solid var(--border);
 		background: var(--bar);
+	}
+
+	.vbar.off {
+		padding-bottom: 0;
+	}
+
+	.vbar.off .vstat {
+		padding-bottom: 2px;
 	}
 
 	.vstat {
@@ -108,6 +167,27 @@
 	.recording .wave i,
 	.speaking:not(.paused) .wave i {
 		animation: wave 0.5s ease-in-out infinite alternate;
+	}
+
+	/* The meter: each bar's height follows the mic, not a clock. */
+	.vstat .meter i {
+		animation: none;
+		background: #0a84ff;
+		height: calc(3px + 11px * var(--level));
+		transition: height 0.08s linear;
+	}
+
+	.vstat .meter i:nth-child(2) {
+		height: calc(3px + 8px * var(--level));
+	}
+
+	.vstat .meter i:nth-child(3) {
+		height: calc(3px + 11px * var(--level));
+	}
+
+	.vstat .meter i:nth-child(1),
+	.vstat .meter i:nth-child(4) {
+		height: calc(3px + 5px * var(--level));
 	}
 
 	.wave i:nth-child(2) {

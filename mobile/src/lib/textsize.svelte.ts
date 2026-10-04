@@ -1,4 +1,4 @@
-import { chatSize, clampSize, DEFAULT_SIZE, MAX_SIZE, MIN_SIZE, stepSize } from './textsize';
+import { chatSize, clampSize, DEFAULT_SIZE } from './textsize';
 
 const KEY = 'mm.textSize';
 
@@ -17,8 +17,6 @@ class TextSize {
 	size = $state(stored());
 
 	readonly chat = $derived(chatSize(this.size));
-	readonly atMin = $derived(this.size <= MIN_SIZE);
-	readonly atMax = $derived(this.size >= MAX_SIZE);
 
 	/** Change the size without storing it: for each frame of a pinch. */
 	preview(size: number): void {
@@ -36,10 +34,6 @@ class TextSize {
 	set(size: number): void {
 		this.preview(size);
 		this.save();
-	}
-
-	step(direction: 1 | -1): void {
-		this.set(stepSize(this.size, direction));
 	}
 
 	reset(): void {

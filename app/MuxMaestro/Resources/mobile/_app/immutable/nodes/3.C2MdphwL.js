@@ -1,0 +1,1 @@
+import{E as e,T as t,V as n,X as r,Z as i,rt as a,x as o}from"../chunks/XBtowF8c.js";import"../chunks/xihTtKlq.js";import{t as s}from"../chunks/CWTjUcJs.js";var c=a({load:()=>l}),l=({params:e})=>({id:e.id});function u(a,c){i(c,!0);var l=e(),u=n(l);o(u,()=>c.data.id,e=>{s(e,{get id(){return c.data.id}})}),t(a,l),r()}export{u as component,c as universal};

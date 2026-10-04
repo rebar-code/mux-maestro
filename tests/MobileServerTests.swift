@@ -28,6 +28,15 @@ final class MobileServerTests: XCTestCase {
         var transcript: String?
         /// When set, a turn says nothing until this is signalled.
         var gate: DispatchSemaphore?
+        private var _screen: String? = "$ claude\n\u{1B}[32m⏺\u{1B}[0m Ready.\n\n\n"
+        /// What the manager pane shows.
+        var screen: String? {
+            get { lock.lock(); defer { lock.unlock() }; return _screen }
+            set { lock.lock(); _screen = newValue; lock.unlock() }
+        }
+
+        /// The manager's own pane, for a prompt it waits on.
+        let pane = FakePane()
 
         var status: MobileManagerStatus {
             get { lock.lock(); defer { lock.unlock() }; return _status }
@@ -47,7 +56,9 @@ final class MobileServerTests: XCTestCase {
                         completion(script.outcome)
                     }
                 },
-                dismiss: { [self] key in lock.lock(); _dismissed.append(key); lock.unlock() })
+                dismiss: { [self] key in lock.lock(); _dismissed.append(key); lock.unlock() },
+                screen: { [self] _ in screen },
+                io: { [self] in ("mux-manager", pane.io) })
         }
     }
     /// What the fake pane shows, and the line counts the server asked it for.
@@ -612,8 +623,94 @@ final class MobileServerTests: XCTestCase {
         XCTAssertEqual(body["status"] as? String, "idle")
         XCTAssertEqual((body["needsYou"] as? [[String: Any]])?.first?["thread"] as? String, "localhost:12")
         XCTAssertEqual((body["review"] as? [[String: Any]])?.first?["key"] as? String, "acme-app:pr")
-        let messages = (body["chat"] as? [String: Any])?["messages"] as? [[String: Any]]
+        XCTAssertNil(body["chat"])
+
+        // The chat is its own route, with the cursor a thread's chat has.
+        let chat = get("/api/manager/chat")
+        XCTAssertEqual(chat.status, 200)
+        let page = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(chat.body.utf8)) as? [String: Any])
+        let messages = page["messages"] as? [[String: Any]]
         XCTAssertEqual(messages?.map { $0["text"] as? String }, ["what needs me?", "Two threads need you."])
+        XCTAssertEqual(messages?.map { $0["role"] as? String }, ["user", "assistant"])
+        let next = try XCTUnwrap(page["next"] as? Int)
+        XCTAssertTrue(get("/api/manager/chat?after=\(next)").body.contains(#""messages":[]"#))
+    }
+
+    func testTheManagerChatIsEmptyUntilThePaneHasATranscript() {
+        managerOn()
+        manager.transcript = nil
+        let chat = get("/api/manager/chat")
+        XCTAssertEqual(chat.status, 200)
+        XCTAssertEqual(chat.body, #"{"messages":[],"next":0,"reset":false}"#)
+    }
+
+    func testServesTheManagerPanesScreenLikeAThreads() {
+        managerOn()
+        let screen = get("/api/manager/screen?lines=50")
+        XCTAssertEqual(screen.status, 200)
+        // Colour escapes are kept, and the empty rows at the end are cut.
+        XCTAssertTrue(screen.body.contains(#""lines":50"#))
+        XCTAssertTrue(screen.body.contains("Ready."))
+        XCTAssertTrue(screen.body.contains(#"\u001b[32m"#))
+        XCTAssertFalse(screen.body.contains(#"Ready.\n"#))
+        XCTAssertTrue(screen.head.contains("ETag: "))
+
+        manager.screen = nil
+        XCTAssertEqual(get("/api/manager/screen").status, 503)
+    }
+
+    func testTheManagerChatAndScreenNeedTheSwitchAndTheToken() {
+        for path in ["/api/manager/chat", "/api/manager/screen"] {
+            let off = get(path)
+            XCTAssertEqual(off.status, 403, path)
+            XCTAssertEqual(off.body, #"{"error":"disabled"}"#, path)
+        }
+        managerOn()
+        for path in ["/api/manager/chat", "/api/manager/screen"] {
+            XCTAssertEqual(get(path, token: nil).status, 401, path)
+            XCTAssertEqual(get(path).status, 200, path)
+        }
+    }
+
+    func testTheSpinnerLineOfARunningTurnGoesOutOnTheEventStream() {
+        var limits = MobileServer.Limits()
+        limits.spinnerPoll = 0.05
+        restart(limits: limits)
+        managerOn()
+        let raw = "GET /api/events HTTP/1.1\r\nHost: devmac.example.ts.net\r\n"
+            + "Tailscale-User-Login: me@example.com\r\nX-MuxMaestro-Token: demo-token\r\n\r\n"
+        var step = 0
+        let text = exchange(raw) { [self] received in
+            if step == 0, received.contains("event: manager") {
+                step = 1
+                manager.screen = "✻ Incubating… (3s · esc to interrupt)\n│ >  │\n"
+                server.managerTurnBegan("summarise the morning")
+            }
+            if step == 1, received.contains(#"{"text":"Incubating… 3s"}"#) {
+                step = 2
+                manager.screen = "✻ Incubating… (4s · esc to interrupt)\n│ >  │\n"
+            }
+            if step == 2, received.contains(#"{"text":"Incubating… 4s"}"#) {
+                step = 3
+                // The pane stops showing a spinner: the phone is told that too.
+                manager.screen = "⏺ All quiet.\n│ >  │\n"
+            }
+            if step == 3, received.contains(#"event: manager-spinner\#ndata: {"text":null}"#) {
+                step = 4
+                server.managerTurnEnded()
+            }
+            return step == 4 && received.components(separatedBy: #""turn":null"#).count >= 3
+        }
+        XCTAssertEqual(step, 4)
+        let spinners = text.components(separatedBy: "\n\n").filter { $0.contains("event: manager-spinner") }
+        // Sent only when the line changed, not on every poll.
+        XCTAssertEqual(spinners.count, 3)
+
+        // The turn is over: the pane is no longer read.
+        manager.screen = "✻ Musing… (1s)\n"
+        usleep(200_000)
+        XCTAssertTrue(get("/api/manager").body.contains(#""turn":null"#))
     }
 
     func testAManagerTurnStreamsTheReplyThenEnds() {
@@ -846,7 +943,7 @@ final class MobileServerTests: XCTestCase {
         let events = text.components(separatedBy: "\n\n").filter { $0.contains("event: manager") }
         XCTAssertEqual(events.count, 4)
         XCTAssertTrue(events[0].contains(#""turn":null"#))
-        XCTAssertTrue(events[1].contains(#""turn":{"prompt":"summarise the morning","reply":""}"#))
+        XCTAssertTrue(events[1].contains(#""turn":{"prompt":"summarise the morning","reply":"","spinner":null}"#))
         // The reply grows by a small event of its own, not by the board again.
         XCTAssertEqual(events[2], "event: manager-delta\ndata: {\"text\":\"All quiet.\"}")
         XCTAssertTrue(events[3].hasPrefix("event: manager\n"))
@@ -860,7 +957,7 @@ final class MobileServerTests: XCTestCase {
         let raw = "GET /api/events HTTP/1.1\r\nHost: devmac.example.ts.net\r\n"
             + "Tailscale-User-Login: me@example.com\r\nX-MuxMaestro-Token: demo-token\r\n\r\n"
         let text = exchange(raw) { $0.contains("event: manager") && $0.hasSuffix("\n\n") }
-        XCTAssertTrue(text.contains(#""turn":{"prompt":"summarise the morning","reply":"All quiet"}"#))
+        XCTAssertTrue(text.contains(#""turn":{"prompt":"summarise the morning","reply":"All quiet","spinner":null}"#))
         XCTAssertTrue(get("/api/manager").body.contains(#""reply":"All quiet""#))
     }
 
@@ -2149,11 +2246,10 @@ final class MobileServerTests: XCTestCase {
             }
         }
         XCTAssertEqual(pane.argv.count, 0)
-        // Escape and the arrows answer nothing and stay.
-        XCTAssertEqual(post(shell + "/key", json: #"{"key":"Escape"}"#).status, 200)
-        // An agent's idle input box, with the cursor in it, takes Enter.
+        // An agent's idle input box, with the cursor in it, takes keys.
         pane.screen = DemoPrompt.idle
         pane.cursor = .inBox
+        XCTAssertEqual(post(shell + "/key", json: #"{"key":"Escape"}"#).status, 200)
         XCTAssertEqual(post(shell + "/key", json: #"{"key":"Enter"}"#).status, 200)
         XCTAssertEqual(pane.argv.map(\.last), ["Escape", "Enter"])
     }
@@ -2166,7 +2262,7 @@ final class MobileServerTests: XCTestCase {
         for below in [
             "  Overwrite? [y/N] ", " Password:", " $ ", "  ❯ Yes, proceed\n    No, go back",
             "\t? for shortcuts", "\u{A0}\u{A0}? for shortcuts", "\u{3000}? for shortcuts",
-            "  Continue?", "  name:",
+            "  Continue?",
         ] {
             for cursor in [FakePane.Cursor.lastLine, .inBox] {
                 pane.screen = box + below
@@ -2248,5 +2344,392 @@ final class MobileServerTests: XCTestCase {
         XCTAssertEqual(post(shell + "/text", json: #"{"text":"go on"}"#).status, 409)
         XCTAssertEqual(post(shell + "/key", json: #"{"key":"Enter"}"#).status, 409)
         XCTAssertEqual(pane.argv.count, 0)
+    }
+
+    // MARK: replies, fourth review
+
+    private static let shell = "/api/threads/localhost%3A13"
+
+    func testEveryKeyThatSubmitsIsHeldToTheRulesForEnter() throws {
+        repliesOn()
+        // Ctrl-M and Ctrl-J are Enter to a terminal; Ctrl-D ends the input.
+        let submits = ["Enter", "C-m", "C-j", "C-d"]
+        // A pane with no first-hand status on a y/N question.
+        pane.status = nil
+        pane.screen = "$ rm -i build\nremove build? [y/N] "
+        pane.cursor = .lastLine
+        for key in submits {
+            let refused = post(Self.shell + "/key", json: #"{"key":"\#(key)"}"#)
+            XCTAssertEqual(refused.status, 409, key)
+            XCTAssertEqual(
+                refused.body, #"{"error":"no_input","message":"Thread shows no input box"}"#, key)
+        }
+        // A waiting pane whose prompt cannot be read: the phone has no card.
+        pane.status = .waiting
+        pane.screen = DemoPrompt.yesNo
+        let blind = try promptID()
+        for key in submits {
+            let refused = post(Self.thread + "/key", json: #"{"key":"\#(key)","prompt":"\#(blind)"}"#)
+            XCTAssertEqual(refused.status, 409, key)
+            XCTAssertEqual(refused.body, #"{"error":"unseen","message":"Open the terminal to answer"}"#, key)
+        }
+        XCTAssertEqual(pane.argv.count, 0)
+    }
+
+    func testEnterIntoALocalPaneWithAShellInFrontIsRefusedWhateverItsStatusSays() {
+        repliesOn()
+        // The hooks last said idle; the agent has since exited to a shell.
+        for status in [AttentionStatus.idle, .busy] {
+            pane.status = status
+            pane.cursor = .lastLine
+            for screen in ["$ rm -i build\nremove build? [y/N] ", "$ ", DemoPrompt.idle + "\n$ "] {
+                pane.screen = screen
+                for key in ["Enter", "C-m", "3"] {
+                    let refused = post(Self.thread + "/key", json: #"{"key":"\#(key)"}"#)
+                    XCTAssertEqual(refused.status, 409, "\(status) \(screen) \(key)")
+                    XCTAssertEqual(
+                        refused.body, #"{"error":"no_input","message":"Thread shows no input box"}"#)
+                }
+            }
+        }
+        XCTAssertEqual(pane.argv.count, 0)
+        // The box takes them.
+        pane.screen = DemoPrompt.claudeIdle
+        pane.cursor = .inBox
+        XCTAssertEqual(post(Self.thread + "/key", json: #"{"key":"C-c"}"#).status, 200)
+        XCTAssertEqual(post(Self.thread + "/key", json: #"{"key":"Enter"}"#).status, 200)
+        XCTAssertEqual(pane.argv.map(\.last), ["C-c", "Enter"])
+    }
+
+    func testTextGoesIntoARealCodexComposerAndARealClaudeBox() {
+        repliesOn()
+        // Codex has no hooks here: the shell window stands in for it.
+        pane.status = nil
+        pane.screen = DemoPrompt.codexIdle
+        pane.cursor = .row(8)
+        pane.screenAfterPaste = DemoPrompt.codexInput(["run the tests", "then push"])
+        pane.cursorAfterPaste = .row(9)
+        let codex = post(Self.shell + "/text", json: #"{"text":"run the tests\nthen push"}"#)
+        XCTAssertEqual(codex.status, 200, codex.body)
+        XCTAssertTrue(FakePane.sendArgv(pane.argv, target: "%13"), "\(pane.argv)")
+
+        // Claude Code with a status line that ends in a percentage.
+        pane.status = .idle
+        pane.screen = DemoPrompt.claudeIdle
+        pane.screenAfterPaste = nil
+        pane.cursor = .inBox
+        pane.cursorAfterPaste = nil
+        let claude = post(Self.thread + "/text", json: #"{"text":"go on"}"#)
+        XCTAssertEqual(claude.status, 200, claude.body)
+
+        // Codex with its cursor somewhere else, or its own menu, takes nothing.
+        let before = pane.argv.count
+        pane.status = nil
+        pane.screen = DemoPrompt.codexIdle
+        pane.cursor = .row(2)
+        XCTAssertEqual(post(Self.shell + "/text", json: #"{"text":"go on"}"#).status, 409)
+        pane.screen = DemoPrompt.codexTrust
+        pane.cursor = .lastLine
+        XCTAssertEqual(post(Self.shell + "/text", json: #"{"text":"go on"}"#).status, 409)
+        XCTAssertEqual(pane.argv.count, before)
+    }
+
+    func testALineUnderTheBoxThatAsksOrOffersAChoiceIsNotAFooter() {
+        repliesOn()
+        let box = "────────────\n❯ \n────────────\n"
+        pane.cursor = .inBox
+        for below in [
+            "  Press Enter to continue", "  (Y)es / (N)o", "  ● Yes, proceed", "  --More--(45%)",
+            "  ○ No, go back", "  [x] overwrite", "  Continue?", "  (END)", "  y/n", "  enter continue · esc back",
+        ] {
+            pane.screen = box + below
+            let refused = post(Self.thread + "/text", json: #"{"text":"y"}"#)
+            XCTAssertEqual(refused.status, 409, below)
+        }
+        XCTAssertEqual(pane.argv.count, 0)
+        // A status line of the human's own is a footer, a percentage included.
+        for below in ["  ➜ acme-app git:(main) · ctx 42%", "  12% context left", "  main ✗ 3 files · 87%"] {
+            pane.screen = box + below
+            XCTAssertEqual(post(Self.thread + "/text", json: #"{"text":"go on"}"#).status, 200, below)
+        }
+    }
+
+    func testADigitAnswersOnlyAChoiceTheCardShows() throws {
+        repliesOn()
+        pane.status = .waiting
+        pane.cursor = .lastLine
+        pane.screen = DemoPrompt.permission
+        var id = try promptID()
+        for digit in ["4", "7", "9"] {
+            let refused = post(Self.thread + "/key", json: #"{"key":"\#(digit)","prompt":"\#(id)"}"#)
+            XCTAssertEqual(refused.status, 409, digit)
+            XCTAssertEqual(refused.body, #"{"error":"no_option","message":"Not a choice on the card"}"#, digit)
+        }
+        XCTAssertEqual(pane.argv.count, 0)
+
+        // A long menu, scrolled: the card holds every row on screen and says
+        // there are more.
+        pane.screen = DemoPrompt.scrolledMenu
+        let shown = try shownPrompt()
+        let prompt = try XCTUnwrap(shown["prompt"] as? [String: Any])
+        XCTAssertEqual(
+            (prompt["options"] as? [[String: Any]])?.compactMap { $0["n"] as? Int }, [4, 5, 6, 7, 8, 9])
+        XCTAssertEqual(prompt["selected"] as? Int, 6)
+        XCTAssertEqual(prompt["moreAbove"] as? Bool, true)
+        XCTAssertEqual(prompt["moreBelow"] as? Bool, true)
+        id = try XCTUnwrap(shown["id"] as? String)
+        // Row 9 is on the card; row 2 is off screen.
+        XCTAssertEqual(post(Self.thread + "/key", json: #"{"key":"2","prompt":"\#(id)"}"#).status, 409)
+        XCTAssertEqual(post(Self.thread + "/key", json: #"{"key":"9","prompt":"\#(id)"}"#).status, 200)
+        XCTAssertEqual(pane.argv.map(\.last), ["9"])
+    }
+
+    // MARK: replies, fifth review
+
+    func testARowCountUnderTheLastChoiceMeansMoreBelow() throws {
+        repliesOn()
+        pane.status = .waiting
+        pane.cursor = .lastLine
+        pane.screen = DemoPrompt.modelMenu
+        let prompt = try XCTUnwrap(try shownPrompt()["prompt"] as? [String: Any])
+        XCTAssertEqual((prompt["options"] as? [[String: Any]])?.count, 3)
+        XCTAssertEqual(prompt["moreBelow"] as? Bool, true)
+        XCTAssertEqual(prompt["moreAbove"] as? Bool, false)
+        // The dialog's own title, not the banner above its top edge.
+        XCTAssertEqual(prompt["title"] as? String, "Select model")
+        XCTAssertEqual(prompt["truncated"] as? Bool, false)
+    }
+
+    func testEveryKeyNeedsAnInputBoxOrAPromptToName() {
+        repliesOn()
+        // "Press any key": no card, and the status does not say waiting. Any
+        // key at all would answer it.
+        for status in [AttentionStatus.idle, .busy, nil] {
+            pane.status = status
+            pane.cursor = .lastLine
+            let thread = status == nil ? Self.shell : Self.thread
+            for screen in ["Press any key to continue", "$ less notes.txt\n(END)", "$ "] {
+                pane.screen = screen
+                for key in ["Escape", "Down", "Tab", "C-c", "C-u", "C-z", "Enter", "1"] {
+                    let refused = post(thread + "/key", json: #"{"key":"\#(key)"}"#)
+                    XCTAssertEqual(refused.status, 409, "\(screen) \(key)")
+                    XCTAssertEqual(
+                        refused.body, #"{"error":"no_input","message":"Thread shows no input box"}"#)
+                }
+            }
+        }
+        XCTAssertEqual(pane.argv.count, 0)
+        // An agent at work shows its box: Ctrl-C and Escape reach it.
+        pane.status = .busy
+        pane.screen = DemoPrompt.claudeIdle
+        pane.cursor = .inBox
+        XCTAssertEqual(post(Self.thread + "/key", json: #"{"key":"C-c"}"#).status, 200)
+        XCTAssertEqual(post(Self.thread + "/key", json: #"{"key":"Escape"}"#).status, 200)
+        XCTAssertEqual(pane.argv.map(\.last), ["C-c", "Escape"])
+    }
+
+    func testMorePagerAndAnyKeyLinesAreNotAFooterAndAColonIsFine() {
+        repliesOn()
+        let box = "────────────\n❯ \n────────────\n"
+        pane.cursor = .inBox
+        for below in ["  -- More --", "  --More--", "  Hit any key to continue", "  Overwrite (y or n)",
+                      "  press any key"] {
+            pane.screen = box + below
+            XCTAssertEqual(post(Self.thread + "/text", json: #"{"text":"y"}"#).status, 409, below)
+        }
+        XCTAssertEqual(pane.argv.count, 0)
+        // A status line may end in a colon.
+        for below in ["  ➜ acme-app git:(main) model:", "  branch: main · ctx:"] {
+            pane.screen = box + below
+            XCTAssertEqual(post(Self.thread + "/text", json: #"{"text":"go on"}"#).status, 200, below)
+        }
+    }
+
+    // MARK: uploads for the reply box
+
+    func testAnUploadForTheReplyBoxIsSavedAndTypesNothing() {
+        repliesOn()
+        // The phone puts the path into its own reply box, so nothing goes to
+        // the pane: a pane at work or on a prompt can still be given a file.
+        for status in [AttentionStatus.idle, .busy, .waiting] {
+            pane.status = status
+            let saved = post(Self.thread + "/upload?name=shot.png&paste=0", json: "demo")
+            XCTAssertEqual(saved.status, 200, "\(status)")
+            XCTAssertTrue(saved.body.contains(#""pasted":false"#), saved.body)
+        }
+        XCTAssertEqual(pane.argv.count, 0)
+        // Never over a file that is there: each one gets its own name.
+        XCTAssertEqual(pane.saves.map(\.path), [
+            "/Users/me/acme-app/shot.png", "/Users/me/acme-app/shot-2.png", "/Users/me/acme-app/shot-3.png",
+        ])
+        // The path comes back as it should be typed: quoted when it needs it.
+        let first = post(Self.thread + "/upload?name=a.png&paste=0", json: "demo")
+        XCTAssertEqual(
+            first.body,
+            #"{"ok":true,"pasted":false,"path":"\/Users\/me\/acme-app\/a.png","text":"\/Users\/me\/acme-app\/a.png"}"#)
+
+        // Every other rule holds: the switch, the size cap, the name, the thread.
+        XCTAssertEqual(post(Self.thread + "/upload?name=..&paste=0", json: "demo").status, 400)
+        XCTAssertEqual(
+            post(Self.thread + "/upload?name=big.bin&paste=0", json: String(repeating: "a", count: 65)).status,
+            413)
+        XCTAssertEqual(post("/api/threads/localhost%3A99/upload?name=a.png&paste=0", json: "demo").status, 404)
+        XCTAssertEqual(
+            post(Self.thread + "/upload?name=a.png&paste=0", json: "demo", token: nil).status, 401)
+        server.configure(MobileConfig(capabilities: [.replies, .keyBar]))
+        XCTAssertEqual(post(Self.thread + "/upload?name=a.png&paste=0", json: "demo").status, 403)
+        // Without the flag an upload still pastes, and is still refused for a busy pane.
+        repliesOn()
+        pane.status = .busy
+        XCTAssertEqual(post(Self.thread + "/upload?name=b.png", json: "demo").status, 409)
+    }
+
+    // MARK: the manager's own prompt
+
+    private func managerPrompt() throws -> [String: Any] {
+        try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(get("/api/manager/prompt").body.utf8)) as? [String: Any])
+    }
+
+    func testTheManagerHomeShowsTheManagersPromptAndTakesATappedAnswer() throws {
+        server.configure(MobileConfig(capabilities: [.manager, .replies]))
+        manager.status = .waiting
+        manager.pane.screen = DemoPrompt.question
+        manager.pane.cursor = .lastLine
+        let shown = try managerPrompt()
+        let prompt = try XCTUnwrap(shown["prompt"] as? [String: Any])
+        XCTAssertEqual(prompt["question"] as? String, "Which store should the cache use?")
+        XCTAssertEqual(prompt["selected"] as? Int, 1)
+        XCTAssertEqual((prompt["options"] as? [[String: Any]])?.count, 3)
+        let id = try XCTUnwrap(shown["id"] as? String)
+
+        // The same guards as a thread's card: the id, and a choice on the card.
+        XCTAssertEqual(post("/api/manager/answer", json: #"{"prompt":"9f2c","option":1}"#).status, 409)
+        XCTAssertEqual(post("/api/manager/answer", json: #"{"prompt":"\#(id)","option":7}"#).status, 400)
+        XCTAssertEqual(manager.pane.argv.count, 0)
+        XCTAssertEqual(post("/api/manager/answer", json: #"{"prompt":"\#(id)","option":2}"#).status, 200)
+        XCTAssertEqual(manager.pane.argv, [["send-keys", "-t", "mux-manager", "2"]])
+        // Answered: the same words after this are another prompt.
+        XCTAssertNotEqual(try XCTUnwrap(try managerPrompt()["id"] as? String), id)
+        XCTAssertEqual(post("/api/manager/answer", json: #"{"prompt":"\#(id)","option":1}"#).status, 409)
+        // It typed into the manager's pane and no other, and sent no turn.
+        XCTAssertEqual(pane.argv.count, 0)
+        XCTAssertEqual(manager.sent, [])
+        // A manager that waits on nothing has no card.
+        manager.status = .idle
+        manager.pane.screen = DemoPrompt.claudeIdle
+        manager.pane.cursor = .inBox
+        XCTAssertEqual(get("/api/manager/prompt").body, #"{"id":null,"prompt":null}"#)
+    }
+
+    func testCancelBacksOutOfThePromptTheCardShows() throws {
+        server.configure(MobileConfig(capabilities: [.manager, .replies]))
+        manager.status = .waiting
+        manager.pane.screen = DemoPrompt.question
+        manager.pane.cursor = .lastLine
+        let id = try XCTUnwrap(try managerPrompt()["id"] as? String)
+        XCTAssertEqual(post("/api/manager/answer", json: #"{"prompt":"9f2c","cancel":true}"#).status, 409)
+        XCTAssertEqual(manager.pane.argv.count, 0)
+        XCTAssertEqual(post("/api/manager/answer", json: #"{"prompt":"\#(id)","cancel":true}"#).status, 200)
+        XCTAssertEqual(manager.pane.argv, [["send-keys", "-t", "mux-manager", "Escape"]])
+
+        // The same for a thread's card.
+        pane.status = .waiting
+        pane.screen = DemoPrompt.permission
+        pane.cursor = .lastLine
+        let thread = try promptID()
+        XCTAssertEqual(post(Self.thread + "/answer", json: #"{"prompt":"\#(thread)","cancel":true}"#).status, 200)
+        XCTAssertEqual(pane.argv, [["send-keys", "-t", "%12", "Escape"]])
+        // Neither an option and a cancel, nor a cancel that is not true.
+        for body in [#"{"prompt":"x","cancel":false}"#, #"{"prompt":"x","cancel":"yes"}"#, #"{"prompt":"x"}"#] {
+            XCTAssertEqual(post("/api/manager/answer", json: body).status, 400, body)
+        }
+    }
+
+    func testTheManagersPromptRoutesNeedTheManagerSwitchAndTheirOwn() {
+        manager.status = .waiting
+        manager.pane.screen = DemoPrompt.question
+        manager.pane.cursor = .lastLine
+        let answer = #"{"prompt":"9f2c","option":1}"#
+        let key = #"{"key":"Escape"}"#
+        // Replies and the key bar without the manager switch, and the reverse.
+        for capabilities in [[MobileCapability.replies, .keyBar], [.manager], [.manager, .voice, .upload]] {
+            server.configure(MobileConfig(capabilities: Set(capabilities)))
+            for refused in [
+                get("/api/manager/prompt"), post("/api/manager/answer", json: answer),
+                post("/api/manager/key", json: key),
+            ] {
+                XCTAssertEqual(refused.status, 403, "\(capabilities)")
+                XCTAssertEqual(refused.body, #"{"error":"disabled"}"#)
+            }
+        }
+        // The key bar alone reads the prompt and presses keys, but answers nothing.
+        server.configure(MobileConfig(capabilities: [.manager, .keyBar]))
+        XCTAssertEqual(get("/api/manager/prompt").status, 200)
+        XCTAssertEqual(post("/api/manager/answer", json: answer).status, 403)
+        server.configure(MobileConfig(capabilities: [.manager, .replies]))
+        XCTAssertEqual(post("/api/manager/key", json: key).status, 403)
+        // The token and the origin, as for every write.
+        server.configure(MobileConfig(capabilities: [.manager, .replies, .keyBar]))
+        for path in ["/api/manager/answer", "/api/manager/key"] {
+            let body = path.hasSuffix("key") ? key : answer
+            XCTAssertEqual(post(path, json: body, token: nil).status, 401, path)
+            XCTAssertEqual(post(path, json: body, origin: "https://evil.example.com").status, 403, path)
+            XCTAssertEqual(post(path, json: body, writeHeader: false).status, 403, path)
+        }
+        XCTAssertEqual(get("/api/manager/prompt", token: nil).status, 401)
+        XCTAssertEqual(manager.pane.argv.count, 0)
+        // A manager that is not running has no pane.
+        manager.status = .off
+        XCTAssertEqual(post("/api/manager/key", json: key).status, 503)
+    }
+
+    func testAPromptThatCannotBeReadIsAnsweredFromTheTerminalViewWithTheKeyBar() throws {
+        server.configure(MobileConfig(capabilities: [.manager, .replies, .keyBar]))
+        manager.status = .waiting
+        manager.pane.screen = DemoPrompt.yesNo
+        manager.pane.cursor = .lastLine
+        let shown = try managerPrompt()
+        XCTAssertTrue(shown["prompt"] is NSNull)
+        let id = try XCTUnwrap(shown["id"] as? String)
+        // No card: Enter is refused, unless the phone shows the terminal,
+        // where the human reads the prompt itself.
+        let unseen = post("/api/manager/key", json: #"{"key":"Enter","prompt":"\#(id)"}"#)
+        XCTAssertEqual(unseen.status, 409)
+        XCTAssertEqual(unseen.body, #"{"error":"unseen","message":"Open the terminal to answer"}"#)
+        XCTAssertEqual(
+            post("/api/manager/key", json: #"{"key":"Enter","prompt":"\#(id)","terminal":true}"#).status, 200)
+        // The terminal view does not lift the id check.
+        XCTAssertEqual(
+            post("/api/manager/key", json: #"{"key":"Enter","prompt":"9f2c","terminal":true}"#).status, 409)
+        XCTAssertEqual(post("/api/manager/key", json: #"{"key":"Enter","terminal":true}"#).status, 409)
+        XCTAssertEqual(manager.pane.argv, [["send-keys", "-t", "mux-manager", "Enter"]])
+
+        // The same for a thread.
+        repliesOn()
+        pane.status = .waiting
+        pane.screen = DemoPrompt.yesNo
+        pane.cursor = .lastLine
+        let thread = try promptID()
+        XCTAssertEqual(post(Self.thread + "/key", json: #"{"key":"Enter","prompt":"\#(thread)"}"#).status, 409)
+        XCTAssertEqual(
+            post(Self.thread + "/key", json: #"{"key":"Enter","prompt":"\#(thread)","terminal":true}"#).status,
+            200)
+    }
+
+    func testAQuestionDrawnInColumnsGivesACardThatPointsToTheTerminal() throws {
+        server.configure(MobileConfig(capabilities: [.manager, .replies]))
+        manager.status = .waiting
+        manager.pane.screen = DemoPrompt.columns
+        manager.pane.cursor = .lastLine
+        let prompt = try XCTUnwrap(try managerPrompt()["prompt"] as? [String: Any])
+        let labels = (prompt["options"] as? [[String: Any]])?.compactMap { $0["label"] as? String } ?? []
+        XCTAssertEqual(labels.count, 3)
+        XCTAssertEqual(labels.first, "Sidebar on the")
+        // No piece of the preview box in a label, and the card says it does
+        // not hold everything.
+        XCTAssertFalse(labels.joined().unicodeScalars.contains { (0x2500...0x259F).contains($0.value) })
+        XCTAssertEqual(prompt["truncated"] as? Bool, true)
+        XCTAssertEqual(prompt["question"] as? String, "Which layout should the page use?")
     }
 }

@@ -1,59 +1,77 @@
 import { describe, expect, it } from 'vitest';
-import { homeLines, needsYouCards } from './manager';
+import {
+	boardSummary,
+	elapsedLabel,
+	needsYouCards,
+	pendingPrompt,
+	PHRASE_SECONDS,
+	THINKING_PHRASES,
+	thinkingText
+} from './manager';
 import type { ChatMessage, ManagerItem, Thread } from './types';
 
 const chat = (...rows: [ChatMessage['role'], string][]): ChatMessage[] =>
 	rows.map(([role, text], n) => ({ n, role, text }));
 
-describe('homeLines', () => {
-	it('shows the last three lines of the conversation, without tool rows', () => {
-		const lines = homeLines(
-			chat(
-				['user', 'good morning'],
-				['assistant', 'Morning.'],
-				['user', 'what needs me?'],
-				['tool', 'mux sessions'],
-				['assistant', 'Two threads need you.']
-			),
-			null
+describe('pendingPrompt', () => {
+	it('is the prompt until the chat holds it', () => {
+		expect(pendingPrompt(null, chat(['user', 'hi']), -1)).toBeNull();
+		expect(pendingPrompt('what needs me?', null, -1)).toBe('what needs me?');
+		expect(pendingPrompt('what needs me?', chat(['assistant', 'Morning.']), 0)).toBe(
+			'what needs me?'
 		);
-		expect(lines).toEqual([
-			{ role: 'manager', text: 'Morning.' },
-			{ role: 'user', text: 'what needs me?' },
-			{ role: 'manager', text: 'Two threads need you.' }
-		]);
+		expect(
+			pendingPrompt(
+				'what needs me?',
+				chat(['assistant', 'Morning.'], ['user', 'what needs me?']),
+				0
+			)
+		).toBeNull();
 	});
 
-	it('puts the turn in flight after the chat', () => {
-		const lines = homeLines(chat(['assistant', 'Morning.']), {
-			prompt: 'what needs me?',
-			reply: 'Two'
-		});
-		expect(lines).toEqual([
-			{ role: 'manager', text: 'Morning.' },
-			{ role: 'user', text: 'what needs me?' },
-			{ role: 'manager', text: 'Two', live: true }
-		]);
+	it('does not take an older turn with the same words for this one', () => {
+		const rows = chat(['user', 'what needs me?'], ['assistant', 'Nothing.']);
+		expect(pendingPrompt('what needs me?', rows, 1)).toBe('what needs me?');
+		expect(
+			pendingPrompt('what needs me?', [...rows, { n: 2, role: 'user', text: 'what needs me?' }], 1)
+		).toBeNull();
+	});
+});
+
+describe('thinkingText', () => {
+	it("shows the pane's own spinner line when there is one", () => {
+		expect(thinkingText('Incubating… 4m 48s', 3)).toBe('Incubating… 4m 48s');
 	});
 
-	it('does not show a turn twice once the transcript has its prompt', () => {
-		const lines = homeLines(
-			chat(['assistant', 'Morning.'], ['user', 'what needs me?'], ['assistant', 'Two threads']),
-			{ prompt: 'what needs me?', reply: 'Two threads need' }
+	it('else rotates through phrases, each with the time so far', () => {
+		expect(thinkingText(null, 0)).toBe(`${THINKING_PHRASES[0]}… 0s`);
+		expect(thinkingText(null, PHRASE_SECONDS - 1)).toBe(
+			`${THINKING_PHRASES[0]}… ${PHRASE_SECONDS - 1}s`
 		);
-		expect(lines.map((line) => line.text)).toEqual([
-			'Morning.',
-			'what needs me?',
-			'Two threads need'
-		]);
+		expect(thinkingText(null, PHRASE_SECONDS)).toBe(`${THINKING_PHRASES[1]}… ${PHRASE_SECONDS}s`);
+		const round = PHRASE_SECONDS * THINKING_PHRASES.length;
+		expect(thinkingText(null, round)).toBe(`${THINKING_PHRASES[0]}… ${elapsedLabel(round)}`);
+		expect(thinkingText('', 5)).toContain('… 5s');
+		expect(new Set(THINKING_PHRASES).size).toBeGreaterThan(3);
 	});
 
-	it('keeps an older answer to the same question', () => {
-		const lines = homeLines(
-			chat(['user', 'what needs me?'], ['assistant', 'Nothing.'], ['user', 'thanks']),
-			{ prompt: 'what needs me?', reply: '' }
+	it('writes the time as the agent does', () => {
+		expect(elapsedLabel(0)).toBe('0s');
+		expect(elapsedLabel(48)).toBe('48s');
+		expect(elapsedLabel(288)).toBe('4m 48s');
+		expect(elapsedLabel(3723)).toBe('1h 2m 3s');
+		expect(elapsedLabel(3600)).toBe('1h 0m 0s');
+		expect(elapsedLabel(-4)).toBe('0s');
+	});
+});
+
+describe('boardSummary', () => {
+	it('names what the board holds, and leaves out what it does not', () => {
+		expect(boardSummary({ needsYou: 2, review: 1, updates: 5 })).toBe(
+			'2 need you · 1 review · 5 updates'
 		);
-		expect(lines.map((line) => line.text)).toEqual(['thanks', 'what needs me?', '']);
+		expect(boardSummary({ needsYou: 0, review: 1, updates: 1 })).toBe('1 review · 1 update');
+		expect(boardSummary({ needsYou: 0, review: 0, updates: 0 })).toBe('Nothing waiting');
 	});
 });
 

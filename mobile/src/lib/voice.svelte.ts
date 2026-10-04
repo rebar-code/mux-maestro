@@ -1,8 +1,8 @@
-import { ApiError } from './api';
 import { live } from './live.svelte';
 import type { VoiceEnd, VoiceMode } from './types';
 import { replayVoice, sendVoice, warmVoice, type VoiceHandlers } from './voice/api';
 import { Capture } from './voice/capture';
+import { dropLabel, micFault, requestFault } from './voice/faults';
 import { Player } from './voice/player';
 import { takeWav } from './voice/wav';
 
@@ -26,8 +26,6 @@ export interface VoiceSink {
 export type PrimaryKind = 'talk' | 'submit' | 'stop' | 'pause' | 'resume';
 
 const KEY = 'mm.voice';
-/** After a reply ends, Auto waits this long, so it does not hear the reply's tail. */
-const REARM_MS = 400;
 /** Under the Mac's limit, so a take that hits it is still accepted. */
 const LIMIT_MARGIN_MS = 5000;
 
@@ -45,6 +43,29 @@ function picked(): Picked {
 }
 
 type AudioContextClass = typeof AudioContext;
+
+/** Milliseconds from Submit to the reply's first text and first audio. */
+export interface VoiceTiming {
+	text: number | null;
+	audio: number | null;
+}
+
+/**
+ * Tell the phone what the audio is for, where it can be told (iOS 17). With
+ * the mic closed the reply is `playback`: it plays with the ringer switch on
+ * silent and through the loudspeaker. With the mic open the session must be
+ * `play-and-record`, which iOS plays quietly, so the mic is closed before a
+ * reply is played.
+ */
+function session(type: 'playback' | 'play-and-record'): void {
+	const audio = (navigator as { audioSession?: { type: string } }).audioSession;
+	if (!audio) return;
+	try {
+		audio.type = type;
+	} catch {
+		// An older phone: it picks the session itself.
+	}
+}
 
 /**
  * Voice on this phone: one mic, one speaker, one turn at a time, whichever
@@ -66,6 +87,10 @@ class Voice {
 	listening = $state(false);
 	/** Why the last take went nowhere. */
 	note = $state<string | null>(null);
+	/** How loud the mic is now, 0 to 1, while it is open. */
+	level = $state(0);
+	/** The last turn's delays, for the report of a slow turn. */
+	timing = $state.raw<VoiceTiming>({ text: null, audio: null });
 
 	/** What this phone picked. Until it picks, the Mac's defaults apply. */
 	private picked = $state<Picked>(picked());
@@ -84,9 +109,11 @@ class Voice {
 	private bound = $state.raw<{ target: VoiceTarget; sink: VoiceSink } | null>(null);
 	/** The turn in flight has begun at its target. */
 	private sink: VoiceSink | null = null;
-	private armAt = 0;
 	/** Skip was pressed: the rest of this reply is not played. */
 	private silenced = false;
+	/** Keeps the screen on while a turn runs: a locked phone stops web audio. */
+	private wake: WakeLockSentinel | null = null;
+	private wakeWanted = false;
 
 	private get inFlight(): boolean {
 		return this.abort !== null;
@@ -148,14 +175,24 @@ class Voice {
 				window.AudioContext ??
 				(window as unknown as { webkitAudioContext?: AudioContextClass }).webkitAudioContext;
 			if (!Context) return;
+			session('playback');
 			const context = new Context();
 			this.context = context;
 			context.onstatechange = () => {
-				this.listening = this.stream !== null && context.state === 'running';
+				const running = context.state === 'running';
+				this.listening = this.stream !== null && running;
+				// Not a pause of ours: a call, Siri or another app took the audio.
+				if (!running && context.state !== 'closed' && !this.paused) this.interrupted();
 			};
 			const player = new Player(context);
 			player.onStarted = () => {
-				if (this.status !== 'recording') this.status = 'speaking';
+				if (this.status === 'recording') return;
+				this.status = 'speaking';
+				// The phone did not let the audio start: Resume, a tap, will.
+				if (context.state !== 'running') this.paused = true;
+			};
+			player.onFailed = () => {
+				this.note = 'Reply audio failed';
 			};
 			player.onDrained = () => {
 				if (!this.inFlight && this.status !== 'recording') this.rest();
@@ -177,18 +214,39 @@ class Voice {
 		this.unlock();
 		const context = this.context;
 		if (!context) {
-			this.note = 'This browser has no audio';
+			this.note = 'No audio on this phone';
 			return false;
 		}
 		if (this.stream) return true;
 		let stream: MediaStream;
 		try {
+			session('play-and-record');
 			stream = await navigator.mediaDevices.getUserMedia({
-				audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true }
+				audio: {
+					channelCount: 1,
+					echoCancellation: true,
+					noiseSuppression: true,
+					autoGainControl: true
+				}
 			});
-		} catch {
-			this.note = 'Microphone access is off';
+		} catch (error) {
+			session('playback');
+			this.note = micFault(error);
 			return false;
+		}
+		// The page was left while the phone asked: nothing may hold the mic.
+		if (this.context !== context) {
+			for (const track of stream.getTracks()) track.stop();
+			return false;
+		}
+		// The permission prompt suspends the audio on iOS, and it stays
+		// suspended: no frame would ever arrive.
+		if (context.state !== 'running') {
+			try {
+				await context.resume();
+			} catch {
+				// Still not running: the take shows "Mic gave no sound".
+			}
 		}
 		// Two taps in a row: the first one's stream is already in place.
 		if (this.stream) {
@@ -206,6 +264,7 @@ class Voice {
 		processor.connect(context.destination);
 		this.processor = processor;
 		this.listening = context.state === 'running';
+		this.keepAwake();
 		return true;
 	}
 
@@ -217,10 +276,55 @@ class Voice {
 		this.processor?.disconnect();
 		this.source?.disconnect();
 		for (const track of this.stream?.getTracks() ?? []) track.stop();
+		const held = this.stream !== null;
 		this.processor = null;
 		this.source = null;
 		this.stream = null;
 		this.listening = false;
+		this.level = 0;
+		if (held) session('playback');
+		this.keepAwake();
+	}
+
+	/** Hold the screen on while a turn runs, and while Auto listens. */
+	private keepAwake(): void {
+		const wanted = this.status !== 'idle' || this.stream !== null;
+		if (wanted === this.wakeWanted) return;
+		this.wakeWanted = wanted;
+		if (!wanted) {
+			void this.wake?.release();
+			this.wake = null;
+			return;
+		}
+		navigator.wakeLock?.request('screen').then(
+			(lock) => {
+				if (this.wakeWanted) this.wake = lock;
+				else void lock.release();
+			},
+			() => {
+				// Low power mode, or an old phone: the screen may lock.
+			}
+		);
+	}
+
+	/** Something else took the phone's audio. Nothing is recorded or played now. */
+	private interrupted(): void {
+		if (this.status === 'speaking') {
+			// What is left of the reply waits for Resume.
+			this.paused = true;
+			return;
+		}
+		const lost = this.status === 'recording';
+		// With no mic open there is nothing to lose: the phone's own mic prompt
+		// suspends the audio too, and the take that follows must still start.
+		if (!lost && !this.stream) return;
+		// Auto does not start to listen again by itself: a tap does.
+		this.bound = null;
+		this.closeMic();
+		if (lost) {
+			this.rest();
+			this.note = 'Mic interrupted';
+		}
 	}
 
 	/**
@@ -233,12 +337,16 @@ class Voice {
 
 	/** The page is going away or into the background: give everything back. */
 	release = (): void => {
+		this.bound = null;
 		this.halt();
 		this.closeMic();
 		this.rest();
-		void this.context?.close();
+		const context = this.context;
 		this.context = null;
 		this.player = null;
+		if (!context) return;
+		context.onstatechange = null;
+		void context.close();
 	};
 
 	private frame(input: Float32Array): void {
@@ -246,12 +354,9 @@ class Voice {
 		if (!capture || this.micMuted) return;
 		const now = performance.now();
 		const armed =
-			this.mode === 'auto' &&
-			this.bound !== null &&
-			this.status === 'idle' &&
-			!this.inFlight &&
-			now >= this.armAt;
+			this.mode === 'auto' && this.bound !== null && this.status === 'idle' && !this.inFlight;
 		const result = capture.feed(input, now, this.mode, armed);
+		this.level = capture.level;
 		if (result === 'began' && this.bound) this.opened(this.bound.target);
 		else if (result === 'ended') this.submit();
 	}
@@ -261,13 +366,18 @@ class Voice {
 		this.target = target;
 		this.status = 'recording';
 		this.note = null;
+		this.keepAwake();
 		void warmVoice(this.speaker);
 	}
 
+	/** Nothing runs now. In Auto the mic, closed for the reply, opens again. */
 	private rest(): void {
 		this.status = 'idle';
 		this.paused = false;
-		this.armAt = performance.now() + REARM_MS;
+		this.keepAwake();
+		if (this.mode === 'auto' && !this.micMuted && this.bound && this.context && !this.stream) {
+			void this.openMic();
+		}
 	}
 
 	/** The rising two-tone cue: the take was heard and is on its way. */
@@ -318,32 +428,46 @@ class Voice {
 		this.target = target;
 		this.status = 'thinking';
 		this.silenced = false;
+		// No mic while the Mac thinks and speaks: see `submit`.
+		this.closeMic();
+		this.keepAwake();
+		const started = performance.now();
+		const since = (): number => Math.round(performance.now() - started);
+		this.timing = { text: null, audio: null };
 		const mine = (): boolean => this.abort === control;
+		const heard = (): void => {
+			if (this.timing.text === null) this.timing = { ...this.timing, text: since() };
+		};
 		try {
 			const end = await make(
 				{
 					onTranscript: (text) => {
 						if (!mine()) return;
+						heard();
 						this.sink = sink;
 						sink.begin(text);
 					},
 					onDelta: (text) => {
-						if (mine() && this.sink) sink.delta(text);
+						if (!mine()) return;
+						heard();
+						if (this.sink) sink.delta(text);
 					},
 					onAudio: (wav) => {
-						if (mine() && !this.silenced && (always || this.speaker)) this.player?.enqueue(wav);
+						if (!mine()) return;
+						if (this.timing.audio === null) this.timing = { ...this.timing, audio: since() };
+						if (!this.silenced && (always || this.speaker)) this.player?.enqueue(wav);
 					}
 				},
 				control.signal
 			);
 			if (!mine()) return;
 			if (this.sink) sink.end(end);
-			else if (end.outcome !== 'done') this.note = end.message;
+			else if (end.outcome === 'empty') this.note = dropLabel('silent');
+			else if (end.outcome !== 'done') this.note = end.message ?? 'Mac not reachable';
 		} catch (error) {
 			if (!mine()) return;
 			live.fail(error);
-			const message =
-				error instanceof ApiError && error.detail ? error.detail : 'The Mac did not answer';
+			const message = requestFault(error);
 			if (this.sink) sink.fail(message);
 			else this.note = message;
 		}
@@ -358,14 +482,19 @@ class Voice {
 		const target = this.target;
 		const sink = this.bound?.sink;
 		if (!capture || target === null || !sink) return;
-		const mode = this.mode;
 		const rate = capture.rate;
-		const samples = capture.end(mode);
-		this.settleMic();
-		if (!samples) return this.rest();
+		const take = capture.end(this.mode);
+		// The mic is given back before the reply, in Auto too: with it open the
+		// phone plays the reply quietly, and Auto would hear the reply itself.
+		this.closeMic();
+		if ('dropped' in take) {
+			this.rest();
+			this.note = dropLabel(take.dropped);
+			return;
+		}
 		this.blip();
 		const speaker = this.speaker;
-		const wav = takeWav(samples, rate);
+		const wav = takeWav(take.samples, rate);
 		void this.run(target, sink, false, (handlers, signal) =>
 			sendVoice(target, speaker, wav, handlers, signal)
 		);

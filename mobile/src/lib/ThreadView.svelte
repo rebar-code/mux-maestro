@@ -4,16 +4,19 @@
 	import { ARTIFACTS, Artifacts } from './artifacts.svelte';
 	import ArtifactsPage from './ArtifactsPage.svelte';
 	import AttachButton from './AttachButton.svelte';
+	import AttachTiles from './AttachTiles.svelte';
 	import Composer from './Composer.svelte';
 	import { Find } from './find.svelte';
 	import FindBar from './FindBar.svelte';
+	import type { Snippet } from 'svelte';
 	import { dotClass, statusLabel } from './format';
 	import { pages, pullToRefresh, ui } from './gestures.svelte';
 	import KeyBar from './KeyBar.svelte';
 	import { overKeyboard } from './keyboard';
-	import { can, live } from './live.svelte';
+	import { can, live, OFF_LABEL } from './live.svelte';
 	import Marked from './Marked.svelte';
 	import NextBar from './NextBar.svelte';
+	import NoteLine from './NoteLine.svelte';
 	import PromptCard from './PromptCard.svelte';
 	import PullIndicator from './PullIndicator.svelte';
 	import { liveLines, nextWaiting } from './reply';
@@ -28,7 +31,41 @@
 	import { voice } from './voice.svelte';
 	import VoiceBar from './VoiceBar.svelte';
 
-	const { id }: { id: string } = $props();
+	interface Props {
+		id: string;
+		/**
+		 * A feed that is not a listed thread's own (the manager pane). The view
+		 * then has no thread row to read: it always has a chat and is never closed.
+		 */
+		feed?: ThreadFeed;
+		/** Drawn in place of the thread's own toolbar. */
+		header?: Snippet;
+		/** Drawn after the last chat row: what the thread is doing now. */
+		tail?: Snippet;
+		/** A prompt that was sent and is not in the chat yet. */
+		pending?: string | null;
+		/** The first tab shows the terminal, not the chat. */
+		terminal?: boolean;
+		/**
+		 * What asks and answers prompts on a pane that is not a listed thread
+		 * (the manager). The view then draws the pane's prompt card; the page
+		 * that gives it draws its own keys and text box.
+		 */
+		reply?: Reply;
+	}
+
+	/* eslint-disable prefer-const */
+	// `terminal` is bound, so the props are one `let`.
+	let {
+		id,
+		feed: given,
+		header,
+		tail,
+		pending = null,
+		terminal = $bindable(false),
+		reply: givenReply
+	}: Props = $props();
+	/* eslint-enable prefer-const */
 
 	const PULL = 'thread';
 	const MAIN = 'main';
@@ -46,13 +83,14 @@
 	const LABELS: Record<string, string> = { [ARTIFACTS]: 'Artifacts', [SERVERS]: 'Servers' };
 
 	// svelte-ignore state_referenced_locally
-	const feed = new ThreadFeed(id);
+	const feed = given ?? new ThreadFeed(id);
+	// svelte-ignore state_referenced_locally
+	const listed = given === undefined;
 
-	const thread = $derived(live.byId(id));
-	const canChat = $derived(thread?.chat ?? false);
-	let terminal = $state(false);
+	const thread = $derived(listed ? live.byId(id) : undefined);
+	const canChat = $derived(listed ? (thread?.chat ?? false) : true);
 	const mode: Mode = $derived(canChat && !terminal ? 'chat' : 'terminal');
-	const closed = $derived((live.threads !== null && !thread) || feed.gone);
+	const closed = $derived(listed && ((live.threads !== null && !thread) || feed.gone));
 
 	// svelte-ignore state_referenced_locally
 	const artifacts = new Artifacts(id);
@@ -78,10 +116,16 @@
 	const color = $derived(thread?.hostColor ?? '#2a2a2a');
 
 	// svelte-ignore state_referenced_locally
-	const reply = new Reply(id, {
-		refresh: () => feed.load(mode),
-		stick: (change) => feed.keepEnd(mode, false, change)
-	});
+	const reply =
+		givenReply ??
+		new Reply(id, {
+			refresh: () => feed.load(mode),
+			stick: (change) => feed.keepEnd(mode, false, change),
+			terminal: () => mode === 'terminal'
+		});
+	/** The pane's prompts are shown and answered here: a listed thread, or a pane given its own `reply`. */
+	// svelte-ignore state_referenced_locally
+	const asks = listed || givenReply !== undefined;
 
 	// svelte-ignore state_referenced_locally
 	const find = new Find(
@@ -95,15 +139,20 @@
 	const keysOn = $derived(can('keyBar'));
 	// A take goes to the thread as a reply, so voice needs that switch too.
 	const voiceOn = $derived(repliesOn && can('voice'));
-	const docked = $derived(!closed && (repliesOn || keysOn));
-	const next = $derived(repliesOn ? nextWaiting(live.threads ?? [], id) : null);
+	// A listed thread's reply box is always there: switched off on the Mac, it says so and
+	// takes nothing. The manager pane is not a listed thread: it has no reply routes, and
+	// its page brings its own box, so it gets no dock, no card and no Next bar.
+	const docked = $derived(listed && !closed);
+	const next = $derived(listed && repliesOn ? nextWaiting(live.threads ?? [], id) : null);
 	// The pane can ask while its status says nothing of it: the prompt decides.
 	// With the key bar alone the card is read-only: it shows what a key would answer.
-	const cardId = $derived(repliesOn || keysOn ? reply.promptId : null);
+	const cardId = $derived(asks && (repliesOn || keysOn) ? reply.promptId : null);
 	const card = $derived(cardId === null ? null : reply.prompt);
 
 	/** The card shows only part of the pane's text: the terminal has it all. */
 	function showTerminal(): void {
+		// What a key was told before ("open the terminal") is done now.
+		reply.note = null;
 		terminal = true;
 		ui.goTo(0);
 	}
@@ -133,39 +182,46 @@
 		readonly={!repliesOn}
 		answering={reply.answering}
 		onanswer={reply.answer}
+		oncancel={repliesOn ? reply.cancel : undefined}
 		{onterminal}
 	/>
 {/snippet}
 
-<header
-	class="tbar thread"
-	style:border-bottom-color={color}
-	style:background="linear-gradient({color}3a, {color}14), var(--bar)"
->
-	<button class="tb" aria-label="Menu" onclick={() => ui.openDrawer()}>☰</button>
-	{#if thread}
-		<span class="dot {dotClass(thread)}"></span>
-		<div class="title">
-			<b>{thread.session} · {thread.name}</b>
-			<span><i class="hchip" style:background={color}>{thread.host}</i> {statusLabel(thread)}</span>
-		</div>
-	{:else if closed}
-		<div class="title"><b>Closed</b></div>
-	{:else}
-		<div class="title">
-			<span class="skel" style:width="55%" style:height="14px" style:margin-bottom="5px"></span>
-			<span class="skel" style:width="35%" style:height="11px"></span>
-		</div>
-	{/if}
-	<button
-		class="tb"
-		disabled={!can('find') || closed}
-		aria-disabled={!can('find')}
-		aria-label="Find"
-		aria-pressed={finding}
-		onclick={find.toggle}>🔍</button
+{#if header}
+	{@render header()}
+{:else}
+	<header
+		class="tbar thread"
+		style:border-bottom-color={color}
+		style:background="linear-gradient({color}3a, {color}14), var(--bar)"
 	>
-</header>
+		<button class="tb" aria-label="Menu" onclick={() => ui.openDrawer()}>☰</button>
+		{#if thread}
+			<span class="dot {dotClass(thread)}"></span>
+			<div class="title">
+				<b>{thread.session} · {thread.name}</b>
+				<span
+					><i class="hchip" style:background={color}>{thread.host}</i> {statusLabel(thread)}</span
+				>
+			</div>
+		{:else if closed}
+			<div class="title"><b>Closed</b></div>
+		{:else}
+			<div class="title">
+				<span class="skel" style:width="55%" style:height="14px" style:margin-bottom="5px"></span>
+				<span class="skel" style:width="35%" style:height="11px"></span>
+			</div>
+		{/if}
+		<button
+			class="tb"
+			disabled={!can('find') || closed}
+			aria-disabled={!can('find')}
+			aria-label="Find"
+			aria-pressed={finding}
+			onclick={find.toggle}>🔍</button
+		>
+	</header>
+{/if}
 
 {#if finding}<FindBar {find} />{/if}
 
@@ -199,18 +255,6 @@
 		{/each}
 	</div>
 	<button
-		class="tb size"
-		aria-label="Smaller text"
-		disabled={text.atMin}
-		onclick={() => text.step(-1)}>A−</button
-	>
-	<button
-		class="tb size"
-		aria-label="Larger text"
-		disabled={text.atMax}
-		onclick={() => text.step(1)}>A+</button
-	>
-	<button
 		class="tb"
 		aria-label="Refresh"
 		disabled={ui.refreshing !== null}
@@ -221,12 +265,14 @@
 <div
 	class="pager"
 	class:docked
+	data-thread-pages
 	style:--term-size="{text.size}px"
 	style:--chat-size="{text.chat}px"
 	{@attach pages(tabs, landed)}
 	{@attach feed.watch(mode)}
 	{@attach can('artifacts') && artifacts.watch}
 	{@attach can('localServers') && servers.watch}
+	{@attach !listed && asks && (repliesOn || keysOn) && reply.watch}
 >
 	<div
 		class="track"
@@ -246,6 +292,7 @@
 						class="scroll"
 						data-pull={PULL}
 						data-view="chat"
+						data-rise
 						{@attach feed.scroller('chat')}
 						{@attach pullToRefresh(PULL, () => feed.load('chat'))}
 					>
@@ -280,6 +327,10 @@
 									{#if spoken.prompt}<div class="u" data-live>{reply.turn.prompt}</div>{/if}
 									{#if spoken.reply}<div class="a" data-live>{reply.turn.reply}</div>{/if}
 								{/if}
+								{#if pending}
+									<div class="u" data-pending>{pending}</div>
+								{/if}
+								{@render tail?.()}
 							{/if}
 							{#if cardId !== null}
 								{@render promptCard(cardId, showTerminal)}
@@ -287,7 +338,13 @@
 						</div>
 					</div>
 				{:else}
-					<div class="scroll" data-view="terminal" data-zoom {@attach feed.scroller('terminal')}>
+					<div
+						class="scroll"
+						data-view="terminal"
+						data-zoom
+						data-rise
+						{@attach feed.scroller('terminal')}
+					>
 						{#if feed.screen === null}
 							<div class="chat">
 								{#each [90, 70, 82, 55, 76] as width (width)}
@@ -346,17 +403,24 @@
 <ServeConfirm {servers} />
 
 {#if docked}
-	<div class="dock" data-dock {@attach overKeyboard} {@attach reply.watch}>
+	<div
+		class="dock"
+		data-dock
+		{@attach overKeyboard}
+		{@attach (repliesOn || keysOn) && reply.watch}
+		{@attach reply.files.watch}
+	>
 		{#if next}<NextBar thread={next} />{/if}
 		{#if repliesOn && reply.matches.length}
 			<SlashList commands={reply.matches} onpick={reply.pick} />
 		{/if}
 		{#if !repliesOn && reply.note}
 			<!-- With no composer below, the bar's own refusals are said here. -->
-			<div class="knote" class:bad={reply.note.bad} role="alert" data-note>{reply.note.text}</div>
+			<NoteLine note={reply.note} />
 		{/if}
 		{#if keysOn}<KeyBar {reply} composer={repliesOn} />{/if}
-		{#if voiceOn}<VoiceBar target={id} sink={reply.voice} />{/if}
+		<!-- Voice switched off on the Mac: the bar stays and says so, like the manager's. -->
+		{#if repliesOn}<VoiceBar target={id} sink={reply.voice} off={!voiceOn} />{/if}
 		{#if repliesOn}
 			<Composer
 				bind:value={reply.draft}
@@ -365,16 +429,34 @@
 				target={id}
 				sink={reply.voice}
 				{voiceOn}
-				blocked={reply.blocked || reply.sending}
+				blocked={reply.blocked || reply.sending || reply.files.pending}
 				note={reply.note}
 				onsend={send}
 				oninput={reply.typed}
 				onbeforeinput={reply.beforeInput}
+				onpaste={reply.pasted}
+			>
+				{#snippet above()}
+					{#if reply.files.items.length}<AttachTiles files={reply.files} />{/if}
+				{/snippet}
+				{#snippet leading()}
+					<AttachButton off={!can('upload')} onpick={reply.files.add} onoff={reply.uploadOff} />
+				{/snippet}
+			</Composer>
+		{:else}
+			<!-- Same box, same place: nothing moves when the Mac switches replies on. -->
+			<Composer
+				value=""
+				label={OFF_LABEL}
+				target={id}
+				sink={reply.voice}
+				voiceOn={false}
+				off
+				bare
+				onsend={() => {}}
 			>
 				{#snippet leading()}
-					{#if can('upload')}
-						<AttachButton busy={reply.uploading} disabled={reply.blocked} onpick={reply.upload} />
-					{/if}
+					<AttachButton disabled />
 				{/snippet}
 			</Composer>
 		{/if}
@@ -410,11 +492,6 @@
 	.tabs .seg {
 		flex: 1;
 		margin-right: 0;
-	}
-
-	.size {
-		font-size: 14px;
-		font-weight: 600;
 	}
 
 	.seg button {
@@ -464,7 +541,7 @@
 		display: flex;
 		flex-direction: column;
 		gap: 10px;
-		padding: 10px 14px calc(16px + env(safe-area-inset-bottom));
+		padding: 10px 14px calc(16px + var(--below, env(safe-area-inset-bottom)));
 		font-size: var(--chat-size);
 	}
 
@@ -479,19 +556,6 @@
 		display: flex;
 		flex-direction: column;
 		padding-bottom: var(--kb, 0px);
-	}
-
-	.knote {
-		padding: 0 max(18px, env(safe-area-inset-right)) 6px max(18px, env(safe-area-inset-left));
-		font-size: 12.5px;
-		color: var(--muted);
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-	}
-
-	.knote.bad {
-		color: var(--red);
 	}
 
 	.u {
@@ -536,7 +600,7 @@
 	}
 
 	.screen {
-		padding: 10px 12px calc(16px + env(safe-area-inset-bottom));
+		padding: 10px 12px calc(16px + var(--below, env(safe-area-inset-bottom)));
 		font-size: var(--term-size);
 		/* A whole number of pixels, so a thousand lines are exactly a thousand times one. */
 		--lh: calc(var(--term-size) * 1.3);
@@ -619,7 +683,7 @@
 	.jump {
 		position: absolute;
 		right: max(12px, env(safe-area-inset-right));
-		bottom: calc(14px + env(safe-area-inset-bottom));
+		bottom: calc(14px + var(--below, env(safe-area-inset-bottom)));
 		width: var(--hit);
 		height: var(--hit);
 		border-radius: 50%;

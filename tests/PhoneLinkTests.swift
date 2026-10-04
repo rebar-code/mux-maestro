@@ -59,8 +59,14 @@ private final class MemoryPorts: PhonePortStore {
 private final class MemoryTokens: PhoneTokenStore {
     var token: String?
     var refuses = false
+    /// When set, `load` blocks until it is signalled: the Keychain dialog
+    /// waiting for a click.
+    var dialog: DispatchSemaphore?
 
-    func load() -> String? { token }
+    func load() -> String? {
+        dialog?.wait()
+        return token
+    }
 
     func save(_ token: String) -> Bool {
         guard !refuses else { return false }
@@ -101,7 +107,7 @@ final class PhoneLinkTests: XCTestCase {
         let link = PhoneLink(
             server: server, runner: tailscale, tailscalePath: { tailscalePath },
             port: { port }, keepAwake: { keepAwake }, tokens: tokens, ports: ports,
-            now: { [unowned self] in self.clock }, notify: { $0() })
+            now: { [unowned self] in self.clock }, keychainNotice: 0.05, notify: { $0() })
         link.onMappings = { [weak self] mappings in
             guard let self else { return }
             self.lock.lock()
@@ -119,7 +125,9 @@ final class PhoneLinkTests: XCTestCase {
 
     private func settle(_ link: PhoneLink, file: StaticString = #filePath, line: UInt = #line) {
         let deadline = Date().addingTimeInterval(5)
-        while link.state == .starting, Date() < deadline { usleep(10_000) }
+        while link.state == .starting || link.state == .waitingForKeychain, Date() < deadline {
+            usleep(10_000)
+        }
         XCTAssertNotEqual(link.state, .starting, file: file, line: line)
     }
 
@@ -164,6 +172,41 @@ final class PhoneLinkTests: XCTestCase {
         XCTAssertNotEqual(fresh, "stored-token")
         while link.state == .on(url: url, pairing: pairing), Date() < deadline { usleep(10_000) }
         XCTAssertEqual(link.state, .on(url: url, pairing: url + "#pair=" + fresh))
+        link.shutdown()
+    }
+
+    /// Bug: a new build makes macOS ask for the pairing token again, and the
+    /// start sat in the Keychain read with the pane still saying "Starting…".
+    func testASlowKeychainReadSaysSoAndThenStarts() {
+        tokens.token = "stored-token"
+        let dialog = DispatchSemaphore(value: 0)
+        tokens.dialog = dialog
+        let link = link()
+        link.turnOn()
+        let deadline = Date().addingTimeInterval(5)
+        while link.state != .waitingForKeychain, Date() < deadline { usleep(10_000) }
+        XCTAssertEqual(link.state, .waitingForKeychain)
+        XCTAssertFalse(link.isOn)
+        // Nothing is published while the read is pending.
+        XCTAssertFalse(tailscale.calls.contains { $0.contains("--bg") })
+
+        dialog.signal()  // the user clicked Allow
+        tokens.dialog = nil
+        settle(link)
+        guard case .on(_, let pairing) = link.state else { return XCTFail("\(link.state)") }
+        XCTAssertTrue(pairing.hasSuffix("#pair=stored-token"))
+        link.shutdown()
+    }
+
+    func testAFastKeychainReadNeverShowsTheNotice() {
+        tokens.token = "stored-token"
+        let link = link()
+        link.turnOn()
+        settle(link)
+        XCTAssertTrue(link.isOn)
+        usleep(150_000)  // past the notice delay
+        XCTAssertFalse(states.contains(.waitingForKeychain))
+        XCTAssertTrue(link.isOn)
         link.shutdown()
     }
 
