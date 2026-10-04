@@ -44,6 +44,12 @@ final class SettingsTests: XCTestCase {
         XCTAssertTrue(Settings.managerRailSideBySide(defaults: defaults))
     }
 
+    func testManagerRailListDefaultsToTheBoard() {
+        XCTAssertFalse(Settings.managerRailShowsRequests(defaults: defaults))
+        Settings.setManagerRailShowsRequests(true, defaults: defaults)
+        XCTAssertTrue(Settings.managerRailShowsRequests(defaults: defaults))
+    }
+
     func testManagerRailListSizeIsKeptPerLayout() {
         XCTAssertNil(Settings.managerRailListSize(sideBySide: false, defaults: defaults))
         Settings.setManagerRailListSize(420, sideBySide: false, defaults: defaults)

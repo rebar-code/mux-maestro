@@ -25,6 +25,8 @@ struct ManagerReviewItem: Equatable {
     let text: String
     let updatedAt: Int
     let dismissed: Bool
+    /// What makes the row answerable from the phone; nil for a plain row.
+    var card: ManagerCard? = nil
 
     /// The key prefix `mux point` owns. `mux review add` refuses it, so a row
     /// with this prefix names a session the CLI checked.
@@ -216,12 +218,13 @@ final class ManagerStore {
     /// recently updated. Dismissed rows are excluded unless asked for.
     func reviewItems(includeDismissed: Bool = false) throws -> [ManagerReviewItem] {
         let sql = """
-        SELECT key, host, session, window, severity, text, updated_at, dismissed
-        FROM review
-        \(includeDismissed ? "" : "WHERE dismissed = 0")
-        ORDER BY dismissed ASC,
-                 CASE severity WHEN 'blocked' THEN 0 WHEN 'warn' THEN 1 ELSE 2 END,
-                 updated_at DESC;
+        SELECT r.key, r.host, r.session, r.window, r.severity, r.text, r.updated_at, r.dismissed,
+               c.v, c.pane, c.body, c.actions, c.answer, c.answered_at
+        FROM review r LEFT JOIN review_card c ON c.key = r.key
+        \(includeDismissed ? "" : "WHERE r.dismissed = 0")
+        ORDER BY r.dismissed ASC,
+                 CASE r.severity WHEN 'blocked' THEN 0 WHEN 'warn' THEN 1 ELSE 2 END,
+                 r.updated_at DESC;
         """
         let stmt = try prepare(sql)
         defer { sqlite3_finalize(stmt) }
@@ -235,7 +238,13 @@ final class ManagerStore {
                 severity: ManagerReviewItem.Severity(rawValue: column(stmt, 4)),
                 text: column(stmt, 5),
                 updatedAt: Int(sqlite3_column_int64(stmt, 6)),
-                dismissed: sqlite3_column_int64(stmt, 7) != 0
+                dismissed: sqlite3_column_int64(stmt, 7) != 0,
+                // No `review_card` row: every one of its columns is NULL.
+                card: sqlite3_column_type(stmt, 8) == SQLITE_NULL ? nil : ManagerCard.row(
+                    version: Int(sqlite3_column_int64(stmt, 8)), pane: column(stmt, 9),
+                    body: column(stmt, 10), actions: column(stmt, 11), answer: column(stmt, 12),
+                    answeredAt: sqlite3_column_type(stmt, 13) == SQLITE_NULL
+                        ? nil : Int(sqlite3_column_int64(stmt, 13)))
             ))
         }
         return items
@@ -456,6 +465,17 @@ final class ManagerStore {
         _ = try step(stmt)
     }
 
+    /// The human answered a card from the phone and the text reached the pane.
+    /// The row stays listed; `mux review list --json` shows the answer.
+    func recordAnswer(key: String, label: String, at: Int) throws {
+        let stmt = try prepare("UPDATE review_card SET answer = ?, answered_at = ? WHERE key = ?;")
+        defer { sqlite3_finalize(stmt) }
+        bindText(stmt, 1, label)
+        bindInt(stmt, 2, at)
+        bindText(stmt, 3, key)
+        _ = try step(stmt)
+    }
+
     func markSeen(upTo id: Int64) throws {
         let stmt = try prepare("UPDATE notifications SET seen = 1 WHERE id <= ?;")
         defer { sqlite3_finalize(stmt) }
@@ -469,6 +489,8 @@ final class ManagerStore {
         defer { sqlite3_finalize(stmt) }
         bindInt(stmt, 1, cutoff)
         _ = try step(stmt)
+        // A card has no life without its review row.
+        try exec("DELETE FROM review_card WHERE key NOT IN (SELECT key FROM review);")
     }
 
     /// Mirrors `mux review add`: upsert keyed on `key`, preserving `dismissed`
@@ -606,6 +628,15 @@ final class ManagerStore {
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
       dismissed INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS review_card (
+      key TEXT PRIMARY KEY,                 -- the review row this card belongs to
+      v INTEGER NOT NULL DEFAULT 1,         -- card format version
+      pane TEXT NOT NULL DEFAULT '',        -- %id of the pane that asked
+      body TEXT NOT NULL DEFAULT '',
+      actions TEXT NOT NULL DEFAULT '[]',   -- JSON array of {label, text}
+      answer TEXT NOT NULL DEFAULT '',      -- label of the action that was delivered
+      answered_at INTEGER
     );
     CREATE TABLE IF NOT EXISTS notifications (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

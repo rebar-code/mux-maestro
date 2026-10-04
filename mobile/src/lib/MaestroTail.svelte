@@ -1,9 +1,19 @@
 <script lang="ts">
+	import ActionCard from './ActionCard.svelte';
+	import { live } from './live.svelte';
 	import { thinkingText } from './manager';
 	import { manager } from './manager.svelte';
+	import { pointCards } from './panel';
 
-	/** What the Maestro is doing now, after the last row of its chat. */
+	/**
+	 * After the last row of the Maestro's chat: the questions it passes on for
+	 * an answer, and what it is doing now.
+	 */
 	const { onterminal }: { onterminal: () => void } = $props();
+
+	const asked = $derived(
+		pointCards(manager.points, live.threads).filter((point) => point.card !== null)
+	);
 
 	/** Ticks while a turn runs, for the time beside the dots. */
 	let now = $state(Date.now());
@@ -17,6 +27,9 @@
 	}
 </script>
 
+{#each asked as point (point.key)}
+	<ActionCard {point} />
+{/each}
 {#if manager.busy}
 	<div class="think" role="status" data-thinking {@attach clock}>
 		<span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>

@@ -477,10 +477,16 @@ p.plain {
 }
 
 /* A path or a local address with nothing behind it reads as text. */
-.prose a:not([href], [data-known]) {
+.prose a:not([href], [data-known], [data-thread-link]) {
 	color: inherit;
 	text-decoration: none;
 	cursor: inherit;
+}
+
+/* A link to a session the thread list does not have: tapped, and it went nowhere. */
+.prose a[data-thread-link][data-missing] {
+	color: var(--muted);
+	text-decoration: line-through;
 }
 
 .prose code {

@@ -3,7 +3,7 @@
 #
 #   tmux -L demo new-session -d -s acme-app -n checkout-fix
 #   scripts/mobile-dev-server.sh --socket demo --port 7433 \
-#       --static app/MuxMaestro/Resources/mobile
+#       --static app/MuxMaestro/Resources/mobile [--replies] [--manager-db /tmp/demo.db]
 #   curl -H 'Host: devmac.example.ts.net' -H 'Tailscale-User-Login: me@example.com' \
 #       -H 'X-MuxMaestro-Token: demo-token' \
 #       http://127.0.0.1:7433/api/threads
@@ -14,13 +14,13 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 out="${TMPDIR:-/tmp}/muxmaestro-mobile-dev-server"
-# Every app source the test target compiles (they need no AppKit). A file of
-# the test target that is not under app/ is a test helper, and is left out.
+# Every app source the test target compiles (they need no AppKit). The target
+# also holds test helpers that live in tests/: only the app's own files count.
 sources=$(sed -n '/A0000034 \/\* Sources \*\//,/runOnlyForDeploymentPostprocessing/p' \
     MuxMaestro.xcodeproj/project.pbxproj \
   | grep -oE '[A-Za-z0-9+]+\.swift in Sources' | sed 's/ in Sources//' \
   | grep -v 'Tests\.swift$' | sort -u | sed 's|^|app/MuxMaestro/|' \
-  | while read -r file; do [ -f "$file" ] && echo "$file"; done)
+  | while read -r file; do [ ! -f "$file" ] || echo "$file"; done)
 
 newest=$(ls -t $sources scripts/mobile-dev-server/main.swift | head -1)
 if [ ! -x "$out" ] || [ "$newest" -nt "$out" ]; then

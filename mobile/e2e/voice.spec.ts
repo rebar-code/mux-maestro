@@ -57,13 +57,14 @@ async function talkMode(page: Page): Promise<void> {
 	await bar(page, 'Auto').click();
 	await expect(status(page)).toHaveText('Listening…');
 	await bar(page, 'Manual').click();
-	await expect(status(page)).toHaveText('Start talking');
+	await expect(primary(page)).toHaveText('Talk');
+	await expect(status(page)).toHaveCount(0);
 }
 
 test('the voice controls are drawn only in talk mode', async ({ page }) => {
 	await open(page);
 	const controls = page.locator('[data-voicebar]').getByRole('button');
-	await expect(status(page)).toHaveText('Start talking');
+	await expect(status(page)).toHaveCount(0);
 	await expect(controls).toHaveCount(0);
 
 	// A take starts talk mode. It lasts past the take: the controls do not come and go.
@@ -75,7 +76,7 @@ test('the voice controls are drawn only in talk mode', async ({ page }) => {
 
 	// A typed turn ends it.
 	await box(page).fill('what needs me?');
-	await page.getByRole('button', { name: '↑ Send' }).click();
+	await page.locator('[data-send]').click();
 	await expect(said(page).locator('.a').last()).toHaveText(REPLY);
 	await expect(controls).toHaveCount(0);
 });

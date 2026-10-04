@@ -44,6 +44,7 @@ final class MobileServerTests: XCTestCase {
         private var _status = MobileManagerStatus.idle
         private var _sent: [String] = []
         private var _dismissed: [String] = []
+        private var _answered: [String] = []
         /// What a turn says: the deltas, then the outcome.
         var script: (deltas: [String], outcome: ManagerTurnOutcome) = ([], .done(reply: ""))
         var transcript: String?
@@ -65,6 +66,8 @@ final class MobileServerTests: XCTestCase {
         }
         var sent: [String] { lock.lock(); defer { lock.unlock() }; return _sent }
         var dismissed: [String] { lock.lock(); defer { lock.unlock() }; return _dismissed }
+        /// Each answer the server recorded, as "key=label".
+        var answered: [String] { lock.lock(); defer { lock.unlock() }; return _answered }
 
         var source: MobileServer.Manager {
             MobileServer.Manager(
@@ -78,6 +81,9 @@ final class MobileServerTests: XCTestCase {
                     }
                 },
                 dismiss: { [self] key in lock.lock(); _dismissed.append(key); lock.unlock() },
+                answered: { [self] key, label, _ in
+                    lock.lock(); _answered.append("\(key)=\(label)"); lock.unlock()
+                },
                 screen: { [self] _ in screen },
                 io: { [self] in ("mux-manager", pane.io) },
                 cwd: { "/Users/me/Library/Application Support/MuxMaestro/manager" })
@@ -961,6 +967,152 @@ final class MobileServerTests: XCTestCase {
         MobileManagerBoard(items: [MobileManagerItem(
             kind: .review, key: "billing:pr", title: "billing", detail: "PR open, CI green",
             severity: .warn, at: 1_759_499_000, link: nil)])
+    }
+
+    // MARK: cards
+
+    private static let cardKey = "point:localhost:acme-app:2"
+
+    /// A pointer at acme-app:2 with two answers. Its pane is %13: not the
+    /// first thread of the list, and not the Maestro's.
+    private func cardBoard(pane: String? = "%13") -> (board: MobileManagerBoard, id: String) {
+        let card = MobileCard(
+            title: "asks whether to run the migration",
+            source: MobileCard.Source(host: "localhost", session: "acme-app", window: 2, pane: pane),
+            card: ManagerCard(pane: pane, actions: [
+                ManagerCard.Action(label: "Yes", text: "yes, run it"),
+                ManagerCard.Action(label: "No", text: "no, stop.\nExplain why first."),
+            ]))
+        let board = MobileManagerBoard(items: [MobileManagerItem(
+            kind: .review, key: Self.cardKey, title: "acme-app", detail: card.title,
+            severity: .blocked, at: 1_759_499_000,
+            link: .open(session: "acme-app", window: 2, pane: nil, host: "localhost"),
+            pointer: true, card: card)])
+        return (board, MobileCards.id(key: Self.cardKey, card: card))
+    }
+
+    private func cardsOn() {
+        server.configure(MobileConfig(capabilities: [.manager, .replies]))
+        pane.status = .idle
+    }
+
+    private func act(_ action: Int, card: String) -> (status: Int, head: String, body: String) {
+        post("/api/manager/act", json: #"{"key":"\#(Self.cardKey)","action":\#(action),"card":"\#(card)"}"#)
+    }
+
+    func testACardTapPastesItsTextIntoTheSourcePaneAndNotTheMaestros() throws {
+        cardsOn()
+        let (board, id) = cardBoard()
+        server.updateManager(board)
+        // The phone gets the card with the pointer, and no text of an action.
+        let home = get("/api/manager").body
+        XCTAssertTrue(home.contains(#""source":"localhost:13""#), home)
+        XCTAssertTrue(home.contains(#""link":"\/t\/localhost:13""#), home)
+        XCTAssertFalse(home.contains("Explain why first"), home)
+
+        let sent = act(1, card: id)
+        XCTAssertEqual(sent.status, 200, sent.body)
+        let body = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(sent.body.utf8)) as? [String: Any])
+        XCTAssertEqual(body["ok"] as? Bool, true)
+        XCTAssertEqual(body["thread"] as? String, "localhost:13")
+        XCTAssertEqual((body["answered"] as? [String: Any])?["label"] as? String, "No")
+        // One buffer, one bracketed paste, then a separate Enter, all at %13.
+        XCTAssertTrue(FakePane.sendArgv(pane.argv, target: "%13"), "\(pane.argv)")
+        // Both lines went in as one paste: the newline is text, not Enter.
+        XCTAssertEqual(pane.calls[1].stdin, "no, stop.\nExplain why first.")
+        // Nothing was typed into the Maestro's own pane, and no turn was run.
+        XCTAssertEqual(manager.pane.argv.count, 0)
+        XCTAssertEqual(manager.sent, [])
+        XCTAssertEqual(manager.answered, ["\(Self.cardKey)=No"])
+    }
+
+    func testACardTapThatDoesNotLandSaysWhyAndRecordsNoAnswer() {
+        cardsOn()
+        let (board, id) = cardBoard()
+        server.updateManager(board)
+        // The session is working: its next prompt could take the Enter.
+        pane.status = .busy
+        let busy = act(0, card: id)
+        XCTAssertEqual(busy.status, 409)
+        XCTAssertEqual(busy.body, #"{"error":"busy","message":"Thread is busy"}"#)
+        // It is on a prompt of its own.
+        pane.status = .waiting
+        let waiting = act(0, card: id)
+        XCTAssertEqual(waiting.status, 409)
+        XCTAssertEqual(waiting.body, #"{"error":"waiting","message":"Thread is waiting on a prompt"}"#)
+        // tmux does not answer.
+        pane.status = .idle
+        pane.failing = true
+        XCTAssertEqual(act(0, card: id).status, 503)
+        pane.failing = false
+        XCTAssertEqual(manager.answered, [])
+
+        // The tap can be tried again, and lands once.
+        XCTAssertTrue(get("/api/manager").body.contains(#""answered":null"#))
+        let before = pane.argv.count
+        XCTAssertEqual(act(0, card: id).status, 200)
+        XCTAssertEqual(manager.answered, ["\(Self.cardKey)=Yes"])
+        let after = pane.argv.count
+        XCTAssertGreaterThan(after, before)
+        // The app's list has not heard of the answer yet: a second tap sends
+        // nothing, and the phone is already told the card is answered.
+        let again = act(1, card: id)
+        XCTAssertEqual(again.status, 409)
+        XCTAssertEqual(again.body, #"{"error":"answered","message":"Already answered"}"#)
+        XCTAssertEqual(pane.argv.count, after)
+        XCTAssertEqual(manager.answered, ["\(Self.cardKey)=Yes"])
+        XCTAssertTrue(get("/api/manager").body.contains(#""answered":{"#))
+        // The same list again, still without the answer: it stays answered.
+        server.updateManager(board)
+        XCTAssertTrue(get("/api/manager").body.contains(#""answered":{"#))
+        XCTAssertEqual(act(0, card: id).status, 409)
+        // The pointer is cleared and the same question is asked again: it is open.
+        server.updateManager(MobileManagerBoard())
+        server.updateManager(board)
+        XCTAssertTrue(get("/api/manager").body.contains(#""answered":null"#))
+        XCTAssertEqual(act(0, card: id).status, 200)
+        XCTAssertEqual(manager.answered, ["\(Self.cardKey)=Yes", "\(Self.cardKey)=Yes"])
+    }
+
+    func testACardTapWithNoOnePaneToGoToTypesNothing() {
+        cardsOn()
+        // Its pane is gone.
+        let (gone, goneID) = cardBoard(pane: "%99")
+        server.updateManager(gone)
+        let missing = act(0, card: goneID)
+        XCTAssertEqual(missing.status, 404)
+        XCTAssertEqual(missing.body, #"{"error":"source_gone","message":"Session is gone"}"#)
+        // The card changed since the phone drew it.
+        let (board, id) = cardBoard()
+        server.updateManager(board)
+        let stale = act(0, card: goneID)
+        XCTAssertEqual(stale.status, 409)
+        XCTAssertEqual(stale.body, #"{"error":"changed","message":"Card changed"}"#)
+        // Not a button, not a card, not a request.
+        XCTAssertEqual(act(2, card: id).status, 400)
+        XCTAssertEqual(
+            post("/api/manager/act", json: #"{"key":"nope","action":0,"card":"x"}"#).status, 404)
+        XCTAssertEqual(post("/api/manager/act", json: "{}").status, 400)
+        XCTAssertEqual(pane.argv.count, 0)
+        XCTAssertEqual(manager.answered, [])
+    }
+
+    func testACardTapPassesTheWriteChecksAndNeedsBothSwitches() {
+        let (board, id) = cardBoard()
+        server.updateManager(board)
+        let json = #"{"key":"\#(Self.cardKey)","action":0,"card":"\#(id)"}"#
+        // The Maestro switch alone does not type into a thread.
+        managerOn()
+        pane.status = .idle
+        XCTAssertEqual(post("/api/manager/act", json: json).body, #"{"error":"disabled"}"#)
+        cardsOn()
+        XCTAssertEqual(post("/api/manager/act", json: json, token: nil).status, 401)
+        XCTAssertEqual(
+            post("/api/manager/act", json: json, origin: "https://evil.example.com").status, 403)
+        XCTAssertEqual(post("/api/manager/act", json: json, writeHeader: false).status, 403)
+        XCTAssertEqual(pane.argv.count, 0)
+        XCTAssertEqual(manager.answered, [])
     }
 
     func testDismissPassesOnTheKeyOfAReviewItemOnly() {
