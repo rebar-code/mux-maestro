@@ -183,7 +183,18 @@ final class ManagerController {
     /// only runs on create; `-A` attaches straight to an existing session.
     func attachCommand() -> String? {
         guard let tmux = service.tmuxPath, let home else { return nil }
+        showPane(homePath: home.path)
         return Self.attachCommandString(tmux: tmux, homePath: home.path)
+    }
+
+    /// Put the Maestro's window in front before the rail terminal attaches: a
+    /// session shows its current window, and that may be one somebody added.
+    private func showPane(homePath: String) {
+        let service = self.service
+        queue.async {
+            guard let pane = ManagerPane.resolve(homePath: homePath, run: { service.runTmux($0) }) else { return }
+            _ = service.runTmux(ManagerPane.showArgv(pane: pane))
+        }
     }
 
     /// Pure builder for the attach-or-create command, split out so it's testable
@@ -197,9 +208,12 @@ final class ManagerController {
     /// the rail terminal would. The chat works with the terminal hidden, so the
     /// session has to exist before anyone attaches to it; the rail's
     /// `new-session -A` then simply attaches to what this created.
+    ///
+    /// The same tmux call marks the new pane as the Maestro's (`ManagerPane`),
+    /// while it is still the only pane the session has.
     static func createCommandArgs(homePath: String) -> [String] {
         ["new-session", "-d", "-s", ManagerHome.sessionName, "-c", homePath,
-         launchShell(homePath: homePath)]
+         launchShell(homePath: homePath)] + ManagerPane.createMarkArgv(session: ManagerHome.sessionName)
     }
 
     /// The pane command, shared by the attach and the detached-create paths so

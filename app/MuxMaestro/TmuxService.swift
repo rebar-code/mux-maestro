@@ -1442,8 +1442,8 @@ final class TmuxService {
     /// Run a **non-destructive** tmux argv through this host's transport and hand
     /// back stdout (empty string on a silent success), or nil when tmux is
     /// unavailable or the command failed. `tmux(_:)` itself stays private so
-    /// callers go through a typed helper; this is the escape hatch for a command
-    /// with exactly one caller: the manager creating its own session detached.
+    /// callers go through a typed helper; this is the escape hatch for the
+    /// manager: creating its own session detached, and finding its pane in it.
     /// Blocking shell-out; call off the main thread.
     @discardableResult
     func runTmux(_ args: [String]) -> String? {
