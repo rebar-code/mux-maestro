@@ -1,14 +1,8 @@
 import { untrack } from 'svelte';
-import {
-	answerPrompt,
-	ApiError,
-	fetchCommands,
-	fetchPrompt,
-	sendKey,
-	sendText,
-	uploadFile
-} from './api';
-import { live } from './live.svelte';
+import { answerPrompt, ApiError, fetchCommands, fetchPrompt, sendKey, sendText } from './api';
+import { isImage, insertPath, removePath } from './attach';
+import { Attachments } from './attach.svelte';
+import { live, OFF_LABEL } from './live.svelte';
 import {
 	CTRL_MS,
 	ctrlReduce,
@@ -83,7 +77,6 @@ export class Reply {
 	promptId = $state<string | null>(null);
 	/** The option an answer in flight picked. */
 	answering = $state<number | null>(null);
-	uploading = $state(false);
 	/** A spoken turn in flight. */
 	turn = $state.raw<LiveTurn | null>(null);
 	/** The text box, for the keys that type into it. */
@@ -124,18 +117,27 @@ export class Reply {
 	constructor(
 		readonly id: string,
 		private readonly host: ReplyHost
-	) {}
+	) {
+		this.files = new Attachments(id, {
+			insert: (text) => (this.draft = insertPath(this.draft, text)),
+			remove: (text) => (this.draft = removePath(this.draft, text)),
+			sending: () => this.sending
+		});
+	}
 
 	// MARK: text
 
 	send = async (): Promise<void> => {
 		const text = this.draft.trim();
-		if (!text || this.sending || this.blocked) return;
+		// One write to a thread at a time: a file on its way goes first.
+		if (!text || this.sending || this.blocked || this.files.pending) return;
 		this.sending = true;
 		this.note = null;
 		try {
 			await sendText(this.id, text);
 			this.draft = '';
+			// The paths went with the text.
+			this.files.clear();
 			void this.host.refresh();
 		} catch (error) {
 			live.fail(error);
@@ -147,6 +149,8 @@ export class Reply {
 			this.recheck(error);
 		} finally {
 			this.sending = false;
+			// A file picked meanwhile waited for this.
+			void this.files.pump();
 		}
 	};
 
@@ -348,28 +352,22 @@ export class Reply {
 
 	// MARK: files
 
-	upload = async (file: File): Promise<void> => {
-		if (this.uploading || this.blocked) return;
-		const max = live.config?.upload?.maxBytes;
-		if (max !== undefined && file.size > max) {
-			this.note = { text: 'Too big', bad: true };
-			return;
-		}
-		this.uploading = true;
-		this.note = null;
-		try {
-			const { pasted } = await uploadFile(this.id, file);
-			// Saved either way; without the paste the pane does not name it.
-			this.note = pasted
-				? { text: 'Attached', bad: false }
-				: { text: 'Saved, not pasted', bad: true };
-			void this.host.refresh();
-		} catch (error) {
-			this.note = refusal(error, 'file');
-			this.recheck(error);
-		} finally {
-			this.uploading = false;
-		}
+	/** The files picked for this reply. Their paths go into the text box. */
+	readonly files: Attachments;
+
+	/** The attach button was tapped while uploads are switched off on the Mac. */
+	uploadOff = (): void => {
+		this.note = { text: OFF_LABEL, bad: false };
+	};
+
+	/** The text box got a paste: images become attachments, text stays text. */
+	pasted = (event: ClipboardEvent): void => {
+		const images = [...(event.clipboardData?.files ?? [])].filter((file) => isImage(file.type));
+		if (!images.length) return;
+		// The picture, not also its name or its address as text.
+		event.preventDefault();
+		if (live.config?.capabilities.upload === true) this.files.paste(images);
+		else this.uploadOff();
 	};
 
 	// MARK: voice

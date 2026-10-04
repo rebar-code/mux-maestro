@@ -26,8 +26,10 @@
 		onsend,
 		oninput,
 		onbeforeinput,
+		onpaste,
 		box,
-		leading
+		leading,
+		above
 	}: {
 		value: string;
 		/** The placeholder, and the box's name. */
@@ -51,8 +53,11 @@
 		onbeforeinput?: (event: InputEvent) => void;
 		/** Attachment for the text box, for a caller that types into it or moves the focus. */
 		box?: Attachment<HTMLInputElement>;
+		onpaste?: (event: ClipboardEvent) => void;
 		/** Controls left of the text box. */
 		leading?: Snippet;
+		/** A row above the text box, as wide as the composer. */
+		above?: Snippet;
 	} = $props();
 	/* eslint-enable prefer-const */
 
@@ -70,6 +75,7 @@
 			{note.text}
 		</div>
 	{/if}
+	{@render above?.()}
 	{@render leading?.()}
 	<input
 		bind:value
@@ -82,6 +88,7 @@
 		disabled={off}
 		{oninput}
 		{onbeforeinput}
+		{onpaste}
 	/>
 	<!-- Typing is always there: with text in the box the button sends it. -->
 	{#if canSend && !off}

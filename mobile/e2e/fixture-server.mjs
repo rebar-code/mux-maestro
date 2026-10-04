@@ -12,7 +12,8 @@
 // /__fixture/prompt also takes truncated=1, bare=1 (an id with no choices), quiet=1,
 // scrolled=<last row> (a menu scrolled to rows 4…last, with more above and below),
 // /__fixture/not-sent?cleared=&reason=, /__fixture/no-input?id=&on=, /__fixture/pasted?on=,
-// /__fixture/prompt-delay?ms=
+// /__fixture/prompt-delay?ms=, /__fixture/upload-slow?chunk=&answer=,
+// /__fixture/upload-fail?status=&error=&message=
 // /__fixture/append?count= (adds lines to pane buildbox:8),
 // /__fixture/screen?default=&max= (the screen endpoint's default and cap)
 //
@@ -212,6 +213,8 @@ let started, threads, chats, grouping, deny, token, log, screenDefault, screenMa
 let capabilities, manager, voice;
 // Per thread id: the prompt on the pane. And everything the phone wrote.
 let prompts, replies, uploadMax, promptSeq, notSent, noInput, pasted, keyLocks, promptDelay;
+// Uploads: the paths taken, the threads with one in flight, how slow they are, a refusal for the next.
+let saved, uploadLocks, uploadSlow, uploadFail;
 const streams = new Set();
 
 function reset() {
@@ -229,6 +232,10 @@ function reset() {
 	keyLocks = new Set();
 	// How long `GET /prompt` takes, so a test can tap before the card catches up.
 	promptDelay = 0;
+	saved = new Set();
+	uploadLocks = new Set();
+	uploadSlow = { chunk: 0, answer: 0 };
+	uploadFail = null;
 	promptSeq = 0;
 	uploadMax = 10485760;
 	replies = { texts: [], keys: [], answers: [], uploads: [], left: [], commandFetches: 0 };
@@ -462,6 +469,55 @@ function runThreadTurn(thread, text, onDelta = () => {}, onEnd = () => {}) {
 	setTimeout(step, 250);
 }
 
+/** A path as it is typed into a pane: quoted when a shell would split it. */
+const typed = (path) => (/^[\w@%+=:,./-]+$/.test(path) ? path : `'${path.replace(/'/g, `'\\''`)}'`);
+
+/** `name` in `dir`, with `-2`, `-3`… before its extension while the name is taken. */
+function freePath(dir, name) {
+	const dot = name.lastIndexOf('.');
+	const [stem, ext] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ''];
+	let path = `${dir}/${name}`;
+	for (let n = 2; saved.has(path); n += 1) path = `${dir}/${stem}-${n}${ext}`;
+	return path;
+}
+
+/**
+ * `POST /upload?paste=0`: the file is saved and nothing is typed, so what the
+ * pane is doing does not matter. One write to a thread at a time.
+ */
+function saveOnly(req, res, thread, name, body) {
+	if (uploadLocks.has(thread.id))
+		return send(res, 409, { error: 'busy', message: 'A reply is being sent' });
+	if (uploadFail) {
+		const { status, body: refusal } = uploadFail;
+		uploadFail = null;
+		return send(res, status, refusal);
+	}
+	uploadLocks.add(thread.id);
+	const locks = uploadLocks;
+	const files = saved;
+	// The phone gave up on it: nothing is kept, and the thread is free again.
+	res.on('close', () => {
+		if (res.writableEnded) return;
+		clearTimeout(timer);
+		locks.delete(thread.id);
+	});
+	const timer = setTimeout(() => {
+		locks.delete(thread.id);
+		const path = freePath(thread.cwd, name);
+		files.add(path);
+		replies.uploads.push({
+			thread: thread.id,
+			name,
+			path,
+			bytes: body.length,
+			type: req.headers['content-type'] ?? null,
+			paste: false
+		});
+		send(res, 200, { ok: true, pasted: false, path, text: typed(path) });
+	}, uploadSlow.answer);
+}
+
 function replyApi(req, res, url, thread, route, body) {
 	const needs = route === 'key' ? 'keyBar' : route === 'upload' ? 'upload' : 'replies';
 	// The key bar names the prompt in its keys, so it may read the prompt too.
@@ -485,6 +541,7 @@ function replyApi(req, res, url, thread, route, body) {
 		if (!name || name.includes('/') || body.length === 0)
 			return send(res, 400, { error: 'bad_request' });
 		if (body.length > uploadMax) return send(res, 413, { error: 'too_large' });
+		if (url.searchParams.get('paste') === '0') return saveOnly(req, res, thread, name, body);
 		const refused = refusedBy(thread);
 		if (refused) return send(res, 409, refused);
 		replies.uploads.push({
@@ -1025,6 +1082,24 @@ function hook(res, url) {
 		case '/__fixture/prompt-delay':
 			promptDelay = Number(url.searchParams.get('ms') ?? 0);
 			return send(res, 200, { ok: true });
+		case '/__fixture/upload-slow':
+			// `chunk`: a wait after each piece of the body is read, so the phone's
+			// progress has steps. `answer`: a wait before the answer.
+			uploadSlow = {
+				chunk: Number(url.searchParams.get('chunk') ?? 0),
+				answer: Number(url.searchParams.get('answer') ?? 0)
+			};
+			return send(res, 200, { ok: true });
+		case '/__fixture/upload-fail':
+			// The next upload is refused, once.
+			uploadFail = {
+				status: Number(url.searchParams.get('status') ?? 503),
+				body: {
+					error: url.searchParams.get('error') ?? 'unavailable',
+					...(url.searchParams.get('message') ? { message: url.searchParams.get('message') } : {})
+				}
+			};
+			return send(res, 200, { ok: true });
 		case '/__fixture/pasted':
 			pasted = url.searchParams.get('on') !== '0';
 			return send(res, 200, { ok: true });
@@ -1128,7 +1203,14 @@ createServer((req, res) => {
 	if (url.pathname.startsWith('/api/')) {
 		// A take is audio: the body stays bytes until a route wants text.
 		const chunks = [];
-		req.on('data', (chunk) => chunks.push(chunk));
+		const slow = url.pathname.endsWith('/upload') ? uploadSlow.chunk : 0;
+		req.on('data', (chunk) => {
+			chunks.push(chunk);
+			if (!slow) return;
+			// Read no faster than this, so the sender sees its bytes go out in steps.
+			req.pause();
+			setTimeout(() => req.resume(), slow);
+		});
 		req.on('end', () => api(req, res, url, Buffer.concat(chunks)));
 		return;
 	}

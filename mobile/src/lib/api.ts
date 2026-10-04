@@ -269,20 +269,81 @@ export async function fetchCommands(id: string): Promise<Command[]> {
 	return (await get<{ commands: Command[] }>(`${threadPath(id)}/commands`)).commands;
 }
 
+/** What the Mac says of a file it saved. */
+export interface Uploaded {
+	/** Where the file is on the Mac. A name that was taken got a number. */
+	path: string;
+	/** The path as it is typed into a pane: quoted when it has to be. */
+	text: string;
+}
+
+function refusalOf(xhr: XMLHttpRequest): ApiError {
+	try {
+		const body = JSON.parse(xhr.responseText) as Record<string, unknown>;
+		return new ApiError(
+			xhr.status,
+			typeof body.error === 'string' ? body.error : null,
+			typeof body.message === 'string' ? body.message : null,
+			typeof body.reason === 'string' ? body.reason : null,
+			typeof body.cleared === 'boolean' ? body.cleared : null
+		);
+	} catch {
+		return new ApiError(xhr.status, null);
+	}
+}
+
 /**
- * Put `file` in the thread's directory. `pasted` is false when the file was
- * saved but the pane could not take its path.
+ * Put `file` in the thread's directory under `name`. Nothing is typed into
+ * the pane: the caller gets the path, to put it in the reply.
+ *
+ * The one request that is not a `fetch`: `fetch` cannot say how much of a
+ * body has gone out, and a photo over a phone link needs a progress bar. It
+ * carries the token and the write header like every other write, and a
+ * refusal is the same `ApiError`. No answer at all (offline, or the Mac out
+ * of reach) rejects with a plain `Error`; `signal` aborts it.
  */
-export async function uploadFile(id: string, file: File): Promise<{ pasted: boolean }> {
-	const response = await request(
-		`${threadPath(id)}/upload?name=${encodeURIComponent(file.name)}`,
-		'application/json',
-		undefined,
-		undefined,
-		{},
-		{ bytes: file, type: 'application/octet-stream' }
-	);
-	return { pasted: ((await response.json()) as { pasted?: boolean }).pasted !== false };
+export function uploadFile(
+	id: string,
+	file: Blob,
+	name: string,
+	onProgress: (sent: number, total: number) => void,
+	signal: AbortSignal
+): Promise<Uploaded> {
+	return new Promise((resolve, reject) => {
+		if (signal.aborted) return reject(new DOMException('Aborted', 'AbortError'));
+		const xhr = new XMLHttpRequest();
+		xhr.open('POST', `${threadPath(id)}/upload?name=${encodeURIComponent(name)}&paste=0`);
+		xhr.setRequestHeader('accept', 'application/json');
+		xhr.setRequestHeader('content-type', 'application/octet-stream');
+		xhr.setRequestHeader('x-muxmaestro', '1');
+		if (token) xhr.setRequestHeader(TOKEN_HEADER, token);
+		const abort = (): void => xhr.abort();
+		signal.addEventListener('abort', abort, { once: true });
+		const settle = (): void => signal.removeEventListener('abort', abort);
+		xhr.upload.onprogress = (event) => {
+			if (event.lengthComputable) onProgress(event.loaded, event.total);
+		};
+		xhr.onload = () => {
+			settle();
+			if (xhr.status < 200 || xhr.status >= 300) return reject(refusalOf(xhr));
+			try {
+				const body = JSON.parse(xhr.responseText) as Partial<Uploaded>;
+				const path = body.path ?? '';
+				resolve({ path, text: body.text ?? path });
+			} catch {
+				reject(new ApiError(xhr.status, null));
+			}
+		};
+		xhr.onerror = () => {
+			settle();
+			reject(new Error('No answer'));
+		};
+		xhr.onabort = () => {
+			settle();
+			reject(new DOMException('Aborted', 'AbortError'));
+		};
+		xhr.send(file);
+	});
 }
 
 export function fetchManager(): Promise<ManagerHome> {

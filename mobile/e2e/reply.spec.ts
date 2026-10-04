@@ -27,7 +27,6 @@ interface Replies {
 	/** Texts the pane was left holding, unsent. */
 	left: { thread: string; text: string }[];
 	answers: { thread: string; prompt: string; option: number }[];
-	uploads: { thread: string; name: string; bytes: number; type: string | null; text: string }[];
 	commandFetches: number;
 }
 
@@ -539,86 +538,6 @@ test('a thread that starts to wait gets its card, and loses it after', async ({ 
 	await expect(card(page)).toHaveCount(0);
 });
 
-test('a file is attached; one that is too big is not sent', async ({ page }) => {
-	await open(page, IDLE, ['replies', 'keyBar', 'upload']);
-	const attach = page.getByRole('button', { name: 'Attach' });
-	const size = await attach.evaluate((button) => {
-		const rect = button.getBoundingClientRect();
-		const x = rect.left + rect.width / 2;
-		const y = rect.top + rect.height / 2;
-		return (
-			document.elementFromPoint(x, y - 21) === button &&
-			document.elementFromPoint(x - 21, y) === button
-		);
-	});
-	expect(size).toBe(true);
-	const picker = page.locator('[data-attach-input]');
-	// No `capture`: the phone offers the library, the camera and files.
-	expect(await picker.getAttribute('capture')).toBeNull();
-	expect(await picker.getAttribute('accept')).toBeNull();
-
-	const sent = page.waitForRequest((request) => request.url().includes('/upload?'));
-	await picker.setInputFiles({
-		name: 'release notes.txt',
-		mimeType: 'text/plain',
-		buffer: Buffer.from('ship the fix')
-	});
-	const request = await sent;
-	expect(new URL(request.url()).search).toBe('?name=release%20notes.txt');
-	expect(request.headers()['content-type']).toBe('application/octet-stream');
-	expect(request.headers()['x-muxmaestro']).toBe('1');
-	expect(request.headers()['x-muxmaestro-token']).toBe('demo-token');
-	await expect(note(page)).toHaveText('Attached');
-	await expect(attach).toBeEnabled();
-	expect((await received(page)).uploads).toEqual([
-		{
-			thread: IDLE,
-			name: 'release notes.txt',
-			bytes: 12,
-			type: 'application/octet-stream',
-			text: 'ship the fix'
-		}
-	]);
-	await shot(page, 'upload');
-
-	// Over the Mac's limit: refused on the phone, nothing is posted.
-	await page.request.post('/__fixture/upload-max?value=8');
-	await page.waitForTimeout(200);
-	await picker.setInputFiles({
-		name: 'big.txt',
-		mimeType: 'text/plain',
-		buffer: Buffer.from('more than eight bytes')
-	});
-	await expect(note(page)).toHaveText('Too big');
-	expect((await received(page)).uploads).toHaveLength(1);
-});
-
-test('the attach button shows an upload in flight, and is off while the pane is busy', async ({
-	page
-}) => {
-	await open(page, IDLE, ['replies', 'upload']);
-	const attach = page.getByRole('button', { name: 'Attach' });
-	let release: () => void = () => {};
-	const held = new Promise<void>((done) => (release = done));
-	await page.route('**/api/threads/*/upload?*', async (route) => {
-		await held;
-		await route.continue();
-	});
-	await page.locator('[data-attach-input]').setInputFiles({
-		name: 'photo.png',
-		mimeType: 'image/png',
-		buffer: Buffer.from([137, 80, 78, 71])
-	});
-	await expect(attach).toBeDisabled();
-	await expect(attach).toHaveAttribute('aria-busy', 'true');
-	release();
-	await expect(note(page)).toHaveText('Attached');
-	await expect(attach).toBeEnabled();
-
-	await page.request.post(`/__fixture/status?id=${IDLE}&value=busy`);
-	await expect(attach).toBeDisabled();
-});
-
 test('Next opens the thread that has waited longest', async ({ page }) => {
 	await open(page, IDLE, ['replies', 'keyBar']);
 	await expect(nextBar(page)).toHaveText(/Next\s+billing · proration\s*›/);
@@ -650,7 +569,7 @@ test('with the features off, the thread shows none of this', async ({ page }) =>
 	await expect(keybar(page)).toHaveCount(0);
 	await expect(card(page)).toHaveCount(0);
 	await expect(nextBar(page)).toHaveCount(0);
-	await expect(page.getByRole('button', { name: 'Attach' })).toHaveCount(0);
+	await expect(page.getByRole('button', { name: 'Attach' })).toBeDisabled();
 	await expect(voiceControls(page)).toHaveCount(0);
 
 	// Each switch shows only its own controls, as soon as the Mac flips it.
@@ -667,19 +586,22 @@ test('with the features off, the thread shows none of this', async ({ page }) =>
 	await page.request.post('/__fixture/capability?name=upload&on=1');
 	await page.request.post('/__fixture/capability?name=voice&on=1');
 	await page.waitForTimeout(300);
-	await expect(page.getByRole('button', { name: 'Attach' })).toHaveCount(0);
+	await expect(page.getByRole('button', { name: 'Attach' })).toBeDisabled();
 	await expect(voiceControls(page)).toHaveCount(0);
 
 	await page.request.post('/__fixture/capability?name=replies&on=1');
 	await expect(box(page)).toBeVisible();
 	await expect(card(page)).not.toHaveAttribute('data-readonly', '');
 	await expect(card(page).getByRole('button')).toHaveCount(3);
-	await expect(page.getByRole('button', { name: 'Attach' })).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Attach' })).not.toHaveAttribute('aria-disabled');
 	await expect(voiceControls(page)).toBeVisible();
 	await expect(keybar(page).locator('.keys button')).toHaveCount(14);
 
 	await page.request.post('/__fixture/capability?name=upload&on=0');
-	await expect(page.getByRole('button', { name: 'Attach' })).toHaveCount(0);
+	await expect(page.getByRole('button', { name: 'Attach' })).toHaveAttribute(
+		'aria-disabled',
+		'true'
+	);
 	await page.request.post('/__fixture/capability?name=voice&on=0');
 	await expect(voiceControls(page)).toHaveCount(0);
 	await page.request.post('/__fixture/capability?name=keyBar&on=0');
@@ -889,36 +811,14 @@ test('a reply left in the pane empties the box, and is not sent twice', async ({
 	expect(posts).toBe(2);
 });
 
-test('a pane with no input box refuses text and files, and the draft stays', async ({ page }) => {
-	await open(page, IDLE, ['replies', 'upload'], [`/__fixture/no-input?id=${IDLE}`]);
+test('a pane with no input box refuses text, and the draft stays', async ({ page }) => {
+	await open(page, IDLE, ['replies'], [`/__fixture/no-input?id=${IDLE}`]);
 	await box(page).fill('ship it');
 	await sendButton(page).click();
 	await expect(note(page)).toHaveText('Thread shows no input box');
 	await expect(box(page)).toHaveValue('ship it');
-
-	await box(page).fill('');
-	await page.locator('[data-attach-input]').setInputFiles({
-		name: 'notes.txt',
-		mimeType: 'text/plain',
-		buffer: Buffer.from('x')
-	});
-	await expect(note(page)).toHaveText('Thread shows no input box');
-	const got = await received(page);
-	expect(got.texts).toEqual([]);
-	expect(got.uploads).toEqual([]);
+	expect((await received(page)).texts).toEqual([]);
 });
-
-test('a file that was saved but not pasted says so', async ({ page }) => {
-	await open(page, IDLE, ['replies', 'upload'], ['/__fixture/pasted?on=0']);
-	await page.locator('[data-attach-input]').setInputFiles({
-		name: 'notes.txt',
-		mimeType: 'text/plain',
-		buffer: Buffer.from('x')
-	});
-	await expect(note(page)).toHaveText('Saved, not pasted');
-	expect((await received(page)).uploads).toHaveLength(1);
-});
-
 test('a key on a waiting thread names the prompt the phone shows', async ({ page }) => {
 	await open(page, PERMISSION, ['replies', 'keyBar']);
 	const shown = await card(page).getAttribute('data-prompt');
@@ -1460,11 +1360,12 @@ test('with replies off the reply box is there, switched off, and posts nothing',
 	await expect(offBox(page)).toBeDisabled();
 	await expect(offBox(page)).toHaveAttribute('placeholder', 'Off in MuxMaestro Settings');
 	await expect(offBox(page)).toHaveValue('');
-	const pill = page.locator('[data-compose]').getByRole('button');
+	const pill = idlePill(page);
 	await expect(pill).toHaveText(['🎙 Talk']);
 	await expect(pill).toBeDisabled();
-	// The label and nothing more: no attach, no slash list, no voice bar, no key bar, no card.
-	await expect(page.locator('[data-compose] > *')).toHaveCount(2);
+	// The label, the dimmed attach button and the pill: no slash list, no voice bar, no key bar, no card.
+	await expect(page.locator('[data-compose] > :not([hidden])')).toHaveCount(3);
+	await expect(page.getByRole('button', { name: 'Attach' })).toBeDisabled();
 	await expect(keybar(page)).toHaveCount(0);
 	await expect(slash(page)).toHaveCount(0);
 	await expect(nextBar(page)).toHaveCount(0);

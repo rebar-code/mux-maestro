@@ -1,5 +1,6 @@
 <script lang="ts">
 	import AttachButton from './AttachButton.svelte';
+	import AttachTiles from './AttachTiles.svelte';
 	import Composer from './Composer.svelte';
 	import { dotClass, statusLabel } from './format';
 	import { pages, pullToRefresh, ui } from './gestures.svelte';
@@ -236,7 +237,13 @@
 </div>
 
 {#if docked}
-	<div class="dock" data-dock {@attach overKeyboard} {@attach (repliesOn || keysOn) && reply.watch}>
+	<div
+		class="dock"
+		data-dock
+		{@attach overKeyboard}
+		{@attach (repliesOn || keysOn) && reply.watch}
+		{@attach reply.files.watch}
+	>
 		{#if next}<NextBar thread={next} />{/if}
 		{#if repliesOn && reply.matches.length}
 			<SlashList commands={reply.matches} onpick={reply.pick} />
@@ -256,16 +263,18 @@
 				target={id}
 				sink={reply.voice}
 				{voiceOn}
-				blocked={reply.blocked || reply.sending}
+				blocked={reply.blocked || reply.sending || reply.files.pending}
 				note={reply.note}
 				onsend={send}
 				oninput={reply.typed}
 				onbeforeinput={reply.beforeInput}
+				onpaste={reply.pasted}
 			>
+				{#snippet above()}
+					{#if reply.files.items.length}<AttachTiles files={reply.files} />{/if}
+				{/snippet}
 				{#snippet leading()}
-					{#if can('upload')}
-						<AttachButton busy={reply.uploading} disabled={reply.blocked} onpick={reply.upload} />
-					{/if}
+					<AttachButton off={!can('upload')} onpick={reply.files.add} onoff={reply.uploadOff} />
 				{/snippet}
 			</Composer>
 		{:else}
@@ -279,7 +288,11 @@
 				off
 				bare
 				onsend={() => {}}
-			/>
+			>
+				{#snippet leading()}
+					<AttachButton disabled />
+				{/snippet}
+			</Composer>
 		{/if}
 	</div>
 {/if}
