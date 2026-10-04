@@ -24,8 +24,8 @@ desktop orchestrator and must feel genuinely native and responsive.
 │   ▾ 1: server  ●          │ │   ONE live libghostty terminal,         ││
 │       ▪ %12 nvim          │ │   swaps instantly on sidebar select     ││
 │       ▪ %13 pnpm dev ◀    │ │                                         ││
-│ 🟢 front-range    running  │ │                                         ││
-│ ⚪ pastors-workshop       │ └─────────────────────────────────────────┘│
+│ 🟢 acme-app       running  │ │                                         ││
+│ ⚪ widget-shop            │ └─────────────────────────────────────────┘│
 │ [+ new session]           │  [send a prompt ⌄]  [⤢ zoom] [kill] [↗]    │
 └───────────────────────────┴─────────────────────────────────────────────┘
 ```

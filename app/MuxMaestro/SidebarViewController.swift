@@ -921,7 +921,7 @@ final class SessionCellView: NSTableCellView {
             nameField.trailingAnchor.constraint(
                 lessThanOrEqualTo: accessories.leadingAnchor, constant: -6),
             // Same preference the window rows get, at the same yielding priority.
-            // Without it `Front Range Windows` rendered as `F` once it carried a
+            // Without it `Acme App` rendered as `A` once it carried a
             // worktree chip AND the "running" label.
             sessionNameFloor,
             accessories.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),

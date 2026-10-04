@@ -14,7 +14,7 @@ enum VoiceSelfTest {
     static let envKey = "MUXMAESTRO_VOICE_SELFTEST"
 
     static let reply = "Okay, I checked pull request one oh two, and CI is green. "
-        + "I merged it with a merge commit. The front range windows import failed "
+        + "I merged it with a merge commit. The acme app import failed "
         + "because the vendor file had a new column."
 
     static func runIfRequested() {

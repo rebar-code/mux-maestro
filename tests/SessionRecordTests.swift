@@ -72,9 +72,9 @@ final class SessionRecordTests: XCTestCase {
 
     func testThreePanesInOneDirectoryYieldThreeRecords() {
         // The bug this feature exists to fix: `findLostSessions` takes the newest
-        // transcript PER PROJECT DIRECTORY, so three front-range-windows panes
+        // transcript PER PROJECT DIRECTORY, so three acme-app panes
         // recovered as one. Keyed by pane id, all three survive.
-        let dir = "/Users/j/code/github/front-range-windows"
+        let dir = "/Users/j/code/github/acme-app"
         let text = (1...3).map {
             #"{"pane":"%\#($0)","agent":"claude","sessionId":"s\#($0)","cwd":"\#(dir)"}"#
         }.joined(separator: "\n")
@@ -82,14 +82,14 @@ final class SessionRecordTests: XCTestCase {
         XCTAssertEqual(records.count, 3)
 
         let tree = TreeSnapshot(at: Date(), sessions: [
-            .init(name: "Front Range Windows", windows: (1...3).map {
-                .init(index: $0, name: "frw-\($0)", panes: [pane("%\($0)", dir)])
+            .init(name: "Acme App", windows: (1...3).map {
+                .init(index: $0, name: "acme-\($0)", panes: [pane("%\($0)", dir)])
             }),
         ])
         let plan = SessionRecord.restorePlan(
             tree: tree, records: records, directoryExists: anywhere)
         XCTAssertEqual(plan.count, 1)
-        XCTAssertEqual(plan[0].windows.map(\.name), ["frw-1", "frw-2", "frw-3"])
+        XCTAssertEqual(plan[0].windows.map(\.name), ["acme-1", "acme-2", "acme-3"])
         XCTAssertEqual(
             plan[0].windows.flatMap { $0.panes.compactMap(\.resumeCommand) },
             ["claude --resume s1", "claude --resume s2", "claude --resume s3"])
@@ -356,8 +356,8 @@ final class SessionRecordTests: XCTestCase {
 
     func testEncodeDecodeRoundTrip() {
         let snapshot = TreeSnapshot(at: Date(timeIntervalSince1970: 1_724_000_000), sessions: [
-            .init(name: "Front Range Windows", windows: [
-                .init(index: 3, name: "frw-po-import", panes: [pane("%248", "/Users/j/frw")]),
+            .init(name: "Acme App", windows: [
+                .init(index: 3, name: "acme-po-import", panes: [pane("%248", "/Users/j/acme")]),
             ]),
         ])
         let data = SessionRecord.encode(snapshot)
@@ -373,27 +373,27 @@ final class SessionRecordTests: XCTestCase {
             runner: runner, statusProvider: StaticStatus(), tmuxPath: "/usr/bin/tmux")
 
         let created = service.recoverTopology([
-            RestoreSession(name: "Front Range Windows", windows: [
+            RestoreSession(name: "Acme App", windows: [
                 .init(name: "po-import", panes: [
-                    RestorePane(cwd: "/frw", resumeCommand: "claude --resume aaa"),
+                    RestorePane(cwd: "/acme", resumeCommand: "claude --resume aaa"),
                 ]),
                 .init(name: "calendar", panes: [
-                    RestorePane(cwd: "/frw2", resumeCommand: "codex resume bbb"),
+                    RestorePane(cwd: "/acme2", resumeCommand: "codex resume bbb"),
                 ]),
             ]),
         ])
 
-        XCTAssertEqual(created, ["Front Range Windows"])
+        XCTAssertEqual(created, ["Acme App"])
         XCTAssertEqual(runner.argSequences, [
             ["list-sessions", "-F", "#{session_name}"],
-            ["new-session", "-d", "-s", "Front Range Windows", "-c", "/frw"],
-            ["rename-window", "-t", "=Front Range Windows:", "po-import"],
-            ["set-window-option", "-t", "=Front Range Windows:", "allow-rename", "off"],
-            ["send-keys", "-t", "=Front Range Windows:", "claude --resume aaa"],
-            ["new-window", "-a", "-t", "Front Range Windows:", "-c", "/frw2"],
-            ["rename-window", "-t", "=Front Range Windows:", "calendar"],
-            ["set-window-option", "-t", "=Front Range Windows:", "allow-rename", "off"],
-            ["send-keys", "-t", "=Front Range Windows:", "codex resume bbb"],
+            ["new-session", "-d", "-s", "Acme App", "-c", "/acme"],
+            ["rename-window", "-t", "=Acme App:", "po-import"],
+            ["set-window-option", "-t", "=Acme App:", "allow-rename", "off"],
+            ["send-keys", "-t", "=Acme App:", "claude --resume aaa"],
+            ["new-window", "-a", "-t", "Acme App:", "-c", "/acme2"],
+            ["rename-window", "-t", "=Acme App:", "calendar"],
+            ["set-window-option", "-t", "=Acme App:", "allow-rename", "off"],
+            ["send-keys", "-t", "=Acme App:", "codex resume bbb"],
         ])
     }
 

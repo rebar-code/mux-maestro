@@ -306,10 +306,10 @@ final class WorktreeChipTests: XCTestCase {
 /// Fixtures are the exact paths from
 /// `~/Downloads/worktree-rescue-20260819/untracked-classification-groundtruth.py`
 /// — 32 real untracked files hand-labelled during the 2026-08-19 purge across
-/// front-range-windows, acme-app-monorepo and infolk-pulso. No percentage from that
+/// widget-shop, acme-app-monorepo and my-site. No percentage from that
 /// run is encoded here: 32 files, one purge, three repos, one person's labels.
 final class UntrackedClassifierTests: XCTestCase {
-    /// front-range-windows really tracks `.png` and `.xlsx`; acme-app-monorepo
+    /// widget-shop really tracks `.png` and `.xlsx`; acme-app-monorepo
     /// authors `.ts` and `.md` but no `.mts`.
     private let frw: Set<String> = ["ts", "svelte", "sql", "html", "png", "xlsx", "md", "json"]
     private let pw: Set<String> = ["ts", "mjs", "svelte", "sql", "html", "xml", "md", "json"]
@@ -380,7 +380,7 @@ final class UntrackedClassifierTests: XCTestCase {
         XCTAssertEqual(pwClass("BRIEF.md"), .likelyScratch)
     }
 
-    /// The case an extension denylist gets wrong: front-range-windows tracks 17
+    /// The case an extension denylist gets wrong: widget-shop tracks 17
     /// `.png`, so a `.png` sitting in a real directory alongside the project's own
     /// images is work, not junk.
     func testATrackedImageTypeInARealDirectoryIsWorkNotScratch() {
