@@ -93,10 +93,46 @@ function targetOf(address: string): Target {
 // A web link opens in a new tab. A file path and a local address have no
 // `href`: the view decides what a tap on one does, and without a view it
 // does nothing.
+// A name in a link's text that reads as a host: `good.example`, with or
+// without a scheme in front of it.
+const NAMED_HOST =
+	/(?:[a-z][a-z0-9+.-]*:\/\/)?((?:[a-z0-9\u00a1-\uffff-]+\.)+[a-z\u00a1-\uffff][a-z0-9\u00a1-\uffff-]*)/gi;
+
+/** A host as a browser reads it, without `www.`; null when it is not one. */
+function hostOf(address: string): string | null {
+	try {
+		return new URL(address).hostname.toLowerCase().replace(/^www\./, '');
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * The host a web link goes to, when its text names another one:
+ * `[good.example](https://evil.example)`. Null when the text names no host,
+ * or the same one.
+ */
+function otherHost(text: string, href: string): string | null {
+	const real = hostOf(href);
+	if (real === null || !/^https?:/i.test(href)) return null;
+	for (const [, named] of text.replace(UNSEEN, '').matchAll(NAMED_HOST)) {
+		if (hostOf(`http://${named}`) !== real) return real;
+	}
+	return null;
+}
+
 md.renderer.rules.link_open = (tokens, index, options, _env, self) => {
 	const token = tokens[index];
 	const target = targetOf(String(token.attrGet('href') ?? ''));
 	if (target.kind === 'web') {
+		// What the link shows, up to its end.
+		let close = index + 1;
+		let text = '';
+		for (; close < tokens.length && tokens[close].type !== 'link_close'; close += 1) {
+			text += tokens[close].content;
+		}
+		const host = otherHost(text, target.href);
+		if (host !== null && tokens[close]) tokens[close].meta = { host };
 		token.attrs = [
 			['href', target.href],
 			['target', '_blank'],
@@ -117,6 +153,13 @@ md.renderer.rules.link_open = (tokens, index, options, _env, self) => {
 		];
 	}
 	return self.renderToken(tokens, index, options);
+};
+
+// The text of a link can name one site and the link go to another. The real
+// host is then shown after the link, outside it.
+md.renderer.rules.link_close = (tokens, index) => {
+	const host: unknown = tokens[index].meta?.host;
+	return typeof host === 'string' ? `</a> <span class="mdhost">(${escape(host)})</span>` : '</a>';
 };
 
 // No image is loaded from here: a remote one would tell its server that the
@@ -161,6 +204,9 @@ md.renderer.rules.softbreak = (_tokens, _index, _options, env) => (env?.chat ? '
 // name or an address read as another one, so they are not drawn.
 const BIDI = /[\u202a-\u202e\u2066-\u2069]/g;
 
+/** Text that is not parsed: escaped, with its line breaks kept by the style. */
+const plainBlock = (text: string): string[] => [`<p class="plain">${escape(text)}</p>\n`];
+
 /** YAML front matter as a code block: markdown would draw its keys as a heading. */
 function withFrontMatter(text: string): string {
 	const lines = text.replace(/\r\n/g, '\n').split('\n');
@@ -173,12 +219,15 @@ function withFrontMatter(text: string): string {
 }
 
 /** Markdown as HTML that is safe to put in the page. */
-export function renderMarkdown(text: string): string {
-	return md.render(withFrontMatter(text.replace(BIDI, '')), {});
+export function renderMarkdown(source: string): string {
+	const text = source.replace(BIDI, '');
+	if (text.length > MARKDOWN_MAX) return plainBlock(text).join('');
+	try {
+		return md.render(withFrontMatter(text), {}).replace(BIDI, '');
+	} catch {
+		return plainBlock(text).join('');
+	}
 }
-
-/** Text that is not parsed: escaped, with its line breaks kept by the style. */
-const plainBlock = (text: string): string[] => [`<p class="plain">${escape(text)}</p>\n`];
 
 /** A message as HTML, one string for each top-level block. */
 function blocksOf(source: string): string[] {
@@ -193,7 +242,8 @@ function blocksOf(source: string): string[] {
 		for (let i = 0; i < tokens.length; i += 1) {
 			depth += tokens[i].nesting;
 			if (depth !== 0) continue;
-			out.push(md.renderer.render(tokens.slice(from, i + 1), md.options, env));
+			// An entity can spell a direction character: the parser has decoded it by now.
+			out.push(md.renderer.render(tokens.slice(from, i + 1), md.options, env).replace(BIDI, ''));
 			from = i + 1;
 		}
 		return out;

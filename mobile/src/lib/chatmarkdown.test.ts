@@ -8,7 +8,8 @@ import {
 	markedBlocks,
 	markHits,
 	MARKDOWN_MAX,
-	plainText
+	plainText,
+	renderMarkdown
 } from './markdown';
 import type { ArtifactFile, ChatMessage } from './types';
 
@@ -313,6 +314,69 @@ describe('hostile input', () => {
 
 	it('writes only its own tags and attributes, and only web addresses', () => {
 		for (const text of HOSTILE) expectInert(html(text));
+	});
+
+	it('does the same for an artifact, which the same renderer draws', () => {
+		for (const text of HOSTILE) {
+			const out = renderMarkdown(text);
+			expectInert(out);
+			expect(out).not.toMatch(/[\u202a-\u202e\u2066-\u2069]/);
+		}
+		expect(renderMarkdown('<script>alert(1)</script>')).toContain('&lt;script&gt;');
+		expect(renderMarkdown('[a](JaVaScRiPt:alert(1))')).toContain('[a](JaVaScRiPt:alert(1))');
+		expect(renderMarkdown('![x](https://example.com/p.png)')).toBe(
+			'<p><span class="mdimg">x</span></p>\n'
+		);
+	});
+
+	it('gives an artifact the same limits: a very long one is plain text, in bounded time', () => {
+		const started = performance.now();
+		const long = renderMarkdown(`# T <b>${'['.repeat(1_000_000)}`);
+		expect(long.startsWith('<p class="plain"># T &lt;b&gt;[[[')).toBe(true);
+		expectInert(renderMarkdown('['.repeat(MARKDOWN_MAX)));
+		expectInert(html('['.repeat(MARKDOWN_MAX)));
+		expect(performance.now() - started).toBeLessThan(3000);
+	});
+
+	it('shows the real host when the text of a link names another one', () => {
+		const shown = (text: string): string => plainText(html(text)).trim();
+		expect(html('[https://good.example](https://evil.example)')).toBe(
+			'<p><a href="https://evil.example" target="_blank" rel="noopener noreferrer">' +
+				'https://good.example</a> <span class="mdhost">(evil.example)</span></p>\n'
+		);
+		expect(shown('[good.example/login](https://evil.example/x)')).toBe(
+			'good.example/login (evil.example)'
+		);
+		expect(shown('[**www.good.example**](https://evil.example)')).toBe(
+			'www.good.example (evil.example)'
+		);
+		expect(shown('[go\u200bod.example](https://evil.example)')).toContain('(evil.example)');
+		expect(shown('[https://good.example@evil.example](https://good.example@evil.example)')).toBe(
+			'https://good.example@evil.example (evil.example)'
+		);
+		// The host is shown as the browser reads it: a look-alike letter shows.
+		expect(shown('[example.com](https://ex\u0430mple.com)')).toMatch(/\(xn--[a-z0-9-]+\.com\)$/);
+		expect(renderMarkdown('[good.example](https://evil.example)')).toContain(
+			'<span class="mdhost">(evil.example)</span>'
+		);
+		// The same host, or no host in the text: nothing is added.
+		for (const text of [
+			'[docs](https://example.com/a)',
+			'[example.com](https://example.com/a)',
+			'[https://www.example.com/a](https://example.com/b)',
+			'[EXAMPLE.com](https://example.com)',
+			'see https://example.com/a now',
+			'[me@example.com](mailto:me@example.com)'
+		])
+			expect(html(text), text).not.toContain('mdhost');
+	});
+
+	it('does not draw a direction character that an entity spells', () => {
+		expect(html('safe&#x202E;gnp.exe &#8238;x &#x2066;y')).toBe('<p>safegnp.exe x y</p>\n');
+		expect(html('[a&#x202E;b](https://example.com "t&#x202E;t")')).not.toMatch(/\u202e/);
+		expect(renderMarkdown('# a&#x202E;b')).toBe('<h1>ab</h1>\n');
+		// In code an entity is not decoded: it shows as it was written.
+		expect(html('`a&#x202E;b`')).toContain('a&amp;#x202E;b');
 	});
 
 	it('shows raw HTML and a refused link as text', () => {

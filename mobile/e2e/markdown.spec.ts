@@ -317,6 +317,63 @@ test('links: the web in a new tab, a file in Artifacts, a local address through 
 	expect(seen.problems).toEqual([]);
 });
 
+test('an SVG file of the thread in a message is shown from a data address, and runs nothing', async ({
+	page
+}) => {
+	const seen = watch(page);
+	// Every object address the page makes, by the type of its blob.
+	await page.addInitScript(() => {
+		const made: string[] = [];
+		const create = URL.createObjectURL.bind(URL);
+		URL.createObjectURL = (source: Blob | MediaSource): string => {
+			made.push(source instanceof Blob ? source.type : 'media');
+			return create(source);
+		};
+		(window as unknown as { __blobTypes: string[] }).__blobTypes = made;
+	});
+	await open(page, [
+		'The trend: ![coverage trend](coverage/chart.svg)\n\n[open the chart](coverage/chart.svg)'
+	]);
+	const prose = last(page);
+	const image = prose.locator('.mdimg[data-known] img');
+	await expect(image).toHaveJSProperty('naturalWidth', 300);
+	// A `blob:` address belongs to the app's origin; opened as a page, its script would run there.
+	expect(await image.getAttribute('src')).toMatch(/^data:image\/svg\+xml;base64,/);
+	await expect(prose.locator('.mdimg')).toContainText('coverage trend');
+	await expect(prose.locator('img')).toHaveCount(1);
+	// Drawn in the message, so not again as a thumbnail under it.
+	await expect(chat(page).locator('.thumb', { hasText: 'chart.svg' })).toHaveCount(0);
+
+	// The link to the same file opens it in Artifacts, from a data address too.
+	await prose.locator('a[data-file="coverage/chart.svg"]').click();
+	const viewed = page.locator('[data-viewer] .stage img');
+	await expect(viewed).toHaveJSProperty('naturalWidth', 300);
+	expect(await viewed.getAttribute('src')).toMatch(/^data:image\/svg\+xml;base64,/);
+
+	const types = await page.evaluate(
+		() => (window as unknown as { __blobTypes: string[] }).__blobTypes
+	);
+	expect(types.filter((type) => /svg|html|xml|javascript/i.test(type))).toEqual([]);
+	expect(
+		await page.evaluate(() => (window as unknown as { __svgRan?: string }).__svgRan)
+	).toBeUndefined();
+	expect(await page.title()).not.toContain('ran');
+	expect(seen.remote).toEqual([]);
+	expect(seen.problems).toEqual([]);
+	expect(await page.evaluate(() => window.__violations)).toEqual([]);
+});
+
+test('a link whose text names another host shows the host it goes to', async ({ page }) => {
+	await open(page, ['Sign in at [https://good.example/login](https://evil.example/login) now.']);
+	const prose = last(page);
+	await expect(prose.locator('a')).toHaveAttribute('href', 'https://evil.example/login');
+	await expect(prose.locator('.mdhost')).toHaveText('(evil.example)');
+	await expect(prose).toHaveText('Sign in at https://good.example/login (evil.example) now.');
+	// The host is beside the link, not part of it.
+	await expect(prose.locator('a .mdhost')).toHaveCount(0);
+	await shot(page, 'markdown-host');
+});
+
 test('find looks in the rendered text and scrolls to it', async ({ page }) => {
 	await open(page, [EVERYTHING, ...Array.from({ length: 12 }, (_, n) => `Later line ${n + 1}.`)]);
 	await page.getByRole('button', { name: 'Find' }).click();

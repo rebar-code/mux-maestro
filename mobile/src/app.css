@@ -383,8 +383,16 @@ button:disabled {
 	margin: 0 0 0.65em;
 }
 
-.prose .plain {
+/* Text too long to parse: as it was written. Also in the artifact viewer. */
+p.plain {
 	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+/* The host a link really goes to, when its text names another. */
+.mdhost {
+	color: var(--amber);
+	font-size: 0.88em;
 }
 
 .prose h1,
