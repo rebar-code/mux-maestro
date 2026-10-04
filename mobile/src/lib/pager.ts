@@ -70,6 +70,18 @@ export function settlePage(
 	return Math.min(Math.max(next, 0), Math.max(pageCount - 1, 0));
 }
 
+/** How far a finger pulls the messages down before the keyboard is put away. */
+export const KEYBOARD_PULL = 24;
+
+/**
+ * Whether a drag on the messages puts the on-screen keyboard away: a pull
+ * down (`dy` positive), more down than sideways. The page still scrolls under
+ * the finger: the drag is not taken from the browser.
+ */
+export function pullsKeyboardDown(dx: number, dy: number): boolean {
+	return dy >= KEYBOARD_PULL && dy > Math.abs(dx);
+}
+
 /** Whether a row released at `dx` (a left swipe is negative) is swiped away. */
 export function settleSwipe(dx: number, vx: number, width: number): boolean {
 	return dx < 0 && commits(dx, vx, width) === -1;

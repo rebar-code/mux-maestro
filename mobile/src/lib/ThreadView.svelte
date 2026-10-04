@@ -337,6 +337,7 @@
 	class="pager"
 	class:docked
 	data-thread-pages={embedded ? undefined : ''}
+	data-messages
 	style:--term-size="{text.size}px"
 	style:--chat-size="{text.chat}px"
 	{@attach !embedded && pages(tabs, landed)}

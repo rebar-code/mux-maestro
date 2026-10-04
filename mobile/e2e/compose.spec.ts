@@ -1,6 +1,6 @@
 import { mkdirSync } from 'node:fs';
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import { forget, pairingLink, reset, threadPath } from './helpers';
+import { forget, pairingLink, reset, threadPath, touchDrag } from './helpers';
 
 /** Idle, local, with a chat. */
 const IDLE = 'localhost:7';
@@ -804,4 +804,40 @@ test('drafts are cleared when the phone is unpaired, and when it is paired anew'
 	// And nothing but the token itself was stored to notice the change.
 	const keys = await page.evaluate(() => Object.keys(localStorage));
 	expect(keys.filter((key) => /draft/.test(key))).toEqual([]);
+});
+
+test('a pull down on the messages puts the keyboard away', async ({ page }) => {
+	await open(page, threadPath(IDLE), ['replies']);
+	await box(page).tap();
+	await box(page).fill('half a thought');
+	await expect(box(page)).toBeFocused();
+	const chat = (await page.locator('[data-view="chat"]').boundingBox())!;
+	const x = chat.x + chat.width / 2;
+	const y = chat.y + 120;
+	// A pull up reads on: the keyboard stays.
+	await touchDrag(page, [x, y + 90], [x, y]);
+	await expect(box(page)).toBeFocused();
+	// A short pull down is not one. (Past the 15px a browser still calls a tap.)
+	await touchDrag(page, [x, y], [x, y + 20]);
+	await expect(box(page)).toBeFocused();
+	// A pull down inside the text box scrolls its text: the keyboard stays.
+	const typing = (await box(page).boundingBox())!;
+	await touchDrag(
+		page,
+		[typing.x + 40, typing.y + 6],
+		[typing.x + 40, typing.y + typing.height + 60]
+	);
+	await expect(box(page)).toBeFocused();
+	// A pull down on the messages puts it away, and the text stays in the box.
+	await touchDrag(page, [x, y], [x, y + 90]);
+	await expect(box(page)).not.toBeFocused();
+	await expect(box(page)).toHaveValue('half a thought');
+	// The same on the Maestro page: the text box is one thing everywhere.
+	await page.request.post('/__fixture/capability?name=manager&on=1');
+	await page.goto('/');
+	await ask(page).tap();
+	await expect(ask(page)).toBeFocused();
+	const said = (await page.locator('[data-view="chat"]').boundingBox())!;
+	await touchDrag(page, [said.x + 100, said.y + 60], [said.x + 100, said.y + 150]);
+	await expect(ask(page)).not.toBeFocused();
 });
