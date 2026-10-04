@@ -86,11 +86,34 @@ test('the manager waits on a question: the home shows the card, and an option an
 	await expect(card(page).locator('[aria-current="true"]')).toHaveAttribute('data-option', '1');
 	for (const option of await options(page).all())
 		expect((await option.boundingBox())?.height).toBeGreaterThanOrEqual(44);
-	// On screen without scrolling, and clear of the board sheet and the bars under it.
+	// On screen without scrolling, above the footer; the board is below the footer.
 	await expect(card(page)).toBeInViewport({ ratio: 1 });
 	const at = await card(page).boundingBox();
-	const sheet = await page.locator('[data-sheet]').boundingBox();
-	expect((at?.y ?? 0) + (at?.height ?? 0)).toBeLessThanOrEqual(sheet?.y ?? 0);
+	const foot = await page.locator('[data-foot]').boundingBox();
+	expect((at?.y ?? 0) + (at?.height ?? 0)).toBeLessThanOrEqual(foot?.y ?? 0);
+	// The keys are in the footer, under its grabber and above the text box.
+	const keys = await keybar(page).boundingBox();
+	const grab = await page.locator('[data-grab]').boundingBox();
+	const form = await page.locator('form.compose').boundingBox();
+	expect(keys?.y).toBeGreaterThanOrEqual((grab?.y ?? 0) + (grab?.height ?? 0));
+	expect((keys?.y ?? 0) + (keys?.height ?? 0)).toBeLessThanOrEqual(form?.y ?? 0);
+
+	// With the board raised the footer rises with it: the keys and the card stay clear.
+	await page.locator('[data-grab]').click();
+	await expect(page.locator('[data-board]')).toHaveAttribute('data-stop', '1');
+	await page.waitForTimeout(400);
+	const raised = await keybar(page).boundingBox();
+	const board = await page.locator('[data-board]').boundingBox();
+	expect((raised?.y ?? 0) + (raised?.height ?? 0)).toBeLessThanOrEqual(board?.y ?? 0);
+	await expect(card(page)).toBeInViewport({ ratio: 1 });
+	const lifted = await card(page).boundingBox();
+	const footUp = await page.locator('[data-foot]').boundingBox();
+	expect((lifted?.y ?? 0) + (lifted?.height ?? 0)).toBeLessThanOrEqual(footUp?.y ?? 0);
+	// Back down for the rest.
+	await page.locator('[data-grab]').click();
+	await page.locator('[data-grab]').click();
+	await expect(page.locator('[data-board]')).toHaveAttribute('data-stop', '0');
+	await page.waitForTimeout(400);
 	// The line the home had before is still there.
 	await expect(page.locator('[data-status="waiting"]')).toHaveText(
 		'Manager is waiting on a prompt'

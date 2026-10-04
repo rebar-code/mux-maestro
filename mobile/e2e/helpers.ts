@@ -4,7 +4,21 @@ export const WIDTH = 390;
 
 declare global {
 	interface Window {
-		__mic: { opened: number; speak: (on: boolean) => void; live: () => number };
+		__mic: {
+			opened: number;
+			speak: (on: boolean) => void;
+			live: () => number;
+			/** The next `getUserMedia` fails with this error name. */
+			fail: string | null;
+			/** As iOS does: the mic prompt leaves the page's audio suspended. */
+			suspendOnOpen: boolean;
+		};
+		/** The app's own audio context: the one the first tap made. */
+		__app: AudioContext | null;
+		/** The audio session type the app asked for (iOS 17). */
+		__session: () => string;
+		/** Screen wake locks the app holds. */
+		__awake: () => number;
 		/** Reply clips that started to play. */
 		__clips: number;
 	}
@@ -18,8 +32,35 @@ export async function fakeMic(page: Page): Promise<void> {
 	await page.addInitScript(() => {
 		let gain: GainNode | null = null;
 		const streams: MediaStream[] = [];
+		// The app's context is the first one made outside the fake microphone.
+		let making = false;
+		window.__app = null;
+		const Real = window.AudioContext;
+		window.AudioContext = class extends Real {
+			constructor(options?: AudioContextOptions) {
+				super(options);
+				if (!making && (window.__app === null || window.__app.state === 'closed')) {
+					window.__app = this;
+				}
+			}
+		};
+		const audioSession = { type: 'auto' };
+		Object.defineProperty(navigator, 'audioSession', { value: audioSession });
+		window.__session = () => audioSession.type;
+		let held = 0;
+		Object.defineProperty(navigator, 'wakeLock', {
+			value: {
+				request: async () => {
+					held += 1;
+					return { release: async () => void (held -= 1) };
+				}
+			}
+		});
+		window.__awake = () => held;
 		window.__mic = {
 			opened: 0,
+			fail: null,
+			suspendOnOpen: false,
 			speak: (on) => {
 				if (gain) gain.gain.value = on ? 0.5 : 0;
 			},
@@ -29,8 +70,12 @@ export async function fakeMic(page: Page): Promise<void> {
 					.length
 		};
 		navigator.mediaDevices.getUserMedia = async () => {
+			if (window.__mic.fail) throw new DOMException('refused', window.__mic.fail);
+			if (window.__mic.suspendOnOpen) await window.__app?.suspend();
 			window.__mic.opened += 1;
+			making = true;
 			const context = new AudioContext();
+			making = false;
 			await context.resume();
 			const tone = context.createOscillator();
 			tone.frequency.value = 220;

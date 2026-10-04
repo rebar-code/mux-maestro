@@ -197,9 +197,9 @@ test('home: status chips and the threads that need you, live', async ({ page }) 
 	await expect(page.locator('.chip')).toHaveText(['2 need you', '4 running', '💤 14']);
 	const cards = page.locator('.item[data-thread]');
 	await expect(cards).toHaveCount(2);
-	// The cards are on the board sheet: bring it up.
-	await page.locator('[data-sheet] .grip').click();
-	await expect(page.locator('[data-sheet]')).toHaveAttribute('data-stop', '1');
+	// The cards are on the board, under the footer: raise it.
+	await page.locator('[data-grab]').click();
+	await expect(page.locator('[data-board]')).toHaveAttribute('data-stop', '1');
 	await page.waitForTimeout(450);
 
 	// A live update lands without moving what is already on screen.

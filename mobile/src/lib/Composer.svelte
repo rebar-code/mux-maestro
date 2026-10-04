@@ -27,6 +27,8 @@
 		oninput,
 		onbeforeinput,
 		onpaste,
+		onfocus,
+		onblur,
 		box,
 		leading,
 		above
@@ -54,6 +56,8 @@
 		/** Attachment for the text box, for a caller that types into it or moves the focus. */
 		box?: Attachment<HTMLInputElement>;
 		onpaste?: (event: ClipboardEvent) => void;
+		onfocus?: () => void;
+		onblur?: () => void;
 		/** Controls left of the text box. */
 		leading?: Snippet;
 		/** A row above the text box, as wide as the composer. */
@@ -89,6 +93,8 @@
 		{oninput}
 		{onbeforeinput}
 		{onpaste}
+		{onfocus}
+		{onblur}
 	/>
 	<!-- Typing is always there: with text in the box the button sends it. -->
 	{#if canSend && !off}
@@ -106,9 +112,13 @@
 		align-items: center;
 		gap: 8px;
 		margin: 0;
-		/* With the keyboard up there is no home indicator under the box. */
+		/*
+		 * The bottom inset is counted once. With the keyboard up there is no home
+		 * indicator under the box (`--safe-bottom`); on the manager home the board
+		 * takes the inset over once it shows under the footer (`--board`).
+		 */
 		padding: 6px max(10px, env(safe-area-inset-right))
-			calc(10px + var(--safe-bottom, env(safe-area-inset-bottom)))
+			calc(10px + var(--safe-bottom, max(0px, env(safe-area-inset-bottom) - var(--board, 0px))))
 			max(10px, env(safe-area-inset-left));
 		background: var(--bar);
 	}

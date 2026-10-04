@@ -4,38 +4,32 @@
 	import { age } from './format';
 	import { swipeAway, ui } from './gestures.svelte';
 	import { live } from './live.svelte';
-	import { boardSummary, needsYouCards } from './manager';
+	import { needsYouCards } from './manager';
 	import { manager } from './manager.svelte';
 	import { sheetHeight, sheetStops } from './pager';
 
 	/** How many of the manager's updates the board lists. */
 	const UPDATES = 5;
-	const STOPS = ['closed', 'open', 'full'] as const;
 
 	const waiting = $derived(needsYouCards(live.threads ?? [], manager.needsYou));
 	const review = $derived(manager.review);
 	const updates = $derived(manager.updates.slice(0, UPDATES));
-	const summary = $derived(
-		boardSummary({
-			needsYou: waiting.length,
-			review: review?.length ?? 0,
-			updates: updates.length
-		})
-	);
-	const tall = $derived(ui.sheetHeights[2]);
 	const height = $derived(sheetHeight(ui.sheetHeights, ui.sheet, ui.sheetUp));
 
-	/** Attachment: the three stops follow the space the sheet sits in. */
+	/** Attachment: the stops follow the room the thread has for the footer to rise into. */
 	function measure(node: HTMLElement): () => void {
-		const stage = node.parentElement ?? node;
+		const view = node.parentElement ?? node;
 		const fit = (): void => {
-			// The sheet may cover the thread, never the toolbar and tabs above it.
-			const above = node.previousElementSibling as HTMLElement | null;
-			const room = stage.clientHeight - (above ? above.offsetTop : 0);
+			const thread = view.querySelector<HTMLElement>('[data-thread-pages]');
+			const foot = view.querySelector<HTMLElement>('[data-foot]');
+			if (!thread || !foot) return;
+			// From the top of the thread's pages down to where the footer rests.
+			const top = thread.getBoundingClientRect().top - view.getBoundingClientRect().top;
+			const room = view.clientHeight - top - foot.offsetHeight;
 			untrack(() => (ui.sheetHeights = sheetStops(room, window.innerHeight)));
 		};
 		const observer = new ResizeObserver(fit);
-		observer.observe(stage);
+		observer.observe(view);
 		fit();
 		return () => {
 			observer.disconnect();
@@ -44,27 +38,23 @@
 	}
 </script>
 
+<!--
+	The board, below the footer. It has no height at rest: the footer is then at
+	the bottom of the screen. As the footer rises, this is what shows under it.
+-->
 <section
-	class="sheet"
+	class="board"
 	class:anim={!ui.sheetDragging}
-	style:height="{tall}px"
-	style:transform="translate3d(0, {-height}px, 0)"
+	style:height="{height}px"
 	aria-label="Board"
+	inert={ui.sheet === 0}
 	data-sheet
+	data-sheet-list
+	data-board
 	data-stop={ui.sheet}
 	{@attach measure}
 >
-	<button
-		class="grip"
-		aria-label="Board, {summary}, {STOPS[ui.sheet]}"
-		aria-expanded={ui.sheet > 0}
-		onclick={() => ui.stepSheet()}
-	>
-		<span class="bar"></span>
-		<span class="sum">{summary}</span>
-	</button>
-
-	<div class="list" inert={ui.sheet === 0} data-sheet-list>
+	<div class="in">
 		{#if waiting.length}
 			<div class="sect">Needs you · {waiting.length}</div>
 			{#each waiting as { thread, why } (thread.id)}
@@ -133,64 +123,29 @@
 </section>
 
 <style>
-	.sheet {
-		/* Hung below the stage and lifted by its height, so a new size never animates. */
-		position: absolute;
-		left: 0;
-		right: 0;
-		top: 100%;
-		z-index: 5;
-		display: flex;
-		flex-direction: column;
+	/* Scrolled by the gesture controller, and only at the tall stop. */
+	.board {
+		flex: none;
+		overflow: hidden;
 		background: var(--mgr);
-		border-top: 1px solid #2b2b3d;
-		border-radius: 16px 16px 0 0;
-		box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.45);
-		will-change: transform;
 	}
 
-	/* A little past its target and back: the sheet lands like a spring. */
-	.sheet.anim {
-		transition: transform 0.36s cubic-bezier(0.2, 1.25, 0.35, 1);
+	/* A little past its target and back: the drawer lands like a spring. */
+	.board.anim {
+		transition: height 0.36s cubic-bezier(0.2, 1.25, 0.35, 1);
 	}
 
 	/*
-	 * Every drag on the sheet is ours: up and down move it or scroll its list,
-	 * sideways swipes a card away or opens the sidebar.
+	 * Every drag on the board is ours: up and down move the drawer or scroll
+	 * the list, sideways swipes a card away or opens the sidebar.
 	 */
-	.sheet,
-	.sheet :global(*) {
+	.board,
+	.board :global(*) {
 		touch-action: none;
 	}
 
-	.grip {
-		flex: none;
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		justify-content: center;
-		gap: 6px;
-		width: 100%;
-		height: 46px;
-	}
-
-	.bar {
-		width: 36px;
-		height: 4px;
-		border-radius: 2px;
-		background: #4a4a5e;
-	}
-
-	.sum {
-		font-size: 12px;
-		color: var(--muted);
-	}
-
-	/* Moved by the gesture controller, and only at the tall stop. */
-	.list {
-		flex: 1;
-		min-height: 0;
-		overflow: hidden;
+	.in {
+		padding-top: 4px;
 	}
 
 	.item {
@@ -293,7 +248,8 @@
 		font-size: 12px;
 	}
 
+	/* The board is the last thing on screen when it shows: it clears the home indicator. */
 	.end {
-		height: 24px;
+		height: calc(16px + env(safe-area-inset-bottom));
 	}
 </style>
