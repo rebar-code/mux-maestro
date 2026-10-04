@@ -485,6 +485,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         managerRail.onSend = { [weak self] text in self?.runManagerTurn(text) }
         managerRail.onTalk = { [weak self] in self?.actionTalk() }
         managerRail.onShowTerminal = { [weak self] in self?.installManagerTerminalIfNeeded() }
+        managerRail.requests = ManagerHome.defaultHome().map {
+            RequestTracker(url: $0.appendingPathComponent(RequestTracker.fileName), origin: .mac)
+        }
         self.managerController = manager
         if Settings.managerRailShown() { startManagerMachinery() }
         startManagerForPhoneIfNeeded()

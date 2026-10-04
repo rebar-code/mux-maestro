@@ -46,9 +46,17 @@ struct RequestTracker {
     /// Who the agent is in a history entry's `by`. Any other name is the human.
     static let agent = "maestro"
 
+    /// Where a change of state is made.
+    enum Origin: String {
+        case phone = "on the phone"
+        case mac = "on the Mac"
+    }
+
     let url: URL
     /// Who a change from the phone is `by`: the human, as the Mac names them.
     var author = NSUserName()
+    /// Where the human made the change: the last words of its history note.
+    var origin = Origin.phone
     var now: () -> Date = Date.init
     /// The zone a history entry's day is read in.
     var timeZone = TimeZone.current
@@ -86,7 +94,8 @@ struct RequestTracker {
             let after: Data
             let date = now()
             let change = Change(
-                state: state, stamp: Self.stamp(date), day: Self.day(date, in: timeZone), by: author)
+                state: state, stamp: Self.stamp(date), day: Self.day(date, in: timeZone), by: author,
+                origin: origin)
             switch Self.edit(before, id: id, change: change) {
             case .failure(let error): return .failure(error)
             case .success(let data): after = data
@@ -152,7 +161,7 @@ struct RequestTracker {
         return recorded ? nil : "\(fileName) has a request without a history"
     }
 
-    /// One change from the phone: the new state, and what its history entry says.
+    /// One change from the phone or the Mac: the new state, and what its history entry says.
     struct Change {
         var state: RequestState
         /// The time for the list's `updated`.
@@ -160,6 +169,7 @@ struct RequestTracker {
         /// The day for the entry's `at`.
         var day: String
         var by: String
+        var origin = Origin.phone
     }
 
     /// `text` with the state of request `id` set, one entry added at the end of
@@ -203,7 +213,7 @@ struct RequestTracker {
 
         let entry = [
             (key: "at", value: change.day), (key: "by", value: change.by),
-            (key: "note", value: "State changed from \(was) to \(state) on the phone."),
+            (key: "note", value: "State changed from \(was) to \(state) \(change.origin.rawValue)."),
         ]
         if let history = target.history {
             guard let addition = spans.addition(entry, to: history) else {
@@ -444,6 +454,9 @@ struct JSONSpans {
 
 /// The request list on the phone API: `/api/requests`.
 enum MobileRequests {
+    /// What a write that lost every attempt answers.
+    static let busyMessage = "The list is being written. Try again."
+
     /// The `{"id": ..., "state": ...}` body of a state change. The state must
     /// be one the list knows.
     static func change(in body: Data) -> (id: String, state: RequestState)? {
@@ -463,7 +476,7 @@ enum MobileRequests {
         case .failure(.io(let message)): return .error(500, "unreadable", message: message)
         case .failure(.unknownRequest): return .error(404, "not_found")
         case .failure(.busy):
-            return .error(409, "busy", message: "The list is being written. Try again.")
+            return .error(409, "busy", message: busyMessage)
         }
     }
 }

@@ -2,8 +2,8 @@ import Cocoa
 
 /// The 🤖 Manager rail: a far-right collapsible column that IS the manager view.
 /// Two cards. One lists the agent's read of the fleet (what needs you, what the
-/// agents have been doing, what they said); the other is the chat with the
-/// `mux-manager` pane. The cards stack or sit side by side, and the divider
+/// agents have been doing, what they said), or the request list in its place;
+/// the other is the chat with the `mux-manager` pane. The cards stack or sit side by side, and the divider
 /// between them drags.
 ///
 /// The pane's terminal lives behind the chat header's toggle. It is installed
@@ -14,6 +14,10 @@ final class ManagerRailViewController: NSViewController, NSTextFieldDelegate, NS
     private let listScroll = NSScrollView()
     private let sections = FlippedStackView()
     private let emptyLabel = NSTextField(labelWithString: "Nothing needs you")
+    /// The list card's header: the board, or the request list in its place.
+    private let listSwitch = NSSegmentedControl(
+        labels: ["Board", "Requests"], trackingMode: .selectOne, target: nil, action: nil)
+    private let requestList = RequestListView()
     private let chatScroll = NSScrollView()
     private let chatLog = FlippedStackView()
     private let terminalHost = NSView()
@@ -39,6 +43,16 @@ final class ManagerRailViewController: NSViewController, NSTextFieldDelegate, NS
     /// Whether the saved divider position has been applied. It needs real
     /// bounds, which the rail only has once it is shown and laid out.
     private var positionApplied = false
+
+    /// Whether the list card shows the request list rather than the board.
+    private(set) var showsRequests = false
+
+    /// The request list's file. The AppDelegate hands over the one in the
+    /// agent's home.
+    var requests: RequestTracker? {
+        get { requestList.tracker }
+        set { requestList.tracker = newValue }
+    }
 
     /// The terminal, once installed. Owned here so collapse/expand never tears
     /// down the surface; the AppDelegate swaps its attach command on restart.
@@ -75,6 +89,7 @@ final class ManagerRailViewController: NSViewController, NSTextFieldDelegate, NS
         split.addArrangedSubview(buildChatCard())
         split.translatesAutoresizingMaskIntoConstraints = false
         updateLayoutToggle()
+        showRequests(Settings.managerRailShowsRequests())
 
         // A full-height hairline on the leading edge separates the rail from the
         // main terminal; the cards sit inset from it.
@@ -137,18 +152,35 @@ final class ManagerRailViewController: NSViewController, NSTextFieldDelegate, NS
         emptyLabel.textColor = SidebarPalette.muted
         emptyLabel.translatesAutoresizingMaskIntoConstraints = false
 
+        listSwitch.segmentStyle = .roundRect
+        listSwitch.controlSize = .small
+        listSwitch.font = .systemFont(ofSize: 11)
+        listSwitch.target = self
+        listSwitch.action = #selector(listSwitched)
+        listSwitch.translatesAutoresizingMaskIntoConstraints = false
+
         let card = Self.makeCard()
+        card.addSubview(listSwitch)
         card.addSubview(listScroll)
+        card.addSubview(requestList)
         card.addSubview(emptyLabel)
         NSLayoutConstraint.activate([
             sections.topAnchor.constraint(equalTo: listScroll.contentView.topAnchor),
             sections.leadingAnchor.constraint(equalTo: listScroll.contentView.leadingAnchor),
             sections.trailingAnchor.constraint(equalTo: listScroll.contentView.trailingAnchor),
 
-            listScroll.topAnchor.constraint(equalTo: card.topAnchor),
+            listSwitch.topAnchor.constraint(equalTo: card.topAnchor, constant: 10),
+            listSwitch.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
+
+            listScroll.topAnchor.constraint(equalTo: listSwitch.bottomAnchor),
             listScroll.leadingAnchor.constraint(equalTo: card.leadingAnchor),
             listScroll.trailingAnchor.constraint(equalTo: card.trailingAnchor),
             listScroll.bottomAnchor.constraint(equalTo: card.bottomAnchor),
+            // The request list takes the board's place, under the same header.
+            requestList.topAnchor.constraint(equalTo: listSwitch.bottomAnchor, constant: 8),
+            requestList.leadingAnchor.constraint(equalTo: card.leadingAnchor),
+            requestList.trailingAnchor.constraint(equalTo: card.trailingAnchor),
+            requestList.bottomAnchor.constraint(equalTo: card.bottomAnchor),
             emptyLabel.centerXAnchor.constraint(equalTo: card.centerXAnchor),
             emptyLabel.centerYAnchor.constraint(equalTo: card.centerYAnchor),
         ])
@@ -352,6 +384,22 @@ final class ManagerRailViewController: NSViewController, NSTextFieldDelegate, NS
         applyListSize()
     }
 
+    /// Swap the list card between the board and the request list. Both stay in
+    /// the hierarchy; only visibility moves. The request list reads its file
+    /// only while it is the one showing.
+    func showRequests(_ on: Bool) {
+        showsRequests = on
+        listSwitch.selectedSegment = on ? 1 : 0
+        listScroll.isHidden = on
+        requestList.isHidden = !on
+        emptyLabel.isHidden = on || !sections.arrangedSubviews.isEmpty
+    }
+
+    @objc private func listSwitched() {
+        showRequests(listSwitch.selectedSegment == 1)
+        Settings.setManagerRailShowsRequests(showsRequests)
+    }
+
     func splitView(
         _ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat,
         ofSubviewAt dividerIndex: Int
@@ -399,7 +447,7 @@ final class ManagerRailViewController: NSViewController, NSTextFieldDelegate, NS
         addSection("NEEDS YOU", rows: snapshot.needsYou.map(Self.row(needsYou:)), now: now)
         addSection("RECENT WORK", rows: snapshot.recentWork.map(Self.row(work:)), now: now)
         addSection("UPDATES", rows: snapshot.updates.map(Self.row(update:)), now: now)
-        emptyLabel.isHidden = !sections.arrangedSubviews.isEmpty
+        emptyLabel.isHidden = showsRequests || !sections.arrangedSubviews.isEmpty
     }
 
     /// A section with no rows is not rendered at all, because an empty heading says
@@ -423,7 +471,7 @@ final class ManagerRailViewController: NSViewController, NSTextFieldDelegate, NS
         view.widthAnchor.constraint(equalTo: sections.widthAnchor).isActive = true
     }
 
-    private static func sectionHeader(_ title: String) -> NSView {
+    static func sectionHeader(_ title: String) -> NSView {
         let host = NSView()
         let label = NSTextField(labelWithString: title)
         label.font = .systemFont(ofSize: 11, weight: .semibold)
@@ -765,7 +813,7 @@ private struct ManagerRow {
 
 /// A scroll view's document: flipped, so the content starts at the top of the
 /// scroller rather than the bottom.
-private final class FlippedStackView: NSStackView {
+final class FlippedStackView: NSStackView {
     override var isFlipped: Bool { true }
 }
 
