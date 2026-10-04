@@ -903,6 +903,7 @@ final class MobileServerTests: XCTestCase {
         XCTAssertEqual(manager.answered, [])
 
         // The tap can be tried again, and lands once.
+        XCTAssertTrue(get("/api/manager").body.contains(#""answered":null"#))
         let before = pane.argv.count
         XCTAssertEqual(act(0, card: id).status, 200)
         XCTAssertEqual(manager.answered, ["\(Self.cardKey)=Yes"])
@@ -915,15 +916,15 @@ final class MobileServerTests: XCTestCase {
         XCTAssertEqual(again.body, #"{"error":"answered","message":"Already answered"}"#)
         XCTAssertEqual(pane.argv.count, after)
         XCTAssertEqual(manager.answered, ["\(Self.cardKey)=Yes"])
-        XCTAssertTrue(get("/api/manager").body.contains(#""label":"Yes""#))
+        XCTAssertTrue(get("/api/manager").body.contains(#""answered":{"#))
         // The same list again, still without the answer: it stays answered.
         server.updateManager(board)
-        XCTAssertTrue(get("/api/manager").body.contains(#""label":"Yes""#))
+        XCTAssertTrue(get("/api/manager").body.contains(#""answered":{"#))
         XCTAssertEqual(act(0, card: id).status, 409)
         // The pointer is cleared and the same question is asked again: it is open.
         server.updateManager(MobileManagerBoard())
         server.updateManager(board)
-        XCTAssertFalse(get("/api/manager").body.contains(#""label":"Yes""#))
+        XCTAssertTrue(get("/api/manager").body.contains(#""answered":null"#))
         XCTAssertEqual(act(0, card: id).status, 200)
         XCTAssertEqual(manager.answered, ["\(Self.cardKey)=Yes", "\(Self.cardKey)=Yes"])
     }
