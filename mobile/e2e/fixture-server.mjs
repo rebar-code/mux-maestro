@@ -27,6 +27,9 @@
 // /__fixture/screen?default=&max= (the screen endpoint's default and cap)
 // /__fixture/point?key=&thread=&title=&reason= (the Maestro points at a session; no thread: one that is gone),
 // /__fixture/no-updates (the Maestro's updates list is empty),
+// /__fixture/card?key=&thread=&title=&reason=&body=&actions=Yes|No&refuse=&message= (a pointer with buttons, as
+// `mux point --action` records it; `refuse` is the error a tap gets), /__fixture/acted (the taps that landed),
+// /__fixture/maestro-say?text= (the Maestro says something in its chat),
 // /__fixture/terminal (what the live terminal's sockets were sent, and how they were opened),
 // /__fixture/terminal-drop (cut every live socket), /__fixture/terminal-say?text=,
 // /__fixture/terminal-refuse?code= (close the next sockets with that code; 0 to stop)
@@ -645,6 +648,8 @@ let started, threads, chats, grouping, deny, token, log, screenDefault, screenMa
 let capabilities, manager, voice;
 // Per thread id: the prompt on the pane. And everything the phone wrote.
 let prompts, replies, uploadMax, promptSeq, notSent, noInput, pasted, keyLocks, promptDelay;
+// Taps on cards that reached a pane, and the cards whose taps are refused.
+let acted, cardRefusals;
 // Makes one thread row; set by `reset`, used again for a new window or session.
 let makeThread;
 // The ports published on the tailnet, and how the next publish is refused.
@@ -709,6 +714,8 @@ function reset() {
 	notSent = null;
 	noInput = new Set();
 	pasted = true;
+	acted = [];
+	cardRefusals = new Map();
 	keyLocks = new Set();
 	// How long `GET /prompt` takes, so a test can tap before the card catches up.
 	promptDelay = 0;
@@ -1357,6 +1364,12 @@ function managerUpload(req, res, url, body) {
 	return saveOnly(req, res, { id: 'manager', cwd: MANAGER_DIR }, name, body);
 }
 
+/** The id of a card's question: the Mac hashes the key, the pane and the actions. */
+const cardId = (key, labels) =>
+	createHash('sha1')
+		.update([key, ...labels].join('\u001f'))
+		.digest('hex')
+		.slice(0, 16);
 function requestsApi(req, res, path, body) {
 	if (!capabilities.manager) return send(res, 403, { error: 'disabled' });
 	const corrupt = () =>
@@ -1423,6 +1436,38 @@ function managerApi(req, res, url, body) {
 		manager.points = manager.points.filter((item) => item.key !== json.key);
 		push('manager', managerLive());
 		return send(res, 200, { ok: true });
+	}
+	if (path === '/api/manager/act') {
+		// It types into a thread, so the replies switch must be on too.
+		if (!capabilities.replies) return send(res, 403, { error: 'disabled' });
+		if (
+			typeof json.key !== 'string' ||
+			!Number.isInteger(json.action) ||
+			typeof json.card !== 'string'
+		)
+			return send(res, 400, { error: 'bad_request' });
+		const point = manager.points.find((item) => item.key === json.key && item.card);
+		if (!point) return send(res, 404, { error: 'not_found' });
+		if (point.card.id !== json.card)
+			return send(res, 409, { error: 'changed', message: 'Card changed' });
+		if (point.card.answered)
+			return send(res, 409, { error: 'answered', message: 'Already answered' });
+		const action = point.card.actions[json.action];
+		if (!action) return send(res, 400, { error: 'bad_action' });
+		const refusal = cardRefusals.get(json.key);
+		if (refusal)
+			return send(res, refusal.status, { error: refusal.error, message: refusal.message });
+		// The text itself stays on the Mac: the fixture keeps what the phone sent.
+		const answered = { label: action.label, at: Math.floor(Date.now() / 1000) };
+		acted.push({
+			key: json.key,
+			action: json.action,
+			label: action.label,
+			thread: point.card.source
+		});
+		point.card = { ...point.card, answered };
+		push('manager', managerLive());
+		return send(res, 200, { ok: true, thread: point.card.source, answered });
 	}
 	if (path !== '/api/manager/text') return send(res, 404, { error: 'not_found' });
 	const text = typeof json.text === 'string' ? json.text.trim() : '';
@@ -2245,6 +2290,48 @@ function hook(res, url) {
 			];
 			break;
 		}
+		case '/__fixture/card': {
+			// As `mux point <session> --reason … --action …` records it.
+			const key = url.searchParams.get('key') ?? 'point:localhost:acme-app';
+			const source = url.searchParams.get('thread');
+			const labels = (url.searchParams.get('actions') ?? 'Yes|No').split('|').filter(Boolean);
+			const reason = url.searchParams.get('reason') ?? 'asks whether to run the migration';
+			manager.points = [
+				...manager.points.filter((item) => item.key !== key),
+				{
+					key,
+					title: url.searchParams.get('title') ?? 'acme-app',
+					detail: reason,
+					severity: 'blocked',
+					at: now,
+					thread: source,
+					card: {
+						v: Number(url.searchParams.get('v') ?? 1),
+						id: cardId(key, labels),
+						title: reason,
+						body: url.searchParams.get('body'),
+						source,
+						actions: labels.map((label) => ({ label })),
+						link: source ? `/t/${encodeURIComponent(source).replaceAll('%3A', ':')}` : null,
+						answered: null
+					}
+				}
+			];
+			const refuse = url.searchParams.get('refuse');
+			if (refuse) {
+				cardRefusals.set(key, {
+					status: Number(url.searchParams.get('status') ?? 409),
+					error: refuse,
+					message: url.searchParams.get('message') ?? undefined
+				});
+			} else cardRefusals.delete(key);
+			break;
+		}
+		case '/__fixture/acted':
+			return send(res, 200, acted);
+		case '/__fixture/maestro-say':
+			say('assistant', url.searchParams.get('text') ?? '');
+			break;
 		case '/__fixture/no-updates':
 			manager.updates = [];
 			break;

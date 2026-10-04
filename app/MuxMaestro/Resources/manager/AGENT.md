@@ -153,11 +153,44 @@ mux point <session>[:<window>] --done [--host <host>]
 - **Pointing only records a pointer.** Never type into that session and never
   answer its prompt. The human answers it.
 
+### Asking for an answer: a card
+
+When a session stopped on a question that has a few clear answers, give the
+pointer buttons. The phone shows them under your chat. A tap makes the app paste
+that answer into the session's pane, so the human decides without leaving your
+thread, and the answer never comes through you.
+
+```sh
+mux point <session>[:<window>] --reason "asks whether to run the migration" \
+  --pane %<id> \
+  --action "Yes=Yes, run it." \
+  --action "No=No. Do not run it.
+Tell me first which tables it changes."
+```
+
+- **`--action LABEL=TEXT`**, up to 4. `LABEL` is the button, 40 characters at
+  most. `TEXT` is what the session reads as the human's reply, so write the
+  whole instruction. It may be several lines; it is pasted as one message.
+- **`--pane %<id>`** names the pane that asked. Give it whenever the session has
+  more than one agent: without it the session, or the window you named, must
+  hold exactly one agent, or the answer is refused. Find it with
+  `tmux list-panes -s -t <session> -F '#{pane_id} #{window_index} #{pane_current_command}'`.
+- **`--body TEXT`** adds one or two lines under the title. Optional.
+- **Only for a session that is idle at its input box.** A session on a
+  permission prompt or a menu takes no text; point at it without `--action`
+  and the human answers it there.
+- **The answer is recorded.** `mux review list --json` shows a card's `answer`
+  once it reached the pane. Clear the pointer with `--done` when the session
+  moves on. The same card raised again keeps its answer; a new reason, other
+  actions or another pane make it a new question.
+- You still type nothing into that session. The tap is the human's answer, and
+  the app delivers it.
+
 ## The request list
 
 `requests.json`, beside this file, is the list of what the human asked for. You
-keep it. The human reads it on the phone and ticks requests done there, and the
-app writes that tick into the same file.
+keep it. The human reads it on the phone and in the Mac app and ticks requests
+done there, and the app writes that tick into the same file.
 
 ```sh
 mux requests          # state|id|project|asked|title, newest first
@@ -172,7 +205,7 @@ mux requests --json   # the same requests whole, with their history, plus
 - **Add a request when the human asks for something**, not later. Newest first.
   Each has `id`, `title`, `project`, `asked`, `state`, `detail`, `blocked_by`,
   `history`. The top-level fields are the request as it stands **now**. The
-  phone's list shows only `title` and `state`, so keep the title short.
+  human's list shows only `title` and `state`, so keep the title short.
   `project` is the tmux session name, as `mux sessions` prints it. `state` is
   one of `todo`, `in_progress`, `blocked`, `review`, `done`. Keep `"schema": 2`.
 - **`history` is append-only.** It is the record of what was asked and how it
@@ -183,7 +216,7 @@ mux requests --json   # the same requests whole, with their history, plus
   changed. When a request changes, update the top-level fields and **add** an
   entry. Never rewrite or drop one, your own mistakes included: they are there
   to be audited. The app adds an entry of its own when the human changes a
-  state on the phone.
+  state on the phone or on the Mac.
 - **Write the whole file to a temporary file beside it, then `mv` it over
   `requests.json`.** Read the file again just before you write. A file written
   in place is half a file for a moment; the app then shows an error and
@@ -194,8 +227,9 @@ mux requests --json   # the same requests whole, with their history, plus
 ## Linking to a pane
 
 A `muxmaestro://` link in toast or review text renders as a short clickable
-label that opens that pane. Get the link from `mux link`; never build the URL
-by hand.
+label that opens that pane. The same link in your chat opens the session on the
+phone too, inside the phone app, so write one link wherever the human reads you.
+Get the link from `mux link`; never build the URL by hand.
 
 ```sh
 mux link <claude-or-codex-session-id>   # follows the thread to whatever pane runs it

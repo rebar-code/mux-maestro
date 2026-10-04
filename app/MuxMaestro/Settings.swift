@@ -117,6 +117,18 @@ enum Settings {
         defaults.set(on, forKey: managerRailSideBySideKey)
     }
 
+    private static let managerRailShowsRequestsKey = "managerRailShowsRequests"
+
+    /// Whether the Manager rail's list card shows the request list instead of
+    /// the board. Defaults to the board.
+    static func managerRailShowsRequests(defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: managerRailShowsRequestsKey) as? Bool ?? false
+    }
+
+    static func setManagerRailShowsRequests(_ on: Bool, defaults: UserDefaults = .standard) {
+        defaults.set(on, forKey: managerRailShowsRequestsKey)
+    }
+
     /// The size the human dragged the Manager rail's list to: its height when
     /// stacked, its width when side by side. Kept per layout, because a height
     /// means nothing as a width. nil until the divider is first dragged.

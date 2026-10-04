@@ -1,6 +1,7 @@
 import hljs from 'highlight.js/lib/common';
 import MarkdownIt from 'markdown-it';
 import type { Hit } from './find';
+import { linkLabel, parseThreadLink } from './links';
 
 // The text is untrusted: an artifact, or what an agent said. Raw HTML in
 // markdown is off, so it comes out as text. Everything this file returns is
@@ -45,7 +46,8 @@ md.renderer.rules.fence = (tokens, index) =>
 // eslint-disable-next-line no-control-regex
 const UNSEEN = /[\u0000-\u0020\u007f-\u009f\u00ad\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g;
 const SCHEME = /^([a-z][a-z0-9+.-]*):/i;
-const ALLOWED = new Set(['http', 'https', 'mailto']);
+// `muxmaestro` is the Maestro's link to a session: it never leaves this app.
+const ALLOWED = new Set(['http', 'https', 'mailto', 'muxmaestro']);
 
 // A link with any other scheme (`javascript:`, `data:`, `vbscript:`, `file:`,
 // `blob:`, ...) is not a link: markdown-it leaves its source as text. An
@@ -57,12 +59,23 @@ md.validateLink = (url) => {
 
 // Only an address written with its scheme is made a link by itself: with
 // guessing on, `notes.md` and `main.rs` would be web links.
-md.linkify.set({ fuzzyLink: false, fuzzyEmail: false }).add('ftp:', null).add('//', null);
+md.linkify
+	.set({ fuzzyLink: false, fuzzyEmail: false })
+	.add('ftp:', null)
+	.add('//', null)
+	// The Maestro's link to a session, as the Mac reads it: up to the next
+	// space, without the punctuation that ends the sentence it is in.
+	.add('muxmaestro:', {
+		validate: (text, pos) =>
+			/^\/\/[^\s<>"']*[^\s<>"'.,;:!?)\]}]/.exec(text.slice(pos))?.[0].length ?? 0
+	});
 
 const LOCAL_HOST = /^(localhost|.+\.localhost|127(\.\d+){3}|0\.0\.0\.0|\[::1?\])$/i;
 
 type Target =
 	| { kind: 'web'; href: string }
+	/** A session of this app, as the Maestro links to it. */
+	| { kind: 'thread'; link: string }
 	| { kind: 'local'; port: number; rest: string }
 	| { kind: 'path'; path: string };
 
@@ -79,6 +92,12 @@ function pathOf(address: string): string {
 /** Where a link goes. Only `web` is an address the page may open itself. */
 function targetOf(address: string): Target {
 	if (/^mailto:/i.test(address)) return { kind: 'web', href: address };
+	if (/^muxmaestro:/i.test(address)) {
+		// One that names no session is text that goes nowhere, like a path.
+		return parseThreadLink(address)
+			? { kind: 'thread', link: address }
+			: { kind: 'path', path: address };
+	}
 	if (!/^https?:\/\//i.test(address)) return { kind: 'path', path: pathOf(address) };
 	try {
 		const url = new URL(address);
@@ -162,6 +181,17 @@ md.renderer.rules.link_open = (tokens, index, options, _env, self) => {
 			['target', '_blank'],
 			['rel', 'noopener noreferrer']
 		];
+	} else if (target.kind === 'thread') {
+		// No `href`: the view finds the thread and opens it inside the app.
+		token.attrs = [
+			['data-thread-link', target.link],
+			['role', 'link'],
+			['tabindex', '0']
+		];
+		// A bare link shows the session it names, not its address.
+		const text = tokens[index + 1];
+		const link = parseThreadLink(target.link);
+		if (token.markup === 'linkify' && text?.type === 'text' && link) text.content = linkLabel(link);
 	} else if (target.kind === 'local') {
 		token.attrs = [
 			['data-local', String(target.port)],

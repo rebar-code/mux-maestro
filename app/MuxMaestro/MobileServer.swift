@@ -62,6 +62,8 @@ final class MobileServer {
             _ completion: @escaping (ManagerTurnOutcome) -> Void
         ) -> Void
         var dismiss: (_ key: String) -> Void
+        /// A card's answer reached its pane: keep it on the review row.
+        var answered: (_ key: String, _ label: String, _ at: Int) -> Void = { _, _, _ in }
         /// The pane's last `lines` lines and its screen, with colour escapes.
         /// Called off the server queue and may block.
         var screen: (_ lines: Int) -> String?
@@ -237,6 +239,9 @@ final class MobileServer {
     /// Threads with a write on its way to their pane. One at a time per
     /// thread: a paste and its Enter are not interleaved with another's.
     private var writing = Set<String>()
+    /// Answers to cards that this server delivered and the app's list does
+    /// not show yet, by `MobileCards.id`. `board` holds them already.
+    private var deliveredAnswers: [String: ManagerCard.Answer] = [:]
     /// Finds that are capturing a pane now.
     private var finds = 0
     /// Per thread: a counter that goes into a prompt's id, and the words of
@@ -420,7 +425,8 @@ final class MobileServer {
     /// first request after it starts has them.
     func updateManager(_ board: MobileManagerBoard) {
         queue.async {
-            self.board = board
+            self.deliveredAnswers = MobileCards.pending(self.deliveredAnswers, in: board)
+            self.board = MobileCards.withDelivered(self.deliveredAnswers, on: board)
             self.managerChanged()
         }
     }
@@ -779,6 +785,35 @@ final class MobileServer {
             }
             manager.dismiss(key)
             send(.json(["ok": true]), to: client, head: head)
+        case .managerAct:
+            guard let ask = MobileCards.ask(in: request.body) else {
+                return send(.error(400, "bad_request"), to: client, head: head)
+            }
+            guard let manager else {
+                return send(.error(503, "unavailable", message: MobileManager.offMessage),
+                            to: client, head: head)
+            }
+            switch MobileCards.route(ask, board: board, snapshot: snapshot) {
+            case .refuse(let response):
+                send(response, to: client, head: head)
+            case .deliver(let target, let label, let text):
+                // The same checked paste as a typed reply, under the thread's
+                // lock. The answer is on the board before the lock is given
+                // back, so a second tap cannot send it again.
+                write(to: target.id, client: client) { [weak self] thread, io, state in
+                    let response = MobileReply.send(text, target: thread.pane, io: io, state: state)
+                    guard response.status == 200 else { return response }
+                    let answer = ManagerCard.Answer(label: label, at: Int(Date().timeIntervalSince1970))
+                    self?.queue.sync {
+                        guard let self else { return }
+                        self.deliveredAnswers[ask.card] = answer
+                        self.board = MobileCards.withDelivered(self.deliveredAnswers, on: self.board)
+                        self.managerChanged()
+                    }
+                    manager.answered(ask.key, answer.label, answer.at)
+                    return .json(MobileCards.delivered(thread: thread, answer: answer))
+                }
+            }
         case .managerPrompt:
             guard let (manager, _, io) = managerPane(client) else { return }
             reply(to: client) {

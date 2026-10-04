@@ -251,6 +251,32 @@ final class RequestTrackerTests: XCTestCase {
         XCTAssertNil(RequestTracker.fault(in: Data(onDisk.utf8)))
     }
 
+    func testATickOnTheMacSaysSoInItsEntry() {
+        var mac = tracker
+        mac.origin = .mac
+        XCTAssertNotNil(value(mac.setState(.done, of: "req-004")))
+        // The same entry as the phone's, but for where it was made.
+        let added = history("req-004").last
+        XCTAssertEqual(added?["note"], "State changed from in_progress to done on the Mac.")
+        XCTAssertEqual(added?["by"], "me")
+        XCTAssertEqual(added?["at"], day)
+        XCTAssertEqual(added?.count, 3, "at, by and note: the schema's own keys")
+        XCTAssertEqual(history("req-004").count, 4)
+        XCTAssertTrue(onDisk.contains(Self.story), "an entry was rewritten")
+        XCTAssertNil(RequestTracker.fault(in: Data(onDisk.utf8)))
+    }
+
+    func testThePhoneAndTheMacWriteOneHistoryInTurn() {
+        var mac = tracker
+        mac.origin = .mac
+        XCTAssertNotNil(value(mac.setState(.done, of: "req-003")))
+        XCTAssertNotNil(value(tracker.setState(.todo, of: "req-003")))
+        XCTAssertEqual(history("req-003").dropFirst().map { $0["note"] }, [
+            "State changed from blocked to done on the Mac.",
+            "State changed from done to todo on the phone.",
+        ])
+    }
+
     func testHistoryIsOnlyEverAddedTo() {
         let before = history("req-004")
         XCTAssertEqual(before.count, 3)

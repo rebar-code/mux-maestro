@@ -38,7 +38,7 @@ echo 'import Cocoa; class TerminalViewController: NSViewController {}' > "$OUT/S
 DEVELOPER_DIR=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer} xcrun swiftc \
   -o "$OUT/rail-click" \
   scripts/manager-rail-click/main.swift "$OUT/Extracted.swift" "$OUT/Stubs.swift" $PURE \
-  $SRC/ManagerRailViewController.swift $SRC/ManagerController.swift \
+  $SRC/ManagerRailViewController.swift $SRC/RequestListView.swift $SRC/ManagerController.swift \
   $SRC/LinkLabel.swift $SRC/Theme.swift
 
 "$OUT/rail-click" -NSAppSleepDisabled YES
