@@ -2,34 +2,32 @@
 	import { resolve } from '$app/paths';
 	import BoardSheet from '$lib/BoardSheet.svelte';
 	import { age } from '$lib/format';
-	import Composer from '$lib/Composer.svelte';
 	import { pullToRefresh, ui } from '$lib/gestures.svelte';
 	import { counts } from '$lib/group';
-	import KeyBar from '$lib/KeyBar.svelte';
-	import { can, isOff, live, OFF_LABEL } from '$lib/live.svelte';
-	import { boardSummary, needsYouCards, thinkingText } from '$lib/manager';
+	import { can, live } from '$lib/live.svelte';
+	import { maestro } from '$lib/maestro.svelte';
+	import MaestroInput from '$lib/MaestroInput.svelte';
+	import MaestroTail from '$lib/MaestroTail.svelte';
+	import { boardSummary, needsYouCards } from '$lib/manager';
 	import { sheetHeight } from '$lib/pager';
 	import { manager } from '$lib/manager.svelte';
-	import NoteLine from '$lib/NoteLine.svelte';
+	import { needCount, pointCards } from '$lib/panel';
 	import PullIndicator from '$lib/PullIndicator.svelte';
-	import { Reply } from '$lib/reply.svelte';
 	import TalkButton from '$lib/TalkButton.svelte';
 	import ThreadView from '$lib/ThreadView.svelte';
-	import { voice } from '$lib/voice.svelte';
-	import VoiceBar from '$lib/VoiceBar.svelte';
 
 	const PULL = 'home';
 
 	const tally = $derived(live.threads ? counts(live.threads) : null);
 	const managerOn = $derived(can('manager'));
-	// A take goes to the manager, so voice needs the manager's switch too.
-	const voiceOn = $derived(managerOn && can('voice'));
-	const boxLabel = $derived(isOff('manager') ? OFF_LABEL : 'Ask the manager');
 	const waiting = $derived(needsYouCards(live.threads ?? [], []));
 	/** What the board holds, on the footer's grabber. */
 	const summary = $derived(
 		boardSummary({
-			needsYou: needsYouCards(live.threads ?? [], manager.needsYou).length,
+			needsYou: needCount(
+				needsYouCards(live.threads ?? [], manager.needsYou),
+				pointCards(manager.points, live.threads)
+			),
 			review: manager.review?.length ?? 0,
 			updates: Math.min(manager.updates.length, 5)
 		})
@@ -37,46 +35,12 @@
 	const STOPS = ['closed', 'open', 'full'] as const;
 	/** How much of the board shows: the footer's bottom inset gives way to it. */
 	const shown = $derived(sheetHeight(ui.sheetHeights, ui.sheet, ui.sheetUp));
-	/** The manager thread shows its terminal, not its chat. */
-	let terminal = $state(false);
-	/** Ticks while a turn runs, for the time beside the dots. */
-	let now = $state(Date.now());
-	const seconds = $derived(Math.max(0, Math.floor((now - manager.turnSince) / 1000)));
-
-	/** Attachment for the thinking line: a clock, for as long as the line is drawn. */
-	function clock(): () => void {
-		now = Date.now();
-		const timer = setInterval(() => (now = Date.now()), 1000);
-		return () => clearInterval(timer);
-	}
-
-	// The manager pane's prompts and keys. Its text goes through the manager's own turn.
-	const reply = new Reply(
-		'manager',
-		{
-			refresh: () => {
-				// An answer or a key can end the wait: the pane's status is read again too.
-				void manager.load();
-				return manager.feed.load(terminal ? 'terminal' : 'chat');
-			},
-			// A card that comes up is what the human has to act on: it is brought into view.
-			stick: (change, appeared) =>
-				manager.feed.keepEnd(terminal ? 'terminal' : 'chat', appeared, change),
-			terminal: () => terminal
-		},
-		manager.target
-	);
-	const keysOn = $derived(managerOn && can('keyBar'));
-
-	function send(): void {
-		// A typed turn takes over: a reply that is still being read stops.
-		if (voiceOn) voice.skip();
-		void manager.send();
-	}
+	// The Maestro pane's prompts and keys: the same ones the panel shows.
+	const reply = maestro.reply;
 </script>
 
 {#snippet header()}
-	<header class="tbar">
+	<header class="tbar" data-maestro-grab>
 		<button class="tb" aria-label="Menu" onclick={() => ui.openDrawer()}>☰</button>
 		<div class="chips">
 			{#if tally}
@@ -98,33 +62,12 @@
 	</header>
 {/snippet}
 
-<!-- What the manager is doing now, after the last row of its chat. -->
 {#snippet tail()}
-	{#if manager.busy}
-		<div class="think" role="status" data-thinking {@attach clock}>
-			<span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
-			<span data-thinking-text>{thinkingText(manager.spinner, seconds)}</span>
-		</div>
-	{/if}
-	{#if manager.note ?? manager.statusNote}
-		<div class="state">
-			{#if manager.note}
-				<span class="note" role="alert">{manager.note}</span>
-			{:else}
-				<span class="note quiet" role="status" data-status={manager.status}
-					>{manager.statusNote}</span
-				>
-			{/if}
-			{#if manager.status === 'waiting'}
-				<!-- The prompt is answered in the pane: the terminal shows it. -->
-				<button class="chip grow" onclick={() => (terminal = true)}>Terminal</button>
-			{/if}
-		</div>
-	{/if}
+	<MaestroTail onterminal={() => (maestro.terminal = true)} />
 {/snippet}
 
 {#if managerOn}
-	<div class="stage" {@attach manager.watch}>
+	<div class="stage">
 		<ThreadView
 			id="manager"
 			feed={manager.feed}
@@ -132,7 +75,7 @@
 			{tail}
 			pending={manager.pending}
 			{reply}
-			bind:terminal
+			bind:terminal={maestro.terminal}
 		/>
 	</div>
 {:else}
@@ -182,29 +125,9 @@
 			<span class="bar"></span>
 			<span class="sum">{summary}</span>
 		</button>
-		<!--
-			The manager pane's keys, and what the last one came to. In the footer,
-			under the grabber: the board is below the footer and the footer rises
-			with it, so neither ever covers them.
-		-->
-		{#if reply.note}<NoteLine note={reply.note} />{/if}
-		{#if keysOn}<KeyBar {reply} composer={false} hides />{/if}
-		<VoiceBar target="manager" sink={manager.voice} off={!voiceOn} />
 	{/if}
 	<!-- With the keyboard open the footer sits on it and the board stays shut. -->
-	<Composer
-		bind:value={manager.draft}
-		label={boxLabel}
-		target="manager"
-		sink={manager.voice}
-		{voiceOn}
-		off={!managerOn}
-		blocked={manager.busy}
-		sending={manager.sending}
-		onsend={send}
-		onfocus={() => ui.lockSheet(true)}
-		onblur={() => ui.lockSheet(false)}
-	/>
+	<MaestroInput onfocus={() => ui.lockSheet(true)} onblur={() => ui.lockSheet(false)} />
 </div>
 {#if managerOn}
 	<BoardSheet />
@@ -220,22 +143,6 @@
 		flex-direction: column;
 		align-items: center;
 		padding: 22px 0 10px;
-	}
-
-	.note {
-		align-self: center;
-		font-size: 12.5px;
-		color: var(--red);
-		background: #1f1110;
-		border: 1px solid #5a2320;
-		border-radius: 8px;
-		padding: 4px 10px;
-	}
-
-	.note.quiet {
-		color: var(--muted);
-		background: var(--surface);
-		border-color: var(--border);
 	}
 
 	.item {
@@ -353,46 +260,5 @@
 		font-size: 11.5px;
 		line-height: 1.2;
 		color: var(--muted);
-	}
-
-	.think {
-		display: flex;
-		align-items: center;
-		gap: 9px;
-		font-size: 13px;
-		color: #b9b9d0;
-	}
-
-	.dots {
-		display: inline-flex;
-		gap: 4px;
-	}
-
-	.dots i {
-		width: 6px;
-		height: 6px;
-		border-radius: 50%;
-		background: var(--purple);
-		animation: think 1s ease-in-out infinite alternate;
-	}
-
-	.dots i:nth-child(2) {
-		animation-delay: 0.2s;
-	}
-
-	.dots i:nth-child(3) {
-		animation-delay: 0.4s;
-	}
-
-	@keyframes think {
-		from {
-			opacity: 0.25;
-		}
-	}
-
-	.state {
-		display: flex;
-		align-items: center;
-		gap: 8px;
 	}
 </style>

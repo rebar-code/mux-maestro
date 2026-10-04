@@ -38,6 +38,8 @@ struct MobileManagerItem: Equatable {
     /// When the agent started waiting, or the review item last changed.
     let at: Int
     let link: ThreadLink?
+    /// A review item `mux point` wrote: it points the human at a session.
+    var pointer = false
 
     func json(in snapshot: MobileSnapshot) -> [String: Any] {
         [
@@ -45,6 +47,16 @@ struct MobileManagerItem: Equatable {
             "severity": severity?.rawValue ?? NSNull(), "at": at,
             "thread": MobileManager.threadID(for: link, in: snapshot) ?? NSNull(),
         ]
+    }
+
+    /// The same shape for a pointer. The CLI checks a pointer's text, but an
+    /// agent drives the CLI and the DB is a file, so the text is cut to one
+    /// short line again here.
+    func pointJSON(in snapshot: MobileSnapshot) -> [String: Any] {
+        var out = json(in: snapshot)
+        out["title"] = MobileManager.pointerLine(title)
+        out["detail"] = MobileManager.pointerLine(detail)
+        return out
     }
 }
 
@@ -119,7 +131,7 @@ enum MobileManager {
     static let paneBusyMessage = ManagerPaneDriver.busyMessage
     static let waitingMessage = ManagerPaneDriver.waitingMessage
     static let notReadyMessage = ManagerPaneDriver.notReadyMessage
-    static let offMessage = "Manager is not running"
+    static let offMessage = "Maestro is not running"
 
     /// The phone thread a rail link points at, or nil when no listed thread
     /// matches. The phone opens threads by id, never by a tmux address.
@@ -133,7 +145,12 @@ enum MobileManager {
             let rows = snapshot.threads.filter {
                 $0.host.name == host && $0.session == session && (window == nil || $0.window == window)
             }
-            return (rows.first { $0.pane == pane } ?? rows.first)?.id
+            if let named = rows.first(where: { $0.pane == pane }) { return named.id }
+            // No window named: a session of several windows is pointed at for
+            // the one that waits, else for the one that works.
+            let urgent = window != nil ? nil
+                : rows.first { $0.status == .waiting } ?? rows.first { $0.status == .busy }
+            return (urgent ?? rows.first)?.id
         }
     }
 
@@ -156,13 +173,51 @@ enum MobileManager {
         }
         return [
             "needsYou": board.items.filter { $0.kind == .agent }.map { $0.json(in: snapshot) },
-            "review": board.items.filter { $0.kind == .review }.map { $0.json(in: snapshot) },
+            "review": board.items.filter { $0.kind == .review && !$0.pointer }
+                .map { $0.json(in: snapshot) },
+            "points": newest(board.items.filter { $0.kind == .review && $0.pointer })
+                .map { $0.pointJSON(in: snapshot) },
             "updates": updates,
             "turn": turn?.json ?? NSNull(),
         ]
     }
 
+    /// The most pointers the phone is sent. The CLI keeps the same number.
+    static let maxPointers = ManagerReviewItem.maxPointers
+
+    /// The `maxPointers` newest of `pointers`, in the order they came. The CLI
+    /// keeps no more than that, but the DB is a file anyone can write.
+    static func newest(_ pointers: [MobileManagerItem]) -> [MobileManagerItem] {
+        guard pointers.count > maxPointers else { return pointers }
+        let kept = Set(pointers.indices
+            .sorted { (pointers[$0].at, $1) > (pointers[$1].at, $0) }
+            .prefix(maxPointers))
+        return pointers.indices.filter(kept.contains).map { pointers[$0] }
+    }
+
+    /// The longest title or reason of a pointer, in characters.
+    static let maxPointerCharacters = 120
+
+    /// A pointer's text as one short line: a line break or a tab becomes a
+    /// space, any other control character is dropped, and a long text is cut
+    /// with an ellipsis. Zero-width and text-direction characters are dropped
+    /// too: they can hide or reorder what the human reads.
+    static func pointerLine(_ text: String) -> String {
+        var scalars = String.UnicodeScalarView()
+        for scalar in text.unicodeScalars {
+            switch scalar.value {
+            case 0x09, 0x0A, 0x0D, 0x2028, 0x2029: scalars.append(" ")
+            case 0x200B...0x200F, 0x202A...0x202E, 0x2066...0x2069: continue
+            default: if isText(scalar) { scalars.append(scalar) }
+            }
+        }
+        let line = String(scalars).trimmingCharacters(in: .whitespaces)
+        guard line.count > maxPointerCharacters else { return line }
+        return String(line.prefix(maxPointerCharacters - 1)) + "…"
+    }
+
     /// Whether a board holds a review item with `key`: what dismiss may name.
+    /// A pointer is a review item, so dismiss clears it too.
     static func hasReview(_ key: String, in board: MobileManagerBoard) -> Bool {
         board.items.contains { $0.kind == .review && $0.key == key }
     }

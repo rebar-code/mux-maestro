@@ -302,14 +302,17 @@ export function gestures(node: HTMLElement): () => void {
 			return;
 		}
 		if (kind === null) {
+			// The Maestro panel lies over the page: a drag in it opens the sidebar
+			// or swipes a card, and never turns the page under it.
+			const over = origin?.closest('[data-maestro-panel]') != null;
 			kind = resolveDrag({
 				dx,
 				drawerOpen: ui.drawerOpen,
-				pageCount: ui.pages.length,
-				index: ui.index,
+				pageCount: over ? 0 : ui.pages.length,
+				index: over ? 0 : ui.index,
 				canScrollX: canScroll(hscroll, dx),
 				canSwipe: swiped !== null,
-				canBack: ui.back !== null
+				canBack: !over && ui.back !== null
 			});
 			if (kind === 'none') return;
 			base = dx;

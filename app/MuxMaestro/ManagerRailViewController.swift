@@ -186,7 +186,7 @@ final class ManagerRailViewController: NSViewController, NSTextFieldDelegate, NS
 
     private func buildHeader() -> NSView {
         let header = NSView()
-        let title = NSTextField(labelWithString: "MANAGER")
+        let title = NSTextField(labelWithString: "MAESTRO")
         title.font = .systemFont(ofSize: 11, weight: .semibold)
         title.textColor = SidebarPalette.muted
 
@@ -208,10 +208,10 @@ final class ManagerRailViewController: NSViewController, NSTextFieldDelegate, NS
 
         let restart = NSButton()
         restart.image = NSImage(
-            systemSymbolName: "arrow.clockwise", accessibilityDescription: "Restart manager agent")
+            systemSymbolName: "arrow.clockwise", accessibilityDescription: "Restart Maestro agent")
         restart.isBordered = false
         restart.bezelStyle = .regularSquare
-        restart.toolTip = "Restart manager agent"
+        restart.toolTip = "Restart Maestro agent"
         restart.contentTintColor = SidebarPalette.muted
         restart.target = self
         restart.action = #selector(restartClicked)
@@ -492,7 +492,7 @@ final class ManagerRailViewController: NSViewController, NSTextFieldDelegate, NS
     private static func row(update: ManagerUpdate) -> ManagerRow {
         ManagerRow(
             color: update.kind == .done ? SidebarPalette.green : SidebarPalette.muted,
-            title: update.kind == .done ? "Done" : "Manager",
+            title: update.kind == .done ? "Done" : "Maestro",
             prs: "",
             detail: update.text,
             time: update.at,

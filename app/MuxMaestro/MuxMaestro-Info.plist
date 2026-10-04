@@ -36,7 +36,7 @@
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>MuxMaestro listens when you press talk, so you can speak to the manager.</string>
+	<string>MuxMaestro listens when you press talk, so you can speak to the Maestro.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 	<key>NSSupportsAutomaticTermination</key>

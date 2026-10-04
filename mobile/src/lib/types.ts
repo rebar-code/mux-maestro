@@ -176,6 +176,8 @@ export interface ManagerTurn {
 export interface ManagerLive {
 	needsYou: ManagerItem[];
 	review: ManagerItem[];
+	/** Sessions the Maestro points the user at. Left out by a Mac that has no pointers. */
+	points?: ManagerItem[];
 	updates: ManagerUpdate[];
 	turn: ManagerTurn | null;
 }

@@ -18,6 +18,13 @@ final class ToastClickTests: XCTestCase {
         XCTAssertEqual(ToastClick.action(inCloseButton: false, link: link), .openLink(link))
     }
 
+    func testClickOnTheActionButtonRunsIt() {
+        XCTAssertEqual(
+            ToastClick.action(inCloseButton: false, inActionButton: true, link: nil), .action)
+        XCTAssertEqual(
+            ToastClick.action(inCloseButton: true, inActionButton: true, link: nil), .dismiss)
+    }
+
     func testClickElsewhereOpensTheTarget() {
         XCTAssertEqual(ToastClick.action(inCloseButton: false, link: nil), .open)
     }

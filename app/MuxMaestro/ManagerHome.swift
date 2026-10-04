@@ -78,7 +78,7 @@ enum ManagerHomeError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .missingResource(let name): return "manager bundle resource missing: \(name)"
+        case .missingResource(let name): return "Maestro bundle resource missing: \(name)"
         }
     }
 }

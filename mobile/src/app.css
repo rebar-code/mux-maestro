@@ -95,6 +95,13 @@ button:disabled {
 	flex: none;
 }
 
+/* Room for the Maestro button: it is drawn once, over every header, at this place. */
+.tbar::after {
+	content: '';
+	flex: none;
+	width: 36px;
+}
+
 .tb {
 	flex: none;
 	display: inline-flex;

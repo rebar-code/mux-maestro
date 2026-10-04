@@ -1,7 +1,7 @@
 import Foundation
 
 /// Decision + copy for the close confirmation raised by ⌘W. The sidebar's
-/// right-click Close/Kill items skip it (`needsConfirm`). Pure string and enum building — no AppKit — so both
+/// right-click Archive Window and Kill items skip it (`needsConfirm`). Pure string and enum building — no AppKit — so both
 /// *what* a close kills and how it is worded are unit-testable and identical
 /// everywhere the confirm is raised.
 ///
@@ -10,8 +10,9 @@ import Foundation
 /// instead whenever other panes would survive it, and the window only when the
 /// pane and the window are the same thing.
 ///
-/// Both kills are unrecoverable: every process in the target dies, and killing a
-/// session's last window ends the session. The prompt therefore names the exact
+/// Every process in the target dies, and killing a session's last window ends
+/// the session. A window close is an archive: Undo brings the window back and
+/// resumes its agents (see `WindowArchive`), but not the processes themselves. The prompt therefore names the exact
 /// pane or window, and says out loud when an agent is mid-flight or when the
 /// session itself is about to go.
 enum CloseWindowPrompt {
@@ -102,8 +103,8 @@ enum CloseWindowPrompt {
         case mergedTrash
     }
 
-    /// Whether a close raises the confirm sheet. Choosing Kill/Close from the
-    /// sidebar's right-click menu is already a deliberate second step, so a sheet
+    /// Whether a close raises the confirm sheet. Choosing Archive Window or Kill
+    /// from the sidebar's right-click menu is already a deliberate second step, so a sheet
     /// after it is a double confirm — even for a busy agent. ⌘W sits one
     /// keystroke from typing, so it keeps the sheet (Return confirms). A window
     /// whose PR merged has nothing left to lose, so its trash skips the sheet too.
@@ -116,15 +117,15 @@ enum CloseWindowPrompt {
     static func confirmTitle(_ action: Action) -> String {
         switch action {
         case .pane: return "Close Pane"
-        case .window: return "Close Window"
+        case .window: return "Archive Window"
         }
     }
 
     /// Alert title — names exactly what is being closed, and where it lives.
     ///
-    ///     Close window 17 “watch PR #393 #394 CI” in “dev”?
-    ///     Close window 3 in “dev”?            (window has no name)
-    ///     Close the active window in “dev”?   (session not loaded yet)
+    ///     Archive window 17 “watch PR #393 #394 CI” in “dev”?
+    ///     Archive window 3 in “dev”?            (window has no name)
+    ///     Archive the active window in “dev”?   (session not loaded yet)
     ///     Close pane %13 of window 17 “agents” in “dev”?
     static func title(_ target: Target, _ action: Action) -> String {
         let name = target.name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -132,13 +133,13 @@ enum CloseWindowPrompt {
             if case .pane(let id) = action {
                 return "Close pane \(id) in “\(target.session)”?"
             }
-            return "Close the active window in “\(target.session)”?"
+            return "Archive the active window in “\(target.session)”?"
         }
         let what = name.isEmpty ? "window \(index)" : "window \(index) “\(name)”"
         if case .pane(let id) = action {
             return "Close pane \(id) of \(what) in “\(target.session)”?"
         }
-        return "Close \(what) in “\(target.session)”?"
+        return "Archive \(what) in “\(target.session)”?"
     }
 
     /// Alert body — the consequence, then any escalation. A pane close reports
@@ -158,8 +159,8 @@ enum CloseWindowPrompt {
                     : "The window’s other \(others) panes keep running.")
             return parts.joined(separator: " ")
         case .window:
-            var parts = ["This kills the tmux window and every process in it."]
-            parts += agentWarning(target.attention, unit: "window")
+            var parts = ["This ends the tmux window and every process in it."]
+            parts += agentWarning(target.attention, unit: "window", verb: "archiving")
             if target.isLastWindow {
                 parts.append("It is the last window, so the session “\(target.session)” ends too.")
             }
@@ -171,11 +172,11 @@ enum CloseWindowPrompt {
     /// Shared so a pane close and a window close escalate identically apart from
     /// the noun — the warning is about losing an agent either way.
     private static func agentWarning(
-        _ attention: AttentionStatus, unit: String
+        _ attention: AttentionStatus, unit: String, verb: String = "closing"
     ) -> [String] {
         switch attention {
         case .busy:
-            return ["An agent is running here — closing the \(unit) stops that work."]
+            return ["An agent is running here — \(verb) the \(unit) stops that work."]
         case .waiting:
             return ["An agent here is waiting on you — the pending prompt is lost."]
         case .idle, .unknown:
