@@ -338,6 +338,7 @@
 						class="scroll"
 						data-pull={PULL}
 						data-view="chat"
+						data-zoom="wrap"
 						data-rise
 						{@attach feed.scroller('chat')}
 						{@attach pullToRefresh(PULL, () => feed.load('chat'))}

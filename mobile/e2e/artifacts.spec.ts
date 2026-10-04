@@ -6,6 +6,7 @@ import {
 	expectDrawerOpen,
 	fresh,
 	threadPath,
+	twoFingers,
 	WIDTH
 } from './helpers';
 
@@ -206,6 +207,36 @@ test('from the list: a right swipe in an open file goes to the list first, then 
 	await drag(page, ...RIGHT);
 	await expectTab(page, 0);
 	await expectDrawerClosed(page);
+});
+
+test('two fingers scale an image in the viewer; the page and the text size stay', async ({
+	page
+}) => {
+	await open(page);
+	await pageOf(page, 'main').locator('.thumb', { hasText: 'settings-after.png' }).click();
+	const image = page.locator('[data-viewer] .stage img');
+	await expect(image).toHaveJSProperty('naturalWidth', 780);
+	// The viewer has slid in: the fingers land on the image, not on the chat going out.
+	await expectTab(page, 1);
+	const text = await page.evaluate(() => localStorage.getItem('mm.textSize'));
+	const box = (await page.locator('[data-viewer] .stage').boundingBox())!;
+	const y = box.y + box.height / 2;
+	// Fingers 100px apart move to 200px apart: twice the size.
+	await twoFingers(
+		page,
+		[
+			[145, y],
+			[245, y]
+		],
+		[
+			[95, y],
+			[295, y]
+		]
+	);
+	expect(await image.evaluate((el) => new DOMMatrix(getComputedStyle(el).transform).a)).toBe(2);
+	expect(await page.evaluate(() => window.visualViewport?.scale)).toBe(1);
+	expect(await page.evaluate(() => localStorage.getItem('mm.textSize'))).toBe(text);
+	await expectTab(page, 1);
 });
 
 test('code: a long line scrolls sideways before any tab changes', async ({ page }) => {
