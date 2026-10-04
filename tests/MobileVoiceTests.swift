@@ -653,12 +653,7 @@ final class MobileVoiceServerTests: XCTestCase {
         var data = Data((raw + "\r\n").utf8)
         data.append(body)
 
-        let connection = NWConnection(
-            host: "127.0.0.1", port: NWEndpoint.Port(rawValue: UInt16(port))!, using: .tcp)
-        let queue = DispatchQueue(label: "mobile-voice-tests")
-        let finished = DispatchSemaphore(value: 0)
-        var received = Data()
-        func whole() -> Bool {
+        func whole(_ received: Data) -> Bool {
             let text = String(decoding: received, as: UTF8.self)
             guard let head = text.range(of: "\r\n\r\n") else { return false }
             if text.contains("text/event-stream") {
@@ -669,18 +664,11 @@ final class MobileVoiceServerTests: XCTestCase {
                 .flatMap { Int($0.dropFirst(15).trimmingCharacters(in: .whitespaces)) } ?? 0
             return text[head.upperBound...].utf8.count >= length
         }
-        func read() {
-            connection.receive(minimumIncompleteLength: 1, maximumLength: 1_048_576) { chunk, _, complete, error in
-                if let chunk { received.append(chunk) }
-                if complete || error != nil || whole() { finished.signal() } else { read() }
-            }
-        }
-        connection.start(queue: queue)
-        connection.send(content: data, completion: .contentProcessed { _ in })
-        read()
-        _ = finished.wait(timeout: .now() + 5)
-        connection.cancel()
-        let text = queue.sync { String(decoding: received, as: UTF8.self) }
+        let text = String(
+            decoding: LoopbackClient.exchange(
+                port: port, send: data, label: "mobile-voice-tests", maximumLength: 1_048_576,
+                until: whole),
+            as: UTF8.self)
         let parts = text.components(separatedBy: "\r\n\r\n")
         return (Int(text.split(separator: " ").dropFirst().first ?? "") ?? 0,
                 parts.dropFirst().joined(separator: "\r\n\r\n"))
