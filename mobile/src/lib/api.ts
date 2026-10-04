@@ -1,5 +1,6 @@
 import { drafts } from './drafts';
 import { tokenFrom, withoutPair } from './pairing';
+import { record, type Sent } from './phonelog';
 import { frameParser, readOrStall, STALLED, type Frame } from './sse';
 import type {
 	ActionTarget,
@@ -123,6 +124,13 @@ export function openTerminal(id: string): WebSocket {
 	);
 	socket.binaryType = 'arraybuffer';
 	socket.addEventListener('open', () => socket.send(token ?? ''), { once: true });
+	socket.addEventListener('close', (event) => {
+		const clean = event.code === 1000 || event.code === 1005;
+		record(clean ? 'info' : 'warn', 'socket', `terminal socket closed, code ${event.code}`, {
+			code: event.code,
+			thread: id
+		});
+	});
 	return socket;
 }
 
@@ -200,12 +208,49 @@ export async function readEvents(
 ): Promise<void> {
 	const response = await request('/api/events', 'text/event-stream', undefined, signal);
 	if (!response.body) return;
+	record('info', 'sse', 'event stream open');
 	const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
 	const parse = frameParser();
-	for (;;) {
-		const { done, value } = await reader.read();
-		if (done) return;
-		for (const frame of parse(value)) onFrame(frame);
+	try {
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			for (const frame of parse(value)) onFrame(frame);
+		}
+	} catch (error) {
+		// Stopped on purpose (the page went to the background) is not a drop.
+		if (!signal.aborted) record('warn', 'sse', 'event stream dropped');
+		throw error;
+	}
+	record('warn', 'sse', 'event stream ended by the Mac');
+}
+
+/**
+ * Send lines of the phone's own log (`phonelog.ts`). `last`: the page is
+ * going away, so the request must outlive it. The answer says whether the
+ * lines are kept for another try.
+ */
+export async function postLog(batch: unknown, last: boolean): Promise<Sent> {
+	// Not paired: the Mac would refuse. The lines wait until it is.
+	if (!token) return 'retry';
+	try {
+		const response = await fetch('/api/log', {
+			method: 'POST',
+			cache: 'no-store',
+			keepalive: last,
+			headers: {
+				[TOKEN_HEADER]: token,
+				'x-muxmaestro': '1',
+				'content-type': 'application/json'
+			},
+			body: JSON.stringify(batch)
+		});
+		if (response.ok) return 'ok';
+		// A token the Mac no longer takes, or a Mac (or the proxy in front of
+		// it) that is not up: later. Any other refusal will not change.
+		return response.status === 401 || response.status >= 500 ? 'retry' : 'drop';
+	} catch {
+		return 'retry';
 	}
 }
 
