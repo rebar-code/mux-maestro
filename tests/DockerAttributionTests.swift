@@ -131,7 +131,7 @@ final class DockerSupabaseJoinTests: XCTestCase {
     func testFortyCharLabelDoesNotMatchADifferentProject() {
         XCTAssertFalse(Docker.supabaseStackMatches(
             label: "acme-app-portal-spin-feat-rate-auditor-f",
-            projectID: "front-range-windows-po-pipeline"))
+            projectID: "widget-shop-po-pipeline"))
     }
 
     func testEmptySidesNeverMatch() {
@@ -190,13 +190,13 @@ final class DockerConfigTomlTests: XCTestCase {
     func testReadsProjectID() {
         let toml = """
         # A string used to distinguish different Supabase projects.
-        project_id = "front-range-windows-po-pipeline"
+        project_id = "widget-shop-po-pipeline"
 
         [api]
         port = 54401
         """
         XCTAssertEqual(Docker.supabaseProjectID(configToml: toml),
-                       "front-range-windows-po-pipeline")
+                       "widget-shop-po-pipeline")
     }
 
     /// `worktree-supabase.sh` rewrites this file per worktree and leaves the
@@ -204,11 +204,11 @@ final class DockerConfigTomlTests: XCTestCase {
     /// WRONG stack.
     func testCommentedOutIDIsIgnored() {
         let toml = """
-        # project_id = "front-range-windows"
-        project_id = "front-range-windows-spin-feat-x"
+        # project_id = "widget-shop"
+        project_id = "widget-shop-spin-feat-x"
         """
         XCTAssertEqual(Docker.supabaseProjectID(configToml: toml),
-                       "front-range-windows-spin-feat-x")
+                       "widget-shop-spin-feat-x")
     }
 
     func testSingleQuotesAndLooseSpacingSurvive() {

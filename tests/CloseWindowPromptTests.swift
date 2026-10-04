@@ -21,8 +21,8 @@ final class CloseWindowPromptTests: XCTestCase {
     }
 
     func testTitleTreatsWhitespaceOnlyNameAsUnnamed() {
-        let t = CloseWindowPrompt.Target(session: "pulso", index: 0, name: "   ")
-        XCTAssertEqual(CloseWindowPrompt.title(t, .window), "Archive window 0 in “pulso”?")
+        let t = CloseWindowPrompt.Target(session: "acme-app", index: 0, name: "   ")
+        XCTAssertEqual(CloseWindowPrompt.title(t, .window), "Archive window 0 in “acme-app”?")
     }
 
     func testTitleFallsBackToActiveWindowWhenIndexIsUnknown() {
@@ -33,10 +33,10 @@ final class CloseWindowPromptTests: XCTestCase {
 
     func testTitleKeepsSessionNamesWithSpaces() {
         let t = CloseWindowPrompt.Target(
-            session: "Front Range Windows", index: 2, name: "zsh")
+            session: "Acme App", index: 2, name: "zsh")
         XCTAssertEqual(
             CloseWindowPrompt.title(t, .window),
-            "Archive window 2 “zsh” in “Front Range Windows”?")
+            "Archive window 2 “zsh” in “Acme App”?")
     }
 
     // MARK: info
@@ -88,14 +88,14 @@ final class CloseWindowPromptTests: XCTestCase {
 
     func testInfoStacksAgentWarningAndSessionEnd() {
         let t = CloseWindowPrompt.Target(
-            session: "pulso", index: 0, name: "claude",
+            session: "acme-app", index: 0, name: "claude",
             attention: .busy, isLastWindow: true)
         let info = CloseWindowPrompt.info(t, .window)
         XCTAssertEqual(
             info,
             "This ends the tmux window and every process in it. "
                 + "An agent is running here — archiving the window stops that work. "
-                + "It is the last window, so the session “pulso” ends too.")
+                + "It is the last window, so the session “acme-app” ends too.")
     }
 
     // MARK: needsConfirm — who asked for the close
