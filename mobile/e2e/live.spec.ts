@@ -112,11 +112,11 @@ test('the terminal keeps the pane width and scrolls, sideways and into scrollbac
 	await expect(page.getByRole('button', { name: 'Jump to bottom' })).toHaveCount(0);
 });
 
-test('a pinch changes the terminal text, and the size is the stored one', async ({ page }) => {
+test('a pinch changes the terminal text, and the size is kept', async ({ page }) => {
 	await live(page);
 	const size = (): Promise<string> => rows(page).evaluate((el) => getComputedStyle(el).fontSize);
 	const before = parseFloat(await size());
-	// Fingers 100px apart move to 160px apart, on the terminal.
+	// Fingers 100px apart move to 160px apart: the size times 1.6.
 	await twoFingers(
 		page,
 		[
@@ -128,9 +128,11 @@ test('a pinch changes the terminal text, and the size is the stored one', async 
 			[280, 300]
 		]
 	);
-	await expect.poll(async () => parseFloat(await size())).toBeCloseTo(before * 1.6, 0);
+	await expect.poll(async () => parseFloat(await size())).toBeCloseTo(before * 1.6, 1);
 	const after = parseFloat(await size());
-	// The pane keeps its size: the text is larger, the columns are as many.
+	// The pinch typed nothing into the pane.
+	expect((await fixture(page)).typed).toBe('');
+	// The pane keeps its size: the text is larger, the rows are as many.
 	expect(await page.locator('[data-view="live"] .xterm-rows > div').count()).toBe(30);
 	// The size is the stored one: a new visit starts with it.
 	await page.reload();
@@ -146,8 +148,11 @@ test('the key bar and the keyboard type through the socket', async ({ page }) =>
 	});
 	await live(page);
 	// The bar is there with the Key bar switch off: live mode is its own switch.
+	// The strip is the slim one every thread has.
 	for (const name of ['Escape', 'Tab', 'Up', 'Control C', 'Enter']) {
-		await expect(key(page, name)).toBeVisible();
+		const box = await key(page, name).boundingBox();
+		expect(box!.width).toBeGreaterThanOrEqual(28);
+		expect(box!.height).toBeGreaterThanOrEqual(22);
 	}
 	await key(page, 'Tab').click();
 	await key(page, 'Up').click();

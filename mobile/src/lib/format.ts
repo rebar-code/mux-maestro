@@ -66,6 +66,6 @@ export function stageTag(thread: Thread): string {
 }
 
 /** The dot colour class: a sleeping thread is grey whatever its status. */
-export function dotClass(thread: Thread): string {
+export function dotClass(thread: Pick<Thread, 'status' | 'idleStage'>): string {
 	return thread.idleStage === 'dozing' ? 'idle' : thread.status;
 }
