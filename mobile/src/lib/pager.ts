@@ -4,7 +4,8 @@
  * so it is tested directly.
  */
 
-export type DragKind = 'drawer-open' | 'drawer-close' | 'page' | 'hscroll' | 'swipe' | 'none';
+export type DragKind =
+	'drawer-open' | 'drawer-close' | 'page' | 'back' | 'hscroll' | 'swipe' | 'none';
 
 export interface DragContext {
 	/** Finger movement so far: positive is a right swipe. */
@@ -16,6 +17,8 @@ export interface DragContext {
 	canScrollX: boolean;
 	/** The row under the finger can be swiped away to the left. */
 	canSwipe?: boolean;
+	/** The page shows something opened from its own list: a right swipe closes that first. */
+	canBack?: boolean;
 }
 
 /** What a horizontal drag moves. Decided once, when the drag locks. */
@@ -25,10 +28,12 @@ export function resolveDrag({
 	pageCount,
 	index,
 	canScrollX,
-	canSwipe = false
+	canSwipe = false,
+	canBack = false
 }: DragContext): DragKind {
 	if (drawerOpen) return dx < 0 ? 'drawer-close' : 'none';
 	if (canScrollX) return 'hscroll';
+	if (dx > 0 && canBack) return 'back';
 	if (dx > 0) return index > 0 ? 'page' : 'drawer-open';
 	if (canSwipe) return 'swipe';
 	return pageCount > 0 ? 'page' : 'none';
@@ -68,6 +73,11 @@ export function settlePage(
 /** Whether a row released at `dx` (a left swipe is negative) is swiped away. */
 export function settleSwipe(dx: number, vx: number, width: number): boolean {
 	return dx < 0 && commits(dx, vx, width) === -1;
+}
+
+/** Whether a right swipe released at `dx` goes back. */
+export function settleBack(dx: number, vx: number, width: number): boolean {
+	return dx > 0 && commits(dx, vx, width) === 1;
 }
 
 /** Whether the drawer ends open after a drag released at `progress` (0 to 1). */

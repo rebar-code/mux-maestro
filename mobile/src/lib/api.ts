@@ -1,13 +1,20 @@
 import { tokenFrom, withoutPair } from './pairing';
 import { frameParser, readOrStall, STALLED, type Frame } from './sse';
 import type {
+	ActionTarget,
+	ArtifactList,
 	ChatPage,
 	Command,
 	Config,
+	FindResult,
 	Host,
 	ManagerHome,
+	Mapping,
+	MappingList,
 	PromptState,
+	RunningList,
 	Thread,
+	TmuxAction,
 	TurnEnd
 } from './types';
 
@@ -101,6 +108,21 @@ async function failure(response: Response): Promise<ApiError> {
 /** What a write sends: JSON, or bytes of a named type (or nothing). */
 type Write = { json: unknown } | { bytes: BodyInit | null; type?: string };
 
+/**
+ * Open the live terminal of thread `id`. A socket carries no header, and the
+ * token must never be in a URL, so it goes as the first message. It is sent
+ * here, so no other module holds it.
+ */
+export function openTerminal(id: string): WebSocket {
+	const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
+	const socket = new WebSocket(
+		`${scheme}//${location.host}/api/terminal/${encodeURIComponent(id)}`
+	);
+	socket.binaryType = 'arraybuffer';
+	socket.addEventListener('open', () => socket.send(token ?? ''), { once: true });
+	return socket;
+}
+
 /** Every API call goes through here, so every one carries the pairing token. */
 async function request(
 	path: string,
@@ -160,8 +182,8 @@ function post(path: string, body: unknown, accept = 'application/json'): Promise
 	return request(path, accept, undefined, undefined, {}, { json: body });
 }
 
-async function get<T>(path: string, as?: string): Promise<T> {
-	return (await (await request(path, 'application/json', as)).json()) as T;
+async function get<T>(path: string, as?: string, signal?: AbortSignal): Promise<T> {
+	return (await (await request(path, 'application/json', as, signal)).json()) as T;
 }
 
 /**
@@ -366,6 +388,86 @@ export function uploadFile(
 		};
 		xhr.send(file);
 	});
+}
+
+/** What a session action answers: the new window's thread, or the new session's name. */
+export interface ActionResult {
+	thread?: string;
+	session?: string;
+}
+
+/**
+ * Run one session action on the Mac. A kill must carry `confirm: true`; the
+ * Mac refuses it otherwise.
+ */
+export async function tmuxAction(
+	action: TmuxAction,
+	body: (ActionTarget | { host: string }) & { name?: string; dir?: string; confirm?: true }
+): Promise<ActionResult> {
+	return (await (await post(`/api/tmux/${action}`, body)).json()) as ActionResult;
+}
+
+/** The directories a host offers for a new session. */
+export async function fetchDirs(host: string): Promise<string[]> {
+	return (await get<{ dirs: string[] }>(`/api/hosts/${encodeURIComponent(host)}/dirs`)).dirs;
+}
+
+/** Find `query` in the thread's scrollback. */
+export function fetchFind(id: string, query: string, signal?: AbortSignal): Promise<FindResult> {
+	return get<FindResult>(
+		`${threadPath(id)}/find?q=${encodeURIComponent(query)}`,
+		undefined,
+		signal
+	);
+}
+
+export function fetchArtifacts(id: string): Promise<ArtifactList> {
+	return get<ArtifactList>(`${threadPath(id)}/artifacts`);
+}
+
+/**
+ * One artifact's bytes. The file is named by the id the Mac gave it, never by
+ * a path. It is fetched (the token rides in a header) and never linked to.
+ */
+export async function fetchFile(id: string, file: string, signal?: AbortSignal): Promise<Blob> {
+	const path = `${threadPath(id)}/file?id=${encodeURIComponent(file)}`;
+	return (await request(path, '*/*', undefined, signal)).blob();
+}
+
+export function fetchRunning(id: string): Promise<RunningList> {
+	return get<RunningList>(`${threadPath(id)}/running`);
+}
+
+export function fetchMappings(): Promise<MappingList> {
+	return get<MappingList>('/api/servers');
+}
+
+/** Ask the Mac to publish one of the thread's local ports on the tailnet. */
+export async function openServer(id: string, port: number): Promise<Mapping> {
+	return (await (await post('/api/servers/open', { thread: id, port })).json()) as Mapping;
+}
+
+export async function closeServer(port: number): Promise<void> {
+	await post('/api/servers/close', { port });
+}
+
+/** The Mac's push key: what this phone subscribes with. */
+export function fetchPushKey(): Promise<{ key: string }> {
+	return get<{ key: string }>('/api/push/key');
+}
+
+/** Hand the Mac this phone's push subscription, as the browser wrote it. */
+export async function subscribePush(subscription: PushSubscriptionJSON): Promise<void> {
+	await post('/api/push/subscribe', subscription);
+}
+
+export async function unsubscribePush(endpoint: string): Promise<void> {
+	await post('/api/push/unsubscribe', { endpoint });
+}
+
+/** Say which thread this phone shows (`null`: none), so it sends no push here. */
+export async function focusPush(endpoint: string, thread: string | null): Promise<void> {
+	await post('/api/push/focus', { endpoint, thread });
 }
 
 export function fetchManager(): Promise<ManagerHome> {

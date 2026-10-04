@@ -74,11 +74,10 @@ async function checkLayout(page: Page, visible: number): Promise<void> {
 	const stack = await rows(page);
 	for (let n = 1; n < stack.length; n += 1)
 		expect(stack[n].top, JSON.stringify(stack)).toBeGreaterThanOrEqual(stack[n - 1].bottom - 0.5);
-	// The text box, the key bar and its hide-keyboard button are all on the visible screen.
+	// The text box, the key strip and the attach button are all on the visible screen.
 	for (const part of [
 		box(page),
 		keybar(page),
-		page.getByRole('button', { name: 'Hide keyboard' }),
 		page.getByRole('button', { name: 'Attach' }),
 		page.locator('.tbar'),
 		page.locator('.tabs')

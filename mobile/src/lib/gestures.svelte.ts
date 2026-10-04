@@ -3,6 +3,7 @@ import {
 	clamp,
 	pageOffset,
 	resolveDrag,
+	settleBack,
 	resolveSheetDrag,
 	settleDrawer,
 	settlePage,
@@ -36,6 +37,15 @@ class Ui {
 	index = $state(0);
 	/** Pixel offset of the pager while it follows a finger. */
 	dragX = $state(0);
+	/**
+	 * Closes what the current page has open over its own list (a file). While
+	 * it is set, a right swipe does that before it changes the page.
+	 */
+	back = $state.raw<(() => void) | null>(null);
+	/** Pixel offset of that open layer while it follows a finger. */
+	backX = $state(0);
+	/** Called with the page the pager settles on or is sent to. */
+	private landed: ((index: number) => void) | null = null;
 	/** The scroller being pulled down, how far, and whether a finger holds it. */
 	pullKey = $state<string | null>(null);
 	pull = $state(0);
@@ -85,14 +95,19 @@ class Ui {
 		this.drawer = 0;
 	}
 
-	setPages(pages: string[]): void {
+	setPages(pages: string[], landed: ((index: number) => void) | null = null): void {
 		this.pages = pages;
+		this.landed = landed;
 		this.index = clamp(this.index, 0, Math.max(pages.length - 1, 0));
 		this.dragX = 0;
+		this.backX = 0;
 	}
 
 	goTo(index: number): void {
-		this.index = clamp(index, 0, Math.max(this.pages.length - 1, 0));
+		const next = clamp(index, 0, Math.max(this.pages.length - 1, 0));
+		const moved = next !== this.index;
+		this.index = next;
+		if (moved) this.landed?.(next);
 	}
 
 	/** Run the refresh a scroller registered, with the indicator held open. */
@@ -125,10 +140,13 @@ export function pullToRefresh(key: string, run: () => Promise<void>): () => () =
 	};
 }
 
-/** Attachment for a pager: declares the view's pages while it is mounted. */
-export function pages(keys: string[]): () => () => void {
+/**
+ * Attachment for a pager: declares the view's pages while it is mounted.
+ * `landed` hears each change of page, by swipe or by tab.
+ */
+export function pages(keys: string[], landed?: (index: number) => void): () => () => void {
 	return () => {
-		untrack(() => ui.setPages(keys));
+		untrack(() => ui.setPages(keys, landed));
 		return () => untrack(() => ui.setPages([]));
 	};
 }
@@ -176,6 +194,7 @@ export function gestures(node: HTMLElement): () => void {
 	let hscroll: HTMLElement | null = null;
 	let hscrollStart = 0;
 	let swiped: HTMLElement | null = null;
+	let origin: Element | null = null;
 	let momentum = 0;
 	let suppressClick = false;
 	let downT = 0;
@@ -200,6 +219,7 @@ export function gestures(node: HTMLElement): () => void {
 		downZoom = (event.target as Element).closest('[data-zoom]') !== null;
 		hscroll = (event.target as Element).closest<HTMLElement>('[data-hscroll]');
 		swiped = (event.target as Element).closest<HTMLElement>('[data-swipe]');
+		origin = event.target as Element;
 		// A drag that begins in the text box is typing or moving the caret, not the drawer.
 		onSheet =
 			!ui.sheetLocked &&
@@ -208,6 +228,17 @@ export function gestures(node: HTMLElement): () => void {
 		sheetList = (event.target as Element).closest<HTMLElement>('[data-sheet-list]');
 		lastY = event.clientY;
 		vy = 0;
+	}
+
+	/** Let go of the drag with nothing moved. */
+	function abandon(): void {
+		ui.dragX = 0;
+		ui.backX = 0;
+		if (kind === 'drawer-open') ui.drawer = 0;
+		else if (kind === 'drawer-close') ui.drawer = 1;
+		ui.dragging = false;
+		start = null;
+		kind = null;
 	}
 
 	/** Undo a drag that is under way, as if the finger had never moved. */
@@ -234,6 +265,8 @@ export function gestures(node: HTMLElement): () => void {
 
 	function onPointerMove(event: PointerEvent): void {
 		if (!start || event.pointerId !== start.id) return;
+		// A zoomed or pinched image owns the touch: it pans, nothing pages.
+		if (origin?.closest('[data-nopage]')) return abandon();
 		const dx = event.clientX - start.x;
 		const dy = event.clientY - start.y;
 		if (kind === null) {
@@ -275,7 +308,8 @@ export function gestures(node: HTMLElement): () => void {
 				pageCount: ui.pages.length,
 				index: ui.index,
 				canScrollX: canScroll(hscroll, dx),
-				canSwipe: swiped !== null
+				canSwipe: swiped !== null,
+				canBack: ui.back !== null
 			});
 			if (kind === 'none') return;
 			base = dx;
@@ -295,6 +329,7 @@ export function gestures(node: HTMLElement): () => void {
 		if (kind === 'drawer-open') ui.drawer = clamp(moved / drawerWidth(), 0, 1);
 		else if (kind === 'drawer-close') ui.drawer = clamp(1 + moved / drawerWidth(), 0, 1);
 		else if (kind === 'page') ui.dragX = pageOffset(moved, ui.index, ui.pages.length);
+		else if (kind === 'back') ui.backX = Math.max(moved, 0);
 		else if (kind === 'swipe')
 			swiped?.style.setProperty('transform', `translateX(${Math.min(moved, 0)}px)`);
 		else if (hscroll) hscroll.scrollLeft = hscrollStart - moved;
@@ -338,8 +373,11 @@ export function gestures(node: HTMLElement): () => void {
 		if (kind === 'drawer-open' || kind === 'drawer-close') {
 			ui.drawer = settleDrawer(ui.drawer, speed, kind === 'drawer-close') ? 1 : 0;
 		} else if (kind === 'page') {
-			ui.index = settlePage(moved, speed, ui.index, ui.pages.length, node.clientWidth);
+			ui.goTo(settlePage(moved, speed, ui.index, ui.pages.length, node.clientWidth));
 			ui.dragX = 0;
+		} else if (kind === 'back') {
+			if (settleBack(moved, speed, node.clientWidth)) ui.back?.();
+			ui.backX = 0;
 		} else if (kind === 'hscroll' && hscroll && Math.abs(speed) > 0.1) {
 			coast(hscroll, speed);
 		} else if (kind === 'swipe' && swiped) {

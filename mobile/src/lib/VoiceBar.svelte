@@ -1,18 +1,25 @@
 <script lang="ts">
 	import { keepFocus } from './focus';
+	import Icon from './Icon.svelte';
 	import { live, OFF_LABEL } from './live.svelte';
 	import { voice, type VoiceSink, type VoiceTarget } from './voice.svelte';
 
-	/** The bar of one target: the manager, or a thread. */
+	/**
+	 * The bar of one target: the manager, or a thread. `part` draws only the
+	 * status line or only the controls, for a view that puts something between
+	 * the two.
+	 */
 	const {
 		target,
 		sink,
-		off = false
+		off = false,
+		part = 'all'
 	}: {
 		target: VoiceTarget;
 		sink: VoiceSink;
 		/** Voice is switched off on the Mac: the bar says so and has no controls. */
 		off?: boolean;
+		part?: 'all' | 'status' | 'controls';
 	} = $props();
 
 	const status = $derived(voice.statusOf(target));
@@ -32,13 +39,37 @@
 			{live.config === null ? '' : OFF_LABEL}
 		</div>
 	</div>
+{:else if part === 'status'}
+	<div class="vbar alone" data-voice-line>{@render line()}</div>
 {:else}
 	{@render controls()}
 {/if}
 
+{#snippet line()}
+	<div class="vstat {status}" class:paused={voice.paused} role="status" data-voice-status>
+		{#if hearing}
+			<!-- The mic's level, so it is plain that the phone hears. -->
+			<span
+				class="wave meter"
+				role="meter"
+				aria-label="Mic level"
+				aria-valuemin="0"
+				aria-valuemax="100"
+				aria-valuenow={Math.round(level * 100)}
+				data-voice-level={Math.round(level * 100)}
+				style:--level={level}><i></i><i></i><i></i><i></i></span
+			>
+		{:else}
+			<span class="wave" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+		{/if}
+		{voice.note ?? voice.label(target)}
+	</div>
+{/snippet}
+
 {#snippet controls()}
 	<div
 		class="vbar"
+		class:bare={part === 'controls'}
 		data-voicebar
 		data-voice={status}
 		data-first-text-ms={voice.timing.text}
@@ -46,24 +77,7 @@
 		{@attach voice.attach}
 		{@attach keepFocus}
 	>
-		<div class="vstat {status}" class:paused={voice.paused} role="status" data-voice-status>
-			{#if hearing}
-				<!-- The mic's level, so it is plain that the phone hears. -->
-				<span
-					class="wave meter"
-					role="meter"
-					aria-label="Mic level"
-					aria-valuemin="0"
-					aria-valuemax="100"
-					aria-valuenow={Math.round(level * 100)}
-					data-voice-level={Math.round(level * 100)}
-					style:--level={level}><i></i><i></i><i></i><i></i></span
-				>
-			{:else}
-				<span class="wave" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
-			{/if}
-			{voice.note ?? voice.label(target)}
-		</div>
+		{#if part === 'all'}{@render line()}{/if}
 		<div class="vrow">
 			<div class="vseg" role="group" aria-label="Voice mode">
 				<button
@@ -84,24 +98,31 @@
 				class:off={!voice.speaker}
 				aria-label="Speaker"
 				aria-pressed={voice.speaker}
-				onclick={() => voice.setSpeaker(!voice.speaker)}>{voice.speaker ? '🔊' : '🔇'}</button
+				onclick={() => voice.setSpeaker(!voice.speaker)}
+				><Icon name={voice.speaker ? 'speaker' : 'speakerOff'} /></button
 			>
-			<button
-				class="ip"
-				aria-label="Replay"
-				disabled={status === 'thinking' || status === 'recording'}
-				onclick={() => voice.replay(target, sink)}>↻</button
-			>
-			<button class="ip" aria-label="Skip" disabled={status !== 'speaking'} onclick={voice.skip}
-				>⏭</button
-			>
-			<button
-				class="ip"
-				class:off={voice.micMuted}
-				aria-label="Microphone"
-				aria-pressed={!voice.micMuted}
-				onclick={() => voice.toggleMic(target, sink)}>🎙</button
-			>
+			<!-- Both act on the reply that is read out, so they share one pill. -->
+			<div class="pair" role="group" aria-label="Playback">
+				<button
+					aria-label="Replay"
+					disabled={status === 'thinking' || status === 'recording'}
+					onclick={() => voice.replay(target, sink)}><Icon name="replay" /></button
+				>
+				<button aria-label="Skip" disabled={status !== 'speaking'} onclick={voice.skip}
+					><Icon name="skip" /></button
+				>
+			</div>
+			<!-- Manual opens the mic only on a tap, so there is nothing to mute. -->
+			{#if voice.mode === 'auto'}
+				<button
+					class="ip"
+					class:off={voice.micMuted}
+					aria-label="Microphone"
+					aria-pressed={!voice.micMuted}
+					onclick={() => voice.toggleMic(target, sink)}
+					><Icon name={voice.micMuted ? 'micOff' : 'mic'} /></button
+				>
+			{/if}
 		</div>
 	</div>
 {/snippet}
@@ -120,6 +141,21 @@
 
 	.vbar.off .vstat {
 		padding-bottom: 2px;
+	}
+
+	/* The status line by itself, above the key bar. */
+	.vbar.alone {
+		padding-bottom: 0;
+	}
+
+	.vbar.alone .vstat {
+		padding-bottom: 6px;
+	}
+
+	/* The controls by themselves: the line above them is drawn elsewhere. */
+	.vbar.bare {
+		border-top: 0;
+		padding-top: 0;
 	}
 
 	.vstat {
@@ -246,6 +282,10 @@
 	.ip {
 		position: relative;
 		flex: none;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		color: #cfcfcf;
 		width: 36px;
 		height: 36px;
 		border-radius: 50%;
@@ -258,6 +298,35 @@
 		content: '';
 		position: absolute;
 		inset: -5px;
+	}
+
+	/* Two buttons in one oval, with a hairline between them. */
+	.pair {
+		flex: none;
+		display: flex;
+		height: 36px;
+		border-radius: 18px;
+		background: var(--surface);
+		border: 1px solid var(--border);
+	}
+
+	.pair button {
+		position: relative;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 44px;
+		color: #cfcfcf;
+	}
+
+	.pair button + button {
+		border-left: 1px solid var(--border);
+	}
+
+	.pair button::after {
+		content: '';
+		position: absolute;
+		inset: -5px 0;
 	}
 
 	.ip.off {

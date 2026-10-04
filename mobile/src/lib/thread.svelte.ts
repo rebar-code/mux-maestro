@@ -71,19 +71,17 @@ export class ThreadFeed {
 				node.addEventListener('scroll', onScroll, { passive: true });
 			}
 			// When the view gets shorter (the footer rises, the keyboard opens), a
-			// reader at the end stays at the end.
-			let stuck = true;
-			const onStick = (): void => {
-				stuck = atEnd(node, mode === 'chat' ? STICK : AT_BOTTOM);
-			};
-			node.addEventListener('scroll', onStick, { passive: true });
+			// reader at the end stays at the end. Judged from the height it had
+			// before, not from a scroll event, which may come a frame late.
+			let height = node.clientHeight;
 			const resized = new ResizeObserver(() => {
-				if (stuck) node.scrollTop = node.scrollHeight;
+				const gap = node.scrollHeight - node.scrollTop - height;
+				height = node.clientHeight;
+				if (gap < (mode === 'chat' ? STICK : AT_BOTTOM)) node.scrollTop = node.scrollHeight;
 			});
 			resized.observe(node);
 			return () => {
 				resized.disconnect();
-				node.removeEventListener('scroll', onStick);
 				node.removeEventListener('scroll', onScroll);
 				if (this.scrollers[mode] === node) delete this.scrollers[mode];
 			};

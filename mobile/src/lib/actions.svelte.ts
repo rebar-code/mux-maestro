@@ -1,0 +1,161 @@
+import { goto } from '$app/navigation';
+import { resolve } from '$app/paths';
+import { page } from '$app/state';
+import {
+	actionTarget,
+	currentName,
+	killed,
+	refusalText,
+	validName,
+	type ItemKey,
+	type KillKind,
+	type MenuTarget
+} from './actions';
+import { ApiError, fetchDirs, tmuxAction } from './api';
+import { ui } from './gestures.svelte';
+import { live } from './live.svelte';
+
+export type Stage = 'menu' | 'rename' | 'kill' | 'dirs';
+
+const APPEAR_TRIES = 8;
+const APPEAR_MS = 350;
+
+/** The bottom sheet a long press opens, and the actions it runs. */
+class Menu {
+	target = $state.raw<MenuTarget | null>(null);
+	stage = $state<Stage>('menu');
+	/** Which kill the confirmation is for. */
+	killKind = $state<KillKind>('kill-window');
+	name = $state('');
+	/** The directories the host offers; null until they are loaded. */
+	dirs = $state.raw<string[] | null>(null);
+	busy = $state(false);
+	error = $state<string | null>(null);
+
+	readonly nameOk: boolean = $derived(validName(this.name));
+
+	open(target: MenuTarget): void {
+		this.target = target;
+		this.stage = 'menu';
+		this.busy = false;
+		this.error = null;
+	}
+
+	close = (): void => {
+		this.target = null;
+	};
+
+	pick(key: ItemKey): void {
+		const target = this.target;
+		if (!target || this.busy) return;
+		this.error = null;
+		if (key === 'rename') {
+			this.name = currentName(target);
+			this.stage = 'rename';
+		} else if (key === 'kill-pane' || key === 'kill-window' || key === 'kill-session') {
+			this.killKind = key;
+			this.stage = 'kill';
+		} else if (key === 'new-session') {
+			if (target.kind === 'host') this.openDirs(target.host);
+		} else if (key === 'new-window') {
+			void this.newWindow(target);
+		} else {
+			void this.zoom(target);
+		}
+	}
+
+	/** The ＋ on a host card: pick where the new session starts. */
+	openDirs(host: string): void {
+		this.open({ kind: 'host', host });
+		this.stage = 'dirs';
+		this.dirs = null;
+		void fetchDirs(host).then(
+			(dirs) => {
+				if (this.target?.kind === 'host' && this.target.host === host) this.dirs = dirs;
+			},
+			(error: unknown) => this.fail(error)
+		);
+	}
+
+	/** `dir`: one of the offered directories, or null for the host's home. */
+	async newSession(dir: string | null): Promise<void> {
+		const target = this.target;
+		if (target?.kind !== 'host') return;
+		await this.run(async () => {
+			await tmuxAction('new-session', { host: target.host, ...(dir ? { dir } : {}) });
+			void live.refresh();
+		});
+	}
+
+	/** Also the ＋ on a session row. The new window opens once the list has it. */
+	async newWindow(target: MenuTarget): Promise<void> {
+		const to = actionTarget(target);
+		if (!to) return;
+		if (!this.target) this.open(target);
+		await this.run(async () => {
+			const { thread } = await tmuxAction('new-window', to);
+			if (!thread) return void live.refresh();
+			for (let n = 0; n < APPEAR_TRIES && !live.byId(thread); n += 1) {
+				await live.refresh();
+				if (!live.byId(thread)) await new Promise((done) => setTimeout(done, APPEAR_MS));
+			}
+			ui.closeDrawer();
+			await goto(resolve('/t/[id]', { id: thread }));
+		});
+	}
+
+	async rename(): Promise<void> {
+		const target = this.target;
+		const to = target && actionTarget(target);
+		if (!target || !to || !this.nameOk) return;
+		await this.run(async () => {
+			await tmuxAction(target.kind === 'thread' ? 'rename-window' : 'rename-session', {
+				...to,
+				name: this.name.trim()
+			});
+			void live.refresh();
+		});
+	}
+
+	/** The human tapped Kill on the confirmation. */
+	async kill(): Promise<void> {
+		const target = this.target;
+		const to = target && actionTarget(target);
+		if (!target || !to) return;
+		const gone = killed(target, this.killKind, live.threads ?? []);
+		await this.run(async () => {
+			await tmuxAction(this.killKind, { ...to, confirm: true });
+			if (gone.some((thread) => thread.id === page.params.id)) await goto(resolve('/'));
+			void live.refresh();
+		});
+	}
+
+	private async zoom(target: MenuTarget): Promise<void> {
+		const to = actionTarget(target);
+		if (!to) return;
+		await this.run(async () => void (await tmuxAction('zoom-pane', to)));
+	}
+
+	/** Run one action; the sheet closes when it worked and says why when not. */
+	private async run(action: () => Promise<void>): Promise<void> {
+		if (this.busy) return;
+		this.busy = true;
+		this.error = null;
+		try {
+			await action();
+			this.close();
+		} catch (error) {
+			this.fail(error);
+		} finally {
+			this.busy = false;
+		}
+	}
+
+	private fail(error: unknown): void {
+		live.fail(error);
+		this.error =
+			error instanceof ApiError ? refusalText(error.code, error.detail) : 'Connection lost';
+	}
+}
+
+export const menu = new Menu();

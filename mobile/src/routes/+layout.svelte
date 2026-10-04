@@ -1,10 +1,12 @@
 <script lang="ts">
 	import '../app.css';
+	import ActionSheet from '$lib/ActionSheet.svelte';
 	import Drawer from '$lib/Drawer.svelte';
 	import { gestures, ui } from '$lib/gestures.svelte';
 	import { connect, live } from '$lib/live.svelte';
 	import { keyboardInset } from '$lib/pager';
 	import Pair from '$lib/Pair.svelte';
+	import { notifications } from '$lib/push.svelte';
 	import { freshBuild } from '$lib/update';
 
 	const { children } = $props();
@@ -46,6 +48,7 @@
 	{@attach gestures}
 	{@attach connect}
 	{@attach keyboard}
+	{@attach notifications}
 	{@attach freshBuild}
 >
 	{#if live.unpaired}
@@ -66,6 +69,7 @@
 			onclick={() => ui.closeDrawer()}
 		></button>
 		<Drawer />
+		<ActionSheet />
 	{/if}
 </div>
 

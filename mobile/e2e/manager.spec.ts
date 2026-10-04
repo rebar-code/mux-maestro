@@ -286,7 +286,7 @@ test('with the Voice switch off the Talk button is drawn, off, and says where to
 	// The label only: no voice control that would do nothing.
 	await expect(bar.locator('button')).toHaveCount(0);
 	const talk = page.locator('[data-primary]');
-	await expect(talk).toHaveText('🎙 Talk');
+	await expect(talk).toHaveText('Talk');
 	await expect(talk).toBeDisabled();
 
 	// A tap opens no microphone and sends nothing.
@@ -909,6 +909,28 @@ test('the waiting state is shown once, with a way to the terminal', async ({ pag
 	await page.getByRole('button', { name: 'Terminal', exact: true }).click();
 	await expect(page.locator('[data-tab="main"]')).toHaveText(/Terminal\s*⇄/);
 	await expect(page.locator('[data-view="terminal"]')).toContainText('Do you want to proceed?');
+});
+
+test('a waiting state that ends on the Mac ends on the phone, with no reload', async ({ page }) => {
+	await fresh(page);
+	await page.request.post('/__fixture/manager-status?value=waiting');
+	await page.reload();
+	await expect(page.locator('[data-status]')).toHaveText('Manager is waiting on a prompt');
+	// A send is refused, and the refusal is on screen.
+	await box(page).fill('what needs me?');
+	await submit(page);
+	await expect(page.getByRole('alert')).toHaveText('Manager is waiting on a prompt');
+
+	// The prompt ends on the Mac (answered, or cancelled). The next board
+	// brings the status with it: nothing on the phone still says waiting.
+	await page.request.post('/__fixture/manager-status?value=idle');
+	await expect(page.getByText('Manager is waiting on a prompt')).toHaveCount(0);
+	await expect(page.getByRole('alert')).toHaveCount(0);
+	await expect(page.locator('[data-status]')).toHaveCount(0);
+	// The text that was given back goes through now.
+	await expect(box(page)).toHaveValue('what needs me?');
+	await submit(page);
+	await expect(said(page).locator('.a').last()).toContainText('2 threads need you');
 });
 
 test('sidebar: the Manager bar stays at the bottom, and the list scrolls above it', async ({

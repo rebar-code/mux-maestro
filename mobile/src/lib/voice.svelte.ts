@@ -560,6 +560,8 @@ class Voice {
 	setMode = async (mode: VoiceMode, target: VoiceTarget, sink: VoiceSink): Promise<void> => {
 		if (mode === this.mode) return;
 		this.save({ mode });
+		// Manual has no mute control: a mic left muted would hold Talk off.
+		if (mode === 'manual') this.micMuted = false;
 		// A take that is open belongs to the mode that opened it.
 		if (this.status === 'recording') {
 			this.capture?.discard();

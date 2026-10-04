@@ -70,6 +70,7 @@ export const CAPABILITIES = [
 	'upload',
 	'sessionActions',
 	'kill',
+	'find',
 	'artifacts',
 	'localServers',
 	'stopServers',
@@ -194,4 +195,116 @@ export interface TurnEnd {
 /** The last event of a voice stream. `empty` and `failed` never reached the target. */
 export interface VoiceEnd extends Omit<TurnEnd, 'outcome'> {
 	outcome: TurnEnd['outcome'] | 'empty' | 'failed';
+}
+
+/** The last segment of `/api/tmux/<action>`. The Mac takes no other word. */
+export type TmuxAction =
+	| 'new-session'
+	| 'new-window'
+	| 'rename-session'
+	| 'rename-window'
+	| 'kill-session'
+	| 'kill-window'
+	| 'kill-pane'
+	| 'zoom-pane';
+
+/** What an action is done to: a thread, or the session that holds it. */
+export interface ActionTarget {
+	thread: string;
+}
+
+/** A start and an end offset in a string. */
+export type Range = [number, number];
+
+export interface FindMatch {
+	/** The line of `text`, from 0. */
+	line: number;
+	/** Where the query is in that line. */
+	ranges: Range[];
+}
+
+/** A thread's scrollback and where the query is in it. */
+export interface FindResult {
+	text: string;
+	matches: FindMatch[];
+	/** There were more matches than the Mac sends. */
+	truncated: boolean;
+}
+
+export type ArtifactKind = 'image' | 'pdf' | 'markdown' | 'html' | 'code' | 'text' | 'other';
+
+/** One file a thread's agent made. The Mac reads it by `id`; the phone never sends a path. */
+export interface ArtifactFile {
+	id: string;
+	name: string;
+	dir: string;
+	kind: ArtifactKind;
+	mime: string;
+	/** Bytes, when the file is there. */
+	size: number | null;
+	at: number;
+	exists: boolean;
+}
+
+export interface ArtifactLink {
+	url: string;
+	host: string;
+	path: string;
+	at: number | null;
+}
+
+export interface ArtifactList {
+	files: ArtifactFile[];
+	links: ArtifactLink[];
+	/** The thread runs on another host: its files are not read. */
+	remote: boolean;
+}
+
+/** One port of something that runs. `mappable`: the Mac can publish it on the tailnet. */
+export interface RunningLink {
+	label: string;
+	port: number;
+	open: boolean;
+	mappable: boolean;
+}
+
+interface RunningRow {
+	key: string;
+	label: string;
+	host: string;
+	local: boolean;
+}
+
+export interface RunningServer extends RunningRow {
+	port: number;
+	https: boolean;
+	mappable: boolean;
+}
+
+export interface RunningContainer extends RunningRow {
+	count: number;
+	links: RunningLink[];
+}
+
+/** What a thread has running, as the Mac's Running drawer lists it. */
+export interface RunningList {
+	/** False while the Mac has not seen everything: an empty list is then not "nothing". */
+	known: boolean;
+	unknowns: string[];
+	servers: RunningServer[];
+	stacks: RunningContainer[];
+	containers: RunningContainer[];
+}
+
+/** A local port the Mac publishes on the tailnet. */
+export interface Mapping {
+	port: number;
+	url: string;
+	thread: string;
+	label: string;
+}
+
+export interface MappingList {
+	mappings: Mapping[];
+	max: number;
 }

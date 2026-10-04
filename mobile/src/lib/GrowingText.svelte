@@ -156,6 +156,23 @@
 		outline: none;
 		overflow-y: auto;
 		overscroll-behavior: contain;
+		/*
+		 * Text that scrolls out fades at a straight edge, inside the rounded
+		 * ends, so no line is cut by a corner. Text that is not scrolled starts
+		 * below the fade and is whole.
+		 */
+		-webkit-mask-image: linear-gradient(
+			transparent 2px,
+			#000 10px,
+			#000 calc(100% - 10px),
+			transparent calc(100% - 2px)
+		);
+		mask-image: linear-gradient(
+			transparent 2px,
+			#000 10px,
+			#000 calc(100% - 10px),
+			transparent calc(100% - 2px)
+		);
 		-webkit-user-select: text;
 		user-select: text;
 	}

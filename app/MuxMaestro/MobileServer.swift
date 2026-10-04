@@ -19,8 +19,34 @@ final class MobileServer {
         /// The thread's pane, to type into. nil where nothing can be typed
         /// (the dev server): the reply routes then answer 503.
         var pane: (MobileThread) -> MobilePaneIO? = { _ in nil }
+        /// tmux on a host, for session actions and find. nil where there is
+        /// none (the dev server): those routes then answer 503. May block.
+        var tmux: (Host) -> MobileTmux? = { _ in nil }
+        /// A session action changed the tree: load it again now.
+        var changed: () -> Void = {}
         /// The home folder whose skills and commands the `/` list reads.
         var home = NSHomeDirectory()
+        /// What the thread's transcript says its agent made. nil where no
+        /// transcript is read (the dev server): the artifact routes then
+        /// answer 503. May block.
+        var artifacts: ((MobileThread) -> MobileArtifactSource?)? = nil
+        /// What the thread's pane has running, or nil once the pane has gone.
+        /// nil where nothing is scanned (the dev server): 503. May block.
+        var running: ((MobileThread) -> RunningSet?)? = nil
+        /// The command that runs a tmux control client for the thread's
+        /// session, here or over ssh. nil where there is no tmux (the dev
+        /// server): the live terminal then closes as unavailable.
+        var terminal: (MobileThread, MobileTerminal.Target) -> MobileTerminalBridge.Launch? = { _, _ in nil }
+    }
+
+    /// The local ports published on the tailnet, as `PhoneLink` keeps them.
+    /// nil where there is no tailnet (the dev server): the server routes then
+    /// answer 503. Every call may block.
+    struct Serving {
+        var open: (_ port: Int, _ https: Bool, _ thread: String, _ label: String) -> MobileServing.Opened
+        /// False when this app has no mapping on the port.
+        var close: (_ port: Int) -> Bool
+        var list: () -> [MobilePortMapping]
     }
 
     /// The manager pane, as the app reaches it. nil where there is no manager
@@ -70,6 +96,33 @@ final class MobileServer {
         /// A turn stream with nothing to say gets a comment line this often,
         /// so the phone can tell a quiet turn from a dead connection.
         var turnPing: TimeInterval = 15
+        /// Finds that may run at once. Each one captures a pane's scrollback,
+        /// and every phone comes in through the same proxy, so the bound is
+        /// on the server and not on one caller.
+        var maxFinds = 2
+        /// Live terminal sockets held at once, paired or not.
+        var maxSockets = 8
+        /// Paired live terminal sockets held at once. One more closes the
+        /// oldest. Every phone has the same token and comes through the same
+        /// proxy, and an address in a header is the sender's own word, so
+        /// the paired sockets are counted as one holder's.
+        var maxSocketsPerClient = 4
+        /// How long a new socket has to send the pairing token.
+        var socketAuthTimeout: TimeInterval = 5
+        /// A socket gets a ping this often, and is closed when nothing came
+        /// from the phone for `socketDead`.
+        var socketPing: TimeInterval = 15
+        var socketDead: TimeInterval = 45
+        /// A socket nobody typed on for this long is closed: a phone left
+        /// open does not hold a keyboard for ever.
+        var socketIdle: TimeInterval = 900
+        /// Unsent output a socket may hold before the pane is read no more,
+        /// and how long that may last before the socket is closed.
+        var socketBacklog = 262_144
+        var socketStall: TimeInterval = 5
+        /// Messages a phone may send: a second, and at once.
+        var socketRate = 200.0
+        var socketBurst = 400.0
         /// How often the manager pane is read for its spinner line while a
         /// turn runs.
         var spinnerPoll: TimeInterval = 1
@@ -97,8 +150,37 @@ final class MobileServer {
         var onDrop: (() -> Void)?
         /// Its own backlog limit; nil for the listener's `streamBacklog`.
         var backlog: Int?
+        /// It is a live terminal's socket: what it receives is frames.
+        var socket: Socket?
+        /// Runs each time some of its queued bytes were sent.
+        var onSent: (() -> Void)?
 
         init(_ connection: NWConnection) { self.connection = connection }
+    }
+
+    /// One live terminal socket: one phone, one pane. Confined to `queue`.
+    private final class Socket {
+        /// The thread id the phone asked for. Looked up in the tree only
+        /// after the token came.
+        let thread: String
+        var reader = MobileSocketReader(maxMessage: MobileSocket.maxTokenBytes)
+        var rate: MobileSocketRate
+        var paired = false
+        /// What the socket is bound to, from the tree. It never changes.
+        var target: MobileTerminal.Target?
+        var bridge: MobileTerminalBridge?
+        let opened = Date()
+        var lastHeard = Date()
+        var lastInput = Date()
+        var lastPing = Date()
+        /// The bridge waits for `resume()`, since then.
+        var stalled: Date?
+        var closing = false
+
+        init(thread: String, rate: MobileSocketRate) {
+            self.thread = thread
+            self.rate = rate
+        }
     }
 
     /// A stream with nothing to say still gets a comment line this often, so a
@@ -112,13 +194,20 @@ final class MobileServer {
     private let limits: Limits
     private let manager: Manager?
     private let voice: Voice?
+    private let serving: Serving?
+    /// The phones that asked for notifications. nil where nothing is sent
+    /// (the dev server): the push routes then answer 503.
+    private let push: MobilePushCenter?
     private let queue = DispatchQueue(label: "is.rebar.muxmaestro.mobile")
     private let work = DispatchQueue(label: "is.rebar.muxmaestro.mobile.work", attributes: .concurrent)
 
     // Confined to `queue`.
     private var listener: NWListener?
     private var identity: MobileIdentity?
+    /// The port the listener is bound to: the one port no mapping may publish.
+    private var boundPort: Int?
     private var token: String?
+    private var shellPolicyCache: (shell: Data, socket: String?, policy: String)?
     private var snapshot = MobileSnapshot()
     private var threadsBody = MobileSnapshot().threadsJSON()
     private var hostsBody = MobileSnapshot().hostsJSON()
@@ -132,6 +221,8 @@ final class MobileServer {
     /// Threads with a write on its way to their pane. One at a time per
     /// thread: a paste and its Enter are not interleaved with another's.
     private var writing = Set<String>()
+    /// Finds that are capturing a pane now.
+    private var finds = 0
     /// Per thread: a counter that goes into a prompt's id, and the words of
     /// the prompt last seen on its pane. See `sequence(of:)`.
     private var promptSequence: [String: Int] = [:]
@@ -145,6 +236,8 @@ final class MobileServer {
     private var phoneTurns = 0
     /// Counts turns, so a spinner poll from an earlier turn stops.
     private var turnSerial = 0
+    /// Each thread's last status, so a change is one notification.
+    private var pushTracker = MobilePushTracker()
 
     private let activityLock = NSLock()
     private var lastRequestAt = Date.distantPast
@@ -152,13 +245,15 @@ final class MobileServer {
 
     init(
         staticRoot: URL?, sources: Sources, limits: Limits = Limits(), manager: Manager? = nil,
-        voice: Voice? = nil
+        voice: Voice? = nil, serving: Serving? = nil, push: MobilePushCenter? = nil
     ) {
         self.staticRoot = staticRoot
         self.sources = sources
         self.limits = limits
         self.manager = manager
         self.voice = voice
+        self.serving = serving
+        self.push = push
     }
 
     /// Whether a phone asked for something lately or holds an event stream.
@@ -197,7 +292,9 @@ final class MobileServer {
                 case .ready:
                     guard !reported else { return }
                     reported = true
-                    completion(.success(Int(listener?.port?.rawValue ?? nwPort.rawValue)))
+                    let bound = Int(listener?.port?.rawValue ?? nwPort.rawValue)
+                    if self?.listener === listener { self?.boundPort = bound }
+                    completion(.success(bound))
                 case .failed(let error):
                     listener?.cancel()
                     if self?.listener === listener { self?.listener = nil }
@@ -224,10 +321,20 @@ final class MobileServer {
         listener?.cancel()
         listener = nil
         identity = nil
+        boundPort = nil
         token = nil
-        for client in clients.values { client.connection.cancel() }
+        pushTracker = MobilePushTracker()
+        // Each connection goes the way a dropped one does: a live terminal's
+        // tmux client ends with it.
+        for client in Array(clients.values) { drop(client) }
         clients.removeAll()
         setStreamCount(0)
+    }
+
+    /// Drop every push subscription. Called with every new pairing token: a
+    /// phone that was signed out gets no more notifications either.
+    func forgetPhones() {
+        push?.forgetAll()
     }
 
     /// Replace the pairing token. Every open stream is closed: a phone holding
@@ -236,6 +343,7 @@ final class MobileServer {
         queue.async {
             guard self.listener != nil else { return }
             self.token = token
+            self.push?.forgetAll()
             for client in self.clients.values where client.streaming { self.drop(client) }
         }
     }
@@ -254,6 +362,17 @@ final class MobileServer {
             self.promptSequence = self.promptSequence.filter { live.contains($0.key) }
             self.promptSeen = self.promptSeen.filter { live.contains($0.key) }
             self.snapshot = snapshot
+            // A socket is bound to one pane of the tree. When the tree no
+            // longer has that pane in that session, the socket is over.
+            for client in self.clients.values {
+                guard let socket = client.socket, let target = socket.target else { continue }
+                if snapshot.thread(id: socket.thread).flatMap(MobileTerminal.target) != target {
+                    self.close(client, .notFound)
+                }
+            }
+            // Tracked with the switch off too, so turning it on sends nothing old.
+            let events = self.pushTracker.events(in: snapshot)
+            if self.config.allows(.notifications) { self.push?.notify(events) }
             let threads = snapshot.threadsJSON()
             let hosts = snapshot.hostsJSON()
             if threads != self.threadsBody {
@@ -362,6 +481,11 @@ final class MobileServer {
             let managerOn = config.allows(.manager) && !self.config.allows(.manager)
             self.config = config
             self.broadcast(Self.event("config", config.json()))
+            if !config.allows(.liveTerminal) {
+                for client in self.clients.values where client.socket != nil {
+                    self.close(client, .disabled)
+                }
+            }
             if managerOn { self.broadcast(Self.event("manager", self.managerBody)) }
         }
     }
@@ -399,6 +523,9 @@ final class MobileServer {
         client.connection.cancel()
         client.onDrop?()
         client.onDrop = nil
+        client.onSent = nil
+        client.socket?.bridge?.stop()
+        client.socket?.bridge = nil
         setStreamCount(clients.values.filter(\.events).count)
     }
 
@@ -412,7 +539,13 @@ final class MobileServer {
         client.connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) {
             [weak self, weak client] data, _, isComplete, error in
             guard let self, let client else { return }
-            if let data, !data.isEmpty, !client.streaming { client.buffer.append(data) }
+            if let data, !data.isEmpty {
+                if client.socket != nil {
+                    self.received(data, client)
+                } else if !client.streaming {
+                    client.buffer.append(data)
+                }
+            }
             if isComplete || error != nil { return self.drop(client) }
             // An event stream takes no more requests; keep reading only to see
             // the phone hang up.
@@ -483,7 +616,11 @@ final class MobileServer {
         client.connection.send(content: data, completion: .contentProcessed { [weak self, weak client] error in
             guard let client else { return }
             client.pending -= data.count
-            if close || error != nil { self?.drop(client) }
+            if close || error != nil {
+                self?.drop(client)
+            } else {
+                client.onSent?()
+            }
         })
     }
 
@@ -502,6 +639,11 @@ final class MobileServer {
 
     private func respond(to request: MobileRequest, client: Client) {
         let head = request.method == "HEAD"
+        // The live terminal's socket has checks of its own, and its token
+        // comes as its first message: a browser sets no header on a socket.
+        if let upgrade = MobileSocket.upgrade(request, identity: identity, config: config) {
+            return open(upgrade, client: client)
+        }
         guard MobileAPI.authorize(request, identity: identity) == .allowed else {
             return send(.error(403, "forbidden"), to: client, head: head)
         }
@@ -519,11 +661,14 @@ final class MobileServer {
         case .disabled:
             send(.error(403, "disabled"), to: client, head: head)
         case .asset(let path):
-            send(asset(path), to: client, head: head)
+            send(asset(path, socket: MobileAPI.socketOrigin(request, identity: identity)),
+                 to: client, head: head)
         case .methodNotAllowed:
             send(.error(405, "method_not_allowed"), to: client, head: head)
         case .notFound:
             send(.error(404, "not_found"), to: client, head: head)
+        case .unknownAction:
+            send(.error(400, "bad_action"), to: client, head: head)
         }
     }
 
@@ -688,7 +833,316 @@ final class MobileServer {
                     request.body, name: name, thread: thread, io: io, limit: limit, paste: paste,
                     state: state)
             }
+        case .tmux(let action):
+            // Checked against the tree as it is now; tmux runs off the queue.
+            let snapshot = snapshot
+            reply(to: client) { [sources] in
+                let response = MobileActions.perform(
+                    action, body: request.body, snapshot: snapshot, home: sources.home,
+                    tmux: sources.tmux)
+                if response.status == 200 { sources.changed() }
+                return response
+            }
+        case .dirs(let host):
+            guard let dirs = MobileActions.dirs(host: host, snapshot: snapshot) else {
+                return send(.error(404, "not_found"), to: client, head: head)
+            }
+            send(.json(["dirs": dirs]), to: client, head: head)
+        case .find(let id, let raw):
+            guard let query = MobileFind.query(raw) else {
+                return send(.error(400, "bad_query"), to: client, head: head)
+            }
+            guard let thread = snapshot.thread(id: id) else {
+                return send(.error(404, "not_found"), to: client, head: head)
+            }
+            guard finds < limits.maxFinds else {
+                return send(.error(409, "busy", message: MobileFind.busy), to: client, head: head)
+            }
+            finds += 1
+            work.async { [weak self, weak client, sources] in
+                let response = MobileFind.search(
+                    thread: thread, query: query, tmux: sources.tmux(thread.host))
+                self?.queue.async {
+                    guard let self else { return }
+                    // Counted down whether or not the phone still listens.
+                    self.finds -= 1
+                    guard let client, self.clients[ObjectIdentifier(client)] != nil else { return }
+                    self.send(response, to: client, head: false)
+                }
+            }
+        case .artifacts(let id):
+            guard let thread = snapshot.thread(id: id) else {
+                return send(.error(404, "not_found"), to: client, head: head)
+            }
+            guard let source = sources.artifacts else {
+                return send(.error(503, "unavailable"), to: client, head: head)
+            }
+            reply(to: client) { MobileArtifacts.list(thread: thread, source: source) }
+        case .file(let id, let artifact):
+            guard let thread = snapshot.thread(id: id) else {
+                return send(.error(404, "not_found"), to: client, head: head)
+            }
+            guard let source = sources.artifacts else {
+                return send(.error(503, "unavailable"), to: client, head: head)
+            }
+            // The id is looked up in the thread's own list; it is never a path.
+            reply(to: client) { MobileArtifacts.file(id: artifact, thread: thread, source: source) }
+        case .running(let id):
+            guard let thread = snapshot.thread(id: id) else {
+                return send(.error(404, "not_found"), to: client, head: head)
+            }
+            guard let running = sources.running else {
+                return send(.error(503, "unavailable"), to: client, head: head)
+            }
+            let ownPort = boundPort
+            reply(to: client) {
+                guard let set = running(thread) else { return .error(404, "not_found") }
+                return .json(MobileServing.runningJSON(set, ownPort: ownPort))
+            }
+        case .servers:
+            guard let serving, let identity else {
+                return send(.error(503, "unavailable"), to: client, head: head)
+            }
+            reply(to: client) { .json(MobileServing.listJSON(serving.list(), identity: identity)) }
+        case .serverOpen:
+            openServer(request, client: client)
+        case .serverClose:
+            guard let port = MobileServing.closeRequest(request.body) else {
+                return send(.error(400, "bad_request"), to: client, head: head)
+            }
+            guard let serving else {
+                return send(.error(503, "unavailable"), to: client, head: head)
+            }
+            reply(to: client) {
+                serving.close(port) ? .json(["ok": true]) : .error(404, "not_found")
+            }
+        case .pushKey, .pushSubscribe, .pushUnsubscribe, .pushFocus:
+            guard let push else { return send(.error(503, "unavailable"), to: client, head: head) }
+            let body = request.body
+            // The Keychain is read off the server queue.
+            reply(to: client) {
+                switch endpoint {
+                case .pushSubscribe: return push.subscribe(body)
+                case .pushUnsubscribe: return push.unsubscribe(body)
+                case .pushFocus: return push.focus(body)
+                default: return push.keyResponse()
+                }
+            }
+        case .terminal:
+            // `MobileSocket.upgrade` answers every request for this path.
+            send(.error(426, "upgrade_required"), to: client, head: head)
         }
+    }
+
+    // MARK: Live terminal
+
+    /// What each live socket has queued and unsent, and what it may queue.
+    /// For tests.
+    var socketPending: [Int] { queue.sync { sockets.map(\.pending) } }
+    var socketAllowance: [Int] { queue.sync { sockets.map { $0.backlog ?? limits.streamBacklog } } }
+
+    /// Room past the flow limit for one read of the pane and its framing.
+    private static let socketSlack = 262_144
+
+    private var sockets: [Client] { clients.values.filter { $0.socket != nil } }
+
+    private func alive(_ client: Client?) -> Client? {
+        guard let client, clients[ObjectIdentifier(client)] != nil else { return nil }
+        return client
+    }
+
+    /// Answer an upgrade. An accepted one becomes a socket that has
+    /// `socketAuthTimeout` to send the pairing token; until then nothing is
+    /// read from the tree for it and no pane is touched.
+    private func open(_ upgrade: MobileSocket.Upgrade, client: Client) {
+        guard case .accept(let thread, let key) = upgrade else {
+            if case .refuse(let response) = upgrade { send(response, to: client, head: false, close: true) }
+            return
+        }
+        guard sockets.count < limits.maxSockets else {
+            return send(.error(503, "busy"), to: client, head: false, close: true)
+        }
+        let socket = Socket(
+            thread: thread,
+            rate: MobileSocketRate(perSecond: limits.socketRate, burst: limits.socketBurst))
+        client.socket = socket
+        client.streaming = true
+        // The first capture is larger than the flow limit that holds after it.
+        client.backlog = MobileTerminal.maxSnapshotBytes * 2 + limits.socketBacklog
+        let early = client.buffer
+        client.buffer.removeAll()
+        write(MobileSocket.handshake(key: key), to: client)
+        receive(client)
+        queue.asyncAfter(deadline: .now() + limits.socketAuthTimeout) { [weak self, weak client] in
+            guard let self, let client = self.alive(client), client.socket?.paired == false else { return }
+            self.close(client, .unauthorized)
+        }
+        tick(client)
+        if !early.isEmpty { received(early, client) }
+    }
+
+    /// Send a close frame with `code`, then drop the connection.
+    private func close(_ client: Client, _ code: MobileSocket.CloseCode) {
+        guard let socket = client.socket, !socket.closing else { return }
+        socket.closing = true
+        socket.bridge?.stop()
+        socket.bridge = nil
+        write(MobileSocket.close(code), to: client, close: true)
+    }
+
+    /// Ping the socket, and close it when the phone is gone, nobody types, or
+    /// the phone does not read.
+    private func tick(_ client: Client) {
+        // Often enough to see a stall end in time, whatever the ping is.
+        let every = min(limits.socketPing, max(limits.socketStall / 2, 0.05))
+        queue.asyncAfter(deadline: .now() + every) { [weak self, weak client] in
+            guard let self, let client = self.alive(client), let socket = client.socket else { return }
+            let now = Date()
+            if now.timeIntervalSince(socket.lastHeard) >= limits.socketDead { return self.drop(client) }
+            if let stalled = socket.stalled, now.timeIntervalSince(stalled) >= limits.socketStall {
+                // Its queue is full: a close frame would wait behind it.
+                return self.drop(client)
+            }
+            if socket.paired, now.timeIntervalSince(socket.lastInput) >= limits.socketIdle {
+                return self.close(client, .idle)
+            }
+            if !socket.closing, now.timeIntervalSince(socket.lastPing) >= limits.socketPing {
+                socket.lastPing = now
+                self.write(MobileSocket.frame(.ping), to: client)
+            }
+            self.tick(client)
+        }
+    }
+
+    /// Bytes from the phone on a socket.
+    private func received(_ data: Data, _ client: Client) {
+        guard let socket = client.socket, !socket.closing else { return }
+        socket.lastHeard = Date()
+        let messages: [MobileSocketMessage]
+        var failure: MobileSocket.CloseCode?
+        switch socket.reader.feed(data) {
+        case .messages(let whole): messages = whole
+        case .failed(let whole, let code): (messages, failure) = (whole, code)
+        }
+        // Every frame is paid for, whether or not it ends a message.
+        let now = Date().timeIntervalSinceReferenceDate
+        for _ in 0..<socket.reader.takeFrames() where !socket.rate.allow(now: now) {
+            return close(client, .policy)
+        }
+        for message in messages {
+            guard alive(client) != nil, !socket.closing else { return }
+            handle(message, socket: socket, client: client)
+        }
+        if let failure, alive(client) != nil { close(client, failure) }
+    }
+
+    private func handle(_ message: MobileSocketMessage, socket: Socket, client: Client) {
+        switch message {
+        case .ping(let payload):
+            return write(MobileSocket.frame(.pong, payload), to: client)
+        case .pong:
+            return
+        case .close:
+            return close(client, .normal)
+        case .text(let sent) where !socket.paired:
+            // The first message is the pairing token, and nothing else is.
+            guard MobileAPI.sameToken(String(decoding: sent, as: UTF8.self), token: token) else {
+                return close(client, .unauthorized)
+            }
+            socket.paired = true
+            socket.lastInput = Date()
+            socket.reader.maxMessage = MobileSocket.maxMessageBytes
+            attach(socket, client: client)
+        case .binary(let bytes) where socket.paired:
+            // What the phone typed: bytes for the pane, and only that.
+            socket.lastInput = Date()
+            socket.bridge?.input(bytes)
+        case .text, .binary:
+            close(client, socket.paired ? .unsupported : .unauthorized)
+        }
+    }
+
+    /// Bind a paired socket to its pane. The thread id is looked up in the
+    /// tree as it is now; the pane and the session come from the tree.
+    private func attach(_ socket: Socket, client: Client) {
+        guard config.allows(.liveTerminal) else { return close(client, .disabled) }
+        guard let thread = snapshot.thread(id: socket.thread),
+              let target = MobileTerminal.target(thread)
+        else { return close(client, .notFound) }
+        socket.target = target
+        // The token holds few sockets: the oldest gives way to the new one.
+        let mine = sockets.filter { $0 !== client && $0.socket?.paired == true && $0.socket?.closing == false }
+            .sorted { ($0.socket?.opened ?? .distantPast) < ($1.socket?.opened ?? .distantPast) }
+        for old in mine.prefix(max(0, mine.count - limits.maxSocketsPerClient + 1)) {
+            close(old, .replaced)
+        }
+        work.async { [weak self, weak client, sources] in
+            let launch = sources.terminal(thread, target)
+            self?.queue.async {
+                guard let self, let client = self.alive(client), let socket = client.socket,
+                      !socket.closing
+                else { return }
+                guard let launch else { return self.close(client, .unavailable) }
+                let bridge = MobileTerminalBridge(launch: launch, target: target) {
+                    [weak self, weak client] event in
+                    self?.queue.async {
+                        guard let self, let client = self.alive(client) else { return }
+                        self.bridged(event, client: client)
+                    }
+                }
+                // Held by the socket before it starts: its first event, and
+                // the room that event asks for, find it there.
+                socket.bridge = bridge
+                client.onSent = { [weak self, weak client] in
+                    if let self, let client { self.flow(client) }
+                }
+                self.work.async { [weak self, weak client] in
+                    guard !bridge.start() else { return }
+                    self?.queue.async {
+                        if let self, let client = self.alive(client) { self.close(client, .unavailable) }
+                    }
+                }
+            }
+        }
+    }
+
+    /// What the pane said. Its bytes go to the phone as binary frames, for
+    /// xterm.js alone; the phone's own code reads only the text frames, which
+    /// are built here and hold numbers.
+    private func bridged(_ event: MobileTerminalBridge.Event, client: Client) {
+        guard let socket = client.socket, !socket.closing else { return }
+        switch event {
+        case .ready(let cols, let rows, let snapshot):
+            // A screen is larger than the flow limit that holds between screens.
+            client.backlog = MobileTerminal.maxSnapshotBytes * 2 + limits.socketBacklog
+            write(MobileSocket.textFrame(["type": "ready", "cols": cols, "rows": rows]), to: client)
+            write(MobileSocket.binaryFrames(snapshot), to: client)
+            socket.stalled = socket.stalled ?? Date()
+            flow(client)
+        case .output(let bytes):
+            write(MobileSocket.binaryFrames(bytes), to: client)
+            socket.stalled = socket.stalled ?? Date()
+            flow(client)
+        case .size(let cols, let rows):
+            write(MobileSocket.textFrame(["type": "size", "cols": cols, "rows": rows]), to: client)
+        case .unsupported:
+            close(client, .tooOld)
+        case .exit:
+            close(client, .gone)
+        }
+    }
+
+    /// Let the bridge read on once the phone has taken enough of what was
+    /// queued for it.
+    private func flow(_ client: Client) {
+        guard let client = alive(client), let socket = client.socket, socket.stalled != nil,
+              client.pending <= limits.socketBacklog
+        else { return }
+        socket.stalled = nil
+        // The first capture has gone out: from here a socket holds the flow
+        // limit and one read of the pane, no more.
+        client.backlog = limits.socketBacklog + Self.socketSlack
+        socket.bridge?.resume()
     }
 
     // MARK: The manager's own prompt
@@ -739,6 +1193,31 @@ final class MobileServer {
                 guard let client, self.clients[ObjectIdentifier(client)] != nil else { return }
                 self.send(response, to: client, head: false)
             }
+        }
+    }
+
+    /// Publish one local port on the tailnet. The phone names a thread and a
+    /// port number, and the port must be one Running reports for that thread
+    /// now: what it is and where it listens come from the Mac, never the phone.
+    private func openServer(_ request: MobileRequest, client: Client) {
+        guard let ask = MobileServing.openRequest(request.body) else {
+            return send(.error(400, "bad_request"), to: client, head: false)
+        }
+        guard let thread = snapshot.thread(id: ask.thread) else {
+            return send(.error(404, "not_found"), to: client, head: false)
+        }
+        guard let serving, let running = sources.running, let identity else {
+            return send(.error(503, "unavailable"), to: client, head: false)
+        }
+        let ownPort = boundPort
+        guard MobileServing.allowed(port: ask.port, ownPort: ownPort) else {
+            return send(.error(403, "refused"), to: client, head: false)
+        }
+        reply(to: client) {
+            guard let found = running(thread).map({ MobileServing.mappable(in: $0, ownPort: ownPort) })?[ask.port]
+            else { return .error(404, "not_running") }
+            let opened = serving.open(ask.port, found.https, thread.id, found.label)
+            return MobileServing.response(opened, port: ask.port, identity: identity)
         }
     }
 
@@ -1137,7 +1616,7 @@ final class MobileServer {
         }
     }
 
-    private func asset(_ path: String) -> MobileResponse {
+    private func asset(_ path: String, socket: String?) -> MobileResponse {
         guard let staticRoot else { return .error(404, "not_found") }
         var served = path
         var data = try? Data(contentsOf: staticRoot.appendingPathComponent(path))
@@ -1146,12 +1625,25 @@ final class MobileServer {
             data = try? Data(contentsOf: staticRoot.appendingPathComponent(served))
         }
         guard let data else { return .error(404, "not_found") }
+        let shell = served == "index.html"
+            ? data : (try? Data(contentsOf: staticRoot.appendingPathComponent("index.html"))) ?? Data()
         return MobileResponse(
             status: 200,
             headers: [
                 "Content-Type": MobileAPI.contentType(forPath: served),
                 "Cache-Control": MobileAPI.cacheControl(forPath: served),
+                "Content-Security-Policy": shellPolicy(for: shell, socket: socket),
             ],
             body: data)
+    }
+
+    /// The bundle's policy, worked out once for each shell it is read from.
+    private func shellPolicy(for shell: Data, socket: String?) -> String {
+        if let cached = shellPolicyCache, cached.shell == shell, cached.socket == socket {
+            return cached.policy
+        }
+        let policy = MobileAPI.shellPolicy(html: String(decoding: shell, as: UTF8.self), socket: socket)
+        shellPolicyCache = (shell, socket, policy)
+        return policy
     }
 }

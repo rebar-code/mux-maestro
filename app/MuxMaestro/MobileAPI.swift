@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 // The pure half of the phone server: HTTP parsing, routing, the auth decision
@@ -31,8 +32,9 @@ struct MobileResponse: Equatable {
     var body = Data()
 
     static let reasons = [
-        200: "OK", 304: "Not Modified", 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found",
+        101: "Switching Protocols", 200: "OK", 304: "Not Modified", 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found",
         405: "Method Not Allowed", 409: "Conflict", 413: "Payload Too Large",
+        426: "Upgrade Required",
         431: "Request Header Fields Too Large", 500: "Internal Server Error",
         503: "Service Unavailable",
     ]
@@ -218,6 +220,33 @@ enum MobileEndpoint: Equatable {
     /// Save a file in the thread's working directory. With `paste` its path
     /// is pasted into the pane; without, the phone puts it in its reply box.
     case upload(id: String, name: String, paste: Bool)
+    /// One session action. The body names its target.
+    case tmux(MobileAction)
+    /// The directories a host offers for a new session.
+    case dirs(host: String)
+    /// Find `query` in the thread's scrollback.
+    case find(id: String, query: String)
+    /// What the thread's agent made: files and links.
+    case artifacts(id: String)
+    /// One file of that list, named by its id there. Never by a path.
+    case file(id: String, artifact: String)
+    /// What the thread has running: dev servers, stacks, containers.
+    case running(id: String)
+    /// The local ports this app has published on the tailnet.
+    case servers
+    /// Publish one port a thread has running. The body names both.
+    case serverOpen
+    case serverClose
+    /// This Mac's VAPID public key: what a phone subscribes with.
+    case pushKey
+    /// Keep a phone's push subscription. The body is the browser's own JSON.
+    case pushSubscribe
+    case pushUnsubscribe
+    /// The phone says which thread it shows, so that thread sends it nothing.
+    case pushFocus
+    /// The live terminal of one thread: a WebSocket, never a plain request.
+    /// `MobileSocket.upgrade` answers it before the routes are read.
+    case terminal(id: String)
 
     var capability: MobileCapability {
         switch self {
@@ -229,6 +258,13 @@ enum MobileEndpoint: Equatable {
         case .text, .prompt, .answer, .commands: return .replies
         case .key: return .keyBar
         case .upload: return .upload
+        case .tmux(let action): return action.isKill ? .kill : .sessionActions
+        case .dirs: return .sessionActions
+        case .find: return .find
+        case .artifacts, .file: return .artifacts
+        case .running, .servers, .serverOpen, .serverClose: return .localServers
+        case .pushKey, .pushSubscribe, .pushUnsubscribe, .pushFocus: return .notifications
+        case .terminal: return .liveTerminal
         }
     }
 
@@ -237,10 +273,12 @@ enum MobileEndpoint: Equatable {
     var method: String {
         switch self {
         case .config, .threads, .hosts, .events, .chat, .screen, .manager, .managerChat,
-             .managerScreen, .managerPrompt, .prompt, .commands:
+             .managerScreen, .managerPrompt, .prompt, .commands,
+             .dirs, .find, .artifacts, .file, .running, .servers, .pushKey, .terminal:
             return "GET"
         case .managerText, .managerDismiss, .managerAnswer, .managerKey, .voice, .voiceReplay,
-             .voiceWarm, .text, .key, .answer, .upload:
+             .voiceWarm, .text, .key, .answer, .upload, .tmux, .serverOpen, .serverClose,
+             .pushSubscribe, .pushUnsubscribe, .pushFocus:
             return "POST"
         }
     }
@@ -263,6 +301,8 @@ enum MobileRoute: Equatable {
     case asset(String)
     case methodNotAllowed
     case notFound
+    /// `/api/tmux/<action>` with an action that is not a `MobileAction`.
+    case unknownAction
     /// The route belongs to a feature whose switch is off.
     case disabled(MobileCapability)
 }
@@ -284,6 +324,8 @@ enum MobileCapability: String, CaseIterable {
     case upload
     case sessionActions
     case kill
+    /// Find in a thread's scrollback.
+    case find
     case artifacts
     case localServers
     case stopServers
@@ -352,13 +394,16 @@ enum MobileAPI {
         case "push": return .notifications
         case "terminal": return .liveTerminal
         case "servers": return segments.last == "stop" ? .stopServers : .localServers
-        case "tmux": return segments.count >= 3 && segments[2] == "kill" ? .kill : .sessionActions
+        case "tmux": return segments.count >= 3 && segments[2].hasPrefix("kill") ? .kill : .sessionActions
+        case "hosts" where segments.count >= 3: return .sessionActions
         case "threads" where segments.count >= 4:
             switch segments[3] {
             case "text", "prompt", "answer", "commands": return .replies
             case "key": return .keyBar
             case "upload": return .upload
             case "artifacts", "file": return .artifacts
+            case "running": return .localServers
+            case "find": return .find
             default: return nil
             }
         default: return nil
@@ -380,6 +425,10 @@ enum MobileAPI {
         if let capability = capability(forSegments: segments), !config.allows(capability),
            !promptForKeys {
             return .disabled(capability)
+        }
+        // A kill is a session action too: it needs both switches.
+        if segments.count >= 2, segments[1] == "tmux", !config.allows(.sessionActions) {
+            return .disabled(.sessionActions)
         }
         let endpoint: MobileEndpoint
         switch segments.count {
@@ -417,6 +466,28 @@ enum MobileAPI {
         case 4 where segments[1] == "threads" && segments[3] == "upload":
             endpoint = .upload(
                 id: segments[2], name: request.query["name"] ?? "", paste: request.query["paste"] != "0")
+        case 4 where segments[1] == "threads" && segments[3] == "find":
+            endpoint = .find(id: segments[2], query: request.query["q"] ?? "")
+        case 4 where segments[1] == "threads" && segments[3] == "artifacts":
+            endpoint = .artifacts(id: segments[2])
+        case 4 where segments[1] == "threads" && segments[3] == "file":
+            endpoint = .file(id: segments[2], artifact: request.query["id"] ?? "")
+        case 4 where segments[1] == "threads" && segments[3] == "running":
+            endpoint = .running(id: segments[2])
+        case 2 where segments[1] == "servers": endpoint = .servers
+        case 3 where segments[1] == "servers" && segments[2] == "open": endpoint = .serverOpen
+        case 3 where segments[1] == "servers" && segments[2] == "close": endpoint = .serverClose
+        case 3 where segments[1] == "push" && segments[2] == "key": endpoint = .pushKey
+        case 3 where segments[1] == "push" && segments[2] == "subscribe": endpoint = .pushSubscribe
+        case 3 where segments[1] == "push" && segments[2] == "unsubscribe": endpoint = .pushUnsubscribe
+        case 3 where segments[1] == "push" && segments[2] == "focus": endpoint = .pushFocus
+        case 3 where segments[1] == "terminal": endpoint = .terminal(id: segments[2])
+        case 4 where segments[1] == "hosts" && segments[3] == "dirs":
+            endpoint = .dirs(host: segments[2])
+        case 3 where segments[1] == "tmux":
+            // A fixed list: any other word is refused, whatever its method.
+            guard let action = MobileAction(rawValue: segments[2]) else { return .unknownAction }
+            endpoint = .tmux(action)
         default: return .notFound
         }
         guard config.allows(endpoint.capability) || promptForKeys else {
@@ -479,7 +550,14 @@ enum MobileAPI {
     /// the loopback port; the token is the secret only a paired phone holds.
     /// Compared in constant time. No token set means nothing is paired.
     static func hasToken(_ request: MobileRequest, token: String?) -> Bool {
-        guard let token, !token.isEmpty, let sent = request.header(tokenHeader) else { return false }
+        guard let sent = request.header(tokenHeader) else { return false }
+        return sameToken(sent, token: token)
+    }
+
+    /// Whether `sent` is the pairing token. The time it takes depends on the
+    /// token's length alone, never on how much of `sent` is right.
+    static func sameToken(_ sent: String, token: String?) -> Bool {
+        guard let token, !token.isEmpty else { return false }
         let a = Array(sent.utf8), b = Array(token.utf8)
         var difference = UInt8(a.count == b.count ? 0 : 1)
         for index in b.indices { difference |= b[index] ^ (index < a.count ? a[index] : 0) }
@@ -506,14 +584,31 @@ enum MobileAPI {
         else { return .denied("host") }
         guard request.method != "GET", request.method != "HEAD" else { return .allowed }
         guard request.header(writeHeader) != nil else { return .denied("write header") }
-        // The origin is this Mac's name on the port the request came to: another
-        // `tailscale serve` mapping on the same name is another origin.
-        guard let origin = request.header("origin"),
+        guard sameOrigin(request, identity: identity) else { return .denied("origin") }
+        return .allowed
+    }
+
+    /// Whether the request's `Origin` is the app's own. The origin is this
+    /// Mac's name on the port the request came to: another `tailscale serve`
+    /// mapping on the same name is another origin. A request with no `Origin`
+    /// is not the app's.
+    static func sameOrigin(_ request: MobileRequest, identity: MobileIdentity) -> Bool {
+        guard let host = request.header("host"), let origin = request.header("origin"),
               let url = URL(string: origin), url.scheme == "https",
               (url.host ?? "").caseInsensitiveCompare(identity.dnsName) == .orderedSame,
               (url.port ?? 443) == hostPort(host)
-        else { return .denied("origin") }
-        return .allowed
+        else { return false }
+        return true
+    }
+
+    /// The one WebSocket address the shell may open: this Mac's name on the
+    /// port the request came to. `'self'` already means it in a current
+    /// browser; an older one reads `'self'` as `https:` only.
+    static func socketOrigin(_ request: MobileRequest, identity: MobileIdentity?) -> String? {
+        guard let identity, let host = request.header("host"), let port = hostPort(host),
+              (1...65535).contains(port)
+        else { return nil }
+        return port == 443 ? "wss://\(identity.dnsName)" : "wss://\(identity.dnsName):\(port)"
     }
 
     /// The port of a `host[:port]` header; 443 when it names none, as HTTPS does.
@@ -559,6 +654,53 @@ enum MobileAPI {
         }
     }
 
+    /// What the shell may load, as a `Content-Security-Policy`. `script-src`
+    /// is filled in by `shellPolicy(html:)`.
+    static let shellDirectives: [(name: String, value: String)] = [
+        ("default-src", "'self'"), ("script-src", "'self'"),
+        // Svelte sets styles from script; the bundle has no inline `<style>`.
+        ("style-src", "'self' 'unsafe-inline'"),
+        // An artifact image is shown from memory: a `blob:` or a `data:` address.
+        ("img-src", "'self' data: blob:"), ("media-src", "'self' data: blob:"),
+        ("font-src", "'self' data:"), ("connect-src", "'self'"), ("worker-src", "'self'"),
+        ("manifest-src", "'self'"), ("frame-src", "'none'"), ("object-src", "'none'"),
+        ("base-uri", "'none'"), ("form-action", "'none'"), ("frame-ancestors", "'none'"),
+    ]
+
+    private static let scriptTag = try! NSRegularExpression(
+        pattern: #"<script\b([^>]*)>(.*?)</script>"#,
+        options: [.caseInsensitive, .dotMatchesLineSeparators])
+    private static let srcAttribute = try! NSRegularExpression(
+        pattern: #"(^|\s)src\s*="#, options: [.caseInsensitive])
+
+    /// The policy sent with every file of the bundle. The shell's own inline
+    /// scripts (SvelteKit's start-up code) are allowed by the hash of their
+    /// text, read from `html`; no other inline script runs. A page made from a
+    /// `blob:` address takes the policy of the page that made it, so a file
+    /// with a script in it runs nothing even when it is opened as a page.
+    static func shellPolicy(html: String, socket: String? = nil) -> String {
+        var hashes: [String] = []
+        let whole = NSRange(html.startIndex..., in: html)
+        for match in scriptTag.matches(in: html, range: whole) {
+            guard let attributes = Range(match.range(at: 1), in: html),
+                  let text = Range(match.range(at: 2), in: html) else { continue }
+            let tag = String(html[attributes])
+            guard srcAttribute.firstMatch(in: tag, range: NSRange(tag.startIndex..., in: tag)) == nil
+            else { continue }
+            let digest = Data(SHA256.hash(data: Data(html[text].utf8))).base64EncodedString()
+            hashes.append("'sha256-\(digest)'")
+        }
+        return shellDirectives.map { directive in
+            switch directive.name {
+            case "script-src": return ([directive.name, directive.value] + hashes).joined(separator: " ")
+            // The live terminal's socket: the app's own address and no other.
+            case "connect-src": return ([directive.name, directive.value] + [socket].compactMap { $0 })
+                .joined(separator: " ")
+            default: return "\(directive.name) \(directive.value)"
+            }
+        }.joined(separator: "; ")
+    }
+
     /// Hashed build files never change; everything else (the shell, the service
     /// worker, the manifest) is revalidated on each load.
     static func cacheControl(forPath path: String) -> String {
@@ -591,6 +733,8 @@ struct MobileThread: Equatable {
     let pane: String
     /// Threads in this window.
     var panes = 1
+    /// The session's tmux id (`$3`), empty when the tree has none.
+    var sessionId = ""
     let command: String
     let cwd: String
     let status: AttentionStatus
@@ -718,7 +862,7 @@ struct MobileSnapshot: Equatable {
                 id: threadID(host: input.host, pane: pane.id),
                 host: input.host, hostColor: input.colorHex,
                 session: session.name, window: window.index, name: windowName(window),
-                pane: pane.id, panes: panes.count, command: pane.command,
+                pane: pane.id, panes: panes.count, sessionId: session.id, command: pane.command,
                 cwd: pane.path.isEmpty ? window.cwd : pane.path,
                 status: pane.attention, since: pane.agentState?.since,
                 idleStage: pane.idleStage, lastPrompt: pane.lastPrompt,

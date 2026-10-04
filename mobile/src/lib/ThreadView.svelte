@@ -1,21 +1,35 @@
 <script lang="ts">
+	import ArtifactInline from './ArtifactInline.svelte';
+	import { inlineArtifacts } from './artifacts';
+	import { ARTIFACTS, Artifacts } from './artifacts.svelte';
+	import ArtifactsPage from './ArtifactsPage.svelte';
 	import AttachButton from './AttachButton.svelte';
 	import AttachTiles from './AttachTiles.svelte';
 	import Composer from './Composer.svelte';
+	import { Find } from './find.svelte';
+	import FindBar from './FindBar.svelte';
 	import type { Snippet } from 'svelte';
 	import { dotClass, statusLabel } from './format';
 	import { pages, pullToRefresh, ui } from './gestures.svelte';
 	import KeyBar from './KeyBar.svelte';
 	import { can, live, OFF_LABEL } from './live.svelte';
+	import LiveTerminal from './LiveTerminal.svelte';
+	import { LiveTerm } from './liveterm.svelte';
+	import Marked from './Marked.svelte';
 	import NextBar from './NextBar.svelte';
 	import NoteLine from './NoteLine.svelte';
 	import PromptCard from './PromptCard.svelte';
 	import PullIndicator from './PullIndicator.svelte';
+	import { push } from './push.svelte';
 	import { liveLines, nextWaiting } from './reply';
 	import { Reply } from './reply.svelte';
+	import ServeConfirm from './ServeConfirm.svelte';
+	import { SERVERS, Servers } from './servers.svelte';
+	import ServersPage from './ServersPage.svelte';
 	import SlashList from './SlashList.svelte';
 	import { text } from './textsize.svelte';
 	import { ThreadFeed, type Mode } from './thread.svelte';
+	import type { ArtifactFile } from './types';
 	import { voice } from './voice.svelte';
 	import VoiceBar from './VoiceBar.svelte';
 
@@ -56,20 +70,49 @@
 	/* eslint-enable prefer-const */
 
 	const PULL = 'thread';
-	// The pages of this view, left to right. A later tab is one more entry here
-	// and one more `{:else if}` in the pager below.
-	const TABS = [{ key: 'main' }] as const;
-	const TAB_KEYS = TABS.map((tab) => tab.key);
+	const MAIN = 'main';
+	// svelte-ignore state_referenced_locally
+	const listed = given === undefined;
+	// Files and servers belong to a listed thread. The manager pane is not one.
+	const artifactsOn = $derived(listed && can('artifacts'));
+	const serversOn = $derived(listed && can('localServers'));
+	// The pages of this view, left to right. A tab whose feature is off on the
+	// Mac is not there at all. Joined, so the same tabs are the same value and
+	// a config that says nothing new does not send the pager back to Chat.
+	const tabNames = $derived(
+		[MAIN, ...(artifactsOn ? [ARTIFACTS] : []), ...(serversOn ? [SERVERS] : [])].join(' ')
+	);
+	const tabs = $derived(tabNames.split(' '));
+	const LABELS: Record<string, string> = { [ARTIFACTS]: 'Artifacts', [SERVERS]: 'Servers' };
 
 	// svelte-ignore state_referenced_locally
 	const feed = given ?? new ThreadFeed(id);
-	// svelte-ignore state_referenced_locally
-	const listed = given === undefined;
-
 	const thread = $derived(listed ? live.byId(id) : undefined);
 	const canChat = $derived(listed ? (thread?.chat ?? false) : true);
 	const mode: Mode = $derived(canChat && !terminal ? 'chat' : 'terminal');
 	const closed = $derived(listed && ((live.threads !== null && !thread) || feed.gone));
+
+	// svelte-ignore state_referenced_locally
+	const artifacts = new Artifacts(id);
+	// svelte-ignore state_referenced_locally
+	const servers = new Servers(id);
+	/** The files to draw in the chat, under the message that names each. */
+	const inline = $derived(
+		artifactsOn && feed.messages && artifacts.list
+			? inlineArtifacts(feed.messages, artifacts.list.files)
+			: null
+	);
+
+	function landed(index: number): void {
+		artifacts.landed(index);
+		servers.landed(index);
+	}
+
+	/** A tap on a file in the chat: the Artifacts tab slides in with it open. */
+	function openInline(file: ArtifactFile): void {
+		artifacts.show(file, 'chat');
+		ui.goTo(tabs.indexOf(ARTIFACTS));
+	}
 	const color = $derived(thread?.hostColor ?? '#2a2a2a');
 
 	// svelte-ignore state_referenced_locally
@@ -83,6 +126,27 @@
 	/** The pane's prompts are shown and answered here: a listed thread, or a pane given its own `reply`. */
 	// svelte-ignore state_referenced_locally
 	const asks = listed || givenReply !== undefined;
+
+	// svelte-ignore state_referenced_locally
+	const find = new Find(
+		id,
+		() => feed.messages ?? [],
+		() => mode
+	);
+	const finding = $derived(find.open && can('find'));
+
+	// svelte-ignore state_referenced_locally
+	const term = new LiveTerm(id);
+	// The manager's own pane is not a listed thread: it has no live terminal.
+	const liveOn = $derived(listed && can('liveTerminal') && mode === 'terminal' && !closed);
+	/** The pane's own screen is drawn: its keys go down the socket. */
+	const liveShown = $derived(liveOn && term.active && term.shown);
+	const LIVE_LABELS = {
+		off: 'Live',
+		connecting: 'Connecting',
+		live: 'Live',
+		reconnecting: 'Reconnecting'
+	};
 
 	const repliesOn = $derived(can('replies'));
 	const keysOn = $derived(can('keyBar'));
@@ -116,7 +180,10 @@
 	function selectTab(index: number): void {
 		// The first tab is also a switch: a tap while it is showing flips the
 		// page between the chat and the pane's terminal.
-		if (index === 0 && ui.index === 0 && canChat) terminal = !terminal;
+		if (index === 0 && ui.index === 0 && canChat) {
+			terminal = !terminal;
+			if (finding) find.switched(mode);
+		}
 		ui.goTo(index);
 	}
 </script>
@@ -158,33 +225,53 @@
 				<span class="skel" style:width="35%" style:height="11px"></span>
 			</div>
 		{/if}
-		<button class="tb" disabled aria-disabled="true" aria-label="Find">🔍</button>
+		<button
+			class="tb"
+			disabled={!can('find') || closed}
+			aria-disabled={!can('find')}
+			aria-label="Find"
+			aria-pressed={finding}
+			onclick={find.toggle}>🔍</button
+		>
 	</header>
 {/if}
 
+{#if finding}<FindBar {find} />{/if}
+
 <div class="tabs">
 	<div class="seg" role="tablist">
-		{#each TABS as tab, index (tab.key)}
-			<button
-				class="grow"
-				class:on={ui.index === index}
-				role="tab"
-				aria-selected={ui.index === index}
-				aria-label={canChat ? `${mode === 'chat' ? 'Chat' : 'Terminal'}, switch` : 'Terminal'}
-				data-tab={tab.key}
-				data-mode={mode}
-				onclick={() => selectTab(index)}
-			>
-				{mode === 'chat' ? 'Chat' : 'Terminal'}
-				{#if canChat}<span class="swap">⇄</span>{/if}
-			</button>
+		{#each tabs as tab, index (tab)}
+			{#if tab === MAIN}
+				<button
+					class="grow"
+					class:on={ui.index === index}
+					role="tab"
+					aria-selected={ui.index === index}
+					aria-label={canChat ? `${mode === 'chat' ? 'Chat' : 'Terminal'}, switch` : 'Terminal'}
+					data-tab={tab}
+					data-mode={mode}
+					onclick={() => selectTab(index)}
+				>
+					{mode === 'chat' ? 'Chat' : 'Terminal'}
+					{#if canChat}<span class="swap">⇄</span>{/if}
+				</button>
+			{:else}
+				<button
+					class="grow"
+					class:on={ui.index === index}
+					role="tab"
+					aria-selected={ui.index === index}
+					data-tab={tab}
+					onclick={() => selectTab(index)}>{LABELS[tab]}</button
+				>
+			{/if}
 		{/each}
 	</div>
 	<button
 		class="tb"
 		aria-label="Refresh"
 		disabled={ui.refreshing !== null}
-		onclick={() => ui.refresh(PULL)}>↻</button
+		onclick={() => ui.refresh(ui.index === 0 ? PULL : tabs[ui.index])}>↻</button
 	>
 </div>
 
@@ -194,8 +281,11 @@
 	data-thread-pages
 	style:--term-size="{text.size}px"
 	style:--chat-size="{text.chat}px"
-	{@attach pages(TAB_KEYS)}
+	{@attach pages(tabs, landed)}
 	{@attach feed.watch(mode)}
+	{@attach listed && push.watching(id)}
+	{@attach artifactsOn && artifacts.watch}
+	{@attach serversOn && servers.watch}
 	{@attach !listed && asks && (repliesOn || keysOn) && reply.watch}
 >
 	<div
@@ -203,10 +293,14 @@
 		class:anim={!ui.dragging}
 		style:transform="translate3d(calc({-ui.index * 100}% + {ui.dragX}px), 0, 0)"
 	>
-		{#each TABS as tab, index (tab.key)}
-			<section class="page" inert={ui.index !== index} data-page={tab.key}>
+		{#each tabs as tab, index (tab)}
+			<section class="page" inert={ui.index !== index} data-page={tab}>
 				{#if closed}
 					<div class="empty">Closed</div>
+				{:else if tab === ARTIFACTS}
+					<ArtifactsPage {artifacts} />
+				{:else if tab === SERVERS}
+					<ServersPage {servers} />
 				{:else if mode === 'chat'}
 					<div
 						class="scroll"
@@ -224,13 +318,24 @@
 								{/each}
 							{:else}
 								{#each feed.messages as message (message.n)}
+									{@const hits = finding ? find.chat.byRow.get(message.n) : undefined}
+									{#snippet body()}
+										{#if hits}
+											<Marked text={message.text} {hits} current={find.current} />
+										{:else}
+											{message.text}
+										{/if}
+									{/snippet}
 									{#if message.role === 'user'}
-										<div class="u">{message.text}</div>
+										<div class="u">{@render body()}</div>
 									{:else if message.role === 'assistant'}
-										<div class="a">{message.text}</div>
+										<div class="a">{@render body()}</div>
 									{:else}
-										<div class="tool"><b>{message.tool}</b> {message.text}</div>
+										<div class="tool"><b>{message.tool}</b> {@render body()}</div>
 									{/if}
+									{#each inline?.get(message.n) ?? [] as file (file.id)}
+										<ArtifactInline {file} {artifacts} onopen={openInline} />
+									{/each}
 								{/each}
 								{#if reply.turn}
 									{#if spoken.prompt}<div class="u" data-live>{reply.turn.prompt}</div>{/if}
@@ -247,60 +352,89 @@
 						</div>
 					</div>
 				{:else}
-					<div
-						class="scroll"
-						data-view="terminal"
-						data-zoom
-						data-rise
-						{@attach feed.scroller('terminal')}
-					>
-						{#if feed.screen === null}
-							<div class="chat">
-								{#each [90, 70, 82, 55, 76] as width (width)}
-									<span class="skel" style:width="{width}%" style:height="11px"></span>
-								{/each}
-							</div>
-						{:else}
-							{#if feed.screen.hasOlder}
-								<button class="older" disabled={feed.loadingOlder} onclick={feed.loadOlder}>
-									Load older
-								</button>
-							{/if}
-							<div class="screen mono" data-hscroll>
-								<div class="lines" data-lines style:min-width="{feed.screen.cols}ch">
-									{#each feed.screen.blocks as block (block.key)}
-										<div class="blk" style:--n={block.lines.length}>
-											{#each block.lines as line (line.n)}
-												<div class="ln">
-													{#each line.spans as span, at (at)}
-														<span
-															class:sb={span.bold}
-															class:sd={span.dim}
-															class:si={span.italic}
-															class:su={span.underline}
-															style:color={span.color}
-															style:background-color={span.background}>{span.text}</span
-														>
-													{/each}
-												</div>
-											{/each}
-										</div>
+					{#if liveOn}
+						<button
+							class="livechip"
+							class:on={term.active}
+							aria-pressed={term.active}
+							data-live={term.active ? term.state : 'off'}
+							onclick={term.toggle}
+						>
+							<i></i>{term.active ? LIVE_LABELS[term.state] : (term.note ?? 'Live')}
+						</button>
+					{/if}
+					{#if liveOn && term.active}
+						<LiveTerminal {term} />
+						{#if term.shown && !term.following}
+							<button class="jump" aria-label="Jump to bottom" onclick={term.jump}>↓</button>
+						{/if}
+					{/if}
+					{#if !liveShown}
+						<div
+							class="scroll"
+							data-view="terminal"
+							data-zoom
+							data-rise
+							{@attach feed.scroller('terminal')}
+						>
+							{#if feed.screen === null}
+								<div class="chat">
+									{#each [90, 70, 82, 55, 76] as width (width)}
+										<span class="skel" style:width="{width}%" style:height="11px"></span>
 									{/each}
 								</div>
-							</div>
+							{:else if finding && find.result}
+								<!-- The pane's scrollback, as the Mac searched it. -->
+								<pre class="screen mono" data-hscroll data-find-text><Marked
+										text={find.result.text}
+										hits={find.terminal}
+										current={find.current}
+									/></pre>
+							{:else}
+								{#if feed.screen.hasOlder}
+									<button class="older" disabled={feed.loadingOlder} onclick={feed.loadOlder}>
+										Load older
+									</button>
+								{/if}
+								<div class="screen mono" data-hscroll>
+									<div class="lines" data-lines style:min-width="{feed.screen.cols}ch">
+										{#each feed.screen.blocks as block (block.key)}
+											<div class="blk" style:--n={block.lines.length}>
+												{#each block.lines as line (line.n)}
+													<div class="ln">
+														{#each line.spans as span, at (at)}
+															<span
+																class:sb={span.bold}
+																class:sd={span.dim}
+																class:si={span.italic}
+																class:su={span.underline}
+																style:color={span.color}
+																style:background-color={span.background}>{span.text}</span
+															>
+														{/each}
+													</div>
+												{/each}
+											</div>
+										{/each}
+									</div>
+								</div>
+							{/if}
+							{#if cardId !== null}
+								<div class="chat">{@render promptCard(cardId)}</div>
+							{/if}
+						</div>
+						{#if !feed.atBottom}
+							<button class="jump" aria-label="Jump to bottom" onclick={feed.jumpToBottom}>↓</button
+							>
 						{/if}
-						{#if cardId !== null}
-							<div class="chat">{@render promptCard(cardId)}</div>
-						{/if}
-					</div>
-					{#if !feed.atBottom}
-						<button class="jump" aria-label="Jump to bottom" onclick={feed.jumpToBottom}>↓</button>
 					{/if}
 				{/if}
 			</section>
 		{/each}
 	</div>
 </div>
+
+<ServeConfirm {servers} />
 
 {#if docked}
 	<div
@@ -310,55 +444,71 @@
 		{@attach reply.files.watch}
 	>
 		{#if next}<NextBar thread={next} />{/if}
-		{#if repliesOn && reply.matches.length}
-			<SlashList commands={reply.matches} onpick={reply.pick} />
-		{/if}
-		{#if !repliesOn && reply.note}
-			<!-- With no composer below, the bar's own refusals are said here. -->
-			<NoteLine note={reply.note} />
-		{/if}
-		{#if keysOn}<KeyBar {reply} composer={repliesOn} />{/if}
-		<!-- Voice switched off on the Mac: the bar stays and says so, like the manager's. -->
-		{#if repliesOn}<VoiceBar target={id} sink={reply.voice} off={!voiceOn} />{/if}
-		{#if repliesOn}
-			<Composer
-				bind:value={reply.draft}
-				box={reply.box}
-				label="Reply"
-				target={id}
-				sink={reply.voice}
-				{voiceOn}
-				blocked={reply.blocked || reply.files.pending}
-				sending={reply.sending}
-				note={reply.note}
-				onsend={send}
-				oninput={reply.typed}
-				onbeforeinput={reply.beforeInput}
-				onpaste={reply.pasted}
-			>
-				{#snippet above()}
-					{#if reply.files.items.length}<AttachTiles files={reply.files} />{/if}
-				{/snippet}
-				{#snippet leading()}
-					<AttachButton off={!can('upload')} onpick={reply.files.add} onoff={reply.uploadOff} />
-				{/snippet}
-			</Composer>
+		{#if liveShown}
+			<!-- The keyboard types into the pane itself: the bar is all it lacks. -->
+			<div class="livebar"><KeyBar reply={term} composer /></div>
 		{:else}
-			<!-- Same box, same place: nothing moves when the Mac switches replies on. -->
-			<Composer
-				value=""
-				label={OFF_LABEL}
-				target={id}
-				sink={reply.voice}
-				voiceOn={false}
-				off
-				bare
-				onsend={() => {}}
-			>
-				{#snippet leading()}
-					<AttachButton disabled />
-				{/snippet}
-			</Composer>
+			{#if repliesOn && reply.matches.length}
+				<SlashList commands={reply.matches} onpick={reply.pick} />
+			{/if}
+			{#if !repliesOn && reply.note}
+				<!-- With no composer below, the bar's own refusals are said here. -->
+				<NoteLine note={reply.note} />
+			{/if}
+			<!-- The voice status sits above the keys; its controls stay below them. -->
+			{#if repliesOn && voiceOn && keysOn}
+				<VoiceBar target={id} sink={reply.voice} part="status" />
+			{/if}
+			{#if keysOn}<KeyBar {reply} composer={repliesOn} />{/if}
+			<!-- Voice switched off on the Mac: the bar stays and says so, like the manager's. -->
+			{#if repliesOn}
+				<VoiceBar
+					target={id}
+					sink={reply.voice}
+					off={!voiceOn}
+					part={voiceOn && keysOn ? 'controls' : 'all'}
+				/>
+			{/if}
+			{#if repliesOn}
+				<Composer
+					bind:value={reply.draft}
+					box={reply.box}
+					label="Reply"
+					target={id}
+					sink={reply.voice}
+					{voiceOn}
+					blocked={reply.blocked || reply.files.pending}
+					sending={reply.sending}
+					note={reply.note}
+					onsend={send}
+					oninput={reply.typed}
+					onbeforeinput={reply.beforeInput}
+					onpaste={reply.pasted}
+				>
+					{#snippet above()}
+						{#if reply.files.items.length}<AttachTiles files={reply.files} />{/if}
+					{/snippet}
+					{#snippet leading()}
+						<AttachButton off={!can('upload')} onpick={reply.files.add} onoff={reply.uploadOff} />
+					{/snippet}
+				</Composer>
+			{:else}
+				<!-- Same box, same place: nothing moves when the Mac switches replies on. -->
+				<Composer
+					value=""
+					label={OFF_LABEL}
+					target={id}
+					sink={reply.voice}
+					voiceOn={false}
+					off
+					bare
+					onsend={() => {}}
+				>
+					{#snippet leading()}
+						<AttachButton disabled />
+					{/snippet}
+				</Composer>
+			{/if}
 		{/if}
 	</div>
 {/if}
@@ -407,7 +557,8 @@
 	.pager {
 		flex: 1;
 		min-height: 0;
-		overflow: hidden;
+		/* `clip`, not `hidden`: the row of pages must never scroll by itself. */
+		overflow: clip;
 	}
 
 	.track {
@@ -420,12 +571,20 @@
 		transition: transform 0.26s var(--ease);
 	}
 
+	/* A mouse that drags the page must not select the text it passes over. */
+	.track:not(.anim) {
+		-webkit-user-select: none;
+		user-select: none;
+	}
+
 	.page {
 		flex: 0 0 100%;
 		min-width: 0;
 		display: flex;
 		flex-direction: column;
 		height: 100%;
+		/* An open file lies over its page. */
+		position: relative;
 	}
 
 	.chat {
@@ -510,6 +669,12 @@
 		flex: 1 0 auto;
 	}
 
+	/* Find draws the scrollback as plain text in the same box. */
+	pre.screen {
+		margin: 0;
+		white-space: pre;
+	}
+
 	@supports (width: round(1.5px, 1px)) {
 		.screen {
 			--lh: round(calc(var(--term-size) * 1.3), 1px);
@@ -587,6 +752,50 @@
 
 	.docked .jump {
 		bottom: 14px;
+	}
+
+	/* The live switch: over the terminal's top right corner. */
+	.livechip {
+		position: absolute;
+		z-index: 2;
+		top: 6px;
+		right: max(8px, env(safe-area-inset-right));
+		min-height: var(--hit);
+		min-width: var(--hit);
+		display: flex;
+		align-items: center;
+		gap: 7px;
+		padding: 0 12px;
+		border-radius: 22px;
+		background: var(--surface);
+		border: 1px solid var(--border);
+		font-size: 13px;
+		color: var(--muted);
+	}
+
+	.livechip.on {
+		color: #ededed;
+	}
+
+	.livechip i {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		background: var(--muted);
+	}
+
+	.livechip[data-live='live'] i {
+		background: var(--green);
+	}
+
+	.livechip[data-live='connecting'] i,
+	.livechip[data-live='reconnecting'] i {
+		background: var(--amber);
+	}
+
+	/* Nothing below the bar in live mode: it keeps clear of the home indicator. */
+	.livebar {
+		padding-bottom: var(--safe-bottom, env(safe-area-inset-bottom));
 	}
 
 	.jump:active {
