@@ -214,10 +214,10 @@
 
 	/*
 	 * A drag on the footer moves the drawer. The text box is left to the
-	 * browser, so typing and moving the caret work as usual.
+	 * browser, so typing, moving the caret and scrolling its text work as usual.
 	 */
 	.foot.drawer,
-	.foot.drawer :global(*:not(input)) {
+	.foot.drawer :global(*:not(input, textarea)) {
 		touch-action: none;
 	}
 

@@ -986,3 +986,20 @@ test('sidebar: the Maestro bar clears the home indicator', async ({ page }) => {
 	});
 	expect(rule).toContain('safe-area-inset-bottom');
 });
+
+test('a full Maestro text box scrolls under a finger', async ({ page }) => {
+	await fresh(page);
+	const area = box(page);
+	await area.fill(Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join('\n'));
+	// More text than the box shows: the rest is reached by scrolling inside it.
+	expect(await area.evaluate((el) => el.scrollHeight - el.clientHeight)).toBeGreaterThan(100);
+	await area.evaluate((el) => (el.scrollTop = el.scrollHeight));
+	const top = (): Promise<number> => area.evaluate((el) => el.scrollTop);
+	const end = await top();
+	const at = (await area.boundingBox())!;
+	const x = at.x + at.width / 2;
+	const y = at.y + at.height / 2;
+	// A finger pulls the text down: the lines above come into view.
+	await touchDrag(page, [x, y - 30], [x, y + 50]);
+	expect(await top()).toBeLessThan(end);
+});
