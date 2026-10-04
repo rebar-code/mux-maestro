@@ -442,6 +442,134 @@ final class ManagerStoreTests: XCTestCase {
         XCTAssertEqual(item.window, 3)
     }
 
+    // MARK: mux point --action (cards)
+
+    private let cardRows =
+        "SELECT key, v, pane, body, actions, answer, COALESCE(answered_at, 'none') FROM review_card ORDER BY key;"
+    private let yes = "Yes=yes, run it"
+    private let no = "No=no, stop.\nExplain why first; it's O'Brien's table."
+
+    func testMuxPointWithActionsWritesACardTheStoreReads() throws {
+        try seedPointSessions()
+        try store(mux: [
+            "point", "acme-app:2", "--reason", "asks whether to run the migration",
+            "--pane", "%14", "--body", "It adds two columns.", "--action", yes, "--action", no,
+        ])
+        let item = try XCTUnwrap(try makeStore().reviewItems().first)
+        XCTAssertTrue(item.isPointer)
+        XCTAssertEqual(item.card, ManagerCard(
+            pane: "%14", body: "It adds two columns.",
+            actions: [
+                ManagerCard.Action(label: "Yes", text: "yes, run it"),
+                // Both lines and the quotes, exactly as given.
+                ManagerCard.Action(label: "No", text: "no, stop.\nExplain why first; it's O'Brien's table."),
+            ]))
+        XCTAssertEqual(MobileCard(item)?.source, MobileCard.Source(
+            host: "localhost", session: "acme-app", window: 2, pane: "%14"))
+        // A pointer with no action has no card.
+        try store(mux: ["point", "acme-app", "--reason", "needs your approval"])
+        let plain = try XCTUnwrap(try makeStore().reviewItems().first { $0.window == nil })
+        XCTAssertNil(plain.card)
+    }
+
+    func testTheSameQuestionKeepsItsAnswerAndANewOneDoesNot() throws {
+        try seedPointSessions()
+        let point = ["point", "acme-app", "--reason", "asks whether to run the migration"]
+        try store(mux: point + ["--action", yes, "--action", no])
+        let store = try makeStore()
+        try store.recordAnswer(key: "point:localhost:acme-app", label: "Yes", at: 1_759_500_100)
+        XCTAssertEqual(
+            try store.reviewItems().first?.card?.answer,
+            ManagerCard.Answer(label: "Yes", at: 1_759_500_100))
+
+        // Raised again as it was: still answered. The body is not the question.
+        try self.store(mux: point + ["--body", "More words.", "--action", yes, "--action", no])
+        XCTAssertEqual(try store.reviewItems().first?.card?.answer?.label, "Yes")
+        // Another reason, other actions or another pane: a new question.
+        for change in [
+            ["point", "acme-app", "--reason", "asks which database", "--action", yes, "--action", no],
+            point + ["--action", yes],
+            point + ["--action", yes, "--pane", "%12"],
+        ] {
+            try store.recordAnswer(key: "point:localhost:acme-app", label: "Yes", at: 1_759_500_100)
+            try self.store(mux: change)
+            let card = try XCTUnwrap(try store.reviewItems().first?.card)
+            XCTAssertNil(card.answer, "\(change)")
+        }
+    }
+
+    func testACardGoesWhenItsPointerGoes() throws {
+        try seedPointSessions()
+        let action = ["--action", yes]
+        try store(mux: ["point", "acme-app", "--reason", "one"] + action)
+        try store(mux: ["point", "acme-app:1", "--reason", "two"] + action)
+        try store(mux: ["point", "acme-app:2", "--reason", "three"] + action)
+        try store(mux: ["point", "acme-app:7", "--reason", "four"] + action)
+        XCTAssertEqual(try sqlite("SELECT COUNT(*) FROM review_card;"), ["4"])
+        // Cleared by the Maestro, through either verb.
+        try store(mux: ["point", "acme-app", "--done"])
+        try store(mux: ["review", "done", "--key", "point:localhost:acme-app:1"])
+        // Pointed again with no action: a plain pointer.
+        try store(mux: ["point", "acme-app:2", "--reason", "three"])
+        XCTAssertEqual(try sqlite("SELECT key FROM review_card;"), ["point:localhost:acme-app:7"])
+        // Dismissed by the human and pruned: the card goes with the row.
+        let store = try makeStore()
+        try store.dismiss(key: "point:localhost:acme-app:7")
+        try store.pruneDismissed(olderThanDays: -1)
+        XCTAssertEqual(try sqlite("SELECT COUNT(*) FROM review_card;"), ["0"])
+    }
+
+    func testMuxPointRefusesACardItCannotStandBehind() throws {
+        try seedPointSessions()
+        let point = ["point", "acme-app", "--reason", "asks a question"]
+        for (args, message) in [
+            (["--action", "Yes"], "--action wants LABEL=TEXT"),
+            (["--action", "=yes"], "--action has no label"),
+            (["--action", "Yes="], "has no text"),
+            (["--action", "Yes=go\u{1B}[A"], "control character"),
+            (["--action", "Y\nes=go"], "one line"),
+            (["--action", "Y\u{200B}es=go"], "zero-width"),
+            (["--action", String(repeating: "y", count: 41) + "=go"], "over 40 characters"),
+            (["--action", "Yes=" + String(repeating: "y", count: 8193)], "over 8192 bytes"),
+            (["--action", "a=1", "--action", "b=2", "--action", "c=3", "--action", "d=4", "--action", "e=5"],
+             "at most 4 actions"),
+            (["--action", yes, "--pane", "12"], "--pane wants a pane id like %12"),
+            (["--action", yes, "--pane", "%1;kill-server"], "--pane wants a pane id like %12"),
+            (["--action", yes, "--body", String(repeating: "b", count: 281)], "over 280 characters"),
+            (["--action", yes, "--body", "a\u{202E}b"], "zero-width"),
+        ] {
+            let result = runMux(point + args)
+            XCTAssertEqual(result.status, 2, "\(args)")
+            XCTAssertTrue(result.output.contains(message), "\(args): \(result.output)")
+        }
+        XCTAssertEqual(runMux(["point", "acme-app", "--done", "--action", yes]).status, 2)
+        XCTAssertEqual(try sqlite("SELECT COUNT(*) FROM review;"), ["0"])
+        XCTAssertEqual(try sqlite("SELECT COUNT(*) FROM review_card;"), ["0"])
+        // The longest label that is allowed counts characters, not bytes. (A
+        // character with no decomposed form: `Process` hands arguments over decomposed.)
+        try store(mux: point + ["--action", String(repeating: "日", count: 40) + "=go"])
+    }
+
+    func testMuxReviewListJSONShowsACardsAnswer() throws {
+        try seedPointSessions()
+        try store(mux: ["point", "acme-app", "--reason", "asks a question", "--action", yes, "--action", no])
+        try store(mux: ["review", "add", "--key", "billing:pr", "--text", "PR open"])
+        try makeStore().recordAnswer(key: "point:localhost:acme-app", label: "No", at: 1_759_500_100)
+        let result = runMux(["review", "list", "--json"])
+        XCTAssertEqual(result.status, 0, result.output)
+        let rows = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(result.output.utf8)) as? [[String: Any]])
+        let card = try XCTUnwrap(rows.first { $0["key"] as? String == "point:localhost:acme-app" }?["card"]
+            as? [String: Any])
+        // Labels, and what the human picked. Not the texts: the agent wrote those.
+        XCTAssertEqual(card["actions"] as? [String], ["Yes", "No"])
+        XCTAssertEqual(card["answer"] as? String, "No")
+        XCTAssertEqual(card["answered_at"] as? Int, 1_759_500_100)
+        XCTAssertTrue(rows.first { $0["key"] as? String == "billing:pr" }?["card"] is NSNull)
+        // The plain list keeps its shape.
+        XCTAssertEqual(runMux(["review", "list", "--nope"]).status, 2)
+    }
+
     func testMuxPointUpdatesInPlaceAndShowsADismissedPointerAgain() throws {
         try seedPointSessions()
         try store(mux: ["point", "acme-app", "--reason", "needs your approval"])

@@ -82,7 +82,7 @@ extension ManagerSnapshot {
                     return MobileManagerItem(
                         kind: .review, key: review.key, title: item.title, detail: item.detail,
                         severity: review.severity, at: review.updatedAt, link: item.link,
-                        pointer: review.isPointer)
+                        pointer: review.isPointer, card: MobileCard(review))
                 }
             },
             updates: updates)
@@ -240,6 +240,12 @@ final class ManagerController {
     /// The human ticked a review row's checkbox — sticky ack in the DB.
     func dismiss(key: String) {
         queue.async { [store] in try? store?.dismiss(key: key) }
+    }
+
+    /// A card's answer reached its pane: kept on the row, so every reader of
+    /// the list sees it was answered.
+    func answered(key: String, label: String, at: Int) {
+        queue.async { [store] in try? store?.recordAnswer(key: key, label: label, at: at) }
     }
 
     /// Send one prompt to the manager pane. `onDelta` streams the reply as it
