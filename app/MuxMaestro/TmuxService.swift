@@ -1899,11 +1899,17 @@ final class TmuxService {
     }
 
     /// The command that runs a tmux control client on this host for the
-    /// phone's live terminal. It goes through the transport, so over ssh each
-    /// tmux word is quoted for the remote shell like every other tmux call.
+    /// phone's live terminal, under the shell that ends it when the bridge or
+    /// this app goes away. Over ssh that shell runs on the far host, next to
+    /// the client, and each word is quoted for the remote shell.
     func phoneTerminal(_ target: MobileTerminal.Target) -> MobileTerminalBridge.Launch? {
-        transport.command(forTmux: MobileTerminal.attachArgv(target))
-            .map { MobileTerminalBridge.Launch(path: $0.path, args: $0.args) }
+        if let ssh = transport as? SshTmuxTransport {
+            return .remote(
+                sshPath: ssh.sshPath, options: Ssh.opts(host: ssh.host), tmux: ssh.remoteTmux,
+                target: target)
+        }
+        return transport.command(forTmux: MobileTerminal.attachArgv(target))
+            .map { .supervised(MobileTerminalBridge.Launch(path: $0.path, args: $0.args)) }
     }
 
     /// One tmux call on this host, for the phone's session actions and find:

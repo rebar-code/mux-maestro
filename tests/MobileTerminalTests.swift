@@ -37,12 +37,29 @@ final class MobileTerminalTests: XCTestCase {
             MobileTerminal.attachArgv(target), ["-C", "attach-session", "-f", "ignore-size", "-t", "$3"])
     }
 
-    func testOverSshEveryTmuxWordIsQuotedForTheRemoteShell() {
-        let command = SshTmuxTransport(host: "devbox").command(forTmux: MobileTerminal.attachArgv(target))
-        XCTAssertEqual(command?.path, "/usr/bin/ssh")
+    func testOverSshTheSupervisorRunsOnTheFarHostAndEveryWordIsQuoted() {
+        let launch = MobileTerminalBridge.Launch.remote(
+            sshPath: "/usr/bin/ssh", options: Ssh.opts(host: "devbox"), tmux: "tmux", target: target)
+        XCTAssertEqual(launch.path, "/usr/bin/ssh")
         XCTAssertEqual(
-            Array(command?.args.suffix(8) ?? []),
-            ["devbox", "'tmux'", "'-C'", "'attach-session'", "'-f'", "'ignore-size'", "'-t'", "'$3'"])
+            Array(launch.args.suffix(12)),
+            [
+                "devbox", "'sh'", "'-c'", "'\(MobileTerminal.supervisor)'", "'sh'", "'tmux'", "'-C'",
+                "'attach-session'", "'-f'", "'ignore-size'", "'-t'", "'$3'",
+            ])
+        // Nothing keeps ssh's input open or gives it a terminal: the end of
+        // input must reach the far host.
+        for flag in ["-t", "-tt", "-n", "-f", "-N"] { XCTAssertFalse(launch.args.contains(flag), flag) }
+    }
+
+    func testTheSupervisorIsOneWordForAnyShell() {
+        // A quote, a backslash or a newline would need quoting that differs
+        // between sh, csh and fish; `!` and a character after it is history in csh.
+        for bad in ["'", "\\", "\n", "`"] { XCTAssertFalse(MobileTerminal.supervisor.contains(bad), bad) }
+        XCTAssertNil(MobileTerminal.supervisor.range(of: #"![^ ]"#, options: .regularExpression))
+        XCTAssertEqual(
+            MobileTerminalBridge.Launch.supervised(.init(path: "/opt/homebrew/bin/tmux", args: ["-C"])),
+            .init(path: "/bin/sh", args: ["-c", MobileTerminal.supervisor, "sh", "/opt/homebrew/bin/tmux", "-C"]))
     }
 
     // MARK: input is data
@@ -70,16 +87,22 @@ final class MobileTerminalTests: XCTestCase {
         var session = MobileControlSession(target: target)
         var written = session.opening
         written += session.keys(Data("x\nkill-server\n".utf8))
+        written += session.pause()
+        written += session.resync()
         for line in ["%begin 1 1 0", "%end 1 1 0", "%layout-change @1 abcd,80x24,0,0,1 abcd,80x24,0,0,1 *"] {
             for case .send(let text) in session.line(Data(line.utf8)) { written.append(text) }
         }
+        let fixed = [
+            "refresh-client -f pause-after=1", "refresh-client -A '%12:pause'",
+            "refresh-client -A '%12:continue'",
+        ]
         for line in written {
             XCTAssertFalse(line.contains("\n"))
             XCTAssertTrue(
-                line.hasPrefix("display-message -p -t %12 '") || line.hasPrefix("capture-pane -p -e -S -")
-                    || line.hasPrefix("send-keys -t %12 -H "), line)
+                fixed.contains(line) || line.hasPrefix("display-message -p -t %12 '")
+                    || line.hasPrefix("capture-pane -p -e -S -") || line.hasPrefix("send-keys -t %12 -H "), line)
         }
-        XCTAssertEqual(written.count, 3)
+        XCTAssertEqual(written.count, 8)
     }
 
     // MARK: control mode
@@ -99,6 +122,7 @@ final class MobileTerminalTests: XCTestCase {
 
     private let opening = [
         "%begin 100 1 0", "%end 100 1 0", "%session-changed $3 acme-app",
+        "%begin 100 9 1", "%end 100 9 1",
         "%begin 100 2 1", "80 24 2 1 0 1 0 0 23", "%end 100 2 1",
     ]
 
@@ -162,7 +186,10 @@ final class MobileTerminalTests: XCTestCase {
         XCTAssertNil(MobileTerminal.State("80 99999 0 0 0 1 0 0 23"))
         var session = MobileControlSession(target: target)
         XCTAssertEqual(
-            run(&session, ["%begin 1 1 0", "%end 1 1 0", "%begin 1 2 1", "can't find pane: %12", "%error 1 2 1"]),
+            run(&session, [
+                "%begin 1 1 0", "%end 1 1 0", "%begin 1 9 1", "%end 1 9 1",
+                "%begin 1 2 1", "can't find pane: %12", "%error 1 2 1",
+            ]),
             [.exit])
         // And nothing after the end.
         XCTAssertEqual(run(&session, ["%output %12 x"]), [])
@@ -181,6 +208,64 @@ final class MobileTerminalTests: XCTestCase {
         // The same size again is no event.
         _ = run(&session, [change])
         XCTAssertEqual(run(&session, ["%begin 100 5 1", "100 30 0 0 0 1 0 0 29", "%end 100 5 1"]), [])
+    }
+
+    /// A session that has its first screen.
+    private func screened() -> MobileControlSession {
+        var session = MobileControlSession(target: target)
+        _ = run(&session, opening + ["%begin 100 3 1", "%end 100 3 1"])
+        return session
+    }
+
+    func testTheClientAsksTmuxToHoldOutputForASlowReader() {
+        XCTAssertEqual(MobileControlSession(target: target).opening.first, "refresh-client -f pause-after=1")
+        // An old tmux that refuses the flag still gives a screen.
+        var session = MobileControlSession(target: target)
+        let events = run(&session, [
+            "%begin 1 1 0", "%end 1 1 0", "%begin 1 2 1", "unknown flag", "%error 1 2 1",
+            "%begin 1 3 1", "80 24 0 0 0 1 0 0 23", "%end 1 3 1", "%begin 1 4 1", "$", "%end 1 4 1",
+        ])
+        guard case .ready? = events.first else { return XCTFail("\(events)") }
+    }
+
+    func testOutputThatIsOldPausesThePane() {
+        var session = screened()
+        XCTAssertEqual(
+            run(&session, ["%extended-output %12 40 : fresh"]), [.output(Data("fresh".utf8))])
+        XCTAssertEqual(
+            run(&session, ["%extended-output %12 900 : stale"]),
+            [.send("refresh-client -A '%12:pause'"), .paused])
+        // Paused: nothing more is passed on, and nothing is asked twice.
+        XCTAssertEqual(run(&session, ["%extended-output %12 950 : more", "%output %12 x"]), [])
+        XCTAssertEqual(session.pause(), [])
+    }
+
+    func testAPauseFromTmuxItselfIsSeen() {
+        var session = screened()
+        XCTAssertEqual(run(&session, ["%pause %13"]), [])
+        XCTAssertEqual(run(&session, ["%pause %12"]), [.paused])
+        XCTAssertEqual(run(&session, ["%output %12 x"]), [])
+    }
+
+    func testAPausedPaneStartsAgainFromANewCapture() {
+        var session = screened()
+        XCTAssertEqual(session.resync(), [])
+        XCTAssertEqual(session.pause(), ["refresh-client -A '%12:pause'"])
+        XCTAssertEqual(run(&session, ["%begin 100 4 1", "%end 100 4 1", "%pause %12"]), [])
+        XCTAssertEqual(session.resync(), [
+            "refresh-client -A '%12:continue'", MobileTerminal.stateCommand(target),
+            MobileTerminal.captureCommand(target),
+        ])
+        // What the pane writes before the capture ends is in the capture.
+        let events = run(&session, [
+            "%begin 100 5 1", "%end 100 5 1", "%continue %12", "%extended-output %12 0 : early",
+            "%begin 100 6 1", "100 30 1 2 0 1 0 0 29", "%end 100 6 1",
+            "%begin 100 7 1", "new screen", "%end 100 7 1", "%extended-output %12 0 : late",
+        ])
+        guard case .ready(let state, let snapshot)? = events.first else { return XCTFail("\(events)") }
+        XCTAssertEqual(state.cols, 100)
+        XCTAssertTrue(String(decoding: snapshot, as: UTF8.self).hasPrefix("new screen"))
+        XCTAssertEqual(Array(events.dropFirst()), [.output(Data("late".utf8))])
     }
 
     func testTheBridgeEndsWhenTheClientExitsOrChangesSession() {
@@ -464,8 +549,8 @@ final class MobileTerminalSocketTests: XCTestCase {
                 screen: { _, _ in nil }, transcript: { _ in nil },
                 terminal: { [launches] _, target in
                     launches.add()
-                    return MobileTerminalBridge.Launch(
-                        path: path, args: ["-L", name] + MobileTerminal.attachArgv(target))
+                    return .supervised(MobileTerminalBridge.Launch(
+                        path: path, args: ["-L", name] + MobileTerminal.attachArgv(target)))
                 }),
             limits: limits)
         let started = expectation(description: "listening")
@@ -875,15 +960,14 @@ final class MobileTerminalSocketTests: XCTestCase {
         let ready = expectation(description: "ready")
         ready.assertForOverFulfill = false
         var bridge: MobileTerminalBridge? = MobileTerminalBridge(
-            launch: .init(path: tmux.path, args: ["-L", tmux.name] + MobileTerminal.attachArgv(target)),
-            target: target
+            launch: localLaunch(target), target: target
         ) { event in
             if case .ready = event { ready.fulfill() }
         }
         XCTAssertEqual(bridge?.start(), true)
         wait(for: [ready], timeout: 5)
         XCTAssertEqual(tmux.clientCount, 1)
-        // Nobody said there is room: it waits, its reading suspended. Let go of it.
+        // Nobody said there is room, and the pane floods. Let go of it.
         bridge = nil
         XCTAssertTrue(eventually { tmux.clientCount == 0 })
     }
@@ -894,15 +978,27 @@ final class MobileTerminalSocketTests: XCTestCase {
         tmux.run(["new-window", "-d", "-t", "acme-app", Self.flood])
         let ids = tmux.ids(window: "acme-app:1")
         let target = MobileTerminal.Target(pane: ids.pane, session: ids.session)
-        let launch = MobileTerminalBridge.supervised(
-            .init(path: tmux.path, args: ["-L", tmux.name] + MobileTerminal.attachArgv(target)))
-        // A parent that starts the client as the bridge does (the lifeline is
-        // the client's standard error), never reads its output, and is killed.
+        try killedParent(of: localLaunch(target), python: python)
+    }
+
+    func testTheFarClientDiesWhenTheParentOfSshIsKilled() throws {
+        let python = "/usr/bin/python3"
+        guard FileManager.default.isExecutableFile(atPath: python) else { throw XCTSkip("no python3") }
+        tmux.run(["new-window", "-d", "-t", "acme-app", Self.flood])
+        let ids = tmux.ids(window: "acme-app:1")
+        let (launch, dir) = try sshLaunch(MobileTerminal.Target(pane: ids.pane, session: ids.session))
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try killedParent(of: launch, python: python)
+    }
+
+    /// A parent that starts the client as the bridge does, never reads its
+    /// output, and is killed. The pane floods a client nobody reads: the
+    /// worst case to let go of.
+    private func killedParent(of launch: MobileTerminalBridge.Launch, python: String) throws {
         let script = """
-            import os, subprocess, sys, time
-            r, w = os.pipe()
-            p = subprocess.Popen(sys.argv[1:], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=r)
-            os.close(r)
+            import subprocess, sys, time
+            p = subprocess.Popen(sys.argv[1:], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                 stderr=subprocess.DEVNULL)
             time.sleep(600)
             """
         let parent = Process()
@@ -912,7 +1008,6 @@ final class MobileTerminalSocketTests: XCTestCase {
         parent.standardError = FileHandle.nullDevice
         try parent.run()
         XCTAssertTrue(eventually { tmux.clientCount == 1 })
-        // The pane floods a client nobody reads: the worst case to let go of.
         Thread.sleep(forTimeInterval: 1)
         kill(parent.processIdentifier, SIGKILL)
         parent.waitUntilExit()
@@ -920,15 +1015,16 @@ final class MobileTerminalSocketTests: XCTestCase {
         XCTAssertTrue(tmux.alive)
     }
 
-    // MARK: over ssh
+    private func localLaunch(_ target: MobileTerminal.Target) -> MobileTerminalBridge.Launch {
+        .supervised(.init(path: tmux.path, args: ["-L", tmux.name] + MobileTerminal.attachArgv(target)))
+    }
 
-    func testTheBridgeRunsOverSshAndClosesCleanly() throws {
-        // A stand-in for ssh: it drops its options and the host, then hands
-        // the rest to a shell as one string, as sshd does on the far side.
-        // `tmux` there is the private server.
+    /// The bridge's command for a host over ssh, with a stand-in for ssh: it
+    /// drops its options and the host, then hands the rest to a shell as one
+    /// string, as sshd does on the far side. `tmux` there is the private server.
+    private func sshLaunch(_ target: MobileTerminal.Target) throws -> (MobileTerminalBridge.Launch, URL) {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("mm-ssh-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: dir) }
         let shim = dir.appendingPathComponent("tmux")
         try "#!/bin/sh\nexec \(tmux.path) -L \(tmux.name) \"$@\"\n".write(to: shim, atomically: true, encoding: .utf8)
         let ssh = dir.appendingPathComponent("ssh")
@@ -943,18 +1039,82 @@ final class MobileTerminalSocketTests: XCTestCase {
         for file in [shim, ssh] {
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: file.path)
         }
+        return (.remote(sshPath: ssh.path, options: Ssh.opts(host: "devbox"), tmux: "tmux", target: target), dir)
+    }
+
+    func testStoppingABridgeOverSshEndsTheFarClientOfAFloodingPane() throws {
+        tmux.run(["new-window", "-d", "-t", "acme-app", "yes"])
+        let ids = tmux.ids(window: "acme-app:1")
+        let target = MobileTerminal.Target(pane: ids.pane, session: ids.session)
+        let (launch, dir) = try sshLaunch(target)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let ready = expectation(description: "ready")
+        ready.assertForOverFulfill = false
+        let bridge = MobileTerminalBridge(launch: launch, target: target) { event in
+            if case .ready = event { ready.fulfill() }
+        }
+        XCTAssertTrue(bridge.start())
+        wait(for: [ready], timeout: 5)
+        XCTAssertEqual(tmux.clientCount, 1)
+        // Never told there is room: the pane floods a bridge that passes nothing on.
+        Thread.sleep(forTimeInterval: 1)
+        bridge.stop()
+        XCTAssertTrue(eventually(8) { tmux.clientCount == 0 })
+        XCTAssertTrue(tmux.alive)
+    }
+
+    // MARK: descriptors
+
+    func testNoOtherProcessInheritsTheBridgesPipes() {
         let ids = tmux.ids()
         let target = MobileTerminal.Target(pane: ids.pane, session: ids.session)
-        let command = try XCTUnwrap(SshTmuxTransport(host: "devbox", sshPath: ssh.path)
-            .command(forTmux: MobileTerminal.attachArgv(target)))
+        let bridge = MobileTerminalBridge(launch: localLaunch(target), target: target) { _ in }
+        XCTAssertTrue(bridge.start())
+        XCTAssertEqual(bridge.descriptors.count, 2)
+        for fd in bridge.descriptors {
+            XCTAssertEqual(fcntl(fd, F_GETFD) & FD_CLOEXEC, FD_CLOEXEC, "fd \(fd)")
+        }
+        bridge.stop()
+    }
+
+    func testAProcessStartedMeanwhileDoesNotKeepTheClientAttached() throws {
+        tmux.run(["new-window", "-d", "-t", "acme-app", Self.flood])
+        let ids = tmux.ids(window: "acme-app:1")
+        let target = MobileTerminal.Target(pane: ids.pane, session: ids.session)
+        let ready = expectation(description: "ready")
+        ready.assertForOverFulfill = false
+        let bridge = MobileTerminalBridge(launch: localLaunch(target), target: target) { event in
+            if case .ready = event { ready.fulfill() }
+        }
+        XCTAssertTrue(bridge.start())
+        wait(for: [ready], timeout: 5)
+        // A process started the plain way, as the embedded terminal starts a
+        // shell: it gets every descriptor that is not marked close-on-exec.
+        var pid: pid_t = 0
+        let args: [UnsafeMutablePointer<CChar>?] = [strdup("/bin/sleep"), strdup("30"), nil]
+        defer { args.forEach { free($0) } }
+        XCTAssertEqual(posix_spawn(&pid, "/bin/sleep", nil, nil, args, nil), 0)
+        defer {
+            kill(pid, SIGKILL)
+            waitpid(pid, nil, 0)
+        }
+        bridge.stop()
+        XCTAssertTrue(eventually(6) { tmux.clientCount == 0 })
+    }
+
+    // MARK: over ssh
+
+    func testTheBridgeRunsOverSshAndClosesCleanly() throws {
+        let ids = tmux.ids()
+        let target = MobileTerminal.Target(pane: ids.pane, session: ids.session)
+        let (launch, dir) = try sshLaunch(target)
+        defer { try? FileManager.default.removeItem(at: dir) }
         let ready = expectation(description: "ready")
         let echoed = expectation(description: "echoed")
         echoed.assertForOverFulfill = false
         var seen = Data()
         var bridge: MobileTerminalBridge?
-        bridge = MobileTerminalBridge(
-            launch: .init(path: command.path, args: command.args), target: target
-        ) { event in
+        bridge = MobileTerminalBridge(launch: launch, target: target) { event in
             switch event {
             case .ready: ready.fulfill()
             case .output(let bytes):
@@ -1046,6 +1206,67 @@ final class MobileTerminalSocketTests: XCTestCase {
         XCTAssertFalse(held.isEmpty)
         for pending in held { XCTAssertLessThan(pending, 4096 + 2 * 262_144) }
         XCTAssertLessThan(server.socketAllowance.max() ?? .max, 1_048_576)
+    }
+
+    // MARK: tmux holds the output, and does not keep it
+
+    /// The tmux server's resident memory, in megabytes.
+    private func serverMegabytes() -> Int {
+        let pid = tmux.run(["display-message", "-p", "#{pid}"])
+        let ps = Process()
+        ps.executableURL = URL(fileURLWithPath: "/bin/ps")
+        ps.arguments = ["-o", "rss=", "-p", pid]
+        let out = Pipe()
+        ps.standardOutput = out
+        guard (try? ps.run()) != nil else { return -1 }
+        let text = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        ps.waitUntilExit()
+        return (Int(text.trimmingCharacters(in: .whitespacesAndNewlines)) ?? -1) / 1024
+    }
+
+    /// Watch the server's memory for `seconds`; the most it reached.
+    private func peakMegabytes(for seconds: TimeInterval) -> Int {
+        var peak = 0
+        let end = Date().addingTimeInterval(seconds)
+        while Date() < end {
+            peak = max(peak, serverMegabytes())
+            Thread.sleep(forTimeInterval: 0.25)
+        }
+        return peak
+    }
+
+    func testAPhoneThatDoesNotReadCostsTheTmuxServerNoMemory() {
+        var limits = MobileServer.Limits()
+        // The socket is kept, so the whole time is spent stalled.
+        limits.socketStall = 120
+        limits.socketDead = 120
+        startServer(limits: limits)
+        tmux.run(["new-window", "-d", "-t", "acme-app", "yes"])
+        server.update(snapshot(windows: ["acme-app:0", "acme-app:1"]))
+        let fd = unreadSocket(threadID("acme-app:1"))
+        defer { close(fd) }
+        XCTAssertTrue(eventually { tmux.clientCount == 1 })
+        let peak = peakMegabytes(for: 30)
+        XCTAssertLessThan(peak, 50, "tmux server reached \(peak) MB")
+        XCTAssertEqual(tmux.clientCount, 1)
+    }
+
+    func testAPhoneThatReadsAFloodCostsTheTmuxServerNoMemory() {
+        tmux.run(["new-window", "-d", "-t", "acme-app", "yes"])
+        server.update(snapshot(windows: ["acme-app:0", "acme-app:1"]))
+        let phone = live(threadID("acme-app:1"))
+        var bytes = 0
+        let end = Date().addingTimeInterval(15)
+        var peak = 0
+        while Date() < end, let frame = phone.frame(2) {
+            bytes += frame.payload.count
+            if bytes % 64 == 0 { peak = max(peak, serverMegabytes()) }
+        }
+        peak = max(peak, serverMegabytes())
+        XCTAssertLessThan(peak, 50, "tmux server reached \(peak) MB")
+        XCTAssertGreaterThan(bytes, 100_000)
+        // The socket is still good: the pane's screen keeps coming.
+        XCTAssertEqual(tmux.clientCount, 1)
     }
 
     private static let flood =

@@ -113,7 +113,7 @@ final class MobileServer {
         /// Unsent output a socket may hold before the pane is read no more,
         /// and how long that may last before the socket is closed.
         var socketBacklog = 262_144
-        var socketStall: TimeInterval = 20
+        var socketStall: TimeInterval = 5
         /// Messages a phone may send: a second, and at once.
         var socketRate = 200.0
         var socketBurst = 400.0
@@ -163,6 +163,7 @@ final class MobileServer {
         let opened = Date()
         var lastHeard = Date()
         var lastInput = Date()
+        var lastPing = Date()
         /// The bridge waits for `resume()`, since then.
         var stalled: Date?
         var closing = false
@@ -928,7 +929,9 @@ final class MobileServer {
     /// Ping the socket, and close it when the phone is gone, nobody types, or
     /// the phone does not read.
     private func tick(_ client: Client) {
-        queue.asyncAfter(deadline: .now() + limits.socketPing) { [weak self, weak client] in
+        // Often enough to see a stall end in time, whatever the ping is.
+        let every = min(limits.socketPing, max(limits.socketStall / 2, 0.05))
+        queue.asyncAfter(deadline: .now() + every) { [weak self, weak client] in
             guard let self, let client = self.alive(client), let socket = client.socket else { return }
             let now = Date()
             if now.timeIntervalSince(socket.lastHeard) >= limits.socketDead { return self.drop(client) }
@@ -939,7 +942,10 @@ final class MobileServer {
             if socket.paired, now.timeIntervalSince(socket.lastInput) >= limits.socketIdle {
                 return self.close(client, .idle)
             }
-            if !socket.closing { self.write(MobileSocket.frame(.ping), to: client) }
+            if !socket.closing, now.timeIntervalSince(socket.lastPing) >= limits.socketPing {
+                socket.lastPing = now
+                self.write(MobileSocket.frame(.ping), to: client)
+            }
             self.tick(client)
         }
     }
@@ -1043,6 +1049,8 @@ final class MobileServer {
         guard let socket = client.socket, !socket.closing else { return }
         switch event {
         case .ready(let cols, let rows, let snapshot):
+            // A screen is larger than the flow limit that holds between screens.
+            client.backlog = MobileTerminal.maxSnapshotBytes * 2 + limits.socketBacklog
             write(MobileSocket.textFrame(["type": "ready", "cols": cols, "rows": rows]), to: client)
             write(MobileSocket.binaryFrames(snapshot), to: client)
             socket.stalled = socket.stalled ?? Date()

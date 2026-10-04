@@ -73,6 +73,43 @@ enum MobileTerminal {
         "capture-pane -p -e -S -\(historyLines) -t \(target.pane)"
     }
 
+    /// Asks tmux to hold a pane's output for this client once the client is
+    /// a second behind, and not to keep it. Without it tmux keeps every byte
+    /// a slow client has not taken, and its memory grows with the pane.
+    static let flowCommand = "refresh-client -f pause-after=1"
+    /// Output older than this, in milliseconds, means the client is falling
+    /// behind the pane: the bridge pauses the pane itself, well before tmux
+    /// would.
+    static let maxAgeMilliseconds = 250
+
+    /// Stop the pane's output to this client. tmux drops what it held for it.
+    static func pauseCommand(_ target: Target) -> String {
+        "refresh-client -A '\(target.pane):pause'"
+    }
+
+    static func continueCommand(_ target: Target) -> String {
+        "refresh-client -A '\(target.pane):continue'"
+    }
+
+    /// The control client under a small shell that ends it when its input
+    /// closes: when the bridge stops, and when this app goes away for any
+    /// reason, a kill included. The shell reads the input and hands it to
+    /// the client through a named pipe; at the end of input it closes the
+    /// pipe, waits a second, and signals the client. The signal is needed: a
+    /// control client with output still to write stays attached when its
+    /// pipes merely close.
+    ///
+    /// One line, with no quote, backslash or newline in it, so it can also
+    /// be one word of a command for a remote login shell of any kind.
+    static let supervisor = "f=$(mktemp -u) && mkfifo -m 600 \"$f\" || exit 1; "
+        + "\"$@\" <\"$f\" 2>/dev/null & c=$! ; exec 3>\"$f\"; rm -f \"$f\"; cat >&3; exec 3>&-; "
+        + "sleep 1; kill \"$c\" 2>/dev/null; sleep 2; kill -9 \"$c\" 2>/dev/null; wait"
+
+    /// `command` (a program and its arguments) under the supervisor.
+    static func supervised(_ command: [String]) -> [String] {
+        ["sh", "-c", supervisor, "sh"] + command
+    }
+
     /// `data` as key presses: `send-keys -H` takes each byte as two hex
     /// digits and hands it to the pane as it is. A line holds hex digits and
     /// spaces after its fixed start, so no byte can end the command, start
@@ -180,27 +217,54 @@ struct MobileControlSession {
         case ready(MobileTerminal.State, snapshot: Data)
         /// Bytes the pane wrote since.
         case output(Data)
+        /// The pane's output to this client has stopped, and what was on its
+        /// way is lost. `resync()` starts it again with a new `ready`.
+        case paused
         case size(cols: Int, rows: Int)
         /// The bridge is over: the pane, its session or the client went away.
         case exit
     }
 
-    private enum Reply { case state, capture, size, keys }
+    private enum Reply { case state, capture, size, keys, other }
 
     let target: MobileTerminal.Target
     /// The replies still to come, in the order their commands were written.
-    private var awaited: [Reply] = [.state, .capture]
+    private var awaited: [Reply] = [.other, .state, .capture]
     /// The block being read: its `%begin` arguments, and whose it is.
     private var block: (tag: Data, reply: Reply?, lines: [Data], bytes: Int)?
     private var state: MobileTerminal.State?
     private var ready = false
+    private var paused = false
     private var over = false
 
     init(target: MobileTerminal.Target) { self.target = target }
 
     /// The lines to write when the client starts.
     var opening: [String] {
-        [MobileTerminal.stateCommand(target), MobileTerminal.captureCommand(target)]
+        [
+            MobileTerminal.flowCommand, MobileTerminal.stateCommand(target),
+            MobileTerminal.captureCommand(target),
+        ]
+    }
+
+    /// Stop the pane's output: the phone cannot take it as fast as it comes.
+    mutating func pause() -> [String] {
+        guard !over, !paused else { return [] }
+        paused = true
+        ready = false
+        awaited.append(.other)
+        return [MobileTerminal.pauseCommand(target)]
+    }
+
+    /// Start a paused pane again, from a new capture of its screen.
+    mutating func resync() -> [String] {
+        guard !over, paused else { return [] }
+        paused = false
+        awaited += [.other, .state, .capture]
+        return [
+            MobileTerminal.continueCommand(target), MobileTerminal.stateCommand(target),
+            MobileTerminal.captureCommand(target),
+        ]
     }
 
     /// Bytes from the phone, as lines to write.
@@ -229,11 +293,23 @@ struct MobileControlSession {
             guard ready, words.count == 3, words[1] == Data(target.pane.utf8) else { return [] }
             return [.output(MobileTerminal.unescape(Data(words[2])))]
         case "%extended-output":
-            // `%extended-output %1 <age> ... : <data>`.
+            // `%extended-output %1 <age in ms> ... : <data>`.
             guard ready, words.count == 3, words[1] == Data(target.pane.utf8),
                   let colon = words[2].range(of: Data(" : ".utf8))
             else { return [] }
+            let age = words[2].split(separator: UInt8(ascii: " ")).first
+                .flatMap { Int(String(decoding: $0, as: UTF8.self)) } ?? 0
+            // Old output: the pane writes faster than this client reads.
+            if age > MobileTerminal.maxAgeMilliseconds {
+                return pause().map(Event.send) + [.paused]
+            }
             return [.output(MobileTerminal.unescape(Data(words[2][colon.upperBound...])))]
+        case "%pause":
+            // tmux stopped the pane for this client by itself.
+            guard words.count >= 2, words[1] == Data(target.pane.utf8), !paused else { return [] }
+            paused = true
+            ready = false
+            return [.paused]
         case "%layout-change":
             // The pane may have a new size. One question at a time.
             guard ready, !awaited.contains(.size) else { return [] }
@@ -271,7 +347,7 @@ struct MobileControlSession {
         }
         block = nil
         switch current.reply {
-        case nil:
+        case nil, .other:
             return []
         case .keys:
             // The pane no longer takes keys: it has gone.
@@ -300,19 +376,35 @@ struct MobileControlSession {
 /// One running control client. It reads the client's output on a queue of its
 /// own and reports what `MobileControlSession` makes of it.
 ///
-/// Back-pressure: after it reports output it reads no more until `resume()`
-/// is called. A phone that reads slowly so stops the reading, and what the
-/// pane writes meanwhile waits in tmux, which drops a client that falls too
-/// far behind. This process holds one read of output at a time.
+/// Back-pressure: one lot of output is with the server at a time, until it
+/// calls `resume()`. The client's output is read all the while, so tmux never
+/// keeps it for a slow reader. What the phone cannot take is held up to a
+/// limit; past that the pane is paused in tmux, which keeps nothing for a
+/// paused client, and a new capture of the screen follows when there is room.
 ///
 /// The client never outlives the bridge. `stop()` ends it, letting go of the
 /// bridge without `stop()` ends it, and so does the death of this process,
-/// however it dies: see `supervised`.
+/// however it dies: see `MobileTerminal.supervisor`.
 final class MobileTerminalBridge {
     /// The command that runs the control client, here or over ssh.
     struct Launch: Equatable {
         var path: String
         var args: [String]
+
+        /// `launch` under `MobileTerminal.supervisor`, run by this Mac's shell.
+        static func supervised(_ launch: Launch) -> Launch {
+            let command = MobileTerminal.supervised([launch.path] + launch.args)
+            return Launch(path: "/bin/sh", args: Array(command.dropFirst()))
+        }
+
+        /// The same for a host reached over ssh: the supervisor runs there, next
+        /// to the client. Each word is quoted for the remote shell.
+        static func remote(
+                sshPath: String, options: [String], tmux: String, target: MobileTerminal.Target
+            ) -> Launch {
+            let command = MobileTerminal.supervised([tmux] + MobileTerminal.attachArgv(target))
+            return Launch(path: sshPath, args: options + command.map(Ssh.shellQuote))
+        }
     }
 
     enum Event: Equatable {
@@ -323,27 +415,11 @@ final class MobileTerminalBridge {
         case exit
     }
 
-    /// `launch` under a small shell that ends the client when this process
-    /// goes away. The shell's standard error is the read end of a pipe whose
-    /// only write end this process holds: when that closes, by `stop()` or
-    /// because the app quit, crashed or was killed, the shell signals the
-    /// client. A signal is needed: a tmux control client with output still to
-    /// write stays attached when its pipes merely close, and tmux then keeps
-    /// what the pane writes for it.
-    static func supervised(_ launch: Launch) -> Launch {
-        Launch(path: "/bin/sh", args: ["-c", supervisor, "sh", launch.path] + launch.args)
-    }
-
-    private static let supervisor = """
-        exec 3<&0
-        "$@" <&3 3<&- 2>/dev/null &
-        c=$!
-        ( exec 0<&- 1>&- 3<&-; read _ <&2; kill "$c" 2>/dev/null; sleep 2; kill -9 "$c" 2>/dev/null ) &
-        w=$!
-        exec 0<&- 1>&- 3<&-
-        wait "$c"
-        kill "$w" 2>/dev/null
-        """
+    /// Output held for the phone while it has not taken the last lot. More
+    /// than this and the pane is paused.
+    static let heldLimit = 262_144
+    /// The least time between a pause and the capture that follows it.
+    static let resyncGap: TimeInterval = 0.5
 
     /// The running half. The queue's blocks hold it, never the bridge, so the
     /// bridge is free to go while a read is under way.
@@ -354,20 +430,36 @@ final class MobileTerminalBridge {
         let process = Process()
         let input = Pipe()
         let output = Pipe()
-        /// Its write end is held open for as long as the client may run.
-        let lifeline = Pipe()
 
         // Confined to `io`.
         var session: MobileControlSession
         var source: DispatchSourceRead?
-        var reading = false
         var pending = Data()
         var stopped = false
+        /// The server has a lot of output it has not said there is room after.
+        var awaiting = false
+        var held = Data()
+        var paused = false
+        var pausedAt = Date.distantPast
+        var resyncDue = false
 
         init(launch: Launch, target: MobileTerminal.Target, onEvent: @escaping (Event) -> Void) {
-            self.launch = MobileTerminalBridge.supervised(launch)
+            self.launch = launch
             self.onEvent = onEvent
             session = MobileControlSession(target: target)
+            // No other process this app starts gets these: a copy of the
+            // input's write end in a sibling would keep the client alive.
+            for handle in [
+                input.fileHandleForReading, input.fileHandleForWriting,
+                output.fileHandleForReading, output.fileHandleForWriting,
+            ] {
+                _ = fcntl(handle.fileDescriptor, F_SETFD, FD_CLOEXEC)
+            }
+        }
+
+        /// The descriptors this process keeps while the client runs.
+        var descriptors: [Int32] {
+            [input.fileHandleForWriting.fileDescriptor, output.fileHandleForReading.fileDescriptor]
         }
 
         func start() -> Bool {
@@ -378,13 +470,14 @@ final class MobileTerminalBridge {
             process.environment = environment
             process.standardInput = input
             process.standardOutput = output
-            process.standardError = lifeline.fileHandleForReading
+            process.standardError = FileHandle.nullDevice
             do { try process.run() } catch {
                 io.async { self.finish(report: false) }
                 return false
             }
-            // This process keeps the write end alone.
-            try? lifeline.fileHandleForReading.close()
+            // The client's own ends are the client's alone.
+            try? input.fileHandleForReading.close()
+            try? output.fileHandleForWriting.close()
             // A write to a client that has gone is an error, not a signal.
             _ = fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
             let fd = output.fileHandleForReading.fileDescriptor
@@ -394,7 +487,6 @@ final class MobileTerminalBridge {
                 let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: io)
                 source.setEventHandler { [self] in read(fd) }
                 self.source = source
-                reading = true
                 source.resume()
                 write(session.opening)
             }
@@ -418,12 +510,60 @@ final class MobileTerminalBridge {
             if failed { finish(report: true) }
         }
 
+        /// The server took the last lot and has room.
         func resume() {
-            guard !stopped, !reading, let source else { return }
-            reading = true
-            source.resume()
+            guard !stopped else { return }
+            awaiting = false
+            if !held.isEmpty {
+                let next = held
+                held = Data()
+                deliver(.output(next))
+            } else if paused {
+                resyncSoon()
+            }
         }
 
+        /// Hand the server a lot of output, or a screen, and wait for room.
+        func deliver(_ event: Event) {
+            awaiting = true
+            onEvent(event)
+        }
+
+        /// Output from the pane. One lot is with the server at a time; what
+        /// comes meanwhile is held, up to a limit. Past it the pane is
+        /// paused in tmux, which then keeps nothing for this client, and
+        /// what was held is dropped: a new capture follows.
+        func offer(_ data: Data) {
+            guard !data.isEmpty, !paused else { return }
+            guard awaiting else { return deliver(.output(data)) }
+            held.append(data)
+            guard held.count > MobileTerminalBridge.heldLimit else { return }
+            write(session.pause())
+            didPause()
+        }
+
+        func didPause() {
+            held = Data()
+            paused = true
+            pausedAt = Date()
+        }
+
+        /// Start the pane again once the server has room, and not at once:
+        /// a pane that floods would otherwise be captured without a rest.
+        func resyncSoon() {
+            guard !resyncDue else { return }
+            resyncDue = true
+            let wait = max(0, MobileTerminalBridge.resyncGap - Date().timeIntervalSince(pausedAt))
+            io.asyncAfter(deadline: .now() + wait) { [self] in
+                resyncDue = false
+                guard !stopped, paused, !awaiting else { return }
+                paused = false
+                write(session.resync())
+            }
+        }
+
+        /// The pane is always read, whatever the phone does: tmux never has
+        /// to keep output because this process is slow to take it.
         func read(_ fd: Int32) {
             guard !stopped else { return }
             var chunk = [UInt8](repeating: 0, count: 65_536)
@@ -433,13 +573,8 @@ final class MobileTerminalBridge {
             pending.append(contentsOf: chunk[0..<count])
 
             var out = Data()
-            var events: [Event] = []
-            func flush() {
-                if !out.isEmpty { events.append(.output(out)) }
-                out = Data()
-            }
             var ended = false
-            while !ended, let newline = pending.firstIndex(of: UInt8(ascii: "\n")) {
+            while !ended, !stopped, let newline = pending.firstIndex(of: UInt8(ascii: "\n")) {
                 let line = Data(pending[pending.startIndex..<newline])
                 pending = Data(pending[pending.index(after: newline)...])
                 for event in session.line(line) {
@@ -447,52 +582,44 @@ final class MobileTerminalBridge {
                     case .send(let text): write([text])
                     case .output(let data): out.append(data)
                     case .ready(let state, let snapshot):
-                        flush()
-                        events.append(.ready(cols: state.cols, rows: state.rows, snapshot: snapshot))
+                        // A screen replaces whatever was on its way.
+                        out = Data()
+                        held = Data()
+                        deliver(.ready(cols: state.cols, rows: state.rows, snapshot: snapshot))
                     case .size(let cols, let rows):
-                        flush()
-                        events.append(.size(cols: cols, rows: rows))
+                        offer(out)
+                        out = Data()
+                        onEvent(.size(cols: cols, rows: rows))
+                    case .paused:
+                        out = Data()
+                        didPause()
                     case .exit:
                         ended = true
                     }
                 }
             }
-            flush()
             guard !stopped else { return }
-            // Wait for room after anything that takes room at the other end.
-            let heavy = events.contains {
-                if case .output = $0 { return true }
-                if case .ready = $0 { return true }
-                return false
-            }
-            if heavy, reading {
-                reading = false
-                source?.suspend()
-            }
-            events.forEach(onEvent)
+            offer(out)
+            if paused, !awaiting { resyncSoon() }
             if ended || pending.count > MobileTerminal.maxLineBytes { finish(report: true) }
         }
 
         func finish(report: Bool) {
             guard !stopped else { return }
             stopped = true
-            // Both ends of the client's pipes are closed, and the lifeline:
-            // the shell around the client then signals it. A client with
-            // output still to write would wait for a reader for ever.
+            // Both of this process's pipe ends are closed. The end of input
+            // is what the shell around the client waits for.
             let reader = output.fileHandleForReading
             if let source {
                 source.setCancelHandler { try? reader.close() }
-                // A suspended source must run again before it can be let go.
-                if !reading { source.resume() }
                 source.cancel()
             } else {
                 try? reader.close()
             }
             source = nil
             try? input.fileHandleForWriting.close()
-            try? lifeline.fileHandleForWriting.close()
             // By its own process id, and only if the shell did not end.
-            io.asyncAfter(deadline: .now() + 5) { [process] in
+            io.asyncAfter(deadline: .now() + 6) { [process] in
                 if process.isRunning { kill(process.processIdentifier, SIGKILL) }
             }
             if report { onEvent(.exit) }
@@ -510,6 +637,9 @@ final class MobileTerminalBridge {
 
     /// Start the client. False when it could not be run.
     func start() -> Bool { engine.start() }
+
+    /// The descriptors this process holds for the client. For tests.
+    var descriptors: [Int32] { engine.descriptors }
 
     /// Bytes from the phone, for the pane.
     func input(_ data: Data) {
