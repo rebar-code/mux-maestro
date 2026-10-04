@@ -252,8 +252,8 @@ enum ManagerTranscript {
     }
 
     /// The Claude session id of the pane running tmux session `tmuxSession`.
-    static func sessionId(forTmuxSession tmuxSession: String, sessionsDir: URL) -> String? {
-        session(forTmuxSession: tmuxSession, sessionsDir: sessionsDir)?.id
+    static func sessionId(forTmuxSession tmuxSession: String, pane: String? = nil, sessionsDir: URL) -> String? {
+        session(forTmuxSession: tmuxSession, pane: pane, sessionsDir: sessionsDir)?.id
     }
 
     /// The session id AND its status file in one scan. The status file is named
@@ -265,9 +265,16 @@ enum ManagerTranscript {
     /// another's must not match it. When several files match (a restarted
     /// manager whose old file has not been removed yet) the most recently
     /// updated one is the live pane.
-    static func session(forTmuxSession tmuxSession: String, sessionsDir: URL) -> (id: String, file: URL)? {
+    ///
+    /// With `pane`, the field must also end in `".<pane>"`: the session can
+    /// hold a second agent, and the transcript read must be the one of the
+    /// pane that gets the text.
+    static func session(
+        forTmuxSession tmuxSession: String, pane: String? = nil, sessionsDir: URL
+    ) -> (id: String, file: URL)? {
         guard !tmuxSession.isEmpty else { return nil }
         let prefix = tmuxSession + ":"
+        let suffix = pane.map { "." + $0 } ?? ""
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: sessionsDir.path) else {
             return nil
         }
@@ -275,7 +282,7 @@ enum ManagerTranscript {
         for name in names.sorted() where name.hasSuffix(".json") {
             let url = sessionsDir.appendingPathComponent(name)
             guard let object = object(at: url),
-                  let tmux = object["tmux"] as? String, tmux.hasPrefix(prefix),
+                  let tmux = object["tmux"] as? String, tmux.hasPrefix(prefix), tmux.hasSuffix(suffix),
                   let id = object["sessionId"] as? String, !id.isEmpty
             else { continue }
             let updatedAt = (object["updatedAt"] as? NSNumber)?.doubleValue ?? 0
@@ -598,20 +605,30 @@ final class ManagerPaneDriver {
     struct Config {
         var tmuxPath: String
         var tmuxSession: String
+        /// The manager home, for finding the Maestro's pane in a session made
+        /// before panes were marked (`ManagerPane`).
+        var homePath: String?
         var claudeDir: URL
         var pollInterval: TimeInterval
+        /// How long a turn waits for a session the app has just made to get
+        /// from its login shell to the agent.
+        var startTimeout: TimeInterval
 
         init(
             tmuxPath: String,
             tmuxSession: String = ManagerHome.sessionName,
+            homePath: String? = ManagerHome.defaultHome()?.path,
             claudeDir: URL = FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent(".claude", isDirectory: true),
-            pollInterval: TimeInterval = ManagerTurnWatcher.poll
+            pollInterval: TimeInterval = ManagerTurnWatcher.poll,
+            startTimeout: TimeInterval = 10
         ) {
             self.tmuxPath = tmuxPath
             self.tmuxSession = tmuxSession
+            self.homePath = homePath
             self.claudeDir = claudeDir
             self.pollInterval = pollInterval
+            self.startTimeout = startTimeout
         }
     }
 
@@ -693,15 +710,47 @@ final class ManagerPaneDriver {
     /// The manager pane's status in Claude's own status file, without the
     /// hook row. nil when the pane has no session yet. Safe on any queue.
     func fileStatus() -> ManagerTurnStatus? {
-        guard let resolved = ManagerTranscript.session(
-            forTmuxSession: config.tmuxSession, sessionsDir: sessionsDir) else { return nil }
+        guard let pane = maestroPane(), let resolved = ManagerTranscript.session(
+            forTmuxSession: config.tmuxSession, pane: pane, sessionsDir: sessionsDir) else { return nil }
         return ManagerTranscript.status(sessionFile: resolved.file).0
     }
 
     /// The resolved Claude session id for the manager pane, re-read each call:
     /// restarting the pane gives the manager a new id.
     func currentSessionId() -> String? {
-        ManagerTranscript.sessionId(forTmuxSession: config.tmuxSession, sessionsDir: sessionsDir)
+        maestroPane().flatMap {
+            ManagerTranscript.sessionId(forTmuxSession: config.tmuxSession, pane: $0, sessionsDir: sessionsDir)
+        }
+    }
+
+    /// The Maestro's own pane id, looked up each call: a restart makes a new
+    /// pane. nil when there is none to type into. A session name is never a
+    /// target here: tmux reads it as the session's active pane.
+    private func maestroPane() -> String? {
+        guard case .pane(let id) = lookup() else { return nil }
+        return id
+    }
+
+    private func lookup() -> ManagerPane.Lookup {
+        ManagerPane.lookup(session: config.tmuxSession, homePath: config.homePath) {
+            runner.run(config.tmuxPath, $0, stdin: nil)
+        }
+    }
+
+    /// The pane for a turn. A session the app has just made runs a login
+    /// shell for a moment before the agent; a turn sent then waits for the
+    /// agent, and is not typed into the shell. Blocks; on `queue` only.
+    private func paneForTurn() -> String? {
+        let deadline = Self.now() + config.startTimeout
+        while true {
+            switch lookup() {
+            case .pane(let id): return id
+            case .none: return nil
+            case .starting:
+                guard Self.now() < deadline else { return nil }
+                Thread.sleep(forTimeInterval: 0.1)
+            }
+        }
     }
 
     /// The manager pane's transcript file, once its session has written one.
@@ -718,10 +767,10 @@ final class ManagerPaneDriver {
     /// The pane's status now, read apart from any turn: safe on any queue.
     /// nil when the pane has no session yet or its state is not known.
     func paneStatus() -> ManagerTurnStatus? {
-        guard let resolved = ManagerTranscript.session(
-            forTmuxSession: config.tmuxSession, sessionsDir: sessionsDir) else { return nil }
-        if let statusOverride, let status = statusOverride(resolved.id) { return verified(status) }
-        return verified(ManagerTranscript.status(sessionFile: resolved.file).0)
+        guard let pane = maestroPane(), let resolved = ManagerTranscript.session(
+            forTmuxSession: config.tmuxSession, pane: pane, sessionsDir: sessionsDir) else { return nil }
+        if let statusOverride, let status = statusOverride(resolved.id) { return verified(status, pane: pane) }
+        return verified(ManagerTranscript.status(sessionFile: resolved.file).0, pane: pane)
     }
 
     /// A stored "waiting", or no status at all, checked against the pane
@@ -730,9 +779,8 @@ final class ManagerPaneDriver {
     /// back to its input box. An input box that is verified on screen wins;
     /// anything else on screen, or a pane that cannot be read, changes nothing.
     /// Busy and idle are taken as they are, and the pane is not read for them.
-    private func verified(_ status: ManagerTurnStatus?) -> ManagerTurnStatus? {
+    private func verified(_ status: ManagerTurnStatus?, pane target: String) -> ManagerTurnStatus? {
         guard status == .waiting || status == nil else { return status }
-        let target = config.tmuxSession
         guard let screen = runner.run(config.tmuxPath, ManagerScreen.captureArgv(target: target), stdin: nil),
               let row = runner.run(config.tmuxPath, ManagerScreen.cursorRowArgv(target: target), stdin: nil)
                   .flatMap({ Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }),
@@ -783,19 +831,21 @@ final class ManagerPaneDriver {
                 return
             }
 
+            // No pane of the Maestro's own, or a shell in it: the text goes
+            // nowhere. The session's active pane is never the fallback.
+            guard let pane = self.paneForTurn() else {
+                self.report(.unreachable("The Maestro session is not running"), to: completion)
+                return
+            }
             let resolved = ManagerTranscript.session(
-                forTmuxSession: self.config.tmuxSession, sessionsDir: self.sessionsDir)
+                forTmuxSession: self.config.tmuxSession, pane: pane, sessionsDir: self.sessionsDir)
             self.sessionId = resolved?.id ?? ""
             self.sessionFile = resolved?.file
             // Typing into a pane that is sitting on a permission prompt answers
             // the prompt with the prompt text. Never do that.
             if let reason = Self.refusal(
-                status: self.verified(self.currentStatus()), requireIdle: requireIdle) {
+                status: self.verified(self.currentStatus(), pane: pane), requireIdle: requireIdle) {
                 self.report(.refused(reason), to: completion)
-                return
-            }
-            guard self.tmux(["display-message", "-pt", self.config.tmuxSession, "#{pane_id}"]) else {
-                self.report(.unreachable("The Maestro session is not running"), to: completion)
                 return
             }
 
@@ -806,11 +856,11 @@ final class ManagerPaneDriver {
 
             // A pane in copy mode (the human scrolled the terminal) reads the Enter
             // as a copy-mode key, and the prompt sits unsent in the input box.
-            _ = self.tmux(["copy-mode", "-q", "-t", self.config.tmuxSession])
+            _ = self.tmux(["copy-mode", "-q", "-t", pane])
 
             // Paste rather than `send-keys -l`: the text goes in over stdin, so a
             // multi-line prompt with metacharacters is safe by construction.
-            let paste = TmuxCommands.pastePrompt(session: self.config.tmuxSession)
+            let paste = TmuxCommands.pastePrompt(session: pane)
             guard self.tmux(paste.load, stdin: Data(text.utf8)), self.tmux(paste.paste) else {
                 self.report(.unreachable("Could not paste into the Maestro pane"), to: completion)
                 return
@@ -832,15 +882,15 @@ final class ManagerPaneDriver {
                 // Checked against the screen again: the box now holds the
                 // pasted text, and a prompt that came up has taken the box away.
                 if let reason = Self.refusal(
-                    status: self.verified(self.currentStatus()), requireIdle: requireIdle) {
+                    status: self.verified(self.currentStatus(), pane: pane), requireIdle: requireIdle) {
                     // The text is in the input box already. Take it out, or
                     // the next Enter in the pane would send it.
                     let lines = text.split(separator: "\n", omittingEmptySubsequences: false).count
-                    self.tmux(TmuxCommands.clearInput(target: self.config.tmuxSession, lines: lines))
+                    self.tmux(TmuxCommands.clearInput(target: pane, lines: lines))
                     self.finish(.refused(reason))
                     return
                 }
-                guard self.tmux(["send-keys", "-t", self.config.tmuxSession, "Enter"]) else {
+                guard self.tmux(["send-keys", "-t", pane, "Enter"]) else {
                     self.finish(.unreachable("Could not send Enter to the Maestro pane"))
                     return
                 }

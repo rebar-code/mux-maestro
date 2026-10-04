@@ -82,6 +82,8 @@
 		A00B1018 /* mobile in Resources */ = {isa = PBXBuildFile; fileRef = A00B1008 /* mobile */; };
 		A000C122 /* AgentStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A000C102 /* AgentStateTests.swift */; };
 		A00F6011 /* ManagerPaneDriver.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00F6001 /* ManagerPaneDriver.swift */; };
+		A00F6111 /* ManagerPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00F6101 /* ManagerPane.swift */; };
+		A00F6121 /* ManagerPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00F6101 /* ManagerPane.swift */; };
 		A00F6021 /* ManagerPaneDriver.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00F6001 /* ManagerPaneDriver.swift */; };
 		A00F6022 /* ManagerPaneDriverTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00F6002 /* ManagerPaneDriverTests.swift */; };
 		A000C123 /* ManagerHome.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000791 /* ManagerHome.swift */; };
@@ -319,6 +321,7 @@
 		A00B1008 /* mobile */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Resources/mobile; sourceTree = "<group>"; };
 		A000C102 /* AgentStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentStateTests.swift; sourceTree = "<group>"; };
 		A00F6001 /* ManagerPaneDriver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManagerPaneDriver.swift; sourceTree = "<group>"; };
+		A00F6101 /* ManagerPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManagerPane.swift; sourceTree = "<group>"; };
 		A00F6002 /* ManagerPaneDriverTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManagerPaneDriverTests.swift; sourceTree = "<group>"; };
 		A0000091 /* ClaudeSessionRecoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeSessionRecoveryTests.swift; sourceTree = "<group>"; };
 		A0000093 /* CodexSessionsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexSessionsTests.swift; sourceTree = "<group>"; };
@@ -554,6 +557,7 @@
 				A0000E31 /* PullRequestsViewController.swift */,
 				A0000790 /* ManagerStore.swift */,
 				A00F6001 /* ManagerPaneDriver.swift */,
+				A00F6101 /* ManagerPane.swift */,
 				A0000791 /* ManagerHome.swift */,
 				A0000799 /* ManagerRailViewController.swift */,
 				A000079A /* ManagerController.swift */,
@@ -813,6 +817,7 @@
 				A00B1013 /* PhoneLink.swift in Sources */,
 				A00B1014 /* PhoneSettingsView.swift in Sources */,
 				A00F6011 /* ManagerPaneDriver.swift in Sources */,
+				A00F6111 /* ManagerPane.swift in Sources */,
 				A0000111 /* DetailViewController.swift in Sources */,
 				A00001AF /* FindBar.swift in Sources */,
 				A0000751 /* RightSidebarViewController.swift in Sources */,
@@ -937,6 +942,7 @@
 				A000C122 /* AgentStateTests.swift in Sources */,
 				A000C123 /* ManagerHome.swift in Sources */,
 				A00F6021 /* ManagerPaneDriver.swift in Sources */,
+				A00F6121 /* ManagerPane.swift in Sources */,
 				A00F6022 /* ManagerPaneDriverTests.swift in Sources */,
 				A0000305 /* SidebarDiff.swift in Sources */,
 				A0000306 /* TmuxService.swift in Sources */,

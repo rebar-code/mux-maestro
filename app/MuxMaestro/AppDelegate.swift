@@ -141,15 +141,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 DispatchQueue.main.async { self?.managerController?.dismiss(key: key) }
             },
             screen: { [registry] lines in
-                registry.local.captureScrollback(target: ManagerHome.sessionName, lines: lines)
+                // The Maestro's own pane, never the session: see `ManagerPane`.
+                ManagerPane.resolve(run: { registry.local.runTmux($0) }).flatMap {
+                    registry.local.captureScrollback(target: $0, lines: lines)
+                }
             },
             io: { [registry] in
                 // The server takes the manager's state from `pane` above; the
                 // per-thread state source is not used for it.
-                let io = registry.local.phonePane(target: ManagerHome.sessionName) { thread in
+                guard let pane = ManagerPane.resolve(run: { registry.local.runTmux($0) }) else { return nil }
+                let io = registry.local.phonePane(target: pane) { thread in
                     MobilePaneState(status: thread.status, since: thread.since)
                 }
-                return (ManagerHome.sessionName, io)
+                return (pane, io)
             },
             cwd: { ManagerHome.defaultHome()?.path }),
         requests: ManagerHome.defaultHome().map {
