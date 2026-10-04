@@ -5387,7 +5387,7 @@ extension SidebarViewController: NSMenuDelegate {
         case .window(_, let owner, let w):
             menu.addItem(item("New Window", #selector(contextNewWindow(_:))))
             menu.addItem(item("Rename Window “\(w.name)”…", #selector(contextRenameWindow(_:))))
-            menu.addItem(item("Archive Window \(w.index)", #selector(contextKillWindow(_:))))
+            menu.addItem(item("Archive Window", #selector(contextKillWindow(_:))))
             menu.addItem(.separator())
             if let node {
                 addMoveToSessionItems(to: menu, node: node, session: owner)

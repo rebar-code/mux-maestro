@@ -822,7 +822,7 @@ final class TmuxServiceTests: XCTestCase {
         let runner = FakeRunner()
         let name = makeService(runner).renameWindow(session: "web", window: 2, to: "  editor  ")
         XCTAssertEqual(name, "editor")
-        XCTAssertEqual(runner.argSequences, [["rename-window", "-t", "=web:2", "editor"]])
+        XCTAssertEqual(runner.argSequences, [["rename-window", "-t", "=web:2", "--", "editor"]])
     }
 
     func testRenameWindowRejectsEmptyName() {

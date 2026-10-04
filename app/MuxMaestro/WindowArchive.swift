@@ -51,13 +51,24 @@ struct RestoredWindow: Equatable {
 enum WindowRestoreFailure: Error, Equatable {
     /// A pane's directory is gone (a cleaned-up worktree, a deleted repo).
     case directoryMissing(String)
+    /// The window's session was ended some other way after the archive. Undo
+    /// only creates a session that the archive itself ended.
+    case sessionGone(String)
     case tmux(String)
 
     var message: String {
         switch self {
         case .directoryMissing(let path): return "\(path) no longer exists."
+        case .sessionGone(let session): return "The session “\(session)” no longer exists."
         case .tmux(let reason): return reason
         }
+    }
+
+    /// Whether the same undo can succeed later (an ssh timeout, a busy tmux).
+    /// The archive stays on the undo stack for these.
+    var isRetryable: Bool {
+        if case .tmux = self { return true }
+        return false
     }
 }
 
@@ -98,18 +109,40 @@ enum WindowArchive {
     }
 
     /// Which agent a pane ran and its session id. The polled ids win; the hook
-    /// record covers a pane the poll did not identify, but never a pane that is
-    /// back at a shell prompt (the record outlives the agent it describes).
+    /// record covers a pane the poll did not identify.
+    ///
+    /// The record file is append-only and pane ids start again with the tmux
+    /// server, so an old record can carry a new pane's id. A record counts only
+    /// when it names the pane's directory and the pane runs something that can be
+    /// that agent. An id that is not a session id is dropped. In both cases the
+    /// pane is reported as "agent session not found": resuming the wrong
+    /// conversation is worse than resuming none.
     private static func agentSession(
         of pane: TmuxPane, record: AgentRecord?
     ) -> (RecoveryAgent?, String?) {
-        if let id = pane.claudeSessionId { return (.claude, id) }
-        if let id = pane.codexSessionId { return (.codex, id) }
+        if let id = pane.claudeSessionId { return (.claude, validSessionId(id)) }
+        if let id = pane.codexSessionId { return (.codex, validSessionId(id)) }
         if shells.contains(pane.command), pane.attention == .unknown { return (nil, nil) }
-        if let record { return (record.agent, record.sessionId) }
+        if let record, record.cwd == pane.path,
+           isAgentCommand(pane.command, agent: record.agent) {
+            return (record.agent, validSessionId(record.sessionId))
+        }
         if pane.command == "codex" { return (.codex, nil) }
         if pane.command == "claude" || pane.attention != .unknown { return (.claude, nil) }
         return (nil, nil)
+    }
+
+    /// Claude Code and Codex session ids are both UUIDs.
+    static func validSessionId(_ id: String) -> String? {
+        ClaudeSessionRecovery.isSessionId(id) ? id : nil
+    }
+
+    /// Whether `command` (`#{pane_current_command}`) can be `agent`: its own
+    /// name, `node`, or a version number, which is how Claude Code names its
+    /// process.
+    static func isAgentCommand(_ command: String, agent: RecoveryAgent) -> Bool {
+        command == agent.rawValue || command == "node"
+            || command.range(of: "^[0-9]+\\.[0-9]+\\.[0-9]+", options: .regularExpression) != nil
     }
 
     /// The window as a recovery snapshot, so `SessionRecord.restorePlan` builds
@@ -164,6 +197,9 @@ enum WindowArchive {
         }
     }
 
+    /// Toast body when the window could not be read before the kill.
+    static let notUndoableNote = "Can’t be undone: the window could not be read"
+
     static func failureMessage(_ archived: ArchivedWindow, _ failure: WindowRestoreFailure) -> String {
         "Couldn’t restore “\(archived.displayName)”. \(failure.message)"
     }
@@ -180,28 +216,78 @@ final class WindowArchiveHistory {
         /// Where undo put the window; what redo archives.
         var restoredIndex: Int?
 
-        init(_ archived: ArchivedWindow) { self.archived = archived }
+        // The rest is main thread only.
+
+        /// The panes' directories. They do not change across undo and redo.
+        let directories: [String]
+        /// The window's host and session, for dropping the entry when either goes.
+        let host: Host
+        let session: String
+        let removedSession: Bool
+        /// False while undo has the window back (the entry then waits on the
+        /// redo stack).
+        var isArchived = true
+        /// The worktree the close flow would have cleaned up. It is cleaned up
+        /// when this entry leaves the history still archived, not before: undo
+        /// needs the directory for as long as it is offered.
+        var worktree: String?
+
+        init(_ archived: ArchivedWindow, worktree: String? = nil) {
+            self.archived = archived
+            self.directories = archived.panes.map(\.cwd)
+            self.host = archived.host
+            self.session = archived.session
+            self.removedSession = archived.removedSession
+            self.worktree = worktree
+        }
     }
 
     let limit: Int
     private(set) var entries: [Entry] = []
-    /// Called with each entry pushed out by a newer one, so its undo actions can
-    /// be dropped with it.
-    var onEvict: ((Entry) -> Void)?
+    /// Called with each entry that leaves the history, so its undo actions go
+    /// with it, and with the worktree that is now due for cleanup, if any.
+    var onLeave: ((Entry, String?) -> Void)?
 
     init(limit: Int = WindowArchive.historyLimit) {
         self.limit = max(limit, 1)
     }
 
+    /// Add a new archive. Registering its undo clears the redo stack, so entries
+    /// whose window is restored can no longer be redone and leave first.
     @discardableResult
-    func push(_ archived: ArchivedWindow) -> Entry {
-        let entry = Entry(archived)
+    func push(_ archived: ArchivedWindow, worktree: String? = nil) -> Entry {
+        for restored in entries where !restored.isArchived { remove(restored) }
+        let entry = Entry(archived, worktree: worktree)
         entries.append(entry)
-        while entries.count > limit { onEvict?(entries.removeFirst()) }
+        while entries.count > limit { remove(entries[0]) }
         return entry
     }
 
     func remove(_ entry: Entry) {
-        entries.removeAll { $0 === entry }
+        guard let position = entries.firstIndex(where: { $0 === entry }) else { return }
+        entries.remove(at: position)
+        var due = entry.isArchived ? entry.worktree : nil
+        // Another archived window may still be restored into the same worktree:
+        // the cleanup waits for that one instead.
+        if let worktree = due, let heir = entries.first(where: { other in
+            other.isArchived && other.directories.contains {
+                Worktrees.isInside(path: $0, root: worktree)
+            }
+        }) {
+            heir.worktree = heir.worktree ?? worktree
+            due = nil
+        }
+        onLeave?(entry, due)
+    }
+
+    /// The app is quitting, so no undo is offered any more: empty the history
+    /// and return every worktree that is due for cleanup.
+    func drain() -> [String] {
+        var due: [String] = []
+        for entry in entries where entry.isArchived {
+            if let worktree = entry.worktree, !due.contains(worktree) { due.append(worktree) }
+        }
+        entries = []
+        return due
     }
 }

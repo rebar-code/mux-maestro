@@ -30,14 +30,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The archived windows Edit > Undo can still restore. In memory only.
     private lazy var archiveHistory: WindowArchiveHistory = {
         let history = WindowArchiveHistory()
-        history.onEvict = { [weak self] entry in
+        history.onLeave = { [weak self] entry, worktree in
             self?.window?.undoManager?.removeAllActions(withTarget: entry)
+            if let worktree { self?.cleanUpWorktreeUnlessInUse(worktree) }
         }
         return history
     }()
-    /// Worktrees spindown is working on right now. Undo refuses to put a window
-    /// back into one: spindown would remove the directory under it.
-    private var worktreesBeingCleaned: Set<String> = []
     /// The tmux service for the current breadcrumb selection — the target an inline
     /// breadcrumb rename runs against.
     private var breadcrumbService: TmuxService?
@@ -1769,7 +1767,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     ///
     /// It used to always kill the window: ⌘W typed inside one pane of a
     /// three-pane window took all three with it. `paneFirst` is what asks for the
-    /// narrower target; the sidebar's explicit Close/Kill Window items don't.
+    /// narrower target; the sidebar's explicit Archive Window items don't.
     @objc private func actionCloseWindow() {
         if let panel = NSApp.keyWindow as? NSPanel, panel.isFloatingPanel {
             panel.close()
@@ -1781,7 +1779,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Gate a `kill-pane`/`kill-window` behind a confirm that names the exact
-    /// target (⌘W and both sidebar Close/Kill Window items land here; the sidebar
+    /// target (⌘W and both sidebar Archive Window items land here; the sidebar
     /// items skip the sheet). Confirm is the default button, so ⌘W → Return still
     /// closes in one beat; Escape cancels.
     ///
@@ -1830,8 +1828,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             archivedWindow = result.archived
             return result.killed
         }
-        let archived: (() -> Void)? = action == .window ? { [weak self] in
-            self?.didArchive(archivedWindow, service: service)
+        // An archive keeps its worktree until undo is no longer offered, so the
+        // cleanup the sheet asked for goes with the archive instead of running now.
+        let archived: ((String?) -> Void)? = action == .window ? { [weak self] cleanUp in
+            self?.didArchive(archivedWindow, service: service, worktree: cleanUp)
         } : nil
         guard CloseWindowPrompt.needsConfirm(source) else {
             performDestructive(
@@ -1910,13 +1910,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // the child PATH the runner builds.
         let path = NSHomeDirectory() + "/go/bin:"
             + (ProcessCommandRunner.childEnvironment["PATH"] ?? "")
-        worktreesBeingCleaned.insert(worktree)
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let out = ProcessCommandRunner(timeout: 900).run("/usr/bin/env", ["PATH=\(path)"] + argv)
             let result = Worktrees.parseSpindown(json: out)
             let toast = Worktrees.cleanupToast(result, worktree: worktree)
             DispatchQueue.main.async {
-                self?.worktreesBeingCleaned.remove(worktree)
                 guard let self, let window = self.window else { return }
                 if case .cleaned? = result {
                     self.sidebarVC?.forgetWorktree(path: worktree)
@@ -1937,7 +1935,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func confirmDestructive(
         title: String, info: String, confirmTitle: String,
         failure: String, on service: TmuxService? = nil, worktree: String? = nil,
-        perform: @escaping () -> Bool, onSuccess: (() -> Void)? = nil
+        perform: @escaping () -> Bool, onSuccess: ((String?) -> Void)? = nil
     ) {
         let alert = NSAlert()
         alert.messageText = title
@@ -1969,10 +1967,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Run a destructive tmux mutation now — what a confirm sheet does once
     /// accepted, and what a sidebar right-click does with no sheet. `perform` runs
     /// off-main; success refreshes the tree and hands `cleanUp` to spindown,
-    /// failure shows `failure`.
+    /// failure shows `failure`. With `onSuccess`, the worktree goes to it instead:
+    /// an archive decides when its worktree is cleaned up.
     private func performDestructive(
         failure: String, on service: TmuxService?, cleanUp: String?,
-        perform: @escaping () -> Bool, onSuccess: (() -> Void)? = nil
+        perform: @escaping () -> Bool, onSuccess: ((String?) -> Void)? = nil
     ) {
         // Route to the target host's serial queue so a wedged remote can't block
         // another host; herdr and host-agnostic ops fall back to the global queue.
@@ -1982,8 +1981,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async {
                 guard let self else { return }
                 if ok { self.sidebarVC?.refresh() } else { self.presentError(failure) }
-                if ok, let cleanUp { self.cleanUpWorktree(cleanUp) }
-                if ok { onSuccess?() }
+                guard ok else { return }
+                if let onSuccess {
+                    onSuccess(cleanUp)
+                } else if let cleanUp {
+                    self.cleanUpWorktree(cleanUp)
+                }
             }
         }
     }
@@ -4129,6 +4132,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // (the browser-preview tunnels) don't linger after the app exits.
         registry.closeAllMasters()
         if Settings.phoneEnabled() { phoneLink.shutdown() }
+        finishArchivesAtQuit()
     }
 
     /// Choose what the terminal runs: `tmux attach` if a tmux server is up,
@@ -4184,8 +4188,8 @@ extension AppDelegate: NSToolbarItemValidation, NSMenuItemValidation {
         }
         // ⌘W's label has to follow ⌘W's target — it closes the focused pane of a
         // multi-pane window and the window only when the pane *is* the window.
-        // Left as a fixed "Close Window" it promised the wider blast radius on
-        // every press. Falls back to "Close Window" with nothing attached, which
+        // Left as a fixed "Archive Window" it promised the wider blast radius on
+        // every press. Falls back to "Archive Window" with nothing attached, which
         // is also what ⌘W does once a session loads.
         if item.action == #selector(actionCloseWindow) {
             var action = CloseWindowPrompt.Action.window
@@ -4343,6 +4347,7 @@ extension AppDelegate: SidebarSelectionDelegate {
     /// only place the app can see it — and without this ⌘` would forget every
     /// switch the user made from the keyboard.
     func sidebarDidRefreshTree(host: Host) {
+        dropArchivesOfEndedSessions(host: host)
         reloadPullRequestsScreen()
         refreshHandoffCommands()
         guard let session = attachedSession, attachedService?.host == host,
@@ -4942,7 +4947,8 @@ extension AppDelegate: SidebarActionDelegate {
                 else { return false }
                 Settings.clearHost(Host(name: alias, sshAlias: alias))
                 return true
-            })
+            },
+            onSuccess: { [weak self] _ in self?.dropArchives(ofHostAlias: alias) })
     }
 
     func sidebarRequestInstallMosh(host: Host) {
@@ -5343,17 +5349,31 @@ extension AppDelegate: CommitPanelDelegate {
 
 extension AppDelegate {
     /// A window was archived. Keep what undo needs, put Undo Archive Window on
-    /// the Edit menu, and offer the same undo in a toast. `archived` is nil when
-    /// the window could not be read before the kill; then there is nothing to undo.
+    /// the Edit menu, and offer the same undo in a toast.
+    ///
+    /// `worktree` is the worktree the close flow would clean up. It stays until
+    /// the archive leaves the undo history (pushed out by newer archives, dropped,
+    /// or the app quits): undo needs the directory for as long as it is offered.
+    ///
+    /// `archived` is nil when the window could not be read before the kill. Then
+    /// nothing can be undone: the toast says so and the worktree is cleaned up now.
     ///
     /// ⌘Z reaches the undo even while the terminal has focus: the terminal view
     /// does not answer `undo:`, so the window does, and Edit > Undo is enabled
     /// while an archive is on its undo stack. With nothing to undo the item is
     /// disabled and ⌘Z goes to the terminal as a key press, as before. A text
     /// field's own edits sit above the archive on the stack and are undone first.
-    private func didArchive(_ archived: ArchivedWindow?, service: TmuxService) {
-        guard let archived else { return }
-        registerArchiveUndo(archiveHistory.push(archived), service: service)
+    private func didArchive(_ archived: ArchivedWindow?, service: TmuxService, worktree: String?) {
+        guard let archived else {
+            if let worktree { cleanUpWorktree(worktree) }
+            if let window {
+                toast.show(
+                    over: window, glyph: "🗃", title: "Archived window",
+                    text: WindowArchive.notUndoableNote)
+            }
+            return
+        }
+        registerArchiveUndo(archiveHistory.push(archived, worktree: worktree), service: service)
         showArchivedToast(archived)
     }
 
@@ -5388,20 +5408,15 @@ extension AppDelegate {
             undoManager.setActionName(WindowArchive.actionName)
         }
         toast.hide()
-        let cleaning = worktreesBeingCleaned
         service.driverQueue.async { [weak self] in
             let archived = entry.archived
-            let inCleanup = archived.panes.contains { pane in
-                cleaning.contains { pane.cwd == $0 || pane.cwd.hasPrefix($0 + "/") }
-            }
-            let result: Result<RestoredWindow, WindowRestoreFailure> = inCleanup
-                ? .failure(.tmux("Its worktree is being cleaned up."))
-                : service.restoreArchivedWindow(archived)
+            let result = service.restoreArchivedWindow(archived)
             if case .success(let restored) = result { entry.restoredIndex = restored.index }
             DispatchQueue.main.async {
                 guard let self else { return }
                 switch result {
                 case .success(let restored):
+                    entry.isArchived = false
                     self.focusNew(
                         session: archived.session, window: restored.index, pane: nil,
                         service: service)
@@ -5414,7 +5429,13 @@ extension AppDelegate {
                 case .failure(let failure):
                     // Nothing came back, so there is nothing to redo.
                     self.window?.undoManager?.removeAllActions(withTarget: entry)
-                    self.archiveHistory.remove(entry)
+                    if failure.isRetryable {
+                        // An ssh timeout or a busy tmux: the undo goes back on the
+                        // stack, so ⌘Z tries again.
+                        self.registerArchiveUndo(entry, service: service)
+                    } else {
+                        self.archiveHistory.remove(entry)
+                    }
                     self.presentError(WindowArchive.failureMessage(archived, failure))
                 }
             }
@@ -5422,7 +5443,7 @@ extension AppDelegate {
     }
 
     /// Edit > Redo Archive Window: archive the restored window again. No confirm
-    /// sheet (the archive was confirmed the first time) and no worktree cleanup.
+    /// sheet: the archive was confirmed the first time.
     private func redoArchive(_ entry: WindowArchiveHistory.Entry, service: TmuxService) {
         registerArchiveUndo(entry, service: service)
         service.driverQueue.async { [weak self] in
@@ -5436,14 +5457,67 @@ extension AppDelegate {
             DispatchQueue.main.async {
                 guard let self else { return }
                 guard result.killed else {
-                    self.window?.undoManager?.removeAllActions(withTarget: entry)
+                    // The window is still there, so the entry has nothing to undo.
                     self.archiveHistory.remove(entry)
                     self.presentError("Couldn’t archive the window.")
                     return
                 }
+                entry.isArchived = true
                 self.sidebarVC?.refresh()
                 self.showArchivedToast(result.archived ?? before)
             }
+        }
+    }
+
+    /// Drop every archive that can no longer be undone because its host was
+    /// removed or its session was ended some other way. A session the archive
+    /// itself ended stays: undo creates that one again.
+    private func dropArchives(where gone: (WindowArchiveHistory.Entry) -> Bool) {
+        for entry in archiveHistory.entries where entry.isArchived && gone(entry) {
+            archiveHistory.remove(entry)
+        }
+    }
+
+    /// A host's tree reloaded: drop its archives whose session is no longer there.
+    func dropArchivesOfEndedSessions(host: Host) {
+        guard !archiveHistory.entries.isEmpty, let sidebarVC else { return }
+        let live = Set(sidebarVC.cachedSessions(host: host).map(\.name))
+        dropArchives { $0.host == host && !$0.removedSession && !live.contains($0.session) }
+    }
+
+    func dropArchives(ofHostAlias alias: String) {
+        dropArchives { $0.host.sshAlias == alias }
+    }
+
+    /// A deferred worktree cleanup, now due. Skipped when a pane sits in the
+    /// worktree again (an undone archive, or a window opened there since).
+    private func cleanUpWorktreeUnlessInUse(_ worktree: String) {
+        guard !worktreeIsInUse(worktree) else { return }
+        cleanUpWorktree(worktree)
+    }
+
+    private func worktreeIsInUse(_ worktree: String) -> Bool {
+        (sidebarVC?.cachedSessions(host: .local) ?? []).contains { session in
+            session.windows.contains { window in
+                window.panes.contains { Worktrees.isInside(path: $0.path, root: worktree) }
+            }
+        }
+    }
+
+    /// Quitting ends every undo offer, so the deferred cleanups run now. spindown
+    /// can take minutes; it is started on its own and not waited for.
+    func finishArchivesAtQuit() {
+        guard let python = FileTransfer.python3Path else { return }
+        let path = NSHomeDirectory() + "/go/bin:"
+            + (ProcessCommandRunner.childEnvironment["PATH"] ?? "")
+        for worktree in archiveHistory.drain() where !worktreeIsInUse(worktree) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = ["PATH=\(path)"] + Worktrees.spindownArgv(
+                python: python, script: Worktrees.spindownScriptPath, worktree: worktree)
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            try? process.run()
         }
     }
 }

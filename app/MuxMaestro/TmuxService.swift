@@ -1627,11 +1627,24 @@ final class TmuxService {
         switch WindowArchive.restorePlan(
             archived, directoryExists: directoryExists ?? self.directoryExists) {
         case .failure(let failure): return .failure(failure)
-        case .success(let plan): window = plan
+        // The name and the directories were read from tmux, which would expand
+        // `#{...}` in them again: pass them back as literals.
+        case .success(let plan):
+            window = RestoreWindow(
+                name: TmuxCommands.literal(plan.name),
+                panes: plan.panes.map {
+                    RestorePane(
+                        cwd: TmuxCommands.literal($0.cwd), resumeCommand: $0.resumeCommand,
+                        active: $0.active)
+                },
+                index: plan.index, layout: plan.layout, active: plan.active)
         }
         let session = archived.session
         let cwd = window.panes[0].cwd
         let createdSession = !existingSessionNames().contains(session)
+        // A session that was still there after the archive was ended on purpose
+        // since: do not bring it back.
+        if createdSession, !archived.removedSession { return .failure(.sessionGone(session)) }
         var index = archived.index
         if createdSession {
             guard tmux(TmuxCommands.newSession(name: session, dir: cwd)) != nil else {
@@ -1658,6 +1671,10 @@ final class TmuxService {
         }
 
         let target = TmuxCommands.windowTarget(session: session, window: index)
+        // The id names this window for good; its index can change hands.
+        let windowId = tmux(["display-message", "-p", "-t", target, "#{window_id}"])
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .flatMap { $0.isEmpty ? nil : $0 }
         var pendingResumes: [PendingAgentResume] = []
         var failure = restore(
             window: window, target: target, resumeAgentsImmediately: true,
@@ -1673,7 +1690,7 @@ final class TmuxService {
         if let failure {
             _ = tmuxDestructive(createdSession
                 ? TmuxCommands.killSession(name: session)
-                : TmuxCommands.killWindow(target: target))
+                : TmuxCommands.killWindow(target: windowId ?? target))
             return .failure(.tmux(failure))
         }
         return .success(RestoredWindow(
