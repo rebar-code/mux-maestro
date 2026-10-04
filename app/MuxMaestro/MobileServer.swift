@@ -130,6 +130,9 @@ final class MobileServer {
     private let manager: Manager?
     private let voice: Voice?
     private let serving: Serving?
+    /// The phones that asked for notifications. nil where nothing is sent
+    /// (the dev server): the push routes then answer 503.
+    private let push: MobilePushCenter?
     private let queue = DispatchQueue(label: "is.rebar.muxmaestro.mobile")
     private let work = DispatchQueue(label: "is.rebar.muxmaestro.mobile.work", attributes: .concurrent)
 
@@ -166,6 +169,8 @@ final class MobileServer {
     /// Turns this server started that have not ended. The app tells the server
     /// about a running turn too, but only once the turn is on its way.
     private var phoneTurns = 0
+    /// Each thread's last status, so a change is one notification.
+    private var pushTracker = MobilePushTracker()
 
     private let activityLock = NSLock()
     private var lastRequestAt = Date.distantPast
@@ -173,7 +178,7 @@ final class MobileServer {
 
     init(
         staticRoot: URL?, sources: Sources, limits: Limits = Limits(), manager: Manager? = nil,
-        voice: Voice? = nil, serving: Serving? = nil
+        voice: Voice? = nil, serving: Serving? = nil, push: MobilePushCenter? = nil
     ) {
         self.staticRoot = staticRoot
         self.sources = sources
@@ -181,6 +186,7 @@ final class MobileServer {
         self.manager = manager
         self.voice = voice
         self.serving = serving
+        self.push = push
     }
 
     /// Whether a phone asked for something lately or holds an event stream.
@@ -250,9 +256,16 @@ final class MobileServer {
         identity = nil
         boundPort = nil
         token = nil
+        pushTracker = MobilePushTracker()
         for client in clients.values { client.connection.cancel() }
         clients.removeAll()
         setStreamCount(0)
+    }
+
+    /// Drop every push subscription. Called with every new pairing token: a
+    /// phone that was signed out gets no more notifications either.
+    func forgetPhones() {
+        push?.forgetAll()
     }
 
     /// Replace the pairing token. Every open stream is closed: a phone holding
@@ -261,6 +274,7 @@ final class MobileServer {
         queue.async {
             guard self.listener != nil else { return }
             self.token = token
+            self.push?.forgetAll()
             for client in self.clients.values where client.streaming { self.drop(client) }
         }
     }
@@ -279,6 +293,9 @@ final class MobileServer {
             self.promptSequence = self.promptSequence.filter { live.contains($0.key) }
             self.promptSeen = self.promptSeen.filter { live.contains($0.key) }
             self.snapshot = snapshot
+            // Tracked with the switch off too, so turning it on sends nothing old.
+            let events = self.pushTracker.events(in: snapshot)
+            if self.config.allows(.notifications) { self.push?.notify(events) }
             let threads = snapshot.threadsJSON()
             let hosts = snapshot.hostsJSON()
             if threads != self.threadsBody {
@@ -744,6 +761,18 @@ final class MobileServer {
             }
             reply(to: client) {
                 serving.close(port) ? .json(["ok": true]) : .error(404, "not_found")
+            }
+        case .pushKey, .pushSubscribe, .pushUnsubscribe, .pushFocus:
+            guard let push else { return send(.error(503, "unavailable"), to: client, head: head) }
+            let body = request.body
+            // The Keychain is read off the server queue.
+            reply(to: client) {
+                switch endpoint {
+                case .pushSubscribe: return push.subscribe(body)
+                case .pushUnsubscribe: return push.unsubscribe(body)
+                case .pushFocus: return push.focus(body)
+                default: return push.keyResponse()
+                }
             }
         }
     }

@@ -4,6 +4,7 @@
 /// <reference lib="webworker" />
 
 import { build, files, version } from '$service-worker';
+import { parsePush, threadUrl } from './lib/push';
 
 const sw = self as unknown as ServiceWorkerGlobalScope;
 
@@ -47,6 +48,48 @@ sw.addEventListener('fetch', (event) => {
 		event.respondWith(cached(SHELL, request));
 	}
 });
+
+// A push from the Mac: always a notification, even for a message that cannot
+// be read. iOS takes push away from an app that gets one and shows nothing.
+sw.addEventListener('push', (event) => {
+	let text: string | null = null;
+	try {
+		text = event.data?.text() ?? null;
+	} catch {
+		// Shown as the generic notification.
+	}
+	const message = parsePush(text);
+	event.waitUntil(
+		sw.registration.showNotification(message.title, {
+			body: message.body,
+			tag: message.tag,
+			icon: '/icon-192.png',
+			data: { thread: message.thread }
+		})
+	);
+});
+
+sw.addEventListener('notificationclick', (event) => {
+	event.notification.close();
+	const thread = (event.notification.data as { thread?: unknown } | null)?.thread;
+	event.waitUntil(open(threadUrl(typeof thread === 'string' ? thread : '')));
+});
+
+/** Show `url` in the app: in the window that is open, or in a new one. */
+async function open(url: string): Promise<void> {
+	const windows = await sw.clients.matchAll({ type: 'window', includeUncontrolled: true });
+	const client = windows[0];
+	if (!client) {
+		await sw.clients.openWindow(url);
+		return;
+	}
+	client.postMessage({ type: 'open', url });
+	try {
+		await client.focus();
+	} catch {
+		// The window has the address already; it only stays behind.
+	}
+}
 
 async function cached(key: string, request: Request): Promise<Response> {
 	const cache = await caches.open(CACHE);

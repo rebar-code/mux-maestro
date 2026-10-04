@@ -225,6 +225,13 @@ enum MobileEndpoint: Equatable {
     /// Publish one port a thread has running. The body names both.
     case serverOpen
     case serverClose
+    /// This Mac's VAPID public key: what a phone subscribes with.
+    case pushKey
+    /// Keep a phone's push subscription. The body is the browser's own JSON.
+    case pushSubscribe
+    case pushUnsubscribe
+    /// The phone says which thread it shows, so that thread sends it nothing.
+    case pushFocus
 
     var capability: MobileCapability {
         switch self {
@@ -239,6 +246,7 @@ enum MobileEndpoint: Equatable {
         case .find: return .find
         case .artifacts, .file: return .artifacts
         case .running, .servers, .serverOpen, .serverClose: return .localServers
+        case .pushKey, .pushSubscribe, .pushUnsubscribe, .pushFocus: return .notifications
         }
     }
 
@@ -247,10 +255,10 @@ enum MobileEndpoint: Equatable {
     var method: String {
         switch self {
         case .config, .threads, .hosts, .events, .chat, .screen, .manager, .prompt, .commands,
-             .dirs, .find, .artifacts, .file, .running, .servers:
+             .dirs, .find, .artifacts, .file, .running, .servers, .pushKey:
             return "GET"
         case .managerText, .managerDismiss, .voice, .voiceReplay, .voiceWarm, .text, .key, .answer,
-             .upload, .tmux, .serverOpen, .serverClose:
+             .upload, .tmux, .serverOpen, .serverClose, .pushSubscribe, .pushUnsubscribe, .pushFocus:
             return "POST"
         }
     }
@@ -430,6 +438,10 @@ enum MobileAPI {
         case 2 where segments[1] == "servers": endpoint = .servers
         case 3 where segments[1] == "servers" && segments[2] == "open": endpoint = .serverOpen
         case 3 where segments[1] == "servers" && segments[2] == "close": endpoint = .serverClose
+        case 3 where segments[1] == "push" && segments[2] == "key": endpoint = .pushKey
+        case 3 where segments[1] == "push" && segments[2] == "subscribe": endpoint = .pushSubscribe
+        case 3 where segments[1] == "push" && segments[2] == "unsubscribe": endpoint = .pushUnsubscribe
+        case 3 where segments[1] == "push" && segments[2] == "focus": endpoint = .pushFocus
         case 4 where segments[1] == "hosts" && segments[3] == "dirs":
             endpoint = .dirs(host: segments[2])
         case 3 where segments[1] == "tmux":

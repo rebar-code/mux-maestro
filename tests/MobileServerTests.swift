@@ -15,6 +15,9 @@ final class MobileServerTests: XCTestCase {
     private let tmux = FakeTmux()
     private let changes = Counter()
     private let local = FakeLocal()
+    private let pushTransport = FakePushTransport()
+    private lazy var push = MobilePushCenter(
+        keys: MemoryTokenStore(), store: MemoryTokenStore(), transport: pushTransport)
     private var home: URL { root.appendingPathComponent("home") }
 
     /// The manager pane, scripted. The server calls it from its own queues.
@@ -84,7 +87,8 @@ final class MobileServerTests: XCTestCase {
             changed: { [changes] in changes.add() }, home: home.path,
             artifacts: withLocal ? local.artifactSource : nil,
             running: withLocal ? local.runningSource : nil),
-            limits: limits, manager: manager.source, serving: withLocal ? local.serving : nil)
+            limits: limits, manager: manager.source, serving: withLocal ? local.serving : nil,
+            push: withLocal ? push : nil)
     }
 
     private func start(_ server: MobileServer) {
@@ -255,6 +259,106 @@ final class MobileServerTests: XCTestCase {
 
     private func managerOn() {
         server.configure(MobileConfig(capabilities: [.manager]))
+    }
+
+    // MARK: push
+
+    private func eventually(_ what: String, _ condition: () -> Bool) {
+        let deadline = Date().addingTimeInterval(3)
+        while !condition(), Date() < deadline { usleep(20_000) }
+        XCTAssertTrue(condition(), what)
+    }
+
+    func testPushRoutesNeedTheSwitchTheTokenAndASameOriginWrite() {
+        let phone = String(decoding: FakePhone().body, as: UTF8.self)
+        let writes = ["/api/push/subscribe", "/api/push/unsubscribe", "/api/push/focus"]
+
+        // Off until Settings turns it on, for every route under /api/push.
+        XCTAssertEqual(get("/api/push/key").body, #"{"error":"disabled"}"#)
+        XCTAssertEqual(get("/api/push/key").status, 403)
+        for path in writes + ["/api/push/anything"] {
+            XCTAssertEqual(post(path, json: phone).status, 403, path)
+            XCTAssertEqual(post(path, json: phone).body, #"{"error":"disabled"}"#, path)
+        }
+        XCTAssertEqual(push.count, 0)
+
+        server.configure(MobileConfig(capabilities: [.notifications]))
+        XCTAssertEqual(get("/api/push/key", token: nil).status, 401)
+        XCTAssertEqual(get("/api/push/key", token: "wrong").status, 401)
+        XCTAssertEqual(get("/api/push/key", login: "other@example.com").status, 403)
+        for path in writes {
+            XCTAssertEqual(post(path, json: phone, token: nil).status, 401, path)
+            XCTAssertEqual(post(path, json: phone, writeHeader: false).status, 403, path)
+            for origin in [nil, "https://evil.example", "https://devmac.example.ts.net:8443",
+                           "https://devmac.example.ts.net", "http://devmac.example.ts.net:7433"] {
+                let refused = post(path, json: phone, origin: origin)
+                XCTAssertEqual(refused.status, 403, "\(path) \(origin ?? "none")")
+                XCTAssertEqual(refused.body, #"{"error":"forbidden"}"#)
+            }
+            XCTAssertEqual(get(path).status, 405, path)
+        }
+        XCTAssertEqual(post("/api/push/key", json: "{}").status, 405)
+        XCTAssertEqual(push.count, 0)
+
+        let key = get("/api/push/key")
+        XCTAssertEqual(key.status, 200)
+        XCTAssertTrue(key.body.hasPrefix(#"{"key":"B"#))
+        XCTAssertEqual(post("/api/push/subscribe", json: phone).status, 200)
+        XCTAssertEqual(push.count, 1)
+        XCTAssertEqual(
+            post("/api/push/subscribe", json: #"{"endpoint":"https://127.0.0.1/x","keys":{}}"#).body,
+            #"{"error":"bad_subscription"}"#)
+        XCTAssertEqual(post("/api/push/unsubscribe", json: phone).status, 200)
+        XCTAssertEqual(push.count, 0)
+    }
+
+    func testPushRoutesAnswer503WhereNothingIsSent() {
+        server.stop()
+        server = makeServer(withLocal: false)
+        start(server)
+        server.configure(MobileConfig(capabilities: [.notifications]))
+        XCTAssertEqual(get("/api/push/key").status, 503)
+    }
+
+    func testAThreadThatStartsToWaitOrFinishesNotifiesThePhoneOnce() {
+        let phone = FakePhone()
+        let body = String(decoding: phone.body, as: UTF8.self)
+        server.configure(MobileConfig(capabilities: [.notifications]))
+        XCTAssertEqual(post("/api/push/subscribe", json: body).status, 200)
+
+        // The tree as it was at the start (busy) sent nothing.
+        server.update(snapshot(status: .waiting))
+        eventually("one push") { pushTransport.requests.count == 1 }
+        server.update(snapshot(status: .waiting))
+        server.update(snapshot(status: .busy))
+        server.update(snapshot(status: .idle))
+        eventually("a second push") { pushTransport.requests.count == 2 }
+        XCTAssertEqual(
+            pushTransport.requests.compactMap { try? phone.open($0)["kind"] as? String }, ["waiting", "done"])
+        XCTAssertEqual(try? phone.open(pushTransport.requests[0])["thread"] as? String, "localhost:12")
+
+        // The phone shows the thread: nothing for it.
+        let focus = String(decoding: phone.focus("localhost:12"), as: UTF8.self)
+        XCTAssertEqual(post("/api/push/focus", json: focus).status, 200)
+        server.update(snapshot(status: .waiting))
+        // The switch is off: nothing at all, and nothing old when it comes back.
+        server.configure(MobileConfig())
+        server.update(snapshot(status: .busy))
+        server.update(snapshot(status: .waiting))
+        server.configure(MobileConfig(capabilities: [.notifications]))
+        server.update(snapshot(status: .waiting))
+        XCTAssertEqual(get("/api/push/key").status, 200)
+        usleep(200_000)
+        XCTAssertEqual(pushTransport.requests.count, 2)
+    }
+
+    func testANewPairingCodeForgetsThePhones() {
+        server.configure(MobileConfig(capabilities: [.notifications]))
+        let body = String(decoding: FakePhone().body, as: UTF8.self)
+        XCTAssertEqual(post("/api/push/subscribe", json: body).status, 200)
+        XCTAssertEqual(push.count, 1)
+        server.setToken("next-token")
+        eventually("forgotten") { push.count == 0 }
     }
 
     // MARK: tests

@@ -16,6 +16,7 @@
 	import NextBar from './NextBar.svelte';
 	import PromptCard from './PromptCard.svelte';
 	import PullIndicator from './PullIndicator.svelte';
+	import { push } from './push.svelte';
 	import { liveLines, nextWaiting } from './reply';
 	import { Reply } from './reply.svelte';
 	import ServeConfirm from './ServeConfirm.svelte';
@@ -225,6 +226,7 @@
 	style:--chat-size="{text.chat}px"
 	{@attach pages(tabs, landed)}
 	{@attach feed.watch(mode)}
+	{@attach push.watching(id)}
 	{@attach can('artifacts') && artifacts.watch}
 	{@attach can('localServers') && servers.watch}
 >

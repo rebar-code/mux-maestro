@@ -8,6 +8,7 @@
 	import HostCard from './HostCard.svelte';
 	import { can, live } from './live.svelte';
 	import { longPress } from './longpress';
+	import NotifyRow from './NotifyRow.svelte';
 	import PullIndicator from './PullIndicator.svelte';
 	import ThreadRow from './ThreadRow.svelte';
 
@@ -120,6 +121,10 @@
 			{#each live.hosts as host (host.name)}
 				<HostCard {host} />
 			{/each}
+		{/if}
+		{#if can('notifications')}
+			<div class="sect">This phone</div>
+			<NotifyRow />
 		{/if}
 		<div class="end"></div>
 	</div>
