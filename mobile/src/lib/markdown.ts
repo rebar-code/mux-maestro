@@ -98,6 +98,12 @@ function targetOf(address: string): Target {
 const NAMED_HOST =
 	/(?:[a-z][a-z0-9+.-]*:\/\/)?((?:[a-z0-9\u00a1-\uffff-]+\.)+[a-z\u00a1-\uffff][a-z0-9\u00a1-\uffff-]*)/gi;
 
+// Characters that read as a full stop in a host name.
+const DOT_LIKE = /[\u3002\uff0e\uff61\u2024]/g;
+// An address written with its scheme, up to the next space.
+const WRITTEN_URL = /[a-z][a-z0-9+.-]*:\/\/\S+/gi;
+const IPV4 = /(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])/g;
+
 /** A host as a browser reads it, without `www.`; null when it is not one. */
 function hostOf(address: string): string | null {
 	try {
@@ -115,8 +121,26 @@ function hostOf(address: string): string | null {
 function otherHost(text: string, href: string): string | null {
 	const real = hostOf(href);
 	if (real === null || !/^https?:/i.test(href)) return null;
-	for (const [, named] of text.replace(UNSEEN, '').matchAll(NAMED_HOST)) {
+	// As a person reads it: wide letters are letters, and a dot look-alike is a dot.
+	const shown = text.replace(UNSEEN, '').normalize('NFKC').replace(DOT_LIKE, '.');
+	// An address with a scheme is read as the browser reads it. One that puts
+	// a name before an `@` shows a host it does not go to.
+	let other = false;
+	const rest = shown.replace(WRITTEN_URL, (address) => {
+		try {
+			const url = new URL(address);
+			if (url.username || hostOf(address) !== real) other = true;
+		} catch {
+			other = true;
+		}
+		return ' ';
+	});
+	if (other) return real;
+	for (const [, named] of rest.matchAll(NAMED_HOST)) {
 		if (hostOf(`http://${named}`) !== real) return real;
+	}
+	for (const [address] of rest.matchAll(IPV4)) {
+		if (hostOf(`http://${address}`) !== real) return real;
 	}
 	return null;
 }

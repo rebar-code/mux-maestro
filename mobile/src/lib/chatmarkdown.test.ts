@@ -391,6 +391,41 @@ describe('hostile input', () => {
 			expect(html(text), text).not.toContain('mdhost');
 	});
 
+	it('reads the text of a link as a person does: look-alike dots and wide letters', () => {
+		for (const text of [
+			'[bank\u3002example](https://evil.example)',
+			'[bank\uff0eexample](https://evil.example)',
+			'[bank\u2024example](https://evil.example)',
+			'[bank\uff61example](https://evil.example)',
+			'[\uff42\uff41\uff4e\uff4b.example](https://evil.example)'
+		])
+			expect(html(text), text).toContain('<span class="mdhost">(evil.example)</span>');
+		// The same host written with them is still the same host.
+		expect(html('[evil\u3002example](https://evil.example)')).not.toContain('mdhost');
+	});
+
+	it('shows the real host for text that is an address with a scheme or an IPv4 address', () => {
+		for (const text of [
+			'[https://10.0.0.1/admin](https://evil.example)',
+			'[https://bank](https://evil.example)',
+			'[http://bank/login](https://evil.example)',
+			'[192.168.1.1](https://evil.example)',
+			'[router at 192.168.1.1](https://evil.example)',
+			'[https://bank\u3002example](https://evil.example)',
+			'[https://10.0.0.1](https://10.0.0.2)'
+		])
+			expect(html(text), text).toContain('mdhost');
+		for (const text of [
+			'[https://10.0.0.1/admin](https://10.0.0.1/admin)',
+			'[192.168.1.1](http://192.168.1.1/x)',
+			'[https://bank](https://bank/login)',
+			'[https://example.com/a?next=other.example](https://example.com/a?next=other.example)',
+			'see https://example.com/a?u=https://other.example/b now',
+			'[v2.0 notes](https://example.com)'
+		])
+			expect(html(text), text).not.toContain('mdhost');
+	});
+
 	it('does not draw a direction character that an entity spells', () => {
 		const link = html('[&#x202E;moc.elgoog//:sptth](https://evil.example)');
 		expect(link).toContain('>moc.elgoog//:sptth</a>');
