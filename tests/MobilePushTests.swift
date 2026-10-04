@@ -14,7 +14,7 @@ final class MemoryTokenStore: PhoneTokenStore {
 
     var stored: String? { lock.lock(); defer { lock.unlock() }; return value }
     var saves: Int { lock.lock(); defer { lock.unlock() }; return writes }
-    func refuse() { lock.lock(); refusing = true; lock.unlock() }
+    func refuse(_ on: Bool = true) { lock.lock(); refusing = on; lock.unlock() }
     /// Reads fail, as a locked Keychain or a denied dialog makes them. What
     /// is stored stays stored.
     func failReads(_ on: Bool) { lock.lock(); unreadable = on; lock.unlock() }
@@ -788,6 +788,53 @@ final class MobilePushTests: XCTestCase {
 
         store.failReads(false)
         XCTAssertEqual(locked.count, 1)
+    }
+
+    func testAForgetTheKeychainRefusesStillStopsThePushesAndIsWrittenLater() throws {
+        let center = center()
+        let phone = FakePhone()
+        XCTAssertEqual(center.subscribe(phone.body).status, 200)
+        let list = try XCTUnwrap(store.stored)
+        var counts: [Int] = []
+        center.onCount = { counts.append($0) }
+
+        // A new pairing token signed the phone out, and the write fails.
+        store.refuse()
+        center.forgetAll()
+        XCTAssertEqual(center.count, 0)
+        XCTAssertEqual(counts, [0])
+        XCTAssertEqual(store.stored, list)
+        center.notify([waiting()])
+        var result: MobilePushCenter.TestResult?
+        center.sendTest { result = $0 }
+        settle(center)
+        XCTAssertEqual(transport.requests.count, 0)
+        XCTAssertEqual(result, .noPhone)
+        // The signed-out phone cannot claim a thread either.
+        XCTAssertEqual(center.focus(phone.focus("localhost:12")).status, 404)
+
+        // The Keychain takes writes again: the next use stores the empty list.
+        store.refuse(false)
+        XCTAssertEqual(center.count, 0)
+        XCTAssertEqual(store.stored, "[]")
+        XCTAssertEqual(self.center().count, 0)
+    }
+
+    func testAPhoneThatSubscribesAfterARefusedForgetIsTheOnlyOneKept() throws {
+        let center = center()
+        XCTAssertEqual(center.subscribe(FakePhone("https://web.push.apple.com/QOld").body).status, 200)
+        store.refuse()
+        center.forgetAll()
+        XCTAssertEqual(center.count, 0)
+        // Still refused: a new phone is not taken, and the old one stays forgotten.
+        let phone = FakePhone("https://web.push.apple.com/QNew")
+        XCTAssertEqual(center.subscribe(phone.body).status, 503)
+        XCTAssertEqual(center.count, 0)
+        store.refuse(false)
+        XCTAssertEqual(center.subscribe(phone.body).status, 200)
+        let stored = try JSONDecoder().decode(
+            [MobilePushSubscription].self, from: Data(XCTUnwrap(store.stored).utf8))
+        XCTAssertEqual(stored.map(\.endpoint), [phone.endpoint])
     }
 
     func testForgetAllWritesEvenOverAListItCannotRead() {

@@ -35,6 +35,8 @@ class Push {
 	private thread: string | null = null;
 	/** Counts the reads, so an older one that ends late changes nothing. */
 	private reads = 0;
+	/** The Mac said it does not hold this phone, and the state was read again. */
+	private dropped = false;
 
 	/** Read the phone's state. A subscription it holds is sent to the Mac again. */
 	refresh = async (): Promise<void> => {
@@ -127,9 +129,20 @@ class Push {
 	private tell(): void {
 		if (!this.endpoint || !can('notifications')) return;
 		const shown = document.visibilityState === 'visible' ? this.thread : null;
-		focusPush(this.endpoint, shown).catch(() => {
-			// The Mac forgets on its own.
-		});
+		focusPush(this.endpoint, shown).then(
+			() => {
+				this.dropped = false;
+			},
+			(error: unknown) => {
+				// 404: the Mac dropped this phone. Read the state again, so the
+				// switch says what is true: the subscription goes back to the Mac,
+				// or the switch shows off. Once, so two 404s cannot make a loop.
+				if (!(error instanceof ApiError) || error.status !== 404 || this.dropped) return;
+				this.dropped = true;
+				this.endpoint = null;
+				void this.refresh();
+			}
+		);
 	}
 
 	/** Attachment for an open thread: it is on screen while mounted and visible. */
