@@ -670,7 +670,7 @@
 		gap: 7px;
 		padding: 0 12px;
 		border-radius: 22px;
-		background: color-mix(in srgb, var(--surface) 88%, transparent);
+		background: var(--surface);
 		border: 1px solid var(--border);
 		font-size: 13px;
 		color: var(--muted);
