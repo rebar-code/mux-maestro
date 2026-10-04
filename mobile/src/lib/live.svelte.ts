@@ -59,6 +59,7 @@ class Live {
 	readonly grouping: Grouping = $derived(this.picked ?? this.config?.grouping ?? 'recent');
 
 	private listeners = new Set<() => void>();
+	private configListeners = new Set<() => void>();
 
 	byId(id: string): Thread | undefined {
 		return this.threads?.find((thread) => thread.id === id);
@@ -83,6 +84,13 @@ class Live {
 	setConfig(config: Config): void {
 		this.config = config;
 		write(CONFIG_KEY, config);
+		for (const listener of this.configListeners) listener();
+	}
+
+	/** Call `listener` after each config from the Mac. Returns the unsubscribe. */
+	onConfig(listener: () => void): () => void {
+		this.configListeners.add(listener);
+		return () => this.configListeners.delete(listener);
 	}
 
 	/** Call `listener` after each new thread list. Returns the unsubscribe. */

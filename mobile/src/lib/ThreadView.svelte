@@ -19,6 +19,7 @@
 	import NoteLine from './NoteLine.svelte';
 	import PromptCard from './PromptCard.svelte';
 	import PullIndicator from './PullIndicator.svelte';
+	import { push } from './push.svelte';
 	import { liveLines, nextWaiting } from './reply';
 	import { Reply } from './reply.svelte';
 	import ServeConfirm from './ServeConfirm.svelte';
@@ -69,24 +70,22 @@
 
 	const PULL = 'thread';
 	const MAIN = 'main';
+	// svelte-ignore state_referenced_locally
+	const listed = given === undefined;
+	// Files and servers belong to a listed thread. The manager pane is not one.
+	const artifactsOn = $derived(listed && can('artifacts'));
+	const serversOn = $derived(listed && can('localServers'));
 	// The pages of this view, left to right. A tab whose feature is off on the
 	// Mac is not there at all. Joined, so the same tabs are the same value and
 	// a config that says nothing new does not send the pager back to Chat.
 	const tabNames = $derived(
-		[
-			MAIN,
-			...(can('artifacts') ? [ARTIFACTS] : []),
-			...(can('localServers') ? [SERVERS] : [])
-		].join(' ')
+		[MAIN, ...(artifactsOn ? [ARTIFACTS] : []), ...(serversOn ? [SERVERS] : [])].join(' ')
 	);
 	const tabs = $derived(tabNames.split(' '));
 	const LABELS: Record<string, string> = { [ARTIFACTS]: 'Artifacts', [SERVERS]: 'Servers' };
 
 	// svelte-ignore state_referenced_locally
 	const feed = given ?? new ThreadFeed(id);
-	// svelte-ignore state_referenced_locally
-	const listed = given === undefined;
-
 	const thread = $derived(listed ? live.byId(id) : undefined);
 	const canChat = $derived(listed ? (thread?.chat ?? false) : true);
 	const mode: Mode = $derived(canChat && !terminal ? 'chat' : 'terminal');
@@ -98,7 +97,7 @@
 	const servers = new Servers(id);
 	/** The files to draw in the chat, under the message that names each. */
 	const inline = $derived(
-		can('artifacts') && feed.messages && artifacts.list
+		artifactsOn && feed.messages && artifacts.list
 			? inlineArtifacts(feed.messages, artifacts.list.files)
 			: null
 	);
@@ -270,8 +269,9 @@
 	style:--chat-size="{text.chat}px"
 	{@attach pages(tabs, landed)}
 	{@attach feed.watch(mode)}
-	{@attach can('artifacts') && artifacts.watch}
-	{@attach can('localServers') && servers.watch}
+	{@attach listed && push.watching(id)}
+	{@attach artifactsOn && artifacts.watch}
+	{@attach serversOn && servers.watch}
 	{@attach !listed && asks && (repliesOn || keysOn) && reply.watch}
 >
 	<div

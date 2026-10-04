@@ -436,6 +436,25 @@ export async function closeServer(port: number): Promise<void> {
 	await post('/api/servers/close', { port });
 }
 
+/** The Mac's push key: what this phone subscribes with. */
+export function fetchPushKey(): Promise<{ key: string }> {
+	return get<{ key: string }>('/api/push/key');
+}
+
+/** Hand the Mac this phone's push subscription, as the browser wrote it. */
+export async function subscribePush(subscription: PushSubscriptionJSON): Promise<void> {
+	await post('/api/push/subscribe', subscription);
+}
+
+export async function unsubscribePush(endpoint: string): Promise<void> {
+	await post('/api/push/unsubscribe', { endpoint });
+}
+
+/** Say which thread this phone shows (`null`: none), so it sends no push here. */
+export async function focusPush(endpoint: string, thread: string | null): Promise<void> {
+	await post('/api/push/focus', { endpoint, thread });
+}
+
 export function fetchManager(): Promise<ManagerHome> {
 	return get<ManagerHome>('/api/manager');
 }

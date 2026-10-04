@@ -59,13 +59,20 @@ private final class MemoryPorts: PhonePortStore {
 private final class MemoryTokens: PhoneTokenStore {
     var token: String?
     var refuses = false
-    /// When set, `load` blocks until it is signalled: the Keychain dialog
+    /// When set, a read blocks until it is signalled: the Keychain dialog
     /// waiting for a click.
     var dialog: DispatchSemaphore?
+    /// Reads fail; what is stored stays stored.
+    var unreadable = false
 
     func load() -> String? {
         dialog?.wait()
-        return token
+        return unreadable ? nil : token
+    }
+
+    func read() -> PhoneTokenRead {
+        dialog?.wait()
+        return unreadable ? .failed : token.map(PhoneTokenRead.found) ?? .missing
     }
 
     func save(_ token: String) -> Bool {
@@ -83,6 +90,7 @@ final class PhoneLinkTests: XCTestCase {
     private var clock = Date(timeIntervalSince1970: 1_700_000_000)
     private var published: [[Int]] = []
     private var server: MobileServer!
+    private var push: MobilePushCenter!
     private var states: [PhoneLink.State] = []
     private let lock = NSLock()
 
@@ -91,8 +99,10 @@ final class PhoneLinkTests: XCTestCase {
         tokens = MemoryTokens()
         ports = MemoryPorts()
         published = []
+        push = MobilePushCenter(
+            keys: MemoryTokenStore(), store: MemoryTokenStore(), transport: FakePushTransport())
         server = MobileServer(staticRoot: nil, sources: MobileServer.Sources(
-            screen: { _, _ in nil }, transcript: { _ in nil }))
+            screen: { _, _ in nil }, transcript: { _ in nil }), push: push)
         states = []
     }
 
@@ -207,6 +217,43 @@ final class PhoneLinkTests: XCTestCase {
         usleep(150_000)  // past the notice delay
         XCTAssertFalse(states.contains(.waitingForKeychain))
         XCTAssertTrue(link.isOn)
+        link.shutdown()
+    }
+
+    func testATokenThatCannotBeReadIsNotReplaced() {
+        tokens.token = "stored-token"
+        tokens.unreadable = true
+        XCTAssertEqual(push.subscribe(FakePhone().body).status, 200)
+        let link = link()
+        link.turnOn()
+        settle(link)
+        // The phones hold the stored token: a new one would sign them all out.
+        XCTAssertEqual(link.state, .failed("Keychain did not give the pairing token"))
+        XCTAssertEqual(tokens.token, "stored-token")
+        XCTAssertFalse(tailscale.calls.contains { $0.contains("--bg") })
+        XCTAssertEqual(push.count, 1)
+
+        tokens.unreadable = false
+        link.turnOn()
+        settle(link)
+        guard case .on(_, let pairing) = link.state else { return XCTFail("\(link.state)") }
+        XCTAssertTrue(pairing.hasSuffix("#pair=stored-token"))
+        // The same token as before: the phones stay subscribed.
+        XCTAssertEqual(push.count, 1)
+        link.shutdown()
+    }
+
+    func testANewTokenMadeAtStartForgetsTheSubscribedPhones() {
+        // The stored token is gone, so every phone is signed out. None of
+        // them may go on getting notifications.
+        XCTAssertEqual(push.subscribe(FakePhone().body).status, 200)
+        XCTAssertNil(tokens.token)
+        let link = link()
+        link.turnOn()
+        settle(link)
+        guard case .on = link.state else { return XCTFail("\(link.state)") }
+        XCTAssertNotNil(tokens.token)
+        XCTAssertEqual(push.count, 0)
         link.shutdown()
     }
 

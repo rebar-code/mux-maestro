@@ -6,6 +6,7 @@
 	import { connect, live } from '$lib/live.svelte';
 	import { keyboardInset } from '$lib/pager';
 	import Pair from '$lib/Pair.svelte';
+	import { notifications } from '$lib/push.svelte';
 
 	const { children } = $props();
 
@@ -28,7 +29,7 @@
 	}
 </script>
 
-<div class="app" {@attach gestures} {@attach connect} {@attach keyboard}>
+<div class="app" {@attach gestures} {@attach connect} {@attach keyboard} {@attach notifications}>
 	{#if live.unpaired}
 		<Pair />
 	{:else if live.forbidden}

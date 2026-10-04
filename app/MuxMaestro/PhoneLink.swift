@@ -1,11 +1,27 @@
 import Foundation
 import Security
 
+/// What a read of the token store came to. "Not there" and "could not be
+/// read" are different answers: only the first may be answered with a new
+/// secret, because a new one replaces what every paired phone holds.
+enum PhoneTokenRead: Equatable {
+    case found(String)
+    case missing
+    /// Locked, refused or broken. The stored value may still be there.
+    case failed
+}
+
 /// Where the pairing token is kept between launches.
 protocol PhoneTokenStore {
     func load() -> String?
     /// False when the token could not be stored.
     func save(_ token: String) -> Bool
+    func read() -> PhoneTokenRead
+}
+
+extension PhoneTokenStore {
+    /// A store that cannot fail to read: nothing loaded is nothing stored.
+    func read() -> PhoneTokenRead { load().map(PhoneTokenRead.found) ?? .missing }
 }
 
 /// The pairing token as a generic password in the login Keychain.
@@ -18,14 +34,30 @@ struct KeychainTokenStore: PhoneTokenStore {
          kSecAttrService as String: service, kSecAttrAccount as String: account]
     }
 
-    func load() -> String? {
+    func read() -> PhoneTokenRead {
         var item: CFTypeRef?
         let find = query.merging(
             [kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]) { $1 }
-        guard SecItemCopyMatching(find as CFDictionary, &item) == errSecSuccess,
-              let data = item as? Data, let token = String(data: data, encoding: .utf8), !token.isEmpty
-        else { return nil }
-        return token
+        return Self.outcome(status: SecItemCopyMatching(find as CFDictionary, &item), data: item as? Data)
+    }
+
+    /// Only `errSecItemNotFound` means there is no token. A denied dialog, a
+    /// locked Keychain and every other status mean it could not be read.
+    static func outcome(status: OSStatus, data: Data?) -> PhoneTokenRead {
+        switch status {
+        case errSecSuccess:
+            guard let data, let token = String(data: data, encoding: .utf8) else { return .failed }
+            return token.isEmpty ? .missing : .found(token)
+        case errSecItemNotFound:
+            return .missing
+        default:
+            return .failed
+        }
+    }
+
+    func load() -> String? {
+        if case .found(let token) = read() { return token }
+        return nil
     }
 
     func save(_ token: String) -> Bool {
@@ -236,10 +268,20 @@ final class PhoneLink {
             }
         }
         // Without a stored token nothing could pair, so nothing is published.
-        var stored = loadToken()
-        if stored == nil {
+        // A token that could not be read is not replaced: the phones hold it.
+        var stored: String?
+        switch readToken() {
+        case .found(let token):
+            stored = token
+        case .failed:
+            return set(.failed("Keychain did not give the pairing token"))
+        case .missing:
             let fresh = MobileTailnet.newToken()
-            if tokens.save(fresh) { stored = fresh }
+            if tokens.save(fresh) {
+                stored = fresh
+                // No phone holds the new token, so none is left subscribed.
+                server.forgetPhones()
+            }
         }
         guard let token = stored else { return set(.failed("Keychain refused the pairing token")) }
         server.start(port: wanted, identity: identity, token: token) { [weak self] result in
@@ -263,7 +305,7 @@ final class PhoneLink {
     /// Read the stored token. The read blocks while macOS shows its Keychain
     /// dialog (every new build, until the user allows it), so a read that is
     /// still pending after `keychainNotice` says so instead of looking hung.
-    private func loadToken() -> String? {
+    private func readToken() -> PhoneTokenRead {
         let pending = NSLock()
         var done = false
         DispatchQueue.global().asyncAfter(deadline: .now() + keychainNotice) { [weak self] in
@@ -271,12 +313,12 @@ final class PhoneLink {
             defer { pending.unlock() }
             if !done { self?.set(.waitingForKeychain) }
         }
-        let token = tokens.load()
+        let read = tokens.read()
         pending.lock()
         done = true
         pending.unlock()
         if state == .waitingForKeychain { set(.starting) }
-        return token
+        return read
     }
 
     private func applyKeepAwake() {
