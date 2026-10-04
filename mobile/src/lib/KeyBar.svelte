@@ -25,14 +25,6 @@
 			>
 		{/each}
 	</div>
-	{#if composer}
-		<button
-			class="tb hide"
-			type="button"
-			aria-label="Hide keyboard"
-			onclick={() => reply.input?.blur()}>⌨</button
-		>
-	{/if}
 </div>
 
 <style>
@@ -41,10 +33,10 @@
 		display: flex;
 		align-items: center;
 		gap: 8px;
-		margin: 0 max(8px, env(safe-area-inset-right)) 8px max(8px, env(safe-area-inset-left));
-		padding: 2px 4px 2px 6px;
+		margin: 0 max(8px, env(safe-area-inset-right)) 6px max(8px, env(safe-area-inset-left));
+		padding: 1px 4px;
 		border: 1px solid var(--border);
-		border-radius: 24px;
+		border-radius: 15px;
 		background: #141414;
 	}
 
@@ -53,10 +45,10 @@
 		min-width: 0;
 		display: flex;
 		align-items: center;
-		gap: 8px;
-		/* As tall as a touch area: each key's reaches past its look. */
-		height: var(--hit);
-		border-radius: 16px;
+		gap: 5px;
+		/* A slim strip: about 60% of a full touch row. */
+		height: 28px;
+		border-radius: 12px;
 		/* Moved by the gesture controller, like the terminal. */
 		overflow: hidden;
 		-webkit-mask-image: linear-gradient(90deg, #000 86%, transparent);
@@ -67,25 +59,25 @@
 	.keys::after {
 		content: '';
 		flex: none;
-		width: 36px;
+		width: 28px;
 		height: 1px;
 	}
 
 	.keys button {
 		position: relative;
 		flex: none;
-		min-width: var(--hit);
-		height: 38px;
-		padding: 0 13px;
-		border-radius: 13px;
+		min-width: 28px;
+		height: 23px;
+		padding: 0 8px;
+		border-radius: 8px;
 		background: #0c0c0c;
-		font-size: 14px;
+		font-size: 11.5px;
 	}
 
 	.keys button::after {
 		content: '';
 		position: absolute;
-		inset: -3px 0;
+		inset: -3px -2px;
 	}
 
 	.keys button.on {
@@ -95,9 +87,5 @@
 
 	.keys button:active {
 		filter: brightness(1.4);
-	}
-
-	.hide {
-		font-size: 17px;
 	}
 </style>

@@ -418,9 +418,20 @@
 			<!-- With no composer below, the bar's own refusals are said here. -->
 			<NoteLine note={reply.note} />
 		{/if}
+		<!-- The voice status sits above the keys; its controls stay below them. -->
+		{#if repliesOn && voiceOn && keysOn}
+			<VoiceBar target={id} sink={reply.voice} part="status" />
+		{/if}
 		{#if keysOn}<KeyBar {reply} composer={repliesOn} />{/if}
 		<!-- Voice switched off on the Mac: the bar stays and says so, like the manager's. -->
-		{#if repliesOn}<VoiceBar target={id} sink={reply.voice} off={!voiceOn} />{/if}
+		{#if repliesOn}
+			<VoiceBar
+				target={id}
+				sink={reply.voice}
+				off={!voiceOn}
+				part={voiceOn && keysOn ? 'controls' : 'all'}
+			/>
+		{/if}
 		{#if repliesOn}
 			<Composer
 				bind:value={reply.draft}

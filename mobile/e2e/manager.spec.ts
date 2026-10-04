@@ -280,7 +280,7 @@ test('with the Voice switch off the Talk button is drawn, off, and says where to
 	// The label only: no voice control that would do nothing.
 	await expect(bar.locator('button')).toHaveCount(0);
 	const talk = page.locator('[data-primary]');
-	await expect(talk).toHaveText('🎙 Talk');
+	await expect(talk).toHaveText('Talk');
 	await expect(talk).toBeDisabled();
 
 	// A tap opens no microphone and sends nothing.

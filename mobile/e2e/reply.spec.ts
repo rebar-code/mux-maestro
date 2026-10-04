@@ -219,7 +219,8 @@ test('key bar: keys go to the pane, text keys go to the box', async ({ page }) =
 		'-'
 	]);
 
-	// Every key has a name, a 44pt touch area, and 8pt to the next one.
+	// Every key has a name. The strip is slim by design: about 60% of a full
+	// touch row, with the keys still clear of each other.
 	const sizes = await keybar(page)
 		.locator('.keys')
 		.evaluate((keys) => {
@@ -233,25 +234,25 @@ test('key bar: keys go to the pane, text keys go to the box', async ({ page }) =
 				return {
 					label: button.getAttribute('aria-label'),
 					width: rect.width,
-					top: document.elementFromPoint(x, y - 21) === button,
-					bottom: document.elementFromPoint(x, y + 21) === button,
-					gap: next ? next.left - rect.right : 8
+					top: document.elementFromPoint(x, y - 11) === button,
+					bottom: document.elementFromPoint(x, y + 11) === button,
+					gap: next ? next.left - rect.right : 5
 				};
 			});
 		});
 	for (const size of sizes) {
 		expect(size.label, JSON.stringify(size)).toBeTruthy();
-		expect(size.width, JSON.stringify(size)).toBeGreaterThanOrEqual(44);
+		expect(size.width, JSON.stringify(size)).toBeGreaterThanOrEqual(28);
 		expect(size.top && size.bottom, JSON.stringify(size)).toBe(true);
-		expect(size.gap, JSON.stringify(size)).toBeGreaterThanOrEqual(8);
+		expect(size.gap, JSON.stringify(size)).toBeGreaterThanOrEqual(5);
 	}
+	const strip = await keybar(page).boundingBox();
+	expect(strip?.height).toBeLessThanOrEqual(32);
 	await keybar(page)
 		.locator('.keys')
 		.evaluate((keys) => (keys.scrollLeft = 0));
-	const hide = page.getByRole('button', { name: 'Hide keyboard' });
-	const hideBox = await hide.boundingBox();
-	expect(hideBox?.width).toBeGreaterThanOrEqual(44);
-	expect(hideBox?.height).toBeGreaterThanOrEqual(44);
+	// The bar has no keyboard button.
+	await expect(page.getByRole('button', { name: 'Hide keyboard' })).toHaveCount(0);
 
 	// A tap on a key leaves the focus in the box, so the keyboard stays up.
 	await box(page).tap();
@@ -298,9 +299,6 @@ test('key bar: keys go to the pane, text keys go to the box', async ({ page }) =
 	await expect(box(page)).toHaveValue('/');
 	await expect(slash(page)).toBeVisible();
 	expect((await received(page)).keys).toHaveLength(9);
-
-	await hide.tap();
-	await expect(box(page)).not.toBeFocused();
 });
 
 test('Ctrl is sticky: the next letter is a control key', async ({ page }) => {
@@ -642,7 +640,7 @@ test('voice into a thread: the take shows as your line and the reply streams in'
 	);
 	const primary = page.locator('[data-primary]');
 	const status = page.locator('[data-voice-status]');
-	await expect(primary).toHaveText('🎙 Talk');
+	await expect(primary).toHaveText('Talk');
 	await expect(status).toHaveText('Start talking');
 	const boxBefore = await box(page).boundingBox();
 
@@ -691,7 +689,7 @@ test('a take into a busy thread is refused before it starts', async ({ page }) =
 	await page.evaluate(() => window.__mic.speak(false));
 	await primary.click();
 	await expect(page.locator('[data-voice-status]')).toHaveText('search is running a turn');
-	await expect(primary).toHaveText('🎙 Talk');
+	await expect(primary).toHaveText('Talk');
 	expect((await received(page)).texts).toEqual([]);
 });
 
@@ -1079,7 +1077,7 @@ test('the text size and the terminal view work with the bar and the card in plac
 	expect(await px('[data-prompt] h3')).toBeGreaterThan(before.h3);
 	expect(await px('[data-prompt] .q')).toBe(await px('.a'));
 	// The bar below keeps its own size.
-	expect(await px('[data-keybar] .keys button')).toBe(14);
+	expect(await px('[data-keybar] .keys button')).toBe(11.5);
 
 	// In the terminal the coloured text, the card and the bar stack: none covers another.
 	await page.locator('[data-tab="main"]').tap();
@@ -1363,7 +1361,7 @@ test('with replies off the reply box is there, switched off, and posts nothing',
 	await expect(offBox(page)).toHaveAttribute('placeholder', 'Off in MuxMaestro Settings');
 	await expect(offBox(page)).toHaveValue('');
 	const pill = idlePill(page);
-	await expect(pill).toHaveText(['🎙 Talk']);
+	await expect(pill).toHaveText(['Talk']);
 	await expect(pill).toBeDisabled();
 	// The label, the dimmed attach button and the pill: no slash list, no voice bar, no key bar, no card.
 	await expect(page.locator('[data-compose] > :not([hidden])')).toHaveCount(3);
@@ -1472,4 +1470,31 @@ test('the manager home is not a listed thread: it gets no dock and no reply rout
 	await ask.fill('/co');
 	await expect(slash(page)).toHaveCount(0);
 	expect(asked).toEqual([]);
+});
+
+test('the voice status sits above the key strip, and its controls below it', async ({ page }) => {
+	await open(page, IDLE, ['replies', 'keyBar', 'voice']);
+	const line = page.locator('[data-voice-line]');
+	const controls = page.locator('[data-voicebar]');
+	await expect(line.locator('[data-voice-status]')).toHaveText('Start talking');
+	// One status line, not one in each part.
+	await expect(page.locator('[data-voice-status]')).toHaveCount(1);
+	const top = async (target: Locator): Promise<number> => (await target.boundingBox())?.y ?? 0;
+	expect(await top(line)).toBeLessThan(await top(keybar(page)));
+	expect(await top(keybar(page))).toBeLessThan(await top(controls));
+	expect(await top(controls)).toBeLessThan(await top(box(page)));
+
+	// Replay and Skip act on the same reply: they share one pill.
+	const playback = controls.getByRole('group', { name: 'Playback' });
+	await expect(playback.getByRole('button')).toHaveCount(2);
+	await expect(playback.getByRole('button', { name: 'Replay' })).toBeVisible();
+	await expect(playback.getByRole('button', { name: 'Skip' })).toBeVisible();
+
+	// Icons are drawn, not typed: speaker, replay, skip and the mic on Talk.
+	await expect(controls.locator('[data-icon]')).toHaveCount(3);
+	await expect(page.locator('[data-primary="talk"] [data-icon="mic"]')).toBeVisible();
+	expect(await page.locator('[data-dock]').innerText()).not.toMatch(/[⌨🔊🔇🎙⏭↻]/u);
+	// Manual has no mute control; Auto has one.
+	await expect(controls.getByRole('button', { name: 'Microphone' })).toHaveCount(0);
+	await shot(page, 'controls-thread');
 });
