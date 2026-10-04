@@ -15,6 +15,12 @@
 	} = $props();
 
 	const status = $derived(voice.statusOf(target));
+	/** The mic is open for this bar: a take, or Auto waiting for one. */
+	const hearing = $derived(
+		!off && !voice.micMuted && (status === 'recording' || (status === 'idle' && voice.listening))
+	);
+	/** The mic's loudness as the meter draws it, 0 to 1. Speech fills most of it. */
+	const level = $derived(hearing ? Math.min(1, Math.sqrt(voice.level * 8)) : 0);
 </script>
 
 {#if off}
@@ -30,9 +36,30 @@
 {/if}
 
 {#snippet controls()}
-	<div class="vbar" data-voicebar data-voice={status} {@attach voice.attach}>
+	<div
+		class="vbar"
+		data-voicebar
+		data-voice={status}
+		data-first-text-ms={voice.timing.text}
+		data-first-audio-ms={voice.timing.audio}
+		{@attach voice.attach}
+	>
 		<div class="vstat {status}" class:paused={voice.paused} role="status" data-voice-status>
-			<span class="wave" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+			{#if hearing}
+				<!-- The mic's level, so it is plain that the phone hears. -->
+				<span
+					class="wave meter"
+					role="meter"
+					aria-label="Mic level"
+					aria-valuemin="0"
+					aria-valuemax="100"
+					aria-valuenow={Math.round(level * 100)}
+					data-voice-level={Math.round(level * 100)}
+					style:--level={level}><i></i><i></i><i></i><i></i></span
+				>
+			{:else}
+				<span class="wave" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+			{/if}
 			{voice.note ?? voice.label(target)}
 		</div>
 		<div class="vrow">
@@ -140,6 +167,27 @@
 	.recording .wave i,
 	.speaking:not(.paused) .wave i {
 		animation: wave 0.5s ease-in-out infinite alternate;
+	}
+
+	/* The meter: each bar's height follows the mic, not a clock. */
+	.vstat .meter i {
+		animation: none;
+		background: #0a84ff;
+		height: calc(3px + 11px * var(--level));
+		transition: height 0.08s linear;
+	}
+
+	.vstat .meter i:nth-child(2) {
+		height: calc(3px + 8px * var(--level));
+	}
+
+	.vstat .meter i:nth-child(3) {
+		height: calc(3px + 11px * var(--level));
+	}
+
+	.vstat .meter i:nth-child(1),
+	.vstat .meter i:nth-child(4) {
+		height: calc(3px + 5px * var(--level));
 	}
 
 	.wave i:nth-child(2) {

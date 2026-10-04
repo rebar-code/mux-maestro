@@ -14,7 +14,21 @@ interface Take {
 
 declare global {
 	interface Window {
-		__mic: { opened: number; speak: (on: boolean) => void; live: () => number };
+		__mic: {
+			opened: number;
+			speak: (on: boolean) => void;
+			live: () => number;
+			/** The next `getUserMedia` fails with this error name. */
+			fail: string | null;
+			/** As iOS does: the mic prompt leaves the page's audio suspended. */
+			suspendOnOpen: boolean;
+		};
+		/** The app's own audio context: the one the first tap made. */
+		__app: AudioContext | null;
+		/** The audio session type the app asked for (iOS 17). */
+		__session: () => string;
+		/** Screen wake locks the app holds. */
+		__awake: () => number;
 		/** Reply clips that started to play. */
 		__clips: number;
 	}
@@ -53,8 +67,35 @@ async function open(page: Page, hooks: string[] = []): Promise<void> {
 	await page.addInitScript(() => {
 		let gain: GainNode | null = null;
 		const streams: MediaStream[] = [];
+		// The app's context is the first one made outside the fake microphone.
+		let making = false;
+		window.__app = null;
+		const Real = window.AudioContext;
+		window.AudioContext = class extends Real {
+			constructor(options?: AudioContextOptions) {
+				super(options);
+				if (!making && (window.__app === null || window.__app.state === 'closed')) {
+					window.__app = this;
+				}
+			}
+		};
+		const audioSession = { type: 'auto' };
+		Object.defineProperty(navigator, 'audioSession', { value: audioSession });
+		window.__session = () => audioSession.type;
+		let held = 0;
+		Object.defineProperty(navigator, 'wakeLock', {
+			value: {
+				request: async () => {
+					held += 1;
+					return { release: async () => void (held -= 1) };
+				}
+			}
+		});
+		window.__awake = () => held;
 		window.__mic = {
 			opened: 0,
+			fail: null,
+			suspendOnOpen: false,
 			speak: (on) => {
 				if (gain) gain.gain.value = on ? 0.5 : 0;
 			},
@@ -64,8 +105,12 @@ async function open(page: Page, hooks: string[] = []): Promise<void> {
 					.length
 		};
 		navigator.mediaDevices.getUserMedia = async () => {
+			if (window.__mic.fail) throw new DOMException('refused', window.__mic.fail);
+			if (window.__mic.suspendOnOpen) await window.__app?.suspend();
 			window.__mic.opened += 1;
+			making = true;
 			const context = new AudioContext();
+			making = false;
 			await context.resume();
 			const tone = context.createOscillator();
 			tone.frequency.value = 220;
@@ -157,6 +202,9 @@ test('Auto: speech starts a take, silence sends it, and the mic reopens', async 
 	await expect(primary(page)).toHaveText('■ Stop', { timeout: 3000 });
 	await expect(said(page).locator('.u')).toHaveText('What needs me?');
 	await expect(status(page)).toHaveText('Speaking…');
+	// The mic is closed while the reply plays: the phone plays it at full
+	// volume, and Auto cannot hear its own reply.
+	expect(await page.evaluate(() => window.__mic.live())).toBe(0);
 
 	// After the reply the mic is open again, with no tap.
 	await expect(status(page)).toHaveText('Listening…', { timeout: 8000 });
@@ -174,8 +222,8 @@ test('Auto: speech starts a take, silence sends it, and the mic reopens', async 
 	// The silence Auto waited through is not sent.
 	expect(all[0].seconds).toBeGreaterThan(0.8);
 	expect(all[0].seconds).toBeLessThan(2.5);
-	// The mic was opened once and kept.
-	expect(await page.evaluate(() => window.__mic.opened)).toBe(1);
+	// Opened for the first take, and once more after the reply.
+	expect(await page.evaluate(() => window.__mic.opened)).toBe(2);
 });
 
 test('input only: the speech becomes text and nothing is read back', async ({ page }) => {
@@ -318,7 +366,7 @@ test('a muted mic takes nothing, and a refused take says why', async ({ page }) 
 	await primary(page).click();
 	await say(page, 600);
 	await primary(page).click();
-	await expect(status(page)).toHaveText('Heard nothing');
+	await expect(status(page)).toHaveText('No speech heard');
 });
 
 test('the mic is given back when it is not needed', async ({ page }) => {
@@ -368,6 +416,230 @@ test('the mic is given back when it is not needed', async ({ page }) => {
 	await primary(page).click();
 	await expect(primary(page)).toHaveText('↑ Submit');
 	expect(await live()).toBe(1);
+});
+
+test('a mic that does not open says why', async ({ page }) => {
+	await open(page);
+	for (const [error, label] of [
+		['NotAllowedError', 'Mic blocked'],
+		['NotFoundError', 'No microphone'],
+		['NotReadableError', 'Mic in use']
+	]) {
+		await page.evaluate((name) => (window.__mic.fail = name), error);
+		await primary(page).click();
+		await expect(status(page)).toHaveText(label);
+		await expect(primary(page)).toHaveText('🎙 Talk');
+	}
+	// Allowed again: the next tap records, and the label goes.
+	await page.evaluate(() => (window.__mic.fail = null));
+	await primary(page).click();
+	await expect(status(page)).toHaveText('Recording — tap to send');
+});
+
+test('the level meter moves with the voice while the mic is open', async ({ page }) => {
+	await open(page);
+	const meter = page.getByRole('meter', { name: 'Mic level' });
+	await expect(meter).toHaveCount(0);
+	await primary(page).click();
+	await expect(meter).toBeVisible();
+	const level = async (): Promise<number> => Number(await meter.getAttribute('aria-valuenow'));
+	await expect.poll(level).toBeLessThan(10);
+	await speak(page, true);
+	await expect.poll(level).toBeGreaterThan(50);
+	await speak(page, false);
+	await expect.poll(level).toBeLessThan(10);
+	await say(page, 500);
+	await primary(page).click();
+	// No mic, no meter.
+	await expect(meter).toHaveCount(0);
+
+	// Auto shows it while it waits for speech too.
+	await expect(status(page)).toHaveText('Start talking', { timeout: 8000 });
+	await bar(page, 'Auto').click();
+	await expect(status(page)).toHaveText('Listening…');
+	await expect(meter).toBeVisible();
+});
+
+test('a take that cannot be used says why: no speech, no Mac, no models', async ({ page }) => {
+	await open(page);
+	// Nothing said: nothing is sent.
+	await primary(page).click();
+	await page.waitForTimeout(700);
+	await primary(page).click();
+	await expect(status(page)).toHaveText('No speech heard');
+	await expect(primary(page)).toHaveText('🎙 Talk');
+	expect(await takes(page)).toEqual([]);
+
+	// The Mac is asleep or off the tailnet.
+	await page.route('**/api/voice?*', (route) => route.abort());
+	await primary(page).click();
+	await say(page, 600);
+	await primary(page).click();
+	await expect(status(page)).toHaveText('Mac not reachable');
+	await page.unroute('**/api/voice?*');
+
+	// The Mac has not fetched its voice models yet.
+	await page.route('**/api/voice?*', (route) =>
+		route.fulfill({
+			status: 503,
+			contentType: 'application/json',
+			body: JSON.stringify({ error: 'models', message: 'Voice models not ready' })
+		})
+	);
+	await primary(page).click();
+	await say(page, 600);
+	await primary(page).click();
+	await expect(status(page)).toHaveText('Voice models loading');
+	await page.unroute('**/api/voice?*');
+
+	// A take longer than the Mac accepts.
+	await page.route('**/api/voice?*', (route) =>
+		route.fulfill({
+			status: 413,
+			contentType: 'application/json',
+			body: JSON.stringify({ error: 'too_long' })
+		})
+	);
+	await primary(page).click();
+	await say(page, 600);
+	await primary(page).click();
+	await expect(status(page)).toHaveText('Take too long');
+});
+
+test('the phone is told what the audio is for, and the screen stays on for a turn', async ({
+	page
+}) => {
+	await open(page, ['/__fixture/voice?delay=800']);
+	const session = (): Promise<string> => page.evaluate(() => window.__session());
+	const awake = (): Promise<number> => page.evaluate(() => window.__awake());
+	expect(await session()).toBe('auto');
+	expect(await awake()).toBe(0);
+
+	await primary(page).click();
+	await expect(status(page)).toHaveText('Recording — tap to send');
+	// The mic is open: the session records, and the screen must not lock.
+	expect(await session()).toBe('play-and-record');
+	expect(await awake()).toBe(1);
+	await say(page, 600);
+	await primary(page).click();
+	await expect(primary(page)).toHaveText('■ Stop');
+	// The mic is closed before the reply: it plays as playback, which the
+	// ringer switch does not mute and the earpiece does not get.
+	expect(await session()).toBe('playback');
+	expect(await page.evaluate(() => window.__mic.live())).toBe(0);
+	expect(await awake()).toBe(1);
+	await expect(status(page)).toHaveText('Speaking…');
+	expect(await session()).toBe('playback');
+	await expect(status(page)).toHaveText('Start talking', { timeout: 8000 });
+	expect(await awake()).toBe(0);
+});
+
+test('the mic prompt suspends the audio; the take still records', async ({ page }) => {
+	await open(page);
+	await page.evaluate(() => (window.__mic.suspendOnOpen = true));
+	await primary(page).click();
+	await expect(status(page)).toHaveText('Recording — tap to send');
+	expect(await page.evaluate(() => window.__app?.state)).toBe('running');
+	await speak(page, true);
+	await expect
+		.poll(async () =>
+			Number(await page.getByRole('meter', { name: 'Mic level' }).getAttribute('aria-valuenow'))
+		)
+		.toBeGreaterThan(50);
+	await page.waitForTimeout(500);
+	await speak(page, false);
+	await primary(page).click();
+	await expect(said(page).locator('.u')).toHaveText('What needs me?');
+	expect((await takes(page))[0].rms).toBeGreaterThan(0.01);
+});
+
+test('an interruption ends a take with a label and holds a reply for Resume', async ({ page }) => {
+	await open(page);
+	// A call comes in while a take is open.
+	await primary(page).click();
+	await expect(status(page)).toHaveText('Recording — tap to send');
+	await page.evaluate(() => window.__app?.suspend());
+	await expect(status(page)).toHaveText('Mic interrupted');
+	await expect(primary(page)).toHaveText('🎙 Talk');
+	expect(await page.evaluate(() => window.__mic.live())).toBe(0);
+	expect(await takes(page)).toEqual([]);
+
+	// The next tap resumes the audio and records.
+	await primary(page).click();
+	await expect(status(page)).toHaveText('Recording — tap to send');
+	expect(await page.evaluate(() => window.__app?.state)).toBe('running');
+	await say(page, 600);
+	await primary(page).click();
+
+	// The same while the reply plays: it is held, not lost.
+	await expect(status(page)).toHaveText('Speaking…');
+	await page.evaluate(() => window.__app?.suspend());
+	await expect(status(page)).toHaveText('Paused');
+	await expect(primary(page)).toHaveText('▶ Resume');
+	await primary(page).click();
+	await expect(status(page)).toHaveText('Speaking…');
+	await expect(status(page)).toHaveText('Start talking', { timeout: 8000 });
+});
+
+test('a tap on Talk starts a take; a drag that crosses it does not', async ({ page }) => {
+	await open(page);
+	const box = (await primary(page).boundingBox())!;
+	const x = box.x + box.width / 2;
+	const y = box.y + box.height / 2;
+	const opened = (): Promise<number> => page.evaluate(() => window.__mic.opened);
+
+	// A drag up from the button and back down onto it: the browser calls that
+	// a click on the button. It is not a tap.
+	await page.mouse.move(x, y);
+	await page.mouse.down();
+	await page.mouse.move(x, y - 80, { steps: 8 });
+	await page.mouse.move(x, y, { steps: 8 });
+	await page.mouse.up();
+	await page.waitForTimeout(200);
+	await expect(primary(page)).toHaveText('🎙 Talk');
+	expect(await opened()).toBe(0);
+
+	// A drag to the side that starts on the button is the sidebar's, not a take.
+	await page.mouse.move(x, y);
+	await page.mouse.down();
+	await page.mouse.move(x - 160, y, { steps: 10 });
+	await page.mouse.move(x - 20, y, { steps: 10 });
+	await page.mouse.up();
+	await page.waitForTimeout(300);
+	expect(await opened()).toBe(0);
+	if (await page.locator('[data-drawer]').isVisible()) {
+		await page.getByRole('button', { name: 'Close sidebar' }).click();
+	}
+	await expect(status(page)).toHaveText('Start talking');
+	await expect(primary(page)).toHaveText('🎙 Talk');
+
+	// A tap, with the small slip a finger makes, starts the take and moves nothing.
+	const sheet = (await page.locator('[data-sheet]').boundingBox())!;
+	await page.mouse.move(x, y);
+	await page.mouse.down();
+	await page.mouse.move(x + 3, y - 3);
+	await page.mouse.up();
+	await expect(primary(page)).toHaveText('↑ Submit');
+	expect(await opened()).toBe(1);
+	expect((await page.locator('[data-sheet]').boundingBox())!.y).toBe(sheet.y);
+	await expect(page.locator('[data-sheet]')).toHaveAttribute('data-stop', '0');
+});
+
+test('the delays of a turn are measured', async ({ page }) => {
+	await open(page);
+	await primary(page).click();
+	await say(page, 600);
+	await primary(page).click();
+	await expect(status(page)).toHaveText('Speaking…');
+	const voicebar = page.locator('[data-voicebar]');
+	const text = Number(await voicebar.getAttribute('data-first-text-ms'));
+	const audio = Number(await voicebar.getAttribute('data-first-audio-ms'));
+	// The fixture hears the take after 300 ms and speaks once the reply is written.
+	expect(text).toBeGreaterThanOrEqual(250);
+	expect(text).toBeLessThan(1500);
+	expect(audio).toBeGreaterThan(text);
+	expect(audio).toBeLessThan(5000);
+	console.log(`fixture turn: first text ${text} ms, first audio ${audio} ms after Submit`);
 });
 
 test('the first tap creates the audio the reply needs', async ({ page }) => {
