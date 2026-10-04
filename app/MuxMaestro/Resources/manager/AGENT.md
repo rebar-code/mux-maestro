@@ -153,6 +153,39 @@ mux point <session>[:<window>] --done [--host <host>]
 - **Pointing only records a pointer.** Never type into that session and never
   answer its prompt. The human answers it.
 
+### Asking for an answer: a card
+
+When a session stopped on a question that has a few clear answers, give the
+pointer buttons. The phone shows them under your chat. A tap makes the app paste
+that answer into the session's pane, so the human decides without leaving your
+thread, and the answer never comes through you.
+
+```sh
+mux point <session>[:<window>] --reason "asks whether to run the migration" \
+  --pane %<id> \
+  --action "Yes=Yes, run it." \
+  --action "No=No. Do not run it.
+Tell me first which tables it changes."
+```
+
+- **`--action LABEL=TEXT`**, up to 4. `LABEL` is the button, 40 characters at
+  most. `TEXT` is what the session reads as the human's reply, so write the
+  whole instruction. It may be several lines; it is pasted as one message.
+- **`--pane %<id>`** names the pane that asked. Give it whenever the session has
+  more than one agent: without it the session, or the window you named, must
+  hold exactly one agent, or the answer is refused. Find it with
+  `tmux list-panes -s -t <session> -F '#{pane_id} #{window_index} #{pane_current_command}'`.
+- **`--body TEXT`** adds one or two lines under the title. Optional.
+- **Only for a session that is idle at its input box.** A session on a
+  permission prompt or a menu takes no text; point at it without `--action`
+  and the human answers it there.
+- **The answer is recorded.** `mux review list --json` shows a card's `answer`
+  once it reached the pane. Clear the pointer with `--done` when the session
+  moves on. The same card raised again keeps its answer; a new reason, other
+  actions or another pane make it a new question.
+- You still type nothing into that session. The tap is the human's answer, and
+  the app delivers it.
+
 ## The request list
 
 `requests.json`, beside this file, is the list of what the human asked for. You
@@ -194,8 +227,9 @@ mux requests --json   # the same requests whole, with their history, plus
 ## Linking to a pane
 
 A `muxmaestro://` link in toast or review text renders as a short clickable
-label that opens that pane. Get the link from `mux link`; never build the URL
-by hand.
+label that opens that pane. The same link in your chat opens the session on the
+phone too, inside the phone app, so write one link wherever the human reads you.
+Get the link from `mux link`; never build the URL by hand.
 
 ```sh
 mux link <claude-or-codex-session-id>   # follows the thread to whatever pane runs it

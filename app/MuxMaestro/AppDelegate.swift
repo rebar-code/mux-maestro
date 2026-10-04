@@ -140,6 +140,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             dismiss: { [weak self] key in
                 DispatchQueue.main.async { self?.managerController?.dismiss(key: key) }
             },
+            answered: { [weak self] key, label, at in
+                DispatchQueue.main.async {
+                    self?.managerController?.answered(key: key, label: label, at: at)
+                }
+            },
             screen: { [registry] lines in
                 // The Maestro's own pane, never the session: see `ManagerPane`.
                 ManagerPane.resolve(run: { registry.local.runTmux($0) }).flatMap {

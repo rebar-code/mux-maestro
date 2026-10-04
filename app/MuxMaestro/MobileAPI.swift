@@ -195,6 +195,9 @@ enum MobileEndpoint: Equatable {
     /// One manager turn. The reply streams back.
     case managerText
     case managerDismiss
+    /// One tap on a card: the Mac types that action's text into the pane the
+    /// card names, never into the Maestro's.
+    case managerAct
     /// The manager pane's transcript as chat rows, like a thread's chat.
     case managerChat(after: UInt64?)
     /// The manager pane's terminal text, like a thread's screen.
@@ -259,8 +262,8 @@ enum MobileEndpoint: Equatable {
     var capability: MobileCapability {
         switch self {
         case .config, .threads, .hosts, .events, .log, .chat, .screen: return .access
-        case .manager, .managerText, .managerDismiss, .managerChat, .managerScreen, .managerPrompt,
-             .managerAnswer, .managerKey, .requests, .requestState:
+        case .manager, .managerText, .managerDismiss, .managerAct, .managerChat, .managerScreen,
+             .managerPrompt, .managerAnswer, .managerKey, .requests, .requestState:
             return .manager
         case .voice, .voiceReplay, .voiceWarm: return .voice
         case .text, .prompt, .answer, .commands: return .replies
@@ -284,8 +287,8 @@ enum MobileEndpoint: Equatable {
              .managerScreen, .managerPrompt, .requests, .prompt, .commands,
              .dirs, .find, .artifacts, .file, .running, .servers, .pushKey, .terminal:
             return "GET"
-        case .log, .managerText, .managerDismiss, .managerAnswer, .managerKey, .requestState, .voice,
-             .voiceReplay,
+        case .log, .managerText, .managerDismiss, .managerAct, .managerAnswer, .managerKey, .requestState,
+             .voice, .voiceReplay,
              .voiceWarm, .text, .key, .answer, .upload, .tmux, .serverOpen, .serverClose,
              .pushSubscribe, .pushUnsubscribe, .pushFocus:
             return "POST"
@@ -297,7 +300,7 @@ enum MobileEndpoint: Equatable {
     /// it needs the switch for that too.
     var also: MobileCapability? {
         switch self {
-        case .managerAnswer: return .replies
+        case .managerAnswer, .managerAct: return .replies
         case .managerKey: return .keyBar
         default: return nil
         }
@@ -449,6 +452,7 @@ enum MobileAPI {
         case 2 where segments[1] == "manager": endpoint = .manager
         case 3 where segments[1] == "manager" && segments[2] == "text": endpoint = .managerText
         case 3 where segments[1] == "manager" && segments[2] == "dismiss": endpoint = .managerDismiss
+        case 3 where segments[1] == "manager" && segments[2] == "act": endpoint = .managerAct
         case 3 where segments[1] == "manager" && segments[2] == "chat":
             endpoint = .managerChat(after: request.query["after"].flatMap(UInt64.init))
         case 3 where segments[1] == "manager" && segments[2] == "screen":
@@ -770,6 +774,8 @@ struct MobileThread: Equatable {
             "lastPrompt": lastPrompt.map { ["text": $0.text, "at": $0.at] as [String: Any] } ?? NSNull(),
             "lastActivityAt": lastActivityAt ?? NSNull(),
             "sessionActivity": sessionActivity, "chat": hasChat,
+            // What a `muxmaestro://thread/<id>` link names: the phone finds the thread by it.
+            "agent": claudeSessionId ?? codexSessionId ?? NSNull(),
         ]
     }
 }

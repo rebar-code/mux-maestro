@@ -537,6 +537,14 @@ export async function dismissReview(key: string): Promise<void> {
 	await post('/api/manager/dismiss', { key });
 }
 
+/**
+ * One tap on a card. The Mac types that action's text into the pane the card
+ * came from. A tap that does not land throws an `ApiError` whose `detail` says why.
+ */
+export async function actOnCard(key: string, action: number, card: string): Promise<void> {
+	await post('/api/manager/act', { key, action, card });
+}
+
 /** The Mac pings a quiet turn stream every 15 s; three missed pings is a dead stream. */
 const TURN_STALL_MS = 45_000;
 
