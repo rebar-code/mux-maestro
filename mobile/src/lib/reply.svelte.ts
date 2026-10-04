@@ -10,8 +10,8 @@ import {
 } from './api';
 import { isImage, insertPath, removePath } from './attach';
 import { Attachments } from './attach.svelte';
-import { bytesOver, normalizeText } from './compose';
-import { loadDraft, saveDraft } from './drafts';
+import { bytesOver, normalizeText, remainingDraft } from './compose';
+import { drafts } from './drafts';
 import { live, OFF_LABEL } from './live.svelte';
 import {
 	CTRL_MS,
@@ -105,7 +105,7 @@ export class Reply {
 	}
 	set draft(text: string) {
 		this.#draft = text;
-		saveDraft(this.draftKey, text);
+		drafts.save(this.draftKey, text);
 	}
 	private readonly draftKey: string;
 	note = $state<Note | null>(null);
@@ -165,7 +165,7 @@ export class Reply {
 		private readonly target: ReplyTarget = threadTarget(id)
 	) {
 		this.draftKey = `thread:${id}`;
-		this.#draft = loadDraft(this.draftKey);
+		this.#draft = drafts.load(this.draftKey);
 		this.files = new Attachments(id, {
 			insert: (text) => (this.draft = insertPath(this.draft, text)),
 			remove: (text) => (this.draft = removePath(this.draft, text)),
@@ -185,7 +185,8 @@ export class Reply {
 		this.note = null;
 		try {
 			await sendText(this.id, text);
-			this.draft = '';
+			// What was sent goes; what was typed meanwhile stays.
+			this.draft = remainingDraft(this.draft, text);
 			// The paths went with the text.
 			this.files.clear();
 			void this.host.refresh();

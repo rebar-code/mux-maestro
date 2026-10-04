@@ -2,6 +2,7 @@
 	import type { Attachment } from 'svelte/attachments';
 	import type { FormEventHandler } from 'svelte/elements';
 	import { boxCap, enterSends, hasHardwareKeyboard } from './compose';
+	import { keyboardInset } from './pager';
 
 	/**
 	 * The text box of every composer: it wraps, and grows with its text up to a
@@ -38,16 +39,21 @@
 	} = $props();
 	/* eslint-enable prefer-const */
 
-	function keydown(event: KeyboardEvent): void {
-		const pointer = {
-			fine: matchMedia('(pointer: fine)').matches,
-			hover: matchMedia('(hover: hover)').matches
-		};
+	function keydown(event: KeyboardEvent & { currentTarget: HTMLTextAreaElement }): void {
+		const visible = window.visualViewport?.height ?? window.innerHeight;
 		const sends = enterSends({
 			key: event.key,
 			shiftKey: event.shiftKey,
+			metaKey: event.metaKey,
+			ctrlKey: event.ctrlKey,
 			isComposing: event.isComposing,
-			hardware: hasHardwareKeyboard(pointer)
+			keyCode: event.keyCode,
+			finePointer: hasHardwareKeyboard({
+				fine: matchMedia('(pointer: fine)').matches,
+				hover: matchMedia('(hover: hover)').matches
+			}),
+			focused: document.activeElement === event.currentTarget,
+			keyboardUp: keyboardInset(document.documentElement.clientHeight, visible) > 0
 		});
 		if (!sends) return;
 		event.preventDefault();

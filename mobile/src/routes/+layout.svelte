@@ -7,6 +7,7 @@
 	import { keyboardInset } from '$lib/pager';
 	import Pair from '$lib/Pair.svelte';
 	import { notifications } from '$lib/push.svelte';
+	import { keepDrafts } from '$lib/drafts';
 	import { freshBuild } from '$lib/update';
 
 	const { children } = $props();
@@ -50,6 +51,7 @@
 	{@attach keyboard}
 	{@attach notifications}
 	{@attach freshBuild}
+	{@attach keepDrafts}
 >
 	{#if live.unpaired}
 		<Pair />

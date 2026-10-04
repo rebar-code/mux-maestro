@@ -8,6 +8,7 @@ import {
 	hasHardwareKeyboard,
 	limitLabel,
 	normalizeText,
+	remainingDraft,
 	TEXT_MAX_BYTES
 } from './compose';
 
@@ -79,24 +80,76 @@ describe('Enter', () => {
 		expect(hasHardwareKeyboard({ fine: false, hover: true })).toBe(false);
 	});
 
+	/** A phone: coarse pointer, the box focused, its on-screen keyboard up. */
+	const phone = { finePointer: false, focused: true, keyboardUp: true };
 	const press = (over: Partial<Parameters<typeof enterSends>[0]>): boolean =>
-		enterSends({ key: 'Enter', shiftKey: false, isComposing: false, hardware: true, ...over });
+		enterSends({
+			key: 'Enter',
+			shiftKey: false,
+			metaKey: false,
+			ctrlKey: false,
+			isComposing: false,
+			keyCode: 13,
+			...phone,
+			...over
+		});
 
-	it('sends on real keys', () => {
-		expect(press({})).toBe(true);
+	it('is a new line on a phone with its on-screen keyboard up', () => {
+		expect(press({})).toBe(false);
 	});
 
-	it('is a new line with Shift, and on a touch keyboard', () => {
+	it('sends with a fine pointer that hovers', () => {
+		expect(press({ finePointer: true })).toBe(true);
+		expect(press({ finePointer: true, keyboardUp: false })).toBe(true);
+	});
+
+	it('sends on a touch device whose keys are real: the box has focus and no keyboard is up', () => {
+		expect(press({ keyboardUp: false })).toBe(true);
+		// Not focused: the key is not for this box.
+		expect(press({ keyboardUp: false, focused: false })).toBe(false);
+	});
+
+	it('sends with Cmd or Ctrl everywhere', () => {
+		expect(press({ metaKey: true })).toBe(true);
+		expect(press({ ctrlKey: true })).toBe(true);
+		expect(press({ metaKey: true, finePointer: true })).toBe(true);
+	});
+
+	it('is always a new line with Shift', () => {
 		expect(press({ shiftKey: true })).toBe(false);
-		expect(press({ hardware: false })).toBe(false);
+		expect(press({ shiftKey: true, finePointer: true })).toBe(false);
+		expect(press({ shiftKey: true, keyboardUp: false })).toBe(false);
+		expect(press({ shiftKey: true, metaKey: true })).toBe(false);
 	});
 
-	it('never sends while a composition is open', () => {
-		expect(press({ isComposing: true })).toBe(false);
+	it('never sends while a composition is open, however the browser says so', () => {
+		expect(press({ isComposing: true, finePointer: true })).toBe(false);
+		// Safari: the Enter that ends a composition says it is not composing.
+		expect(press({ keyCode: 229, finePointer: true })).toBe(false);
+		expect(press({ keyCode: 229, metaKey: true })).toBe(false);
 	});
 
 	it('is only about Enter', () => {
-		expect(press({ key: 'a' })).toBe(false);
-		expect(press({ key: 'Tab' })).toBe(false);
+		expect(press({ key: 'a', finePointer: true })).toBe(false);
+		expect(press({ key: 'Tab', metaKey: true })).toBe(false);
+	});
+});
+
+describe('remainingDraft', () => {
+	it('empties the box when it still holds what was sent', () => {
+		expect(remainingDraft('ship it', 'ship it')).toBe('');
+		expect(remainingDraft('  ship it \n', 'ship it')).toBe('');
+	});
+
+	it('keeps what was typed while the send was on its way', () => {
+		expect(remainingDraft('ship it and then deploy', 'ship it')).toBe('and then deploy');
+		expect(remainingDraft('ship it\nsecond thought', 'ship it')).toBe('second thought');
+		expect(remainingDraft('one\r\ntwo more', 'one\ntwo')).toBe('more');
+	});
+
+	it('leaves a box that was changed in another way alone', () => {
+		expect(remainingDraft('something else', 'ship it')).toBe('something else');
+		expect(remainingDraft('do ship it', 'ship it')).toBe('do ship it');
+		expect(remainingDraft('', 'ship it')).toBe('');
 	});
 });

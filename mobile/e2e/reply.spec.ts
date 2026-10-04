@@ -255,8 +255,11 @@ test('key bar: keys go to the pane, text keys go to the box', async ({ page }) =
 	await keybar(page)
 		.locator('.keys')
 		.evaluate((keys) => (keys.scrollLeft = 0));
-	// The bar has no keyboard button.
-	await expect(page.getByRole('button', { name: 'Hide keyboard' })).toHaveCount(0);
+	// One key at the strip's end puts the keyboard away; it is not one of the scrolling keys.
+	await expect(keybar(page).getByRole('button', { name: 'Hide keyboard' })).toHaveCount(1);
+	await expect(
+		keybar(page).locator('.keys').getByRole('button', { name: 'Hide keyboard' })
+	).toHaveCount(0);
 
 	// A tap on a key leaves the focus in the box, so the keyboard stays up.
 	await box(page).tap();
@@ -1461,7 +1464,8 @@ test('the manager home is not a listed thread: it gets no dock and no reply rout
 	await expect(page.locator('[data-dock]')).toHaveCount(0);
 	// The pane's keys only: its text box belongs to the manager's own turns.
 	await expect(keybar(page).locator('.keys button')).toHaveCount(9);
-	await expect(page.getByRole('button', { name: 'Hide keyboard' })).toHaveCount(0);
+	// The manager's text box brings the keyboard up: the strip can put it away.
+	await expect(page.getByRole('button', { name: 'Hide keyboard' })).toHaveCount(1);
 	await expect(card(page)).toHaveCount(0);
 	await expect(nextBar(page)).toHaveCount(0);
 	await expect(page.getByRole('button', { name: 'Attach' })).toHaveCount(0);

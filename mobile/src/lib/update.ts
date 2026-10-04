@@ -1,20 +1,26 @@
+import { drafts } from './drafts';
+
 /** What a pending reload has to wait for. */
 export interface ReloadState {
 	/** The page is in the background. */
 	hidden: boolean;
 	/** A text box has the focus: the keyboard is up. */
 	typing: boolean;
-	/** Writes in flight: a reply, a file, a spoken turn. */
+	/** A text box holds text that was not sent. */
+	unsent: boolean;
+	/** Writes in flight: a reply, a file, a manager turn. */
 	holds: number;
+	/** Something that must not be cut is running: a voice turn. */
+	blocked: boolean;
 }
 
 /**
- * Whether the page may reload now to run a new build. Drafts are kept across
- * a reload, so the only things to lose are the keyboard under the fingers and
- * a write that is on its way.
+ * Whether the page may reload now to run a new build. It waits for a write
+ * that is on its way, for a voice turn, for text that was typed and not sent,
+ * and for the keyboard under the fingers.
  */
 export function canReload(state: ReloadState): boolean {
-	if (state.holds > 0) return false;
+	if (state.holds > 0 || state.blocked || state.unsent) return false;
 	return state.hidden || !state.typing;
 }
 
@@ -29,6 +35,17 @@ export function holdReload(): () => void {
 		released = true;
 		holds -= 1;
 	};
+}
+
+const blockers: (() => boolean)[] = [];
+
+/**
+ * No reload while `busy` says so. For work with many ways to end (a voice
+ * turn: sent, stopped, failed, replaced): its own state is asked, so no exit
+ * can leave the reload held.
+ */
+export function blockReloadWhile(busy: () => boolean): void {
+	blockers.push(busy);
 }
 
 const RELOADED = 'mm.reloaded';
@@ -53,7 +70,14 @@ export function freshBuild(): (() => void) | void {
 	const reload = (): void => {
 		if (!stale) return;
 		const typing = document.activeElement?.matches('textarea, input') ?? false;
-		if (!canReload({ hidden: document.visibilityState === 'hidden', typing, holds })) return;
+		const unsent = [...document.querySelectorAll('textarea')].some(
+			(box) => box.value.trim() !== ''
+		);
+		const blocked = blockers.some((busy) => busy());
+		const hidden = document.visibilityState === 'hidden';
+		if (!canReload({ hidden, typing, unsent, holds, blocked })) return;
+		// Nothing typed is lost to the reload.
+		drafts.flush();
 		try {
 			const last = Number(sessionStorage.getItem(RELOADED) ?? 0);
 			if (Date.now() - last < LOOP_MS) return;
@@ -86,11 +110,14 @@ export function freshBuild(): (() => void) | void {
 	workers.addEventListener('controllerchange', changed);
 	document.addEventListener('visibilitychange', front);
 	document.addEventListener('focusout', reload);
+	// A box that was sent or emptied no longer holds the reload.
+	document.addEventListener('input', reload);
 	const retry = setInterval(reload, RETRY_MS);
 	return () => {
 		workers.removeEventListener('controllerchange', changed);
 		document.removeEventListener('visibilitychange', front);
 		document.removeEventListener('focusout', reload);
+		document.removeEventListener('input', reload);
 		clearInterval(retry);
 	};
 }

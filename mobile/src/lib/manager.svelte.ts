@@ -1,7 +1,7 @@
 import { untrack } from 'svelte';
 import { ApiError, dismissReview, fetchManager, MANAGER_PATH, sendManagerText } from './api';
 import { bytesOver, normalizeText } from './compose';
-import { loadDraft, saveDraft } from './drafts';
+import { drafts } from './drafts';
 import { live } from './live.svelte';
 import { pendingPrompt } from './manager';
 import type { ReplyTarget } from './reply.svelte';
@@ -70,7 +70,7 @@ class Manager {
 	turnSince = $state(0);
 	/** What the last turn left to say: why it was refused, or that it waits. */
 	note = $state<string | null>(null);
-	#draft = $state(loadDraft(DRAFT));
+	#draft = $state(drafts.load(DRAFT));
 	/**
 	 * The text box. A refused turn puts its text back here. Kept across a
 	 * reload and the app closing, until it is sent or emptied.
@@ -80,7 +80,7 @@ class Manager {
 	}
 	set draft(text: string) {
 		this.#draft = text;
-		saveDraft(DRAFT, text);
+		drafts.save(DRAFT, text);
 	}
 	/** This phone has a turn in flight. */
 	sending = $state(false);

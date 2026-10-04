@@ -192,6 +192,8 @@ test('Return is a new line on a phone; the button sends', async ({ page }) => {
 	expect(await box(page).evaluate((el) => el.tagName)).toBe('TEXTAREA');
 
 	await box(page).tap();
+	// The on-screen keyboard is up, as it is on a phone with the box focused.
+	await keyboard(page, 500);
 	await page.keyboard.type('first');
 	await page.keyboard.press('Enter');
 	await page.keyboard.type('second');
@@ -385,15 +387,62 @@ test('Send shows a send on its way, and takes no second tap', async ({ page }) =
 	await expect(sendButton(page)).toHaveCount(0);
 
 	await box(page).fill('ship it');
+	// A full touch target.
+	expect((await sendButton(page).boundingBox())?.height).toBeGreaterThanOrEqual(44);
+	await expect(page.locator('[data-send-busy]')).toHaveCount(0);
 	await sendButton(page).tap();
 	await expect(sendButton(page)).toBeDisabled();
 	await expect(sendButton(page)).toHaveAttribute('aria-busy', 'true');
+	// Seen, not only announced: a sign on the button, which keeps its colour.
+	await expect(page.locator('[data-send-busy]')).toBeVisible();
+	expect(
+		Number(await sendButton(page).evaluate((el) => getComputedStyle(el).opacity))
+	).toBeGreaterThan(0.6);
+	await shot(page, 'send-busy');
 	// A second try while the first is out goes nowhere.
 	await page.locator('form.compose').evaluate((form: HTMLFormElement) => form.requestSubmit());
 	await page.locator('form.compose').evaluate((form: HTMLFormElement) => form.requestSubmit());
 	await expect(box(page)).toHaveValue('');
 	await page.waitForTimeout(300);
 	expect((await received(page)).texts).toEqual([{ thread: IDLE, text: 'ship it' }]);
+});
+
+test('with reduced motion the sign of a send on its way stands still', async ({ page }) => {
+	await page.emulateMedia({ reducedMotion: 'reduce' });
+	await open(page, threadPath(IDLE), ['replies']);
+	await page.request.post('/__fixture/text-slow?ms=1200');
+	await box(page).fill('ship it');
+	await sendButton(page).tap();
+	const sign = page.locator('[data-send-busy]');
+	await expect(sign).toBeVisible();
+	expect(await sign.evaluate((el) => getComputedStyle(el).animationName)).toBe('none');
+});
+
+test('text typed while a send is on its way stays in the box', async ({ page }) => {
+	await open(page, threadPath(IDLE), ['replies']);
+	await page.request.post('/__fixture/text-slow?ms=1200');
+	await box(page).tap();
+	await page.keyboard.type('ship it');
+	await sendButton(page).tap();
+	await expect(sendButton(page)).toHaveAttribute('aria-busy', 'true');
+	// The next thought, typed before the first one is answered.
+	await page.keyboard.type(' and then deploy');
+	await expect(box(page)).toHaveValue('ship it and then deploy');
+	// Sent: only what was sent goes.
+	await expect(box(page)).toHaveValue('and then deploy');
+	expect((await received(page)).texts).toEqual([{ thread: IDLE, text: 'ship it' }]);
+	// The draft that is kept is what is left.
+	await page.reload();
+	await expect(box(page)).toHaveValue('and then deploy');
+});
+
+test('a keyboard that was put away stays away after Send', async ({ page }) => {
+	await open(page, threadPath(IDLE), ['replies']);
+	await box(page).fill('ship it');
+	await box(page).blur();
+	await sendButton(page).tap();
+	await expect(box(page)).toHaveValue('');
+	await expect(box(page)).not.toBeFocused();
 });
 test('the manager home has the same box: it grows, keeps its draft, and sends the lines', async ({
 	page
@@ -406,10 +455,12 @@ test('the manager home has the same box: it grows, keeps its draft, and sends th
 	expect(one).toBeGreaterThanOrEqual(44);
 
 	await ask(page).tap();
+	await keyboard(page, 500);
 	await page.keyboard.type('what needs me?');
 	await page.keyboard.press('Enter');
 	await page.keyboard.type('and what failed?');
 	await expect(ask(page)).toHaveValue('what needs me?\nand what failed?');
+	await keyboard(page, 844);
 	expect((await ask(page).boundingBox())?.height).toBeCloseTo(one + 22, 0);
 	// The footer still ends where the screen ends.
 	const foot = await page.locator('[data-foot]').boundingBox();
@@ -440,4 +491,306 @@ test('the manager home has the same box: it grows, keeps its draft, and sends th
 	expect((await ask(page).boundingBox())?.height).toBeCloseTo(one, 0);
 	await page.reload();
 	await expect(ask(page)).toHaveValue('');
+});
+
+/** The keyboard is up and iOS has slid the visible part down the page by `top`. */
+async function slid(page: Page, visible: number, top: number): Promise<void> {
+	await page.evaluate(
+		([height, offset]) => {
+			const viewport = window.visualViewport as VisualViewport;
+			Object.defineProperty(viewport, 'height', { configurable: true, get: () => height });
+			Object.defineProperty(viewport, 'offsetTop', { configurable: true, get: () => offset });
+			viewport.dispatchEvent(new Event('resize'));
+			viewport.dispatchEvent(new Event('scroll'));
+		},
+		[visible, top]
+	);
+}
+
+test('when iOS slides the visible screen down the page, the dock stays on the keyboard edge', async ({
+	page
+}) => {
+	await open(page, threadPath(IDLE), ['replies', 'keyBar']);
+	await box(page).tap();
+	// 508px are visible, starting 40px down the page: the keyboard edge is at 548.
+	await slid(page, 508, 40);
+	const form = await page.locator('[data-compose]').boundingBox();
+	expect(Math.abs((form?.y ?? 0) + (form?.height ?? 0) - 548)).toBeLessThanOrEqual(1);
+	// The header is at the top of what is visible, not off screen above it.
+	const header = await page.locator('.tbar').boundingBox();
+	expect(Math.abs((header?.y ?? 0) - 40)).toBeLessThanOrEqual(1);
+	// The slide ends (the browser settled, or the keyboard went): the page is whole again.
+	await slid(page, 844, 0);
+	const rest = await page.locator('[data-compose]').boundingBox();
+	expect(Math.abs((rest?.y ?? 0) + (rest?.height ?? 0) - 844)).toBeLessThanOrEqual(1);
+	expect((await page.locator('.tbar').boundingBox())?.y).toBe(0);
+});
+
+test('on a phone, Cmd+Enter and Ctrl+Enter send; real keys on a touch device send on Enter', async ({
+	page
+}) => {
+	await open(page, threadPath(IDLE), ['replies']);
+	await box(page).tap();
+	// The on-screen keyboard is up: Return is a new line, with Shift too.
+	await keyboard(page, 500);
+	await page.keyboard.type('one');
+	await page.keyboard.press('Enter');
+	await page.keyboard.press('Shift+Enter');
+	await page.keyboard.type('two');
+	await expect(box(page)).toHaveValue('one\n\ntwo');
+	expect((await received(page)).texts).toEqual([]);
+	// Cmd+Enter sends even so.
+	await page.keyboard.press('Meta+Enter');
+	await expect(box(page)).toHaveValue('');
+	expect((await received(page)).texts).toEqual([{ thread: IDLE, text: 'one\n\ntwo' }]);
+	await expect(page.locator('.tbar .title span')).toContainText('idle');
+	await page.keyboard.type('three');
+	await page.keyboard.press('Control+Enter');
+	await expect(box(page)).toHaveValue('');
+	await expect.poll(async () => (await received(page)).texts.length).toBe(2);
+	await expect(page.locator('.tbar .title span')).toContainText('idle');
+
+	// A keyboard is attached: the box has the focus and nothing covers the screen.
+	await keyboard(page, 844);
+	await expect(box(page)).toBeFocused();
+	await page.keyboard.type('four');
+	await page.keyboard.press('Shift+Enter');
+	await page.keyboard.type('five');
+	await expect(box(page)).toHaveValue('four\nfive');
+	await page.keyboard.press('Enter');
+	await expect(box(page)).toHaveValue('');
+	await expect.poll(async () => (await received(page)).texts.at(-1)?.text).toBe('four\nfive');
+});
+
+test('with a fine pointer, Cmd+Enter and Ctrl+Enter send too, and a composition key never does', async ({
+	browser,
+	baseURL
+}) => {
+	const context = await browser.newContext({
+		baseURL,
+		viewport: { width: 430, height: 932 },
+		hasTouch: false,
+		isMobile: false
+	});
+	const page = await context.newPage();
+	await open(page, threadPath(IDLE), ['replies']);
+	await box(page).click();
+	await page.keyboard.type('one');
+	// Safari says the Enter that ends a composition is not composing; its key code says it is.
+	const prevented = await box(page).evaluate((el) => {
+		const event = new KeyboardEvent('keydown', {
+			key: 'Enter',
+			keyCode: 229,
+			bubbles: true,
+			cancelable: true
+		});
+		el.dispatchEvent(event);
+		return event.defaultPrevented;
+	});
+	expect(prevented).toBe(false);
+	await page.waitForTimeout(200);
+	expect((await received(page)).texts).toEqual([]);
+	await page.keyboard.press('Meta+Enter');
+	await expect(box(page)).toHaveValue('');
+	await expect(page.locator('.tbar .title span')).toContainText('idle');
+	await page.keyboard.type('two');
+	await page.keyboard.press('Control+Enter');
+	await expect(box(page)).toHaveValue('');
+	await expect
+		.poll(async () => (await received(page)).texts.map((t) => t.text))
+		.toEqual(['one', 'two']);
+	await context.close();
+});
+
+test('the hide-keyboard key gives the focus up; every other control keeps it', async ({ page }) => {
+	await open(page, threadPath(IDLE), ['replies', 'keyBar', 'upload', 'voice']);
+	const hide = page.getByRole('button', { name: 'Hide keyboard' });
+	await expect(hide).toBeVisible();
+	// A full touch area on a slim strip, and an icon, not a word.
+	const hit = await hide.evaluate((button) => {
+		const rect = button.getBoundingClientRect();
+		const x = rect.left + rect.width / 2;
+		const y = rect.top + rect.height / 2;
+		return [
+			document.elementFromPoint(x, y - 21),
+			document.elementFromPoint(x, y + 21),
+			document.elementFromPoint(x - 21, y),
+			document.elementFromPoint(x + 20, y)
+		].every((el) => el === button || button.contains(el));
+	});
+	expect(hit).toBe(true);
+	await expect(hide.locator('svg[data-icon="keyboardDown"]')).toBeVisible();
+	// Fixed at the end: the keys scroll under it, it stays.
+	const before = await hide.boundingBox();
+	await keybar(page)
+		.locator('.keys')
+		.evaluate((keys) => (keys.scrollLeft = keys.scrollWidth));
+	expect(await hide.boundingBox()).toEqual(before);
+	const strip = await keybar(page).boundingBox();
+	expect((before?.x ?? 0) + (before?.width ?? 0)).toBeLessThanOrEqual(
+		(strip?.x ?? 0) + (strip?.width ?? 0)
+	);
+	await keybar(page)
+		.locator('.keys')
+		.evaluate((keys) => (keys.scrollLeft = 0));
+
+	await box(page).tap();
+	await page.keyboard.type('hello');
+	await shot(page, 'keys-hide');
+	// The voice controls, a key, attach: the box keeps the focus through each.
+	await page.locator('[data-voicebar]').getByRole('button', { name: 'Speaker' }).tap();
+	await expect(box(page)).toBeFocused();
+	await page.locator('[data-voicebar]').getByRole('button', { name: 'Manual' }).tap();
+	await expect(box(page)).toBeFocused();
+	await keybar(page).getByRole('button', { name: 'Escape', exact: true }).tap();
+	await expect(box(page)).toBeFocused();
+	const chooser = page.waitForEvent('filechooser');
+	await page.getByRole('button', { name: 'Attach' }).tap();
+	await chooser;
+	await expect(box(page)).toBeFocused();
+
+	// The one that lets go.
+	await hide.tap();
+	await expect(box(page)).not.toBeFocused();
+	await expect(box(page)).toHaveValue('hello');
+});
+
+const storedDrafts = (page: Page): Promise<Record<string, { text: string; at: number }>> =>
+	page.evaluate(
+		() =>
+			JSON.parse(localStorage.getItem('mm.drafts') ?? '{}') as Record<
+				string,
+				{ text: string; at: number }
+			>
+	);
+
+/** The app goes to the background. */
+async function background(page: Page): Promise<void> {
+	await page.evaluate(() => {
+		Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+		document.dispatchEvent(new Event('visibilitychange'));
+	});
+}
+
+test('a draft is written after a pause, and at once when the app goes to the background', async ({
+	page
+}) => {
+	await open(page, threadPath(IDLE), ['replies']);
+	// The storage is not written on every key.
+	const writes = await page.evaluate(() => {
+		const scope = window as unknown as { __writes: number };
+		scope.__writes = 0;
+		const set = Storage.prototype.setItem;
+		Storage.prototype.setItem = function (key: string, value: string) {
+			if (key === 'mm.drafts') scope.__writes += 1;
+			return set.call(this, key, value);
+		};
+		return scope.__writes;
+	});
+	expect(writes).toBe(0);
+	await box(page).tap();
+	await page.keyboard.type('twenty keys in a row');
+	expect(await page.evaluate(() => (window as unknown as { __writes: number }).__writes)).toBe(0);
+	expect(await storedDrafts(page)).toEqual({});
+	// A pause: one write.
+	await expect
+		.poll(() => storedDrafts(page))
+		.toMatchObject({
+			[`thread:${IDLE}`]: { text: 'twenty keys in a row' }
+		});
+	expect(await page.evaluate(() => (window as unknown as { __writes: number }).__writes)).toBe(1);
+
+	// Typed, and the app is put away before the pause is over: written at once.
+	await page.keyboard.type(' more');
+	await background(page);
+	expect((await storedDrafts(page))[`thread:${IDLE}`].text).toBe('twenty keys in a row more');
+});
+
+test('a draft too long to send is not stored; a failed save is marked', async ({ page }) => {
+	await open(page, threadPath(IDLE), ['replies']);
+	await box(page).fill('x'.repeat(9300));
+	await background(page);
+	expect(await storedDrafts(page)).toEqual({});
+	// In the box for as long as the page lives.
+	await expect(box(page)).toHaveValue('x'.repeat(9300));
+	await page.reload();
+	await expect(box(page)).toHaveValue('');
+
+	// Storage refuses the write (full, or private mode): the page says so, without a word in the console.
+	const noise: string[] = [];
+	page.on('console', (message) => noise.push(message.text()));
+	await page.evaluate(() => {
+		const set = Storage.prototype.setItem;
+		const scope = window as unknown as { __full: boolean };
+		scope.__full = true;
+		Storage.prototype.setItem = function (key: string, value: string) {
+			if (scope.__full && key === 'mm.drafts') throw new DOMException('full', 'QuotaExceededError');
+			return set.call(this, key, value);
+		};
+	});
+	const app = page.locator('[data-app]');
+	await expect(app).not.toHaveAttribute('data-drafts-unsaved', '');
+	await box(page).fill('not kept');
+	await expect(app).toHaveAttribute('data-drafts-unsaved', '');
+	await expect(box(page)).toHaveValue('not kept');
+	// Storage takes writes again: the next save goes through and the mark goes.
+	await page.evaluate(() => ((window as unknown as { __full: boolean }).__full = false));
+	await box(page).fill('kept');
+	await expect(app).not.toHaveAttribute('data-drafts-unsaved', '');
+	expect((await storedDrafts(page))[`thread:${IDLE}`].text).toBe('kept');
+	expect(noise.filter((line) => /draft|quota/i.test(line))).toEqual([]);
+});
+
+test('a draft older than seven days is dropped', async ({ page }) => {
+	await open(page, threadPath(IDLE), ['replies']);
+	const day = 24 * 60 * 60 * 1000;
+	await page.evaluate(
+		([idle, other, day]) =>
+			localStorage.setItem(
+				'mm.drafts',
+				JSON.stringify({
+					[`thread:${idle}`]: { text: 'eight days old', at: Date.now() - 8 * (day as number) },
+					[`thread:${other}`]: { text: 'six days old', at: Date.now() - 6 * (day as number) }
+				})
+			),
+		[IDLE, OTHER, day]
+	);
+	await page.reload();
+	await expect(box(page)).toHaveValue('');
+	await page.goto(threadPath(OTHER));
+	await expect(box(page)).toHaveValue('six days old');
+	// The next save writes the old one out of storage too.
+	await box(page).fill('six days old, and touched');
+	await background(page);
+	expect(Object.keys(await storedDrafts(page))).toEqual([`thread:${OTHER}`]);
+});
+
+test('drafts are cleared when the phone is unpaired, and when it is paired anew', async ({
+	page
+}) => {
+	await open(page, threadPath(IDLE), ['replies']);
+	await box(page).fill('typed under the first pairing');
+	await background(page);
+	expect(Object.keys(await storedDrafts(page))).toHaveLength(1);
+
+	// The Mac makes a new token: this phone is no longer paired.
+	await page.request.post('/__fixture/rotate?value=second-token');
+	await expect(page.getByRole('textbox', { name: 'Pairing link' })).toBeVisible();
+	expect(await storedDrafts(page)).toEqual({});
+	expect(await page.evaluate(() => localStorage.getItem('mm.token'))).toBeNull();
+
+	// Paired again with the new link: nothing of the old pairing comes back.
+	await page.goto(`${threadPath(IDLE)}#pair=second-token`);
+	await expect(box(page)).toHaveValue('');
+	await box(page).fill('typed under the second pairing');
+	await background(page);
+	expect(Object.keys(await storedDrafts(page))).toHaveLength(1);
+
+	// A link with another token is opened while still paired: the drafts go with the old token.
+	await page.goto(`${threadPath(IDLE)}#pair=third-token`);
+	await page.reload();
+	expect(await storedDrafts(page)).toEqual({});
+	// And nothing but the token itself was stored to notice the change.
+	const keys = await page.evaluate(() => Object.keys(localStorage));
+	expect(keys.filter((key) => /draft/.test(key))).toEqual([]);
 });

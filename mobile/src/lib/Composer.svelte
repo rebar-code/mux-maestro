@@ -83,9 +83,11 @@
 
 	function submit(event: SubmitEvent & { currentTarget: HTMLFormElement }): void {
 		event.preventDefault();
+		const box = event.currentTarget.querySelector('textarea');
+		// A keyboard that is up stays up for the next message; one that was put away stays away.
+		const typing = box !== null && document.activeElement === box;
 		send();
-		// The keyboard stays up for the next message.
-		event.currentTarget.querySelector('textarea')?.focus();
+		if (typing) box.focus();
 	}
 </script>
 
@@ -116,8 +118,14 @@
 			type="submit"
 			disabled={blocked || sending || tooLong !== null}
 			aria-busy={sending}
-			{@attach keepFocus}>↑ Send</button
+			data-send
+			{@attach keepFocus}
 		>
+			<!-- The arrow keeps its place and its name; while a send is out, the sign is drawn over it. -->
+			<span class="mark" class:out={sending}
+				>↑{#if sending}<i class="busy" data-send-busy aria-hidden="true"></i>{/if}</span
+			> Send
+		</button>
 	{:else}
 		<TalkButton {target} {sink} off={!voiceOn} />
 	{/if}
@@ -172,12 +180,22 @@
 		margin-bottom: 2px;
 	}
 
+	.compose > .pill.send {
+		margin-bottom: 0;
+	}
+
 	.pill {
 		position: relative;
 		flex: none;
-		height: 40px;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: 6px;
+		/* A full touch target, as tall as one line of the box beside it. */
+		height: var(--hit);
+		margin-bottom: 0;
 		padding: 0 16px;
-		border-radius: 20px;
+		border-radius: 22px;
 		background: var(--accent);
 		color: #fff;
 		font-weight: 600;
@@ -185,5 +203,39 @@
 		white-space: nowrap;
 		/* As wide as the voice button, so the text box beside it never moves. */
 		min-width: 104px;
+	}
+
+	/* A send on its way keeps its colour: dimmed like "off" it would read as broken. */
+	.pill[aria-busy='true']:disabled {
+		opacity: 0.75;
+	}
+
+	.mark {
+		position: relative;
+		display: inline-block;
+	}
+
+	.mark.out {
+		color: transparent;
+	}
+
+	/* The sign that it is on its way. With reduced motion it is a still ring. */
+	.busy {
+		position: absolute;
+		left: 50%;
+		top: 50%;
+		margin: -6.5px 0 0 -6.5px;
+		width: 13px;
+		height: 13px;
+		border-radius: 50%;
+		border: 2px solid rgba(255, 255, 255, 0.4);
+		border-top-color: #fff;
+		animation: sending 0.8s linear infinite;
+	}
+
+	@keyframes sending {
+		to {
+			transform: rotate(360deg);
+		}
 	}
 </style>

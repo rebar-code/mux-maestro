@@ -188,7 +188,7 @@
 			with it, so neither ever covers them.
 		-->
 		{#if reply.note}<NoteLine note={reply.note} />{/if}
-		{#if keysOn}<KeyBar {reply} composer={false} />{/if}
+		{#if keysOn}<KeyBar {reply} composer={false} hides />{/if}
 		<VoiceBar target="manager" sink={manager.voice} off={!voiceOn} />
 	{/if}
 	<!-- With the keyboard open the footer sits on it and the board stays shut. -->

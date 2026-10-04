@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { drawer, forget, fresh, pairingLink, reset, TOKEN_HEADER } from './helpers';
+import { drawer, fakeMic, forget, fresh, pairingLink, reset, TOKEN_HEADER } from './helpers';
 
 test('cached lists paint before the network answers', async ({ page }) => {
 	await fresh(page);
@@ -149,9 +149,15 @@ const build = (page: import('@playwright/test').Page): Promise<string | null> =>
 		.catch(() => null);
 
 /** The app with its worker in control, long enough for the worker's own update check to be over. */
-async function installed(page: import('@playwright/test').Page, path = '/'): Promise<void> {
+async function installed(
+	page: import('@playwright/test').Page,
+	path = '/',
+	extra: string[] = []
+): Promise<void> {
 	await reset(page);
 	await page.request.post('/__fixture/capability?name=replies&on=1');
+	for (const one of extra)
+		await page.request.post(one.startsWith('/') ? one : `/__fixture/capability?name=${one}&on=1`);
 	await forget(page);
 	await page.goto(pairingLink(path));
 	await page.evaluate(() => navigator.serviceWorker.ready);
@@ -163,14 +169,8 @@ async function installed(page: import('@playwright/test').Page, path = '/'): Pro
 	expect(await build(page)).toBeNull();
 }
 
-test('a new build replaces the old one when the app comes to the front, and the draft is kept', async ({
-	page
-}) => {
+test('a new build replaces the old one when the app comes to the front', async ({ page }) => {
 	await installed(page, '/t/localhost%3A7');
-	const box = page.getByRole('textbox', { name: 'Reply' });
-	await box.fill('half a thought\nand a second line');
-	await box.blur();
-
 	// The Mac gets a new build while the app is open on the phone.
 	await page.request.post('/__fixture/build?tag=2');
 	// The app comes to the front: no navigation, nothing closed.
@@ -180,9 +180,7 @@ test('a new build replaces the old one when the app comes to the front, and the 
 	const names = await page.evaluate(() => caches.keys());
 	expect(names).toHaveLength(1);
 	expect(names[0]).toMatch(/-2$/);
-	// Same thread, same text, nothing cleared by hand.
 	await expect(page).toHaveURL(/\/t\/localhost(:|%3A)7$/);
-	await expect(box).toHaveValue('half a thought\nand a second line');
 	// The API is still not in any cache.
 	const api = await page.evaluate(async () => {
 		const found: string[] = [];
@@ -194,27 +192,88 @@ test('a new build replaces the old one when the app comes to the front, and the 
 	expect(api).toEqual([]);
 });
 
-test('a new build waits for the fingers to leave the text box', async ({ page }) => {
+/** The new worker is in control; the page has not reloaded for it yet. */
+async function workerChanged(page: import('@playwright/test').Page, tag: string): Promise<void> {
+	await expect
+		.poll(() => page.evaluate(() => caches.keys()).catch(() => []), { timeout: 20_000 })
+		.toEqual([expect.stringMatching(new RegExp(`-${tag}$`))]);
+}
+
+test('a new build waits while a text box holds text that was not sent', async ({ page }) => {
 	await installed(page, '/t/localhost%3A7');
 	const box = page.getByRole('textbox', { name: 'Reply' });
 	await box.tap();
 	await page.keyboard.type('still typing');
 	await page.request.post('/__fixture/build?tag=3');
 	await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
-	// The new worker takes over, and the page is left alone while the keyboard is up.
-	await expect
-		.poll(() => page.evaluate(() => caches.keys()).catch(() => []), { timeout: 20_000 })
-		.toEqual([expect.stringMatching(/-3$/)]);
+	await workerChanged(page, '3');
+	// The keyboard is up: the page is left alone.
 	await page.waitForTimeout(1500);
 	expect(await build(page)).toBeNull();
 	await expect(box).toBeFocused();
 	await page.keyboard.type(' this');
 	await expect(box).toHaveValue('still typing this');
 
-	// The keyboard goes down: now it reloads, with the text kept.
+	// The keyboard goes down, and the text is still not sent: it still waits.
 	await box.blur();
-	await expect.poll(() => build(page), { timeout: 20_000 }).toBe('3');
+	await page.waitForTimeout(6500);
+	expect(await build(page)).toBeNull();
 	await expect(box).toHaveValue('still typing this');
+
+	// Sent: now it reloads, and nothing was lost.
+	await page.getByRole('button', { name: '↑ Send' }).tap();
+	await expect.poll(() => build(page), { timeout: 20_000 }).toBe('3');
+	await expect(box).toHaveValue('');
+	await expect(page.locator('.u').last()).toHaveText('still typing this');
+});
+
+test('a new build waits for an emptied box too, and reloads when it is empty', async ({ page }) => {
+	await installed(page, '/t/localhost%3A7');
+	const box = page.getByRole('textbox', { name: 'Reply' });
+	await box.fill('never mind');
+	await box.blur();
+	await page.request.post('/__fixture/build?tag=4');
+	await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+	await workerChanged(page, '4');
+	await page.waitForTimeout(1500);
+	expect(await build(page)).toBeNull();
+	await box.fill('');
+	await box.blur();
+	await expect.poll(() => build(page), { timeout: 20_000 }).toBe('4');
+});
+
+test('a new build does not cut a voice turn', async ({ page }) => {
+	await fakeMic(page);
+	await installed(page, '/', ['voice', '/__fixture/voice?delay=2500']);
+	const primary = page.locator('[data-primary]');
+	const status = page.locator('[data-voice-status]');
+	await expect(primary).toHaveText(/Talk/);
+	await primary.click();
+	await expect(status).toHaveText('Recording — tap to send');
+	await page.evaluate(() => window.__mic.speak(true));
+
+	// A new build lands in the middle of the take.
+	await page.request.post('/__fixture/build?tag=5');
+	await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+	await workerChanged(page, '5');
+	await page.waitForTimeout(1000);
+	expect(await build(page)).toBeNull();
+	await expect(status).toHaveText('Recording — tap to send');
+
+	// The take is sent; the Mac thinks. Still the same page.
+	await page.evaluate(() => window.__mic.speak(false));
+	await primary.click();
+	await expect(status).toHaveText('Thinking…');
+	await page.waitForTimeout(1500);
+	expect(await build(page)).toBeNull();
+	// The reply is drawn and spoken on the page that asked.
+	await expect(page.locator('[data-view="chat"] .a').last()).toContainText('2 threads need you', {
+		timeout: 15_000
+	});
+	expect(await build(page)).toBeNull();
+
+	// The turn is over: the new build comes in.
+	await expect.poll(() => build(page), { timeout: 30_000 }).toBe('5');
 });
 
 test('a first visit is not reloaded when its first worker takes over', async ({ page }) => {
