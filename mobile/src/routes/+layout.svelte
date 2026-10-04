@@ -5,13 +5,16 @@
 	import { connect, live } from '$lib/live.svelte';
 	import { keyboardInset } from '$lib/pager';
 	import Pair from '$lib/Pair.svelte';
+	import { freshBuild } from '$lib/update';
 
 	const { children } = $props();
 
 	/**
 	 * Attachment for the app root: while the on-screen keyboard is open the page
-	 * is as tall as what is left above it, so the last row sits on the keyboard.
-	 * The keyboard does not shrink the page by itself on a phone.
+	 * is exactly what is left above it, so the last row sits on the keyboard.
+	 * The keyboard does not shrink the page by itself on a phone; it shrinks the
+	 * visual viewport, and iOS may also slide that viewport down the page to
+	 * show the focused box. The page follows both: its height and its top.
 	 */
 	function keyboard(node: HTMLElement): (() => void) | void {
 		const visible = window.visualViewport;
@@ -19,15 +22,32 @@
 		const fit = (): void => {
 			const inset = keyboardInset(document.documentElement.clientHeight, visible.height);
 			node.style.setProperty('--keyboard', `${inset}px`);
-			// The browser scrolls the page to show the box; the shorter page already does.
-			if (inset) window.scrollTo(0, 0);
+			node.toggleAttribute('data-kb', inset > 0);
+			// No home indicator under the last row while the keyboard covers it.
+			if (inset) node.style.setProperty('--safe-bottom', '0px');
+			else node.style.removeProperty('--safe-bottom');
+			// A page the browser scrolled goes back; what it slid instead is followed.
+			if (inset && window.scrollY > 0) window.scrollTo(0, 0);
+			node.style.setProperty('--slid', `${inset ? Math.max(0, visible.offsetTop) : 0}px`);
 		};
+		fit();
 		visible.addEventListener('resize', fit);
-		return () => visible.removeEventListener('resize', fit);
+		visible.addEventListener('scroll', fit);
+		return () => {
+			visible.removeEventListener('resize', fit);
+			visible.removeEventListener('scroll', fit);
+		};
 	}
 </script>
 
-<div class="app" {@attach gestures} {@attach connect} {@attach keyboard}>
+<div
+	class="app"
+	data-app
+	{@attach gestures}
+	{@attach connect}
+	{@attach keyboard}
+	{@attach freshBuild}
+>
 	{#if live.unpaired}
 		<Pair />
 	{:else if live.forbidden}
@@ -53,6 +73,7 @@
 	.app {
 		position: relative;
 		max-width: 430px;
+		top: var(--slid, 0px);
 		height: calc(100% - var(--keyboard, 0px));
 		margin: 0 auto;
 		background: var(--bg);

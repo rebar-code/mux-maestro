@@ -200,6 +200,7 @@
 		{voiceOn}
 		off={!managerOn}
 		blocked={manager.busy}
+		sending={manager.sending}
 		onsend={send}
 		onfocus={() => ui.lockSheet(true)}
 		onblur={() => ui.lockSheet(false)}

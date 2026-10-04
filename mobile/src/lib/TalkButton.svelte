@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { keepFocus } from './focus';
 	import { voice, type PrimaryKind, type VoiceSink, type VoiceTarget } from './voice.svelte';
 
 	/**
@@ -78,6 +79,7 @@
 		{disabled}
 		aria-label={face.label}
 		data-primary={kind}
+		{@attach keepFocus}
 		onpointerdown={press}
 		onpointermove={move}
 		onclick={tap}><span class="icon {kind}">{face.icon}</span> {face.label}</button

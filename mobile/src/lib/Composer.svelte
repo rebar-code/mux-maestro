@@ -2,6 +2,9 @@
 	import type { Snippet } from 'svelte';
 	import type { Attachment } from 'svelte/attachments';
 	import type { FormEventHandler } from 'svelte/elements';
+	import { limitLabel } from './compose';
+	import GrowingText from './GrowingText.svelte';
+	import { keepFocus } from './reply.svelte';
 	import TalkButton from './TalkButton.svelte';
 	import type { VoiceSink, VoiceTarget } from './voice.svelte';
 
@@ -20,6 +23,7 @@
 		sink,
 		voiceOn,
 		blocked = false,
+		sending = false,
 		off = false,
 		bare = false,
 		note = null,
@@ -41,6 +45,8 @@
 		voiceOn: boolean;
 		/** Nothing can be sent now. The box still takes text. */
 		blocked?: boolean;
+		/** A send is on its way: the button says so, and takes no second tap. */
+		sending?: boolean;
 		/**
 		 * The feature is switched off: the box holds its place and takes nothing.
 		 * The caller's `label` then says where the switch is.
@@ -51,10 +57,10 @@
 		/** The status line: what the last send came to. */
 		note?: { text: string; bad: boolean } | null;
 		onsend: () => void;
-		oninput?: FormEventHandler<HTMLInputElement>;
+		oninput?: FormEventHandler<HTMLTextAreaElement>;
 		onbeforeinput?: (event: InputEvent) => void;
 		/** Attachment for the text box, for a caller that types into it or moves the focus. */
-		box?: Attachment<HTMLInputElement>;
+		box?: Attachment<HTMLTextAreaElement>;
 		onpaste?: (event: ClipboardEvent) => void;
 		onfocus?: () => void;
 		onblur?: () => void;
@@ -67,38 +73,51 @@
 
 	const canSend = $derived(value.trim() !== '');
 
-	function submit(event: SubmitEvent): void {
+	/** Over what the Mac takes in one message: said before anything is sent. */
+	const tooLong = $derived(limitLabel(value));
+	const shown = $derived(tooLong ? { text: tooLong, bad: true } : note);
+
+	function send(): void {
+		if (canSend && !blocked && !sending && !off && !tooLong) onsend();
+	}
+
+	function submit(event: SubmitEvent & { currentTarget: HTMLFormElement }): void {
 		event.preventDefault();
-		if (canSend && !blocked && !off) onsend();
+		send();
+		// The keyboard stays up for the next message.
+		event.currentTarget.querySelector('textarea')?.focus();
 	}
 </script>
 
 <form class="compose" class:bare onsubmit={submit} data-compose data-off={off ? '' : undefined}>
-	{#if note}
-		<div class="note" class:bad={note.bad} role={note.bad ? 'alert' : 'status'} data-note>
-			{note.text}
+	{#if shown}
+		<div class="note" class:bad={shown.bad} role={shown.bad ? 'alert' : 'status'} data-note>
+			{shown.text}
 		</div>
 	{/if}
 	{@render above?.()}
 	{@render leading?.()}
-	<input
+	<GrowingText
 		bind:value
-		{@attach box}
-		placeholder={label}
-		aria-label={label}
-		enterkeyhint="send"
-		autocomplete="off"
-		autocapitalize="sentences"
+		{label}
 		disabled={off}
+		onsend={send}
 		{oninput}
 		{onbeforeinput}
 		{onpaste}
 		{onfocus}
 		{onblur}
+		{box}
 	/>
 	<!-- Typing is always there: with text in the box the button sends it. -->
 	{#if canSend && !off}
-		<button class="pill send grow" type="submit" disabled={blocked}>↑ Send</button>
+		<button
+			class="pill send grow"
+			type="submit"
+			disabled={blocked || sending || tooLong !== null}
+			aria-busy={sending}
+			{@attach keepFocus}>↑ Send</button
+		>
 	{:else}
 		<TalkButton {target} {sink} off={!voiceOn} />
 	{/if}
@@ -109,7 +128,8 @@
 		flex: none;
 		display: flex;
 		flex-wrap: wrap;
-		align-items: center;
+		/* The buttons stay on the box's last line as it grows. */
+		align-items: flex-end;
 		gap: 8px;
 		margin: 0;
 		/*
@@ -147,35 +167,9 @@
 		color: var(--red);
 	}
 
-	input {
-		flex: 1;
-		min-width: 0;
-		min-height: var(--hit);
-		padding: 10px 14px;
-		border-radius: 22px;
-		border: 1px solid var(--border);
-		background: var(--surface);
-		color: var(--text);
-		/* 16px: a smaller box makes iOS zoom the page on focus. */
-		font: inherit;
-		font-size: 16px;
-		outline: none;
-	}
-
-	/* Off, not broken: the label stays readable. */
-	input:disabled {
-		opacity: 1;
-		color: var(--muted);
-		-webkit-text-fill-color: var(--muted);
-	}
-
-	input:disabled::placeholder {
-		color: var(--muted);
-		opacity: 1;
-	}
-
-	input:focus-visible {
-		border-color: var(--accent);
+	/* Every button of the row is 40px beside a 44px line: centred on the last line. */
+	.compose > :global(button) {
+		margin-bottom: 2px;
 	}
 
 	.pill {

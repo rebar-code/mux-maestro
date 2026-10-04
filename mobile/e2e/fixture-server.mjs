@@ -14,7 +14,7 @@
 // scrolled=<last row> (a menu scrolled to rows 4…last, with more above and below),
 // /__fixture/not-sent?cleared=&reason=, /__fixture/no-input?id=&on=, /__fixture/pasted?on=,
 // /__fixture/manager-prompt?kind=&bare=&scrolled=&pid=&quiet=, /__fixture/prompt-delay?ms=, /__fixture/upload-slow?chunk=&answer=,
-// /__fixture/upload-fail?status=&error=&message=,
+// /__fixture/upload-fail?status=&error=&message=, /__fixture/build?tag=, /__fixture/text-slow?ms=,
 // /__fixture/append?count= (adds lines to pane buildbox:8),
 // /__fixture/screen?default=&max= (the screen endpoint's default and cap)
 //
@@ -216,6 +216,10 @@ let capabilities, manager, voice;
 let prompts, replies, uploadMax, promptSeq, notSent, noInput, pasted, keyLocks, promptDelay;
 // Uploads: the paths taken, the threads with one in flight, how slow they are, a refusal for the next.
 let saved, uploadLocks, uploadSlow, uploadFail;
+// Set: the server holds a newer build than the one a phone may have cached.
+let buildTag = null;
+// How long a reply's answer takes to come back.
+let textSlow = 0;
 const streams = new Set();
 
 function reset() {
@@ -237,6 +241,8 @@ function reset() {
 	uploadLocks = new Set();
 	uploadSlow = { chunk: 0, answer: 0 };
 	uploadFail = null;
+	buildTag = null;
+	textSlow = 0;
 	promptSeq = 0;
 	uploadMax = 10485760;
 	replies = {
@@ -735,7 +741,8 @@ function replyApi(req, res, url, thread, route, body) {
 	}
 	replies.texts.push({ thread: thread.id, text });
 	runThreadTurn(thread, text);
-	return send(res, 200, { ok: true });
+	// A slow link: the pane has the text, the phone waits for the answer.
+	return void setTimeout(() => send(res, 200, { ok: true }), textSlow);
 }
 
 const managerLive = () => ({
@@ -1213,6 +1220,12 @@ function hook(res, url) {
 		case '/__fixture/prompt-delay':
 			promptDelay = Number(url.searchParams.get('ms') ?? 0);
 			return send(res, 200, { ok: true });
+		case '/__fixture/text-slow':
+			textSlow = Number(url.searchParams.get('ms') ?? 0);
+			return send(res, 200, { ok: true });
+		case '/__fixture/build':
+			buildTag = url.searchParams.get('tag');
+			return send(res, 200, { ok: true });
 		case '/__fixture/upload-slow':
 			// `chunk`: a wait after each piece of the body is read, so the phone's
 			// progress has steps. `answer`: a wait before the answer.
@@ -1328,7 +1341,17 @@ async function asset(res, url) {
 	const file = join(ROOT, rel);
 	const wanted = file.startsWith(ROOT) && extname(file) ? file : join(ROOT, 'index.html');
 	try {
-		const body = await readFile(wanted);
+		let body = await readFile(wanted);
+		// A later build of the app: the worker's bytes differ, and the page says which it is.
+		if (buildTag && wanted.endsWith('service-worker.js')) {
+			// A new build has a new version, so its worker keeps its own cache.
+			const { version } = JSON.parse(await readFile(join(ROOT, '_app/version.json'), 'utf8'));
+			body = Buffer.from(String(body).replaceAll(version, `${version}-${buildTag}`));
+		}
+		if (buildTag && wanted.endsWith('index.html'))
+			body = Buffer.from(
+				String(body).replace('</head>', `<meta name="mm-build" content="${buildTag}" /></head>`)
+			);
 		res.writeHead(200, {
 			'content-type': TYPES[extname(wanted)] ?? 'application/octet-stream',
 			'cache-control': url.pathname.startsWith('/_app/immutable/')

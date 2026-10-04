@@ -6,7 +6,6 @@
 	import { dotClass, statusLabel } from './format';
 	import { pages, pullToRefresh, ui } from './gestures.svelte';
 	import KeyBar from './KeyBar.svelte';
-	import { overKeyboard } from './keyboard';
 	import { can, live, OFF_LABEL } from './live.svelte';
 	import NextBar from './NextBar.svelte';
 	import NoteLine from './NoteLine.svelte';
@@ -307,7 +306,6 @@
 	<div
 		class="dock"
 		data-dock
-		{@attach overKeyboard}
 		{@attach (repliesOn || keysOn) && reply.watch}
 		{@attach reply.files.watch}
 	>
@@ -330,7 +328,8 @@
 				target={id}
 				sink={reply.voice}
 				{voiceOn}
-				blocked={reply.blocked || reply.sending || reply.files.pending}
+				blocked={reply.blocked || reply.files.pending}
+				sending={reply.sending}
 				note={reply.note}
 				onsend={send}
 				oninput={reply.typed}
@@ -447,7 +446,14 @@
 		flex: none;
 		display: flex;
 		flex-direction: column;
-		padding-bottom: var(--kb, 0px);
+	}
+
+	/*
+	 * With the keyboard up the screen is short: what is not for typing gives
+	 * its room to the chat and the text box.
+	 */
+	:global([data-kb]) .dock :global(:is(.next, .vbar.off)) {
+		display: none;
 	}
 
 	.u {

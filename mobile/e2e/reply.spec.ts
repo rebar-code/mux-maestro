@@ -34,6 +34,9 @@ const WRITE = { ...TOKEN_HEADER, 'X-MuxMaestro': '1' };
 
 const box = (page: Page): Locator => page.getByRole('textbox', { name: 'Reply' });
 const sendButton = (page: Page): Locator => page.getByRole('button', { name: '↑ Send' });
+/** Submit the composer's form, as Enter on real keys does. On a phone, Return is a new line. */
+const submit = (page: Page): Promise<void> =>
+	page.locator('form.compose').evaluate((form: HTMLFormElement) => form.requestSubmit());
 const note = (page: Page): Locator => page.locator('[data-note]');
 const keybar = (page: Page): Locator => page.locator('[data-keybar]');
 const key = (page: Page, name: string): Locator =>
@@ -76,7 +79,8 @@ async function shot(page: Page, name: string): Promise<void> {
 
 test('a reply is sent, shows in the chat, and the box clears', async ({ page }) => {
 	await open(page, IDLE, ['replies', 'keyBar']);
-	await expect(box(page)).toHaveAttribute('enterkeyhint', 'send');
+	// Return is a new line on a phone: the button sends.
+	await expect(box(page)).toHaveAttribute('enterkeyhint', 'enter');
 	await expect(box(page)).toHaveAttribute('placeholder', 'Reply');
 	await expect(idlePill(page)).toBeDisabled();
 	await shot(page, 'composer');
@@ -96,10 +100,10 @@ test('a reply is sent, shows in the chat, and the box clears', async ({ page }) 
 	await expect(page.locator('.a').last()).toHaveText('Done: ship it. 2 files changed, tests pass.');
 	expect((await received(page)).texts).toEqual([{ thread: IDLE, text: 'ship it' }]);
 
-	// Enter sends too.
+	// The form sends too, as Enter on real keys does.
 	await expect(page.locator('.tbar .title span')).toContainText('idle');
 	await box(page).fill('and open a PR');
-	await box(page).press('Enter');
+	await submit(page);
 	await expect(page.locator('.u').last()).toHaveText('and open a PR');
 	await expect(box(page)).toHaveValue('');
 });
@@ -109,7 +113,7 @@ test('a busy thread takes typing but not Send', async ({ page }) => {
 	await box(page).fill('one more thing');
 	await expect(box(page)).toHaveValue('one more thing');
 	await expect(sendButton(page)).toBeDisabled();
-	await box(page).press('Enter');
+	await submit(page);
 	await page.waitForTimeout(300);
 	expect((await received(page)).texts).toEqual([]);
 	await expect(box(page)).toHaveValue('one more thing');
@@ -349,8 +353,9 @@ test('Ctrl is sticky: the next letter is a control key', async ({ page }) => {
 	await expect.poll(async () => (await received(page)).keys.at(-1)?.key).toBe('C-d');
 });
 
-test('the bar rides on the on-screen keyboard', async ({ page }) => {
+test('the bar sits exactly on the on-screen keyboard', async ({ page }) => {
 	await open(page, IDLE, ['replies', 'keyBar']);
+	const app = page.locator('[data-app]');
 	const dock = page.locator('[data-dock]');
 	const before = await dock.boundingBox();
 	// The keyboard covers the page without resizing it: only the visual viewport shrinks.
@@ -359,10 +364,11 @@ test('the bar rides on the on-screen keyboard', async ({ page }) => {
 		Object.defineProperty(viewport, 'height', { configurable: true, get: () => 508 });
 		viewport.dispatchEvent(new Event('resize'));
 	});
-	await expect(dock).toHaveAttribute('data-kb', '');
+	await expect(app).toHaveAttribute('data-kb', '');
 	const composer = await page.locator('[data-compose]').boundingBox();
 	const bar = await keybar(page).boundingBox();
-	expect((composer?.y ?? 0) + (composer?.height ?? 0)).toBeLessThanOrEqual(508);
+	// On the keyboard: no gap under the box, and nothing under the keyboard.
+	expect(Math.abs((composer?.y ?? 0) + (composer?.height ?? 0) - 508)).toBeLessThanOrEqual(1);
 	expect((bar?.y ?? 0) + (bar?.height ?? 0)).toBeLessThanOrEqual(composer?.y ?? 0);
 	// The chat above still ends on screen, above the bar.
 	const chat = await page.locator('[data-view="chat"]').boundingBox();
@@ -373,10 +379,9 @@ test('the bar rides on the on-screen keyboard', async ({ page }) => {
 		Object.defineProperty(viewport, 'height', { configurable: true, get: () => 844 });
 		viewport.dispatchEvent(new Event('resize'));
 	});
-	await expect(dock).not.toHaveAttribute('data-kb', '');
+	await expect(app).not.toHaveAttribute('data-kb', '');
 	expect(await dock.boundingBox()).toEqual(before);
 });
-
 test('slash: the list filters as you type and a tap fills the box', async ({ page }) => {
 	await open(page, IDLE, ['replies', 'keyBar']);
 	await expect(slash(page)).toHaveCount(0);
@@ -799,7 +804,7 @@ test('a reply left in the pane empties the box, and is not sent twice', async ({
 
 	// Send has nothing to send: neither the button nor Enter posts the old text.
 	await expect(idlePill(page)).toBeDisabled();
-	await box(page).press('Enter');
+	await submit(page);
 	await page.waitForTimeout(300);
 	expect(posts).toBe(1);
 
@@ -1027,7 +1032,7 @@ test('a prompt that came up after the paste: the box empties and the card shows'
 	await expect(card(page)).toHaveAttribute('data-kind', 'permission');
 	// Nothing to send, by the pill or by Enter.
 	await expect(idlePill(page)).toBeDisabled();
-	await box(page).press('Enter');
+	await submit(page);
 	await page.waitForTimeout(300);
 	expect(posts).toBe(1);
 	const got = await received(page);
