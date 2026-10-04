@@ -73,6 +73,22 @@ export async function replayVoice(
 	);
 }
 
+/**
+ * Have one agent message of `target`'s chat read aloud: the row `n`. The Mac
+ * finds the text itself. The stream is Replay's: `audio`, then `end`.
+ */
+export async function sayVoice(
+	target: string,
+	n: number,
+	handlers: VoiceHandlers,
+	signal?: AbortSignal
+): Promise<VoiceEnd> {
+	return follow(
+		await postAudio(`/api/voice/say?target=${encodeURIComponent(target)}&n=${n}`, null, signal),
+		handlers
+	);
+}
+
 /** A take has started: the Mac loads its models while the human talks. */
 export async function warmVoice(speaker: boolean): Promise<void> {
 	try {

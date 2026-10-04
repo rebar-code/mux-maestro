@@ -221,6 +221,13 @@ final class MobileServer {
     /// The voice turn in flight. One at a time: the Mac has one engine.
     private var voiceTurn: MobileVoiceTurn?
     private var voiceStarting = false
+    /// The read-aloud in flight, and its phone: a newer one replaces it.
+    private weak var reading: MobileVoiceTurn?
+    private weak var readingClient: Client?
+    /// Counts read-alouds, so one that a newer one replaced while it looked
+    /// for its text does not start.
+    private var readingCount = 0
+    private var spoken = MobileSpeechCache()
     /// Threads with a write on its way to their pane. One at a time per
     /// thread: a paste and its Enter are not interleaved with another's.
     private var writing = Set<String>()
@@ -793,6 +800,8 @@ final class MobileServer {
             startVoice(request, client: client)
         case .voiceReplay:
             startReplay(request, client: client)
+        case .voiceSay:
+            startSay(request, client: client)
         case .voiceWarm:
             guard let voice else {
                 return send(.error(503, "unavailable", message: MobileVoice.unavailable),
@@ -1490,6 +1499,7 @@ final class MobileServer {
         write(Self.streamHead, to: client)
         receive(client)
         pingTurn(client)
+        weak var made: MobileVoiceTurn?
         let turn = MobileVoiceTurn(speech: voice.speech, speaker: speaker) {
             [weak self, weak client] name, object, last in
             let json = Self.json(object)
@@ -1497,11 +1507,13 @@ final class MobileServer {
                 guard let self, let client, self.clients[ObjectIdentifier(client)] != nil else { return }
                 if last {
                     client.onDrop = nil
-                    self.voiceTurn = nil
+                    // A turn that was replaced must not clear the one after it.
+                    if self.voiceTurn === made { self.voiceTurn = nil }
                 }
                 self.write(Self.event(name, json), to: client, close: last)
             }
         }
+        made = turn
         voiceTurn = turn
         client.onDrop = { [weak self, weak turn] in
             turn?.cancel()
@@ -1638,6 +1650,76 @@ final class MobileServer {
                 self.voiceStream(to: client, voice: voice, speaker: true).replay(reply)
             }
         }
+    }
+
+    /// Read aloud: speak one agent message of the target's chat, picked by
+    /// its row `n`, with the same stream as Replay. It types into no pane, so
+    /// a thread needs only Voice. A newer read-aloud replaces a running one;
+    /// a take or a Replay is never cut short. A message read to its end
+    /// before is sent again from the cache, without the engine.
+    private func startSay(_ request: MobileRequest, client: Client) {
+        guard let ask = MobileVoiceRequest(query: request.query),
+              let n = request.query["n"].flatMap(UInt64.init)
+        else { return send(.error(400, "bad_request"), to: client, head: false) }
+        let transcript: () -> (path: String, codex: Bool)?
+        switch ask.target {
+        case .manager:
+            guard config.allows(.manager) else { return send(.error(403, "disabled"), to: client, head: false) }
+            guard let manager else {
+                return send(.error(503, "unavailable", message: MobileVoice.unavailable), to: client, head: false)
+            }
+            transcript = { manager.pane().transcript.map { ($0, false) } }
+        case .thread(let id):
+            guard let thread = snapshot.thread(id: id) else {
+                return send(.error(404, "not_found"), to: client, head: false)
+            }
+            transcript = { [sources] in thread.hasChat ? sources.transcript(thread) : nil }
+        }
+        guard let voice else {
+            return send(.error(503, "unavailable", message: MobileVoice.unavailable), to: client, head: false)
+        }
+        guard !voiceStarting, voiceTurn == nil || voiceTurn === reading else {
+            return send(.error(409, "busy", message: MobileVoice.busy), to: client, head: false)
+        }
+        // Newest wins: the phone has already let go of the one this replaces.
+        if let old = readingClient { drop(old) }
+        readingCount += 1
+        let count = readingCount
+        let key = MobileSpeechCache.Key(
+            target: ask.target, n: n, voice: VoiceModelStore.kokoroVoice, speed: VoiceModelStore.kokoroSpeed)
+        work.async { [weak self, weak client] in
+            let ready = voice.speech.modelsReady
+            let text = MobileVoice.sayText(of: transcript()
+                .flatMap { MobileChat.message(path: $0.path, codex: $0.codex, n: n) })
+            self?.queue.async {
+                guard let self, let client, self.clients[ObjectIdentifier(client)] != nil else { return }
+                // Replaced while it looked for its text, or a take began then.
+                guard count == self.readingCount, !self.voiceStarting, self.voiceTurn == nil else {
+                    return self.send(.error(409, "busy", message: MobileVoice.busy), to: client, head: false)
+                }
+                guard let text else {
+                    return self.send(
+                        .error(404, "nothing", message: MobileVoice.nothingToReplay), to: client, head: false)
+                }
+                // The row is read first: a pane that began a new transcript
+                // has other words at the same `n`, and those are not these.
+                if let reply = self.spoken.reply(for: key), reply.text == text {
+                    return self.readAloud(to: client, voice: voice).play(reply)
+                }
+                guard ready else { return self.send(MobileVoice.modelsMissing, to: client, head: false) }
+                self.readAloud(to: client, voice: voice).say(text) { [weak self] reply in
+                    self?.queue.async { self?.spoken.store(reply, for: key) }
+                }
+            }
+        }
+    }
+
+    /// Turn `client` into a read-aloud's stream and return its turn.
+    private func readAloud(to client: Client, voice: Voice) -> MobileVoiceTurn {
+        let turn = voiceStream(to: client, voice: voice, speaker: true)
+        reading = turn
+        readingClient = client
+        return turn
     }
 
     private func asset(_ path: String, socket: String?) -> MobileResponse {

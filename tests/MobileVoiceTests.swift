@@ -20,6 +20,8 @@ private final class FakeSpeech: VoiceSpeech {
     var whileTranscribing: (() -> Void)?
     /// When set, transcription does not finish until this is signalled.
     var gate: DispatchSemaphore?
+    /// When set, each piece waits for this before it is synthesized.
+    var synthGate: DispatchSemaphore?
 
     /// The sample count of each take that was transcribed.
     var transcribed: [Int] { lock.lock(); defer { lock.unlock() }; return _transcribed }
@@ -59,6 +61,14 @@ private final class FakeSpeech: VoiceSpeech {
     ) async throws {
         lock.lock(); _synthCalls += 1; lock.unlock()
         for await piece in text {
+            if let synthGate {
+                await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+                    DispatchQueue.global().async {
+                        synthGate.wait()
+                        done.resume()
+                    }
+                }
+            }
             try Task.checkCancellation()
             if failSynthesize { throw Failed() }
             let sentence = piece.trimmingCharacters(in: .whitespaces)
@@ -128,7 +138,7 @@ final class MobileVoiceTests: XCTestCase {
         let on = MobileConfig(capabilities: [.voice])
         for (path, route) in [
             ("/api/voice", MobileRoute.api(.voice)), ("/api/voice/replay", .api(.voiceReplay)),
-            ("/api/voice/warm", .api(.voiceWarm)),
+            ("/api/voice/warm", .api(.voiceWarm)), ("/api/voice/say", .api(.voiceSay)),
         ] {
             let post = MobileRequest(method: "POST", path: path)
             XCTAssertEqual(MobileAPI.route(post, config: on), route)
@@ -140,7 +150,7 @@ final class MobileVoiceTests: XCTestCase {
         }
         XCTAssertEqual(MobileAPI.route(MobileRequest(method: "POST", path: "/api/voice/other"), config: on), .notFound)
         // Each voice route names the Voice capability and is a write.
-        for endpoint in [MobileEndpoint.voice, .voiceReplay, .voiceWarm] {
+        for endpoint in [MobileEndpoint.voice, .voiceReplay, .voiceSay, .voiceWarm] {
             XCTAssertEqual(endpoint.capability, .voice)
             XCTAssertEqual(endpoint.method, "POST")
         }
@@ -293,6 +303,99 @@ final class MobileVoiceTests: XCTestCase {
             MobileChatMessage(n: 4, role: .tool, text: "ls", tool: "Bash"),
         ]
         XCTAssertEqual(MobileVoice.lastReply(in: page), "Two threads need you.")
+    }
+
+    func testSayReadsOnlyAnAgentsRow() {
+        XCTAssertNil(MobileVoice.sayText(of: nil))
+        XCTAssertNil(MobileVoice.sayText(of: MobileChatMessage(n: 1, role: .user, text: "and now?")))
+        XCTAssertNil(MobileVoice.sayText(of: MobileChatMessage(n: 2, role: .tool, text: "ls", tool: "Bash")))
+        XCTAssertEqual(
+            MobileVoice.sayText(of: MobileChatMessage(n: 3, role: .assistant, text: "All 12 pass.")),
+            "All 12 pass.")
+        XCTAssertEqual(
+            MobileVoice.sayText(of: MobileChatMessage(
+                n: 4, role: .assistant, text: String(repeating: "word ", count: 1500)))?.count,
+            MobileVoice.maxReplayCharacters)
+    }
+
+    func testFindsARowByItsNAnywhereInTheTranscript() throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("say-\(UUID().uuidString).jsonl")
+        defer { try? FileManager.default.removeItem(at: file) }
+        let filler = #"{"type":"user","message":{"role":"user","content":"\#(String(repeating: "x", count: 200_000))"}}"#
+        let lines = [
+            #"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Old news."}]}}"#,
+            filler, filler, filler, filler,
+            #"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"First."},{"type":"text","text":"Second."}]}}"#,
+        ]
+        try Data((lines.joined(separator: "\n") + "\n").utf8).write(to: file)
+        let page = MobileChat.messages(in: try Data(contentsOf: file), offset: 0, codex: false).messages
+        for row in page {
+            XCTAssertEqual(MobileChat.message(path: file.path, codex: false, n: row.n), row)
+        }
+        // The oldest row is past the tail a first page reads, and still found.
+        XCTAssertEqual(MobileChat.message(path: file.path, codex: false, n: 0)?.text, "Old news.")
+        let last = try XCTUnwrap(page.last)
+        XCTAssertEqual(last.text, "Second.")
+        // An `n` that is no row's start is nothing.
+        XCTAssertNil(MobileChat.message(path: file.path, codex: false, n: 5))
+        XCTAssertNil(MobileChat.message(path: file.path, codex: false, n: last.n + 1))
+        XCTAssertNil(MobileChat.message(path: file.path, codex: false, n: 1 << 40))
+    }
+
+    // MARK: read-aloud cache
+
+    private func spoken(_ text: String, bytes: Int = 4) -> MobileSpokenReply {
+        MobileSpokenReply(text: "", clips: [MobileVoiceClip(text: text, wav: String(repeating: "A", count: bytes))])
+    }
+
+    private func key(_ n: UInt64, voice: String = "bm_fable", speed: Float = 1.2) -> MobileSpeechCache.Key {
+        MobileSpeechCache.Key(target: .thread("local:12"), n: n, voice: voice, speed: speed)
+    }
+
+    func testTheCacheKeysOnTheMessageTheVoiceAndTheSpeed() {
+        var cache = MobileSpeechCache()
+        cache.store(spoken("one"), for: key(1))
+        XCTAssertEqual(cache.reply(for: key(1)), spoken("one"))
+        XCTAssertNil(cache.reply(for: key(2)))
+        XCTAssertNil(cache.reply(for: key(1, voice: "af_heart")))
+        XCTAssertNil(cache.reply(for: key(1, speed: 1)))
+        XCTAssertNil(cache.reply(for: MobileSpeechCache.Key(target: .manager, n: 1, voice: "bm_fable", speed: 1.2)))
+    }
+
+    func testACacheHitReturnsItsClipsInOrder() {
+        var cache = MobileSpeechCache()
+        let clips = ["First.", "Second.", "Third."].map { MobileVoiceClip(text: $0, wav: "UklGRg==") }
+        cache.store(MobileSpokenReply(text: "First. Second. Third.", clips: clips), for: key(1))
+        XCTAssertEqual(cache.reply(for: key(1))?.clips, clips)
+    }
+
+    func testTheCacheLetsTheLeastRecentlyUsedGoFirst() {
+        var cache = MobileSpeechCache(entryLimit: 2)
+        cache.store(spoken("one"), for: key(1))
+        cache.store(spoken("two"), for: key(2))
+        // Playing 1 again makes 2 the oldest.
+        XCTAssertNotNil(cache.reply(for: key(1)))
+        cache.store(spoken("three"), for: key(3))
+        XCTAssertEqual(cache.keys, [key(1), key(3)])
+        XCTAssertNil(cache.reply(for: key(2)))
+        XCTAssertNotNil(cache.reply(for: key(1)))
+    }
+
+    func testTheCacheHoldsNoMoreThanItsBytes() {
+        var cache = MobileSpeechCache(byteLimit: 100)
+        cache.store(spoken("a", bytes: 39), for: key(1))
+        cache.store(spoken("b", bytes: 39), for: key(2))
+        XCTAssertEqual(cache.bytes, 80)
+        cache.store(spoken("c", bytes: 39), for: key(3))
+        XCTAssertEqual(cache.keys, [key(2), key(3)])
+        XCTAssertEqual(cache.bytes, 80)
+        // Larger than the whole cache: not kept, and nothing else is pushed out.
+        cache.store(spoken("d", bytes: 200), for: key(4))
+        XCTAssertEqual(cache.keys, [key(2), key(3)])
+        XCTAssertNil(cache.reply(for: key(4)))
+        // The defaults.
+        XCTAssertEqual(MobileSpeechCache().entryLimit, 16)
+        XCTAssertEqual(MobileSpeechCache().byteLimit, 32 << 20)
     }
 
     // MARK: one turn
@@ -456,6 +559,46 @@ final class MobileVoiceTests: XCTestCase {
         XCTAssertEqual(speech.synthesized, ["Two threads need you."])
         XCTAssertEqual(events.names, ["audio", "end"])
         XCTAssertEqual(events.all.last?.data["reply"] as? String, "Two threads need you.")
+    }
+
+    func testSayKeepsTheClipsOfARunThatReachedItsEnd() async {
+        let speech = FakeSpeech()
+        let events = Events()
+        let kept = Events()
+        MobileVoiceTurn(speech: speech, speaker: true, emit: events.add).say("All 12 pass.") { reply in
+            kept.add("kept", ["reply": reply], false)
+        }
+        await settle { events.ended }
+        XCTAssertEqual(events.names, ["audio", "end"])
+        let reply = kept.all.first?.data["reply"] as? MobileSpokenReply
+        XCTAssertEqual(reply?.text, "All 12 pass.")
+        XCTAssertEqual(reply?.clips.map(\.text), ["All 12 pass."])
+        XCTAssertEqual(reply?.clips.first?.wav, events.all.first?.data["wav"] as? String)
+
+        // Played back: the same events, and the engine is not asked.
+        let again = Events()
+        MobileVoiceTurn(speech: speech, speaker: true, emit: again.add).play(reply!)
+        XCTAssertEqual(again.names, ["audio", "end"])
+        XCTAssertEqual(again.all.first?.data["wav"] as? String, reply?.clips.first?.wav)
+        XCTAssertEqual(again.all.first?.data["seq"] as? Int, 0)
+        XCTAssertEqual(again.all.last?.data["reply"] as? String, "All 12 pass.")
+        XCTAssertEqual(speech.synthCalls, 1)
+    }
+
+    func testACancelledSayKeepsNothing() async {
+        let speech = FakeSpeech()
+        let gate = DispatchSemaphore(value: 0)
+        speech.synthGate = gate
+        let events = Events()
+        let kept = Events()
+        let turn = MobileVoiceTurn(speech: speech, speaker: true, emit: events.add)
+        turn.say("All 12 pass.") { _ in kept.add("kept", [:], false) }
+        await settle { speech.synthCalls == 1 }
+        turn.cancel()
+        gate.signal()
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(kept.names, [])
+        XCTAssertFalse(events.ended)
     }
 }
 
@@ -962,6 +1105,139 @@ final class MobileVoiceServerTests: XCTestCase {
         // Nothing was sent to the manager, and nothing was transcribed.
         XCTAssertEqual(locked { sent }, [])
         XCTAssertEqual(speech.transcribed, [])
+    }
+
+    /// A thread chat of a question and a two-sentence answer; the `n` of each row.
+    private func writeThreadChat() throws -> (user: UInt64, reply: UInt64) {
+        let lines = [
+            #"{"type":"user","message":{"role":"user","content":"did it pass?"}}"#,
+            #"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"All 12 pass. Ship it."}]}}"#,
+        ]
+        try Data((lines.joined(separator: "\n") + "\n").utf8).write(to: threadTranscript)
+        return (0, UInt64(lines[0].utf8.count + 1))
+    }
+
+    private static func say(_ n: UInt64) -> String { "/api/voice/say?target=localhost%3A12&n=\(n)" }
+
+    func testSayReadsOneMessageOfAThreadWithVoiceAlone() throws {
+        // Voice is on and Replies is off: reading aloud types nothing.
+        let rows = try writeThreadChat()
+        let say = post(Self.say(rows.reply))
+        XCTAssertEqual(say.status, 200)
+        let all = events(say.body)
+        XCTAssertEqual(all.map(\.name), ["audio", "end"])
+        XCTAssertEqual(all[0].data["seq"] as? Int, 0)
+        XCTAssertEqual(all[0].data["text"] as? String, "All 12 pass. Ship it.")
+        XCTAssertEqual(all[1].data["outcome"] as? String, "done")
+        XCTAssertEqual(speech.synthCalls, 1)
+        XCTAssertEqual(pane.argv.count, 0)
+        XCTAssertEqual(locked { sent }, [])
+        XCTAssertEqual(speech.transcribed, [])
+    }
+
+    func testSayingAMessageAgainComesFromTheCache() throws {
+        let rows = try writeThreadChat()
+        let first = events(post(Self.say(rows.reply)).body)
+        let again = post(Self.say(rows.reply))
+        XCTAssertEqual(again.status, 200)
+        let all = events(again.body)
+        XCTAssertEqual(all.map(\.name), ["audio", "end"])
+        XCTAssertEqual(all[0].data["wav"] as? String, first[0].data["wav"] as? String)
+        XCTAssertEqual(all[1].data["reply"] as? String, first[1].data["reply"] as? String)
+        // The engine ran once, and a cached message needs no models.
+        XCTAssertEqual(speech.synthCalls, 1)
+        speech.modelsReady = false
+        XCTAssertEqual(post(Self.say(rows.reply)).status, 200)
+        XCTAssertEqual(speech.synthCalls, 1)
+    }
+
+    func testOtherWordsAtTheSameRowAreNotReadFromTheCache() throws {
+        let rows = try writeThreadChat()
+        XCTAssertEqual(post(Self.say(rows.reply)).status, 200)
+        // The pane began a new transcript: the same `n` now holds another answer.
+        let lines = [
+            #"{"type":"user","message":{"role":"user","content":"did it pass?"}}"#,
+            #"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Two tests fail."}]}}"#,
+        ]
+        try Data((lines.joined(separator: "\n") + "\n").utf8).write(to: threadTranscript)
+        let all = events(post(Self.say(rows.reply)).body)
+        XCTAssertEqual(all.map(\.name), ["audio", "end"])
+        XCTAssertEqual(all[0].data["text"] as? String, "Two tests fail.")
+        XCTAssertEqual(speech.synthCalls, 2)
+    }
+
+    func testSayRefusesWhatItCannotRead() throws {
+        let rows = try writeThreadChat()
+        XCTAssertEqual(post("/api/voice/say?target=localhost%3A12").status, 400)
+        XCTAssertEqual(post("/api/voice/say?target=localhost%3A12&n=last").status, 400)
+        XCTAssertEqual(post("/api/voice/say?n=1").status, 400)
+        // The human's own row, and a row that is not there.
+        for n in [rows.user, rows.reply + 1, 99_999] {
+            let none = post(Self.say(n))
+            XCTAssertEqual(none.status, 404, "\(n)")
+            XCTAssertEqual(none.body, #"{"error":"nothing","message":"Nothing to replay"}"#)
+        }
+        XCTAssertEqual(post("/api/voice/say?target=localhost%3A99&n=0").status, 404)
+        speech.modelsReady = false
+        XCTAssertEqual(post(Self.say(rows.reply)).status, 503)
+        XCTAssertEqual(speech.synthCalls, 0)
+    }
+
+    func testSayToTheManagerNeedsTheManagersSwitch() throws {
+        let file = root.appendingPathComponent("manager.jsonl")
+        let line = #"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Two threads need you."}]}}"#
+        try Data((line + "\n").utf8).write(to: file)
+        locked { transcript = file.path }
+        XCTAssertEqual(events(post("/api/voice/say?target=manager&n=0").body).first?.data["text"] as? String,
+                       "Two threads need you.")
+        server.configure(MobileConfig(capabilities: [.voice]))
+        let off = post("/api/voice/say?target=manager&n=0")
+        XCTAssertEqual(off.status, 403)
+        XCTAssertEqual(off.body, #"{"error":"disabled"}"#)
+    }
+
+    func testANewerSayReplacesARunningOne() throws {
+        let rows = try writeThreadChat()
+        let gate = DispatchSemaphore(value: 0)
+        speech.synthGate = gate
+        let first = expectation(description: "first say")
+        var firstBody = ""
+        DispatchQueue.global().async {
+            firstBody = self.post(Self.say(rows.reply)).body
+            first.fulfill()
+        }
+        let deadline = Date().addingTimeInterval(5)
+        while speech.synthCalls == 0, Date() < deadline { usleep(5000) }
+        XCTAssertEqual(speech.synthCalls, 1)
+        // The phone let go of the first and asks again: not a 409.
+        speech.synthGate = nil
+        let second = post(Self.say(rows.reply))
+        XCTAssertEqual(second.status, 200)
+        XCTAssertEqual(events(second.body).map(\.name), ["audio", "end"])
+        gate.signal()
+        wait(for: [first], timeout: 5)
+        // The first stream was closed without its end.
+        XCTAssertFalse(firstBody.contains("event: end"), firstBody)
+    }
+
+    func testSayWaitsForARunningTake() throws {
+        let rows = try writeThreadChat()
+        let gate = DispatchSemaphore(value: 0)
+        speech.gate = gate
+        let take = expectation(description: "take")
+        DispatchQueue.global().async {
+            _ = self.post("/api/voice?target=manager&speaker=0", body: Self.take)
+            take.fulfill()
+        }
+        let deadline = Date().addingTimeInterval(5)
+        while speech.transcribed.isEmpty, Date() < deadline { usleep(5000) }
+        let busy = post(Self.say(rows.reply))
+        XCTAssertEqual(busy.status, 409)
+        XCTAssertEqual(busy.body, #"{"error":"busy","message":"A voice turn is running"}"#)
+        gate.signal()
+        speech.gate = nil
+        wait(for: [take], timeout: 5)
+        XCTAssertEqual(speech.synthCalls, 0)
     }
 
     func testWarmLoadsOnlyWhatTheTakeWillNeed() {

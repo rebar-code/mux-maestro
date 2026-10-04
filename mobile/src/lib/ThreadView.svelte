@@ -211,6 +211,9 @@
 	const keysOn = $derived(can('keyBar'));
 	// A take goes to the thread as a reply, so voice needs that switch too.
 	const voiceOn = $derived(repliesOn && can('voice'));
+	// Reading a message aloud types nothing: the Voice switch alone.
+	const sayOn = $derived(can('voice'));
+	const SAY = { idle: 'Play', loading: 'Stop, loading', playing: 'Stop' } as const;
 	// A listed thread's reply box is always there: switched off on the Mac, it says so and
 	// takes nothing. The manager pane is not a listed thread: it has no reply routes, and
 	// its page brings its own box, so it gets no dock, no card and no Next bar.
@@ -404,6 +407,23 @@
 									{:else if message.role === 'assistant'}
 										<div class="a">
 											<Prose text={message.text} {hits} current={find.current} {links} />
+											{#if sayOn}
+												{@const saying = voice.sayingOf(id, message.n)}
+												<!-- Three shapes: a triangle, a turning ring, a square. -->
+												<button
+													class="say grow"
+													aria-label={SAY[saying]}
+													aria-busy={saying === 'loading'}
+													data-say={saying}
+													onclick={() => voice.say(id, message.n)}
+												>
+													{#if saying === 'loading'}
+														<i class="ring" aria-hidden="true"></i>
+													{:else}
+														<Icon name={saying === 'playing' ? 'stop' : 'play'} size={15} />
+													{/if}
+												</button>
+											{/if}
 										</div>
 									{:else}
 										<div class="tool"><b>{message.tool}</b> {@render body()}</div>
@@ -713,6 +733,41 @@
 		padding: 8px 12px;
 		white-space: pre-wrap;
 		overflow-wrap: anywhere;
+	}
+
+	/* Read this message aloud. Small, under the text it reads; its touch area is a full 44pt. */
+	.say {
+		position: relative;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 30px;
+		height: 26px;
+		margin-top: 4px;
+		border-radius: 13px;
+		background: var(--surface);
+		border: 1px solid var(--border);
+		color: var(--muted);
+	}
+
+	.say[data-say='playing'] {
+		color: var(--text);
+	}
+
+	/* The Mac is making the audio. With reduced motion it is a still ring. */
+	.ring {
+		width: 12px;
+		height: 12px;
+		border-radius: 50%;
+		border: 2px solid var(--border);
+		border-top-color: var(--text);
+		animation: turning 0.8s linear infinite;
+	}
+
+	@keyframes turning {
+		to {
+			transform: rotate(360deg);
+		}
 	}
 
 	/* Not sent yet: the agent holds it until its turn ends. A broken edge, and the queue's mark. */

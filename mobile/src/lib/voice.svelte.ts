@@ -1,11 +1,12 @@
 import { blockReloadWhile } from './update';
 import { live } from './live.svelte';
 import type { VoiceEnd, VoiceMode } from './types';
-import { replayVoice, sendVoice, warmVoice, type VoiceHandlers } from './voice/api';
+import { replayVoice, sayVoice, sendVoice, warmVoice, type VoiceHandlers } from './voice/api';
 import { Capture } from './voice/capture';
 import { dropLabel, micFault, requestFault } from './voice/faults';
 import { voiceLabel, type VoiceStatus } from './voice/label';
 import { Player } from './voice/player';
+import { sayState, sayTap, type SayKey, type SayState } from './voice/say';
 import { takeWav } from './voice/wav';
 
 export type { VoiceStatus };
@@ -45,6 +46,15 @@ function picked(): Picked {
 }
 
 type AudioContextClass = typeof AudioContext;
+
+/** A read-aloud draws nothing in the chat: the message is already there. */
+const SILENT: VoiceSink = {
+	begin: () => {},
+	delta: () => {},
+	end: () => {},
+	fail: () => {},
+	detach: () => {}
+};
 
 /** Milliseconds from Submit to the reply's first text and first audio. */
 export interface VoiceTiming {
@@ -97,6 +107,8 @@ class Voice {
 	note = $state<string | null>(null);
 	/** How loud the mic is now, 0 to 1, while it is open. */
 	level = $state(0);
+	/** The message a play button reads aloud now. */
+	private saying = $state.raw<SayKey | null>(null);
 	/** The last turn's delays, for the report of a slow turn. */
 	timing = $state.raw<VoiceTiming>({ text: null, audio: null });
 
@@ -376,6 +388,7 @@ class Voice {
 	private rest(): void {
 		this.status = 'idle';
 		this.paused = false;
+		this.saying = null;
 		this.keepAwake();
 		if (this.mode === 'auto' && !this.micMuted && this.bound && this.context && !this.stream) {
 			void this.openMic();
@@ -416,6 +429,7 @@ class Voice {
 		this.settleMic();
 		this.paused = false;
 		this.status = 'idle';
+		this.saying = null;
 	}
 
 	private async run(
@@ -556,6 +570,28 @@ class Voice {
 		this.halt();
 		this.note = null;
 		void this.run(target, sink, true, (handlers, signal) => replayVoice(target, handlers, signal));
+	};
+
+	/** What the play button of row `n` of `target`'s chat shows. */
+	sayingOf(target: VoiceTarget, n: number): SayState {
+		return sayState(this.saying, { target, n }, this.status === 'speaking');
+	}
+
+	/**
+	 * The play button under an agent's message: read it aloud on this phone,
+	 * whatever the speaker switch says. One message at a time: what is read or
+	 * on its way stops first, and a tap on the message that is read only stops it.
+	 */
+	say = (target: VoiceTarget, n: number): void => {
+		this.unlock();
+		const { start } = sayTap(this.saying, { target, n });
+		this.halt();
+		this.note = null;
+		if (!start) return this.rest();
+		this.saying = start;
+		void this.run(target, SILENT, true, (handlers, signal) =>
+			sayVoice(target, n, handlers, signal)
+		);
 	};
 
 	/** Auto opens the mic and listens; Manual waits for a tap. */

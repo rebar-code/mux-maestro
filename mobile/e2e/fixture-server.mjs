@@ -8,6 +8,7 @@
 // /__fixture/capability?name=&on=, /__fixture/manager-status?value=,
 // /__fixture/mac-turn?text=&reply=&spinner=&ms= (ms: the pause between words),
 // /__fixture/voice?mode=&speaker=&heard=&delay=, /__fixture/voice-takes,
+// /__fixture/voice-said (the messages the phone had read aloud, and which came from the cache),
 // /__fixture/replies, /__fixture/prompt?id=&pid=&kind=,
 // /__fixture/upload-max?value=, /__fixture/status?id=&value=,
 // /__fixture/panes?id=&value=, /__fixture/find-busy?value=,
@@ -644,7 +645,16 @@ function reset() {
 	};
 	// The Mac's voice defaults, what the next take is heard as, how long the
 	// Mac "thinks" before it has the transcript, and every take it was sent.
-	voice = { mode: 'manual', speaker: true, heard: 'What needs me?', delay: 300, takes: [] };
+	voice = {
+		mode: 'manual',
+		speaker: true,
+		heard: 'What needs me?',
+		delay: 300,
+		takes: [],
+		// Every read-aloud asked for, and the messages already synthesized once.
+		said: [],
+		spoken: new Set()
+	};
 	manager = {
 		status: 'idle',
 		turn: null,
@@ -1357,12 +1367,15 @@ function voiceApi(req, res, url, body) {
 	if (!capabilities.voice) return send(res, 403, { error: 'disabled' });
 	if (req.method !== 'POST') return send(res, 405, { error: 'method_not_allowed' });
 	if (path === '/api/voice/warm') return send(res, 200, { ok: true });
-	if (path !== '/api/voice' && path !== '/api/voice/replay')
+	if (path !== '/api/voice' && path !== '/api/voice/replay' && path !== '/api/voice/say')
 		return send(res, 404, { error: 'not_found' });
 	const target = url.searchParams.get('target');
 	const thread = threads.find((t) => t.id === target);
 	if (target !== 'manager' && !thread) return send(res, 404, { error: 'not_found' });
-	if (!capabilities[thread ? 'replies' : 'manager']) return send(res, 403, { error: 'disabled' });
+	// Reading a message aloud types nothing: a thread needs the Voice switch alone.
+	const typed = path !== '/api/voice/say';
+	if (!thread && !capabilities.manager) return send(res, 403, { error: 'disabled' });
+	if (thread && typed && !capabilities.replies) return send(res, 403, { error: 'disabled' });
 	const stream = () =>
 		res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' });
 	const event = (name, data) => res.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
@@ -1370,6 +1383,30 @@ function voiceApi(req, res, url, body) {
 		reply
 			.split(/(?<=[.!?:])\s+/)
 			.forEach((text, seq) => event('audio', { seq, text, wav: clip(0.9) }));
+
+	if (path === '/api/voice/say') {
+		const n = Number(url.searchParams.get('n') ?? 'none');
+		if (!Number.isInteger(n) || n < 0) return send(res, 400, { error: 'bad_request' });
+		const row = (thread ? (chats[thread.id] ?? []) : manager.chat).find((one) => one.n === n);
+		if (row?.role !== 'assistant')
+			return send(res, 404, { error: 'nothing', message: 'Nothing to replay' });
+		const key = `${target} ${n}`;
+		const cached = voice.spoken.has(key);
+		voice.said.push({ target, n, cached });
+		stream();
+		const mine = voice;
+		// The first time the Mac has to synthesize; after that the clips are kept.
+		return void setTimeout(
+			() => {
+				if (voice !== mine || res.destroyed) return res.end();
+				mine.spoken.add(key);
+				speak(row.text);
+				event('end', { outcome: 'done', reply: row.text, message: null });
+				res.end();
+			},
+			cached ? 0 : voice.delay
+		);
+	}
 
 	if (path === '/api/voice/replay') {
 		const said = thread ? (chats[thread.id] ?? []) : manager.chat;
@@ -2064,6 +2101,8 @@ function hook(res, url) {
 			break;
 		case '/__fixture/voice-takes':
 			return send(res, 200, { takes: voice.takes });
+		case '/__fixture/voice-said':
+			return send(res, 200, { said: voice.said });
 		case '/__fixture/mac-turn':
 			// A turn typed into the Mac rail: the phone must follow it.
 			runTurn(

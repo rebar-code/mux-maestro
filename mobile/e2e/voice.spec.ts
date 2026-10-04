@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import { fakeMic, forget, pairingLink, reset } from './helpers';
+import { fakeMic, forget, pairingLink, reset, threadPath } from './helpers';
 
 interface Take {
 	riff: boolean;
@@ -698,4 +698,73 @@ test('with reduced motion nothing in the bar animates', async ({ page }) => {
 			).length
 	);
 	expect(animated).toBe(0);
+});
+
+test('a play button under each agent message reads it aloud, one message at a time', async ({
+	page
+}) => {
+	const THREAD = 'localhost:7';
+	const playButton = (row: Locator): Locator => row.locator('[data-say]');
+	const clips = (): Promise<number> => page.evaluate(() => window.__clips);
+	const said = async (): Promise<{ target: string; n: number; cached: boolean }[]> =>
+		((await (await page.request.post('/__fixture/voice-said')).json()) as { said: never[] }).said;
+
+	await fakeMic(page);
+	await reset(page);
+	// Voice alone: reading aloud types nothing, so Replies stays off.
+	await page.request.post('/__fixture/capability?name=voice&on=1');
+	await page.request.post('/__fixture/voice?delay=700');
+	await page.request.post(
+		`/__fixture/say?id=${THREAD}&text=${encodeURIComponent('Pushed to the branch. CI is green.')}`
+	);
+	await forget(page);
+	await page.goto(pairingLink(threadPath(THREAD)));
+	const first = page.locator('.a').nth(0);
+	const second = page.locator('.a').nth(1);
+	await expect(second).toContainText('Pushed to the branch.');
+	// Under the agent's messages only, never under the human's.
+	await expect(page.locator('.a [data-say]')).toHaveCount(2);
+	await expect(page.locator('.u [data-say]')).toHaveCount(0);
+	await expect(playButton(first)).toHaveAccessibleName('Play');
+	await expect(playButton(first).locator('[data-icon="play"]')).toBeVisible();
+	if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/play-idle.png` });
+
+	// A tap asks the Mac for that row. Until audio comes the button shows progress, not Play.
+	const asked = page.waitForRequest((request) => request.url().includes('/api/voice/say'));
+	await playButton(first).tap();
+	const request = await asked;
+	expect(request.method()).toBe('POST');
+	expect(new URL(request.url()).search).toMatch(/^\?target=localhost%3A7&n=\d+$/);
+	expect(request.headers()['x-muxmaestro']).toBe('1');
+	await expect(playButton(first)).toHaveAttribute('data-say', 'loading');
+	await expect(playButton(first)).toHaveAttribute('aria-busy', 'true');
+	await expect(playButton(first).locator('[data-icon]')).toHaveCount(0);
+	if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/play-loading.png` });
+
+	// Audio plays on this phone: the button is Stop.
+	await expect(playButton(first)).toHaveAttribute('data-say', 'playing');
+	await expect(playButton(first)).toHaveAccessibleName('Stop');
+	await expect(playButton(first).locator('[data-icon="stop"]')).toBeVisible();
+	expect(await clips()).toBeGreaterThan(0);
+	await expect(playButton(second)).toHaveAttribute('data-say', 'idle');
+	if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/play-playing.png` });
+
+	// Play on another message stops this one: they never talk over each other.
+	await playButton(second).tap();
+	await expect(playButton(first)).toHaveAttribute('data-say', 'idle');
+	await expect(playButton(second)).toHaveAttribute('data-say', 'playing');
+	// A tap on the message that is read is its Stop: nothing new is asked for.
+	await playButton(second).tap();
+	await expect(playButton(second)).toHaveAttribute('data-say', 'idle');
+	expect((await said()).map((one) => one.cached)).toEqual([false, false]);
+
+	// The same message again comes from the Mac's cache, and starts sooner.
+	const again = Date.now();
+	await playButton(first).tap();
+	await expect(playButton(first)).toHaveAttribute('data-say', 'playing');
+	expect(Date.now() - again).toBeLessThan(700);
+	expect((await said()).at(-1)?.cached).toBe(true);
+	// Read to its end: the button is Play again.
+	await expect(playButton(first)).toHaveAttribute('data-say', 'idle', { timeout: 8000 });
+	await expect(playButton(first)).toHaveAccessibleName('Play');
 });
