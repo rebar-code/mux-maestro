@@ -286,6 +286,18 @@ export function chatBlocks(text: string): string[] {
 	return entry(text).blocks;
 }
 
+let live: { text: string; blocks: string[] } | null = null;
+
+/**
+ * `chatBlocks` for a reply that is still arriving. Each update is a new text,
+ * so only the newest is kept: a long reply does not fill the cache with its
+ * own beginnings and push the finished messages out of it.
+ */
+export function liveBlocks(text: string): string[] {
+	if (live?.text !== text) live = { text, blocks: blocksOf(text) };
+	return live.blocks;
+}
+
 const ENTITY: Record<string, string> = {
 	'&amp;': '&',
 	'&lt;': '<',

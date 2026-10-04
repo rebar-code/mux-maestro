@@ -5,6 +5,7 @@ import {
 	chatBlocks,
 	chatText,
 	imagePaths,
+	liveBlocks,
 	markedBlocks,
 	markHits,
 	MARKDOWN_MAX,
@@ -128,6 +129,25 @@ describe('chat markdown', () => {
 				html('# T\n\n- a `b`\n\n```js\nlet x = "<i>";\n```\n\n[l](http://e.com)'.slice(0, end))
 			);
 		}
+	});
+});
+
+describe('a reply that is still arriving', () => {
+	it('keeps only its newest text, and pushes no finished message out', () => {
+		// More finished messages than a streamed reply's beginnings would leave room for.
+		const finished = Array.from(
+			{ length: 40 },
+			(_, n) => `Message **${n}** ${'word '.repeat(2000)}`
+		);
+		const kept = finished.map((text) => chatBlocks(text));
+		const reply = Array.from({ length: 523 }, (_, n) => `piece ${n} of the **reply** `).join('\n');
+		for (let end = 40; end <= reply.length; end += 40) liveBlocks(reply.slice(0, end));
+		const last = liveBlocks(reply);
+		// The same result as a finished message gets, and the same array for the same text.
+		expect(last).toEqual(chatBlocks(reply));
+		expect(liveBlocks(reply)).toBe(last);
+		// Every finished message is still the parsed one: none was parsed again.
+		for (const [index, text] of finished.entries()) expect(chatBlocks(text)).toBe(kept[index]);
 	});
 });
 
@@ -372,6 +392,17 @@ describe('hostile input', () => {
 	});
 
 	it('does not draw a direction character that an entity spells', () => {
+		const link = html('[&#x202E;moc.elgoog//:sptth](https://evil.example)');
+		expect(link).toContain('>moc.elgoog//:sptth</a>');
+		expect(html('&#8238;txt.exe &#x202e;a &#X2067;b')).toBe('<p>txt.exe a b</p>\n');
+		for (const text of [
+			'[&#x202E;x](https://evil.example)',
+			'&#8238;txt.exe',
+			'# &#x2066;h',
+			'- &#x202D;i'
+		])
+			for (const out of [html(text), renderMarkdown(text)])
+				expect(out, text).not.toMatch(/[\u202a-\u202e\u2066-\u2069]/);
 		expect(html('safe&#x202E;gnp.exe &#8238;x &#x2066;y')).toBe('<p>safegnp.exe x y</p>\n');
 		expect(html('[a&#x202E;b](https://example.com "t&#x202E;t")')).not.toMatch(/\u202e/);
 		expect(renderMarkdown('# a&#x202E;b')).toBe('<h1>ab</h1>\n');

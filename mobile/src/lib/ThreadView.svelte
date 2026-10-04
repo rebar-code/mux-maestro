@@ -375,7 +375,7 @@
 								{#if reply.turn}
 									{#if spoken.prompt}<div class="u" data-live>{reply.turn.prompt}</div>{/if}
 									{#if spoken.reply}
-										<div class="a" data-live><Prose text={reply.turn.reply} {links} /></div>
+										<div class="a" data-live><Prose text={reply.turn.reply} {links} live /></div>
 									{/if}
 								{/if}
 								{#if pending}

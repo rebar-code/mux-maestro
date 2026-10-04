@@ -8,8 +8,16 @@
 		text,
 		hits,
 		current = 0,
-		links
-	}: { text: string; hits?: Hit[]; current?: number; links?: ProseLinks } = $props();
+		links,
+		live = false
+	}: {
+		text: string;
+		hits?: Hit[];
+		current?: number;
+		links?: ProseLinks;
+		/** The text is still arriving: it is not kept once it has changed. */
+		live?: boolean;
+	} = $props();
 
 	// One string for each top-level block. A message that grows changes its
 	// last block only: the blocks before it keep their elements. Null until the
@@ -17,6 +25,7 @@
 	const blocks = $derived.by(() => {
 		const api = renderer.api;
 		if (!api) return null;
+		if (live) return api.liveBlocks(text);
 		return hits ? api.markedBlocks(text, hits, current) : api.chatBlocks(text);
 	});
 
