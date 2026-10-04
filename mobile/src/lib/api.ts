@@ -108,6 +108,21 @@ async function failure(response: Response): Promise<ApiError> {
 /** What a write sends: JSON, or bytes of a named type (or nothing). */
 type Write = { json: unknown } | { bytes: BodyInit | null; type?: string };
 
+/**
+ * Open the live terminal of thread `id`. A socket carries no header, and the
+ * token must never be in a URL, so it goes as the first message. It is sent
+ * here, so no other module holds it.
+ */
+export function openTerminal(id: string): WebSocket {
+	const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
+	const socket = new WebSocket(
+		`${scheme}//${location.host}/api/terminal/${encodeURIComponent(id)}`
+	);
+	socket.binaryType = 'arraybuffer';
+	socket.addEventListener('open', () => socket.send(token ?? ''), { once: true });
+	return socket;
+}
+
 /** Every API call goes through here, so every one carries the pairing token. */
 async function request(
 	path: string,

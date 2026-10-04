@@ -36,6 +36,15 @@ export function isKeyName(key: string): boolean {
 }
 
 /** The keys a bar shows. Without a text box, only the keys that go to the pane. */
+/** What the key bar's taps go to: a thread's replies, or its live terminal. */
+export interface KeySink {
+	/** Sticky Ctrl is on. */
+	readonly ctrl: boolean;
+	tap(key: BarKey): void;
+	/** What holds the keyboard open, for the hide-keyboard button. */
+	readonly input: { blur(): void } | null;
+}
+
 export function barKeys(composer: boolean): readonly BarKey[] {
 	return composer ? BAR_KEYS : BAR_KEYS.filter((key) => key.send !== undefined);
 }
