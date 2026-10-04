@@ -8,7 +8,7 @@
 	import { maestro } from '$lib/maestro.svelte';
 	import MaestroButton from '$lib/MaestroButton.svelte';
 	import MaestroPanel from '$lib/MaestroPanel.svelte';
-	import { keyboardInset } from '$lib/pager';
+	import { pageFit } from '$lib/pager';
 	import Pair from '$lib/Pair.svelte';
 	import { notifications } from '$lib/push.svelte';
 	import { keepDrafts } from '$lib/drafts';
@@ -20,17 +20,37 @@
 	afterNavigate((navigation) => maestro.arrived(navigation.type, location.pathname));
 
 	/**
-	 * Attachment for the app root: while the on-screen keyboard is open the page
-	 * is exactly what is left above it, so the last row sits on the keyboard.
-	 * The keyboard does not shrink the page by itself on a phone; it shrinks the
-	 * visual viewport, and iOS may also slide that viewport down the page to
-	 * show the focused box. The page follows both: its height and its top.
+	 * Attachment for the app root: it fills the screen, and while the on-screen
+	 * keyboard is open the page is exactly what is left above it, so the last
+	 * row sits on the keyboard. The keyboard does not shrink the page by itself
+	 * on a phone; it shrinks the visual viewport, and iOS may also slide that
+	 * viewport down the page to show the focused box. The page follows both: its
+	 * height and its top. `pageFit` has the rule.
 	 */
 	function keyboard(node: HTMLElement): (() => void) | void {
 		const visible = window.visualViewport;
 		if (!visible) return;
+		const root = document.documentElement;
+		const standalone =
+			window.matchMedia('(display-mode: standalone)').matches ||
+			(navigator as { standalone?: boolean }).standalone === true;
+		let lift = 0;
 		const fit = (): void => {
-			const inset = keyboardInset(document.documentElement.clientHeight, visible.height);
+			const sides = [window.screen.width, window.screen.height];
+			const fitted = pageFit({
+				// What the browser gave the page, without what was added here.
+				layout: root.getBoundingClientRect().height - lift,
+				visible: visible.height,
+				slid: visible.offsetTop,
+				// A screen on its side: some browsers still name its sides as upright.
+				screen: window.innerWidth > window.innerHeight ? Math.min(...sides) : Math.max(...sides),
+				standalone,
+				safeTop: node.querySelector<HTMLElement>('[data-inset]')?.offsetHeight ?? 0
+			});
+			const inset = fitted.keyboard;
+			lift = fitted.lift;
+			// The band under the last row was here: the page was one status bar short.
+			root.style.setProperty('--lift', `${lift}px`);
 			node.style.setProperty('--keyboard', `${inset}px`);
 			node.toggleAttribute('data-kb', inset > 0);
 			// No home indicator under the last row while the keyboard covers it.
@@ -38,7 +58,7 @@
 			else node.style.removeProperty('--safe-bottom');
 			// A page the browser scrolled goes back; what it slid instead is followed.
 			if (inset && window.scrollY > 0) window.scrollTo(0, 0);
-			node.style.setProperty('--slid', `${inset ? Math.max(0, visible.offsetTop) : 0}px`);
+			node.style.setProperty('--slid', `${fitted.slid}px`);
 		};
 		fit();
 		visible.addEventListener('resize', fit);
@@ -46,6 +66,7 @@
 		return () => {
 			visible.removeEventListener('resize', fit);
 			visible.removeEventListener('scroll', fit);
+			root.style.removeProperty('--lift');
 		};
 	}
 </script>
@@ -61,6 +82,7 @@
 	{@attach freshBuild}
 	{@attach keepDrafts}
 >
+	<i class="inset" data-inset aria-hidden="true"></i>
 	{#if live.unpaired}
 		<Pair />
 	{:else if live.forbidden}
@@ -110,6 +132,17 @@
 	.app :global([data-maestro-grab]),
 	.app :global([data-maestro-grab] *) {
 		touch-action: none;
+	}
+
+	/* As tall as the status bar's inset, for `keyboard` to read; it shows nothing. */
+	.inset {
+		position: absolute;
+		top: 0;
+		left: 0;
+		width: 0;
+		height: env(safe-area-inset-top);
+		visibility: hidden;
+		pointer-events: none;
 	}
 
 	.view {

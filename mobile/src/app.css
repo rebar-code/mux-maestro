@@ -28,10 +28,11 @@ body {
 	margin: 0;
 	height: 100%;
 	/*
-	 * The visible height. As a Home Screen app, `100%` can come out taller than
-	 * the screen, which leaves an empty band under the last control.
+	 * The visible height. As a Home Screen app an iPhone makes it one status bar
+	 * shorter than the screen, which leaves an empty band under the last
+	 * control: the layout measures that and adds it back (`--lift`).
 	 */
-	height: 100dvh;
+	height: calc(100dvh + var(--lift, 0px));
 	background: #000;
 	color: var(--text);
 	font:
