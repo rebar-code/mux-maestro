@@ -246,10 +246,11 @@ for (const on of [true, false]) {
 		await expect(page.locator('.tbar .title b')).toHaveText('acme-app · checkout-fix');
 		await page.getByRole('button', { name: 'Menu' }).click();
 		await expectDrawerOpen(page);
-		// Pinned at the top, above the grouping control, and not the current page.
+		// A fixed bar at the bottom of the sidebar, and not the current page.
 		const row = await homeRow(page).boundingBox();
-		const seg = await drawer(page).getByRole('tablist', { name: 'Group by' }).boundingBox();
-		expect(row?.y ?? 999).toBeLessThan(seg?.y ?? 0);
+		expect(row?.height ?? 0).toBeGreaterThanOrEqual(44);
+		expect((row?.y ?? 0) + (row?.height ?? 0)).toBeGreaterThan(844 - 20);
+		expect((row?.y ?? 0) + (row?.height ?? 0)).toBeLessThanOrEqual(844);
 		await expect(homeRow(page)).not.toHaveAttribute('aria-current', 'page');
 
 		await homeRow(page).click();
@@ -670,4 +671,59 @@ test('the waiting state is shown once, with a way to the terminal', async ({ pag
 	await page.getByRole('button', { name: 'Terminal', exact: true }).click();
 	await expect(page.locator('[data-tab="main"]')).toHaveText(/Terminal\s*⇄/);
 	await expect(page.locator('[data-view="terminal"]')).toContainText('Do you want to proceed?');
+});
+
+test('sidebar: the Manager bar stays at the bottom, and the list scrolls above it', async ({
+	page
+}) => {
+	await fresh(page);
+	await page.getByRole('button', { name: 'Menu' }).click();
+	await expectDrawerOpen(page);
+	const list = drawer(page).locator('.scroll');
+	const bar = async (): Promise<{ y: number; bottom: number }> => {
+		const box = await homeRow(page).boundingBox();
+		return { y: box?.y ?? 0, bottom: (box?.y ?? 0) + (box?.height ?? 0) };
+	};
+	const before = await bar();
+
+	// Refresh and the grouping tabs stay at the top, above the list.
+	const tabs = await drawer(page).getByRole('tablist', { name: 'Group by' }).boundingBox();
+	const refresh = await drawer(page).getByRole('button', { name: 'Refresh' }).boundingBox();
+	const area = await list.boundingBox();
+	expect((tabs?.y ?? 99) + (tabs?.height ?? 0)).toBeLessThanOrEqual((area?.y ?? 0) + 8);
+	expect(refresh?.y ?? 999).toBeLessThan(area?.y ?? 0);
+	// The list ends above the bar: no row can sit under it.
+	expect((area?.y ?? 0) + (area?.height ?? 0)).toBeLessThanOrEqual(before.y);
+
+	// Scrolled to its end, the last host card is whole and above the bar; the bar has not moved.
+	await list.evaluate((el) => (el.scrollTop = el.scrollHeight));
+	expect(await list.evaluate((el) => el.scrollTop)).toBeGreaterThan(200);
+	const last = await drawer(page).locator('[data-host]').last().boundingBox();
+	expect((last?.y ?? 0) + (last?.height ?? 0)).toBeLessThanOrEqual(before.y);
+	expect(await bar()).toEqual(before);
+	await expect(homeRow(page)).toBeInViewport();
+	// On the home it is the current page.
+	await expect(homeRow(page)).toHaveAttribute('aria-current', 'page');
+});
+
+test('sidebar: the Manager bar clears the home indicator', async ({ page }) => {
+	await fresh(page);
+	await page.getByRole('button', { name: 'Menu' }).click();
+	await expectDrawerOpen(page);
+	const padding = await drawer(page)
+		.locator('.dbar')
+		.evaluate((el) => getComputedStyle(el).paddingBottom);
+	// 8px plus the bottom inset, which is 0 in this browser.
+	expect(padding).toBe('8px');
+	const rule = await page.evaluate(() => {
+		for (const sheet of [...document.styleSheets]) {
+			for (const rule of [...sheet.cssRules]) {
+				if (rule instanceof CSSStyleRule && rule.selectorText.includes('.dbar')) {
+					return rule.cssText;
+				}
+			}
+		}
+		return '';
+	});
+	expect(rule).toContain('safe-area-inset-bottom');
 });
