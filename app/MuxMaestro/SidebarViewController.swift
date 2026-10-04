@@ -1060,9 +1060,9 @@ final class RowCell: NSTableCellView {
     /// for non-window rows.
     let prChips = PRChipStrip()
     let addButton = SidebarAddButton.make(tooltip: "Add")
-    /// Kill Window, on window rows only, and visible only while the row is hovered.
+    /// Archive Window, on window rows only, and visible only while the row is hovered.
     /// It keeps its slot when invisible so the chips don't shift under the pointer.
-    let trashButton = SidebarAddButton.make(tooltip: "Kill Window", symbol: "trash")
+    let trashButton = SidebarAddButton.make(tooltip: "Archive Window", symbol: "archivebox")
     /// Window rows set this; every other row kind leaves it off.
     var showsTrashOnHover = false { didSet { updateTrash() } }
     /// A window whose PR merged keeps its trash visible without hover.
@@ -1465,7 +1465,7 @@ protocol SidebarActionDelegate: AnyObject {
     /// the host has no tmux.
     func sidebarRequestLaunchSession(host: Host, service: TmuxService)
 
-    /// A window row's trash — kill the window behind the ⌘W close confirm.
+    /// A window row's archive button — archive the window behind the ⌘W confirm.
     /// `merged` (the window's PR merged) skips the confirm and cleans up the
     /// window's worktree.
     func sidebarRequestConfirmKillWindow(
@@ -1947,9 +1947,9 @@ final class SidebarViewController: NSViewController {
         }
     }
 
-    /// A window row's trash: kill the window behind the same confirm ⌘W raises,
-    /// or with no confirm once its PR merged. A separate delegate call from the
-    /// context menu's Kill Window.
+    /// A window row's archive button: archive the window behind the same confirm
+    /// ⌘W raises, or with no confirm once its PR merged. A separate delegate call
+    /// from the context menu's Archive Window.
     @objc private func trashOnRow(_ sender: NSButton) {
         let row = outline.row(for: sender)
         guard row >= 0, case .window(let host, let session, let w)? =
@@ -2303,7 +2303,7 @@ final class SidebarViewController: NSViewController {
         return (outline.cardSegment(atRow: row) ?? .middle).rowHeight(content: content)
     }
 
-    /// Mirror ⌘W (Close Window) from a session row: kill the session's active
+    /// Mirror ⌘W (Archive Window) from a session row: archive the session's active
     /// window (the focused one, or the first if none is flagged active).
     @objc private func contextCloseWindow(_ sender: NSMenuItem) {
         guard case .session(let host, let s)? =
@@ -5377,7 +5377,7 @@ extension SidebarViewController: NSMenuDelegate {
             // Kills the session's active window outright. No ⌘W chord shown any
             // more: ⌘W closes only the focused *pane* of a multi-pane window, so
             // advertising it on a window-kill item promised the wrong blast radius.
-            menu.addItem(item("Close Window", #selector(contextCloseWindow(_:))))
+            menu.addItem(item("Archive Window", #selector(contextCloseWindow(_:))))
             menu.addItem(item("Kill “\(s.name)”", #selector(contextKill(_:))))
             menu.addItem(.separator())
             if let node { addMergeItem(to: menu, node: node, session: s) }
@@ -5387,7 +5387,7 @@ extension SidebarViewController: NSMenuDelegate {
         case .window(_, let owner, let w):
             menu.addItem(item("New Window", #selector(contextNewWindow(_:))))
             menu.addItem(item("Rename Window “\(w.name)”…", #selector(contextRenameWindow(_:))))
-            menu.addItem(item("Kill Window \(w.index)", #selector(contextKillWindow(_:))))
+            menu.addItem(item("Archive Window \(w.index)", #selector(contextKillWindow(_:))))
             menu.addItem(.separator())
             if let node {
                 addMoveToSessionItems(to: menu, node: node, session: owner)

@@ -1590,9 +1590,12 @@ final class TmuxService {
     /// `records` are the `SessionStart` hook's pane records; nil reads them from
     /// disk on the local host. `archived` is nil when the kill failed or the
     /// window could not be read, and then there is nothing to undo.
+    /// `onlyIfNamed` refuses the kill when the window found has another name:
+    /// redo passes it, because an index can change hands between undo and redo.
     /// Blocking; call off the main thread.
     func archiveWindow(
-        session: String, window: Int?, records: [String: AgentRecord]? = nil
+        session: String, window: Int?, records: [String: AgentRecord]? = nil,
+        onlyIfNamed expectedName: String? = nil
     ) -> (killed: Bool, archived: ArchivedWindow?) {
         let tree = loadTree() ?? []
         let known = records ?? (host.isLocal
@@ -1601,6 +1604,7 @@ final class TmuxService {
             : [:])
         let archived = WindowArchive.capture(
             tree: tree, host: host, session: session, window: window, records: known)
+        if let expectedName, archived?.name != expectedName { return (false, nil) }
         // Kill the window that was read, not whichever one is active by now.
         let killed = (window ?? archived?.index).map {
             killWindow(session: session, window: $0, knownTree: tree)

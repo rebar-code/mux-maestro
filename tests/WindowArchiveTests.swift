@@ -198,6 +198,17 @@ final class WindowArchiveTests: XCTestCase {
         XCTAssertNil(result.archived)
     }
 
+    func testRedoRefusesAWindowThatIsNoLongerTheOneUndoMade() {
+        let runner = ScriptedRunner()
+        let status = StatusStub()
+        scriptTree(runner, status)
+        let result = localService(runner, status)
+            .archiveWindow(session: "acme-app", window: 2, records: [:], onlyIfNamed: "web")
+        XCTAssertFalse(result.killed)
+        XCTAssertNil(result.archived)
+        XCTAssertFalse(runner.argSequences.contains { $0.first == "kill-window" })
+    }
+
     func testHookRecordSuppliesAnIdThePollMissedButNotForAShellPane() {
         let runner = ScriptedRunner()
         let status = StatusStub()
