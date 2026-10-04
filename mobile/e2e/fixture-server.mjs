@@ -1600,6 +1600,48 @@ const push = (event, body) => {
 	for (const res of streams) res.write(`event: ${event}\ndata: ${JSON.stringify(body)}\n\n`);
 };
 
+/** A pane's lines as the screen routes answer them. */
+function sendScreen(req, res, url, all) {
+	// Same rules as the Mac: digits only, else the default; then 1 to the cap.
+	const asked = url.searchParams.get('lines') ?? '';
+	const lines = Math.min(
+		Math.max(/^\d+$/.test(asked) ? Number(asked) : screenDefault, 1),
+		screenMax
+	);
+	const text = all.slice(-lines).join('\n');
+	const etag = `"${createHash('sha1').update(`${lines}\n${text}`).digest('hex').slice(0, 16)}"`;
+	if (req.headers['if-none-match'] === etag) {
+		res.writeHead(304, { etag, 'cache-control': 'no-store' });
+		return res.end();
+	}
+	res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store', etag });
+	return res.end(JSON.stringify({ text, lines, max: screenMax }));
+}
+
+const chatPage = (all, url) => {
+	const after = url.searchParams.get('after');
+	return {
+		messages: after === null ? all : all.slice(Number(after)),
+		next: all.length,
+		reset: false
+	};
+};
+
+/** The manager pane as a terminal shows it: its last reply, then its input box or its spinner. */
+function managerScreen() {
+	const box = '─'.repeat(52);
+	const last = manager.chat.filter((m) => m.role === 'assistant').at(-1)?.text ?? '';
+	return [
+		`${E}[32m⏺${E}[0m ${last}`,
+		'',
+		...(manager.turn ? [`✻ ${manager.turn.spinner ?? 'Thinking…'}`, ''] : []),
+		`╭${box}╮`,
+		`│ >${' '.repeat(50)}│`,
+		`╰${box}╯`,
+		manager.status === 'waiting' ? '  Do you want to proceed? ❯ 1. Yes  2. No' : '  ? for shortcuts'
+	];
+}
+
 // A P-256 public key (the sender key of the RFC 8291 example), as the Mac's.
 const PUSH_KEY =
 	'BP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27mlmlMoZIIgDll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A8';
@@ -1650,48 +1692,6 @@ function pushApi(req, res, path, body) {
 		return send(res, 200, { ok: true });
 	}
 	return send(res, 404, { error: 'not_found' });
-}
-
-/** A pane's lines as the screen routes answer them. */
-function sendScreen(req, res, url, all) {
-	// Same rules as the Mac: digits only, else the default; then 1 to the cap.
-	const asked = url.searchParams.get('lines') ?? '';
-	const lines = Math.min(
-		Math.max(/^\d+$/.test(asked) ? Number(asked) : screenDefault, 1),
-		screenMax
-	);
-	const text = all.slice(-lines).join('\n');
-	const etag = `"${createHash('sha1').update(`${lines}\n${text}`).digest('hex').slice(0, 16)}"`;
-	if (req.headers['if-none-match'] === etag) {
-		res.writeHead(304, { etag, 'cache-control': 'no-store' });
-		return res.end();
-	}
-	res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store', etag });
-	return res.end(JSON.stringify({ text, lines, max: screenMax }));
-}
-
-const chatPage = (all, url) => {
-	const after = url.searchParams.get('after');
-	return {
-		messages: after === null ? all : all.slice(Number(after)),
-		next: all.length,
-		reset: false
-	};
-};
-
-/** The manager pane as a terminal shows it: its last reply, then its input box or its spinner. */
-function managerScreen() {
-	const box = '─'.repeat(52);
-	const last = manager.chat.filter((m) => m.role === 'assistant').at(-1)?.text ?? '';
-	return [
-		`${E}[32m⏺${E}[0m ${last}`,
-		'',
-		...(manager.turn ? [`✻ ${manager.turn.spinner ?? 'Thinking…'}`, ''] : []),
-		`╭${box}╮`,
-		`│ >${' '.repeat(50)}│`,
-		`╰${box}╯`,
-		manager.status === 'waiting' ? '  Do you want to proceed? ❯ 1. Yes  2. No' : '  ? for shortcuts'
-	];
 }
 
 function api(req, res, url, body) {

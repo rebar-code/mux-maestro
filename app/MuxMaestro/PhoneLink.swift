@@ -313,12 +313,12 @@ final class PhoneLink {
             defer { pending.unlock() }
             if !done { self?.set(.waitingForKeychain) }
         }
-        let token = tokens.read()
+        let read = tokens.read()
         pending.lock()
         done = true
         pending.unlock()
         if state == .waitingForKeychain { set(.starting) }
-        return token
+        return read
     }
 
     private func applyKeepAwake() {
