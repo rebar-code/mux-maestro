@@ -649,7 +649,7 @@ test('voice into a thread: the take shows as your line and the reply streams in'
 	const primary = page.locator('[data-primary]');
 	const status = page.locator('[data-voice-status]');
 	await expect(primary).toHaveText('Talk');
-	await expect(status).toHaveText('Start talking');
+	await expect(status).toHaveCount(0);
 	const boxBefore = await box(page).boundingBox();
 
 	await primary.click();
@@ -673,7 +673,7 @@ test('voice into a thread: the take shows as your line and the reply streams in'
 	await expect(page.locator('.a').last()).toHaveText(
 		'Done: run the contrast audit. 2 files changed, tests pass.'
 	);
-	await expect(status).toHaveText('Start talking', { timeout: 8000 });
+	await expect(status).toHaveCount(0, { timeout: 8000 });
 	// Drawn once: the live lines gave way to the chat's own.
 	await expect(page.locator('.u', { hasText: 'run the contrast audit' })).toHaveCount(1);
 	await expect(page.locator('.a', { hasText: 'Done: run the contrast audit' })).toHaveCount(1);
@@ -1485,9 +1485,8 @@ test('the voice status sits above the key strip, and its controls below it', asy
 	await open(page, IDLE, ['replies', 'keyBar', 'voice']);
 	const line = page.locator('[data-voice-line]');
 	const controls = page.locator('[data-voicebar]');
-	await expect(line.locator('[data-voice-status]')).toHaveText('Start talking');
-	// One status line, not one in each part.
-	await expect(page.locator('[data-voice-status]')).toHaveCount(1);
+	// Idle, the voice says nothing: no status line is drawn in either part.
+	await expect(page.locator('[data-voice-status]')).toHaveCount(0);
 	const top = async (target: Locator): Promise<number> => (await target.boundingBox())?.y ?? 0;
 	expect(await top(line)).toBeLessThan(await top(keybar(page)));
 	expect(await top(keybar(page))).toBeLessThan(await top(controls));

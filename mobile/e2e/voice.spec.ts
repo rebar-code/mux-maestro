@@ -53,7 +53,7 @@ async function open(page: Page, hooks: string[] = []): Promise<void> {
 
 test('Manual: tap to start, tap to send, and a pause never cuts the take', async ({ page }) => {
 	await open(page);
-	await expect(status(page)).toHaveText('Start talking');
+	await expect(status(page)).toHaveCount(0);
 	await expect(bar(page, 'Manual')).toHaveAttribute('aria-pressed', 'true');
 
 	await primary(page).click();
@@ -84,7 +84,7 @@ test('Manual: tap to start, tap to send, and a pause never cuts the take', async
 	await expect(primary(page)).toHaveText('❚❚ Pause');
 	await expect(said(page).locator('.a').last()).toHaveText(REPLY);
 	// The reply has two sentences: two clips, played in order, then it rests.
-	await expect(status(page)).toHaveText('Start talking', { timeout: 8000 });
+	await expect(status(page)).toHaveCount(0, { timeout: 8000 });
 	await expect(primary(page)).toHaveText('Talk');
 	expect(await page.evaluate(() => window.__clips)).toBe(2);
 
@@ -153,7 +153,7 @@ test('input only: the speech becomes text and nothing is read back', async ({ pa
 
 	await expect(said(page).locator('.u')).toHaveText('What needs me?');
 	await expect(said(page).locator('.a').last()).toHaveText(REPLY);
-	await expect(status(page)).toHaveText('Start talking');
+	await expect(status(page)).toHaveCount(0);
 	await expect(primary(page)).toHaveText('Talk');
 	expect(await page.evaluate(() => window.__clips)).toBe(0);
 	expect((await takes(page))[0].speaker).toBe(false);
@@ -172,7 +172,7 @@ test('interrupt: Stop while it thinks, Pause, Resume and Skip while it speaks', 
 	await expect(primary(page)).toHaveText('■ Stop');
 	await primary(page).click();
 	// Stopped before the Mac had the words: nothing was sent to the manager.
-	await expect(status(page)).toHaveText('Start talking');
+	await expect(status(page)).toHaveCount(0);
 	await expect(primary(page)).toHaveText('Talk');
 	await page.waitForTimeout(2800);
 	await expect(said(page).locator('.u')).toHaveCount(0);
@@ -194,7 +194,7 @@ test('interrupt: Stop while it thinks, Pause, Resume and Skip while it speaks', 
 
 	await expect(bar(page, 'Skip')).toBeEnabled();
 	await bar(page, 'Skip').click();
-	await expect(status(page)).toHaveText('Start talking');
+	await expect(status(page)).toHaveCount(0);
 	await expect(bar(page, 'Skip')).toBeDisabled();
 	// The reply stays as text.
 	await expect(said(page).locator('.a').last()).toHaveText(REPLY);
@@ -214,7 +214,7 @@ test('Replay reads the last reply again, and Talk during it starts a take', asyn
 	await bar(page, 'Replay').click();
 	await expect(status(page)).toHaveText('Speaking…');
 	expect(await page.evaluate(() => window.__clips)).toBeGreaterThan(before);
-	await expect(status(page)).toHaveText('Start talking', { timeout: 12000 });
+	await expect(status(page)).toHaveCount(0, { timeout: 12000 });
 });
 
 test('the button is Send while the box has text, and Talk when it is empty', async ({ page }) => {
@@ -241,7 +241,7 @@ test('mode and speaker are remembered on this phone; the Mac sets the start', as
 	await expect(bar(page, 'Auto')).toHaveAttribute('aria-pressed', 'true');
 	await expect(bar(page, 'Speaker')).toHaveAttribute('aria-pressed', 'false');
 	// No tap yet, so no mic: Auto says so by not claiming to listen.
-	await expect(status(page)).toHaveText('Start talking');
+	await expect(status(page)).toHaveCount(0);
 	expect(await page.evaluate(() => window.__mic.opened)).toBe(0);
 
 	await bar(page, 'Manual').click();
@@ -271,7 +271,7 @@ test('a muted mic takes nothing, and a refused take says why', async ({ page }) 
 	await bar(page, 'Manual').click();
 	await expect(bar(page, 'Microphone')).toHaveCount(0);
 	await expect(primary(page)).toBeEnabled();
-	await expect(status(page)).toHaveText('Start talking');
+	await expect(status(page)).toHaveCount(0);
 
 	await page.request.post('/__fixture/manager-status?value=waiting');
 	await primary(page).click();
@@ -302,7 +302,7 @@ test('the mic is given back when it is not needed', async ({ page }) => {
 	await primary(page).click();
 	await expect(primary(page)).toHaveText('■ Stop');
 	expect(await live()).toBe(0);
-	await expect(status(page)).toHaveText('Start talking', { timeout: 10000 });
+	await expect(status(page)).toHaveCount(0, { timeout: 10000 });
 	expect(await live()).toBe(0);
 
 	// A take that is stopped, not sent, gives it back too.
@@ -328,7 +328,7 @@ test('the mic is given back when it is not needed', async ({ page }) => {
 	expect(await live()).toBe(1);
 	await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
 	expect(await live()).toBe(0);
-	await expect(status(page)).toHaveText('Start talking');
+	await expect(status(page)).toHaveCount(0);
 	// One tap brings it back.
 	await primary(page).click();
 	await expect(primary(page)).toHaveText('↑ Submit');
@@ -371,7 +371,7 @@ test('the level meter moves with the voice while the mic is open', async ({ page
 	await expect(meter).toHaveCount(0);
 
 	// Auto shows it while it waits for speech too.
-	await expect(status(page)).toHaveText('Start talking', { timeout: 8000 });
+	await expect(status(page)).toHaveCount(0, { timeout: 8000 });
 	await bar(page, 'Auto').click();
 	await expect(status(page)).toHaveText('Listening…');
 	await expect(meter).toBeVisible();
@@ -447,7 +447,7 @@ test('the phone is told what the audio is for, and the screen stays on for a tur
 	expect(await awake()).toBe(1);
 	await expect(status(page)).toHaveText('Speaking…');
 	expect(await session()).toBe('playback');
-	await expect(status(page)).toHaveText('Start talking', { timeout: 8000 });
+	await expect(status(page)).toHaveCount(0, { timeout: 8000 });
 	expect(await awake()).toBe(0);
 });
 
@@ -495,7 +495,7 @@ test('an interruption ends a take with a label and holds a reply for Resume', as
 	await expect(primary(page)).toHaveText('▶ Resume');
 	await primary(page).click();
 	await expect(status(page)).toHaveText('Speaking…');
-	await expect(status(page)).toHaveText('Start talking', { timeout: 8000 });
+	await expect(status(page)).toHaveCount(0, { timeout: 8000 });
 });
 
 test('on the footer a tap never drags the board and a drag never starts a take', async ({
@@ -567,8 +567,12 @@ test('on the footer a tap never drags the board and a drag never starts a take',
 	await expect(primary(page)).toHaveText('Talk');
 
 	// A tap, with the small slip a finger makes, starts the take and the
-	// footer stays where it is.
-	const rest = (await foot.boundingBox())!.y;
+	// footer stays where it is: its status line comes in above, its foot does not move.
+	const bottom = async (): Promise<number> => {
+		const box = (await foot.boundingBox())!;
+		return box.y + box.height;
+	};
+	const rest = await bottom();
 	[x, y] = await centre(primary(page));
 	await page.mouse.move(x, y);
 	await page.mouse.down();
@@ -577,7 +581,7 @@ test('on the footer a tap never drags the board and a drag never starts a take',
 	await expect(primary(page)).toHaveText('↑ Submit');
 	expect(await opened()).toBe(1);
 	await expect(board).toHaveAttribute('data-stop', '0');
-	expect((await foot.boundingBox())!.y).toBe(rest);
+	expect(await bottom()).toBe(rest);
 	// And the tap to send does not move it either.
 	await say(page, 500);
 	await primary(page).click();

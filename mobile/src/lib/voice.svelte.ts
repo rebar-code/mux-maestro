@@ -4,10 +4,11 @@ import type { VoiceEnd, VoiceMode } from './types';
 import { replayVoice, sendVoice, warmVoice, type VoiceHandlers } from './voice/api';
 import { Capture } from './voice/capture';
 import { dropLabel, micFault, requestFault } from './voice/faults';
+import { voiceLabel, type VoiceStatus } from './voice/label';
 import { Player } from './voice/player';
 import { takeWav } from './voice/wav';
 
-export type VoiceStatus = 'idle' | 'recording' | 'thinking' | 'speaking';
+export type { VoiceStatus };
 
 /** Where a take goes: `manager`, or a thread's id. */
 export type VoiceTarget = string;
@@ -130,21 +131,15 @@ class Voice {
 		return this.target === target ? this.status : 'idle';
 	}
 
-	/** The status line of `target`'s bar. */
+	/** The status line of `target`'s bar. Empty while the voice does nothing. */
 	label(target: VoiceTarget): string {
-		if (this.micMuted) return 'Mic muted';
-		switch (this.statusOf(target)) {
-			case 'recording':
-				return this.mode === 'auto' ? 'Listening…' : 'Recording — tap to send';
-			case 'thinking':
-				return 'Thinking…';
-			case 'speaking':
-				return this.paused ? 'Paused' : 'Speaking…';
-			default:
-				return this.mode === 'auto' && this.listening && this.bound?.target === target
-					? 'Listening…'
-					: 'Start talking';
-		}
+		return voiceLabel({
+			status: this.statusOf(target),
+			mode: this.mode,
+			micMuted: this.micMuted,
+			paused: this.paused,
+			hearing: this.listening && this.bound?.target === target
+		});
 	}
 
 	/** What the primary button of `target`'s bar does now. */
