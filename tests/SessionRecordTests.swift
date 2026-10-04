@@ -387,11 +387,11 @@ final class SessionRecordTests: XCTestCase {
         XCTAssertEqual(runner.argSequences, [
             ["list-sessions", "-F", "#{session_name}"],
             ["new-session", "-d", "-s", "Front Range Windows", "-c", "/frw"],
-            ["rename-window", "-t", "=Front Range Windows:", "po-import"],
+            ["rename-window", "-t", "=Front Range Windows:", "--", "po-import"],
             ["set-window-option", "-t", "=Front Range Windows:", "allow-rename", "off"],
             ["send-keys", "-t", "=Front Range Windows:", "claude --resume aaa"],
             ["new-window", "-a", "-t", "Front Range Windows:", "-c", "/frw2"],
-            ["rename-window", "-t", "=Front Range Windows:", "calendar"],
+            ["rename-window", "-t", "=Front Range Windows:", "--", "calendar"],
             ["set-window-option", "-t", "=Front Range Windows:", "allow-rename", "off"],
             ["send-keys", "-t", "=Front Range Windows:", "codex resume bbb"],
         ])
@@ -427,7 +427,7 @@ final class SessionRecordTests: XCTestCase {
         let resume = ["send-keys", "-t", "%12", "claude --resume id", "Enter"]
         XCTAssertEqual(runner.argSequences.last, resume)
         XCTAssertTrue(runner.argSequences.firstIndex(of: resume)!
-            > runner.argSequences.firstIndex(of: ["rename-window", "-t", "=web:", "w"])!)
+            > runner.argSequences.firstIndex(of: ["rename-window", "-t", "=web:", "--", "w"])!)
     }
 
     func testRecoverTopologyRestoresWindowIndicesLayoutAndActiveSelection() {
@@ -495,10 +495,10 @@ final class SessionRecordTests: XCTestCase {
         let publish = ["rename-session", "-t", temporary, "web"]
         XCTAssertLessThan(
             runner.argSequences.firstIndex(of: create)!,
-            runner.argSequences.firstIndex(of: ["rename-window", "-t", "=\(temporary):", "server"])!)
+            runner.argSequences.firstIndex(of: ["rename-window", "-t", "=\(temporary):", "--", "server"])!)
         XCTAssertGreaterThan(
             runner.argSequences.firstIndex(of: publish)!,
-            runner.argSequences.firstIndex(of: ["rename-window", "-t", "=\(temporary):", "server"])!)
+            runner.argSequences.firstIndex(of: ["rename-window", "-t", "=\(temporary):", "--", "server"])!)
     }
 
     func testJournaledRetryPublishesACompleteTemporarySession() {

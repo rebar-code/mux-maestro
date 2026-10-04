@@ -56,14 +56,14 @@ final class HelpWindowController: NSWindowController {
             Key(combo: "⌘D", desc: "Split Right"),
             Key(combo: "⇧⌘D", desc: "Split Down"),
             Key(combo: "⌘↩", desc: "Toggle Zoom on the active pane"),
-            Key(combo: "⌘W", desc: "Close the current tmux window (or a focused palette)"),
+            Key(combo: "⌘W", desc: "Close the focused pane, or archive its window (or close a focused palette)"),
             Key(combo: "⇧⌘R", desc: "Rename Session"),
             Key(combo: "⇧⌘N", desc: "Add Server (remote SSH host)"),
         ]),
         ("Editing (text fields)", [
             Key(combo: "⌘A", desc: "Select All"),
             Key(combo: "⌘C / ⌘V / ⌘X", desc: "Copy / Paste / Cut"),
-            Key(combo: "⌘Z / ⇧⌘Z", desc: "Undo / Redo"),
+            Key(combo: "⌘Z / ⇧⌘Z", desc: "Undo / Redo, including Archive Window"),
         ]),
         ("App", [
             Key(combo: "⌘Q", desc: "Quit MuxMaestro"),

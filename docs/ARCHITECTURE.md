@@ -173,7 +173,8 @@ actions, reusing the M6 destructive-safety patterns and the M8 per-host routing:
 
 - **Window rows:** New Window (`new-window -a -t <session>:` — inserted after the
   current window), Rename Window (`rename-window -t <session>:<win> <name>`), and
-  Kill Window (`kill-window -t <session>:<win>`, behind a confirmation alert).
+  Archive Window (`kill-window -t <session>:<win>`, behind a confirmation alert;
+  Edit > Undo creates the window again and resumes its agents, see `WindowArchive`).
 - **Pane rows:** Split Horizontally / Vertically (`split-window -h|-v -t
   <session>:<win>.<pane>`) and Kill Pane (`kill-pane -t <session>:<win>.<pane>`,
   behind a confirmation).
@@ -181,7 +182,7 @@ actions, reusing the M6 destructive-safety patterns and the M8 per-host routing:
 
 ### Safety (reuses M6)
 
-Destructive items (Kill Window, Kill Pane) are gated behind a confirmation sheet.
+Destructive items (Archive Window, Kill Pane) are gated behind a confirmation sheet.
 Every menu item is pinned to the **exact** right-clicked `SidebarNode` via
 `NSMenuItem.representedObject` at menu-open time (`menuNeedsUpdate`); the handlers
 read that node and **never** re-derive the target from `clickedRow` at action
