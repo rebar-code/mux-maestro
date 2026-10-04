@@ -402,6 +402,127 @@ final class ManagerStoreTests: XCTestCase {
         XCTAssertEqual(result.status, 2)
     }
 
+    // MARK: mux point
+
+    private let pointRows =
+        "SELECT key, host, session, COALESCE(window, 'none'), severity, text, dismissed FROM review ORDER BY key;"
+
+    private func seedPointSessions() throws {
+        try makeStore().replaceSessions([
+            sessionRow("compass", state: .waiting),
+            sessionRow("billing", state: .waiting, host: "devbox"),
+        ])
+    }
+
+    func testMuxPointRecordsABlockedReviewRow() throws {
+        try seedPointSessions()
+        try store(mux: ["point", "compass", "--reason", "  needs your approval "])
+        try store(mux: ["point", "billing:3", "--host", "devbox", "--reason", "asks 'which' database"])
+        XCTAssertEqual(try sqlite(pointRows), [
+            "point:devbox:billing:3|devbox|billing|3|blocked|asks 'which' database|0",
+            "point:localhost:compass|localhost|compass|none|blocked|needs your approval|0",
+        ])
+        let item = try XCTUnwrap(try makeStore().reviewItems().first { $0.session == "billing" })
+        XCTAssertTrue(item.isPointer)
+        XCTAssertEqual(item.window, 3)
+    }
+
+    func testMuxPointUpdatesInPlaceAndShowsADismissedPointerAgain() throws {
+        try seedPointSessions()
+        try store(mux: ["point", "compass", "--reason", "needs your approval"])
+        let store = try makeStore()
+        try store.dismiss(key: "point:localhost:compass")
+        XCTAssertEqual(try store.reviewItems(), [])
+
+        try self.store(mux: ["point", "compass", "--reason", "asks which database to use"])
+        XCTAssertEqual(try sqlite(pointRows), [
+            "point:localhost:compass|localhost|compass|none|blocked|asks which database to use|0",
+        ])
+        XCTAssertEqual(try store.reviewItems().count, 1)
+    }
+
+    func testMuxPointDoneDeletesOnlyThatPointer() throws {
+        try seedPointSessions()
+        try store(mux: ["point", "compass", "--reason", "needs your approval"])
+        try store(mux: ["point", "compass:2", "--reason", "asks a question"])
+        try store(mux: ["point", "billing", "--host", "devbox", "--reason", "needs your approval"])
+        try store(mux: ["point", "compass:2", "--done"])
+        try store(mux: ["point", "billing", "--done", "--host", "devbox"])
+        XCTAssertEqual(try sqlite("SELECT key FROM review;"), ["point:localhost:compass"])
+        // A session that is gone can still be cleared, and so can a pointer
+        // through the review list.
+        try store(mux: ["point", "closed", "--done"])
+        try store(mux: ["review", "done", "--key", "point:localhost:compass"])
+        XCTAssertEqual(try sqlite("SELECT key FROM review;"), [])
+    }
+
+    func testMuxPointRefusesASessionTheAppDoesNotList() throws {
+        try seedPointSessions()
+        let unknown = runMux(["point", "nope", "--reason", "needs your approval"])
+        XCTAssertEqual(unknown.status, 2)
+        XCTAssertEqual(unknown.output, "mux: point: no such session: nope on localhost\n")
+        // The name exists, but on another host.
+        let otherHost = runMux(["point", "billing", "--reason", "needs your approval"])
+        XCTAssertEqual(otherHost.status, 2)
+        XCTAssertEqual(otherHost.output, "mux: point: no such session: billing on localhost\n")
+        let unknownHost = runMux(["point", "compass", "--host", "nas", "--reason", "needs your approval"])
+        XCTAssertEqual(unknownHost.status, 2)
+        XCTAssertEqual(unknownHost.output, "mux: point: no such session: compass on nas\n")
+        XCTAssertEqual(try sqlite("SELECT COUNT(*) FROM review;"), ["0"])
+    }
+
+    func testMuxPointRefusesABadWindowOrReason() throws {
+        try seedPointSessions()
+        // A two-byte character that has no decomposed form: `Process` hands
+        // arguments over decomposed, which would turn "é" into two.
+        let long = String(repeating: "ß", count: 121)
+        let refused: [[String]] = [
+            ["point", "compass:two", "--reason", "needs your approval"],
+            ["point", "compass:", "--reason", "needs your approval"],
+            ["point", "compass"],
+            ["point", "compass", "--reason", ""],
+            ["point", "compass", "--reason", "   "],
+            ["point", "compass", "--reason", long],
+            ["point", "compass", "--reason", "needs\nyour approval"],
+            ["point", "compass", "--reason", "needs your approval\n"],
+            ["point", "compass", "--reason", "needs\u{1B}[2Jyour approval"],
+            ["point", "compass", "--reason", "needs\tyour approval"],
+            ["point", "--reason", "needs your approval"],
+            ["point", "compass", "--done", "--reason", "needs your approval"],
+            ["point", "compass", "--severity", "info", "--reason", "needs your approval"],
+        ]
+        for args in refused {
+            XCTAssertEqual(runMux(args).status, 2, args.joined(separator: " "))
+        }
+        XCTAssertTrue(runMux(["point", "compass", "--reason", long]).output.contains("121 characters"))
+        XCTAssertEqual(try sqlite("SELECT COUNT(*) FROM review;"), ["0"])
+
+        // The limit counts characters, not bytes.
+        try store(mux: ["point", "compass", "--reason", String(repeating: "ß", count: 120)])
+        XCTAssertEqual(try sqlite("SELECT COUNT(*) FROM review;"), ["1"])
+    }
+
+    func testMuxReviewAddRefusesAPointerKey() throws {
+        try seedPointSessions()
+        let result = runMux(["review", "add", "--key", "point:localhost:compass", "--text", "t"])
+        XCTAssertEqual(result.status, 2)
+        XCTAssertTrue(result.output.contains("reserved for mux point"), result.output)
+        XCTAssertEqual(runMux(["review", "add", "--key", "point:x", "--text", "t"]).status, 2)
+        XCTAssertEqual(try sqlite("SELECT COUNT(*) FROM review;"), ["0"])
+    }
+
+    func testOnlyAPointKeyIsAPointer() {
+        func item(_ key: String) -> ManagerReviewItem {
+            ManagerReviewItem(
+                key: key, host: "localhost", session: "compass", window: nil,
+                severity: .blocked, text: "needs your approval", updatedAt: 1, dismissed: false)
+        }
+        XCTAssertEqual(ManagerReviewItem.pointerPrefix, "point:")
+        XCTAssertTrue(item("point:localhost:compass").isPointer)
+        XCTAssertFalse(item("compass-perms").isPointer)
+        XCTAssertFalse(item("appoint:x").isPointer)
+    }
+
     // MARK: CLI helpers
 
     private var muxPath: URL {

@@ -169,7 +169,8 @@ final class MobileManagerTests: XCTestCase {
         let body = MobileManager.body(
             board: board(), snapshot: snapshot(), turn: nil, status: .idle)
         // The chat is its own route, read the way a thread's chat is.
-        XCTAssertEqual(Set(body.keys), ["status", "needsYou", "review", "updates", "turn"])
+        XCTAssertEqual(Set(body.keys), ["status", "needsYou", "review", "points", "updates", "turn"])
+        XCTAssertEqual((body["points"] as? [Any])?.count, 0)
         XCTAssertEqual(body["status"] as? String, "idle")
         XCTAssertTrue(body["turn"] is NSNull)
 
@@ -195,6 +196,98 @@ final class MobileManagerTests: XCTestCase {
         XCTAssertEqual(updates[0]["thread"] as? String, "localhost:13")
         XCTAssertEqual(updates[0]["text"] as? String, "Tests pass")
         XCTAssertTrue(updates[1]["thread"] is NSNull)
+    }
+
+    // MARK: pointers
+
+    private func pointer(
+        _ key: String, title: String, detail: String, link: ThreadLink?
+    ) -> MobileManagerItem {
+        MobileManagerItem(
+            kind: .review, key: key, title: title, detail: detail, severity: .blocked,
+            at: 1_759_499_800, link: link, pointer: true)
+    }
+
+    private func pointerBoard() -> MobileManagerBoard {
+        var board = board()
+        board.items += [
+            pointer(
+                "point:devbox:billing:0", title: "billing@devbox", detail: "needs your approval",
+                link: .open(session: "billing", window: 0, pane: nil, host: "devbox")),
+            pointer(
+                "point:localhost:reports", title: "reports", detail: "asks which database to use",
+                link: .open(session: "reports", window: nil, pane: nil, host: "localhost")),
+        ]
+        return board
+    }
+
+    func testAPointerIsUnderPointsWithItsThreadAndNotUnderReview() throws {
+        let live = MobileManager.live(board: pointerBoard(), snapshot: snapshot(), turn: nil)
+        let review = try XCTUnwrap(live["review"] as? [[String: Any]])
+        XCTAssertEqual(review.map { $0["key"] as? String }, ["billing:pr", "gone"])
+        XCTAssertEqual((live["needsYou"] as? [Any])?.count, 1)
+
+        let points = try XCTUnwrap(live["points"] as? [[String: Any]])
+        XCTAssertEqual(points.count, 2)
+        // The same shape as any card: a thread id, and no tmux address.
+        XCTAssertEqual(Set(points[0].keys), ["key", "title", "detail", "severity", "at", "thread"])
+        XCTAssertEqual(points[0]["key"] as? String, "point:devbox:billing:0")
+        XCTAssertEqual(points[0]["title"] as? String, "billing@devbox")
+        XCTAssertEqual(points[0]["detail"] as? String, "needs your approval")
+        XCTAssertEqual(points[0]["severity"] as? String, "blocked")
+        XCTAssertEqual(points[0]["at"] as? Int, 1_759_499_800)
+        XCTAssertEqual(points[0]["thread"] as? String, "devbox:3")
+    }
+
+    func testAPointerAtASessionThatIsNotListedHasNoThread() throws {
+        let live = MobileManager.live(board: pointerBoard(), snapshot: snapshot(), turn: nil)
+        let points = try XCTUnwrap(live["points"] as? [[String: Any]])
+        XCTAssertEqual(points[1]["key"] as? String, "point:localhost:reports")
+        XCTAssertTrue(points[1]["thread"] is NSNull)
+        // With no snapshot at all, every pointer is stale.
+        let empty = MobileManager.live(board: pointerBoard(), snapshot: MobileSnapshot(), turn: nil)
+        let stale = try XCTUnwrap(empty["points"] as? [[String: Any]])
+        XCTAssertTrue(stale.allSatisfy { $0["thread"] is NSNull })
+    }
+
+    func testAPointersTextIsCutToOneShortCleanLine() throws {
+        let board = MobileManagerBoard(items: [
+            pointer(
+                "point:localhost:acme-app", title: "acme\u{1B}[2J-app\u{07}",
+                detail: "  needs\nyour\tapproval\r\u{1B}[31m now\u{9B}\u{7F} ", link: nil),
+            pointer(
+                "point:localhost:long", title: String(repeating: "t", count: 300),
+                detail: String(repeating: "é", count: 121), link: nil),
+            pointer(
+                "point:localhost:fits", title: "fits",
+                detail: String(repeating: "é", count: 120), link: nil),
+        ])
+        let live = MobileManager.live(board: board, snapshot: snapshot(), turn: nil)
+        let points = try XCTUnwrap(live["points"] as? [[String: Any]])
+        XCTAssertEqual(points[0]["title"] as? String, "acme[2J-app")
+        XCTAssertEqual(points[0]["detail"] as? String, "needs your approval [31m now")
+        XCTAssertEqual(points[1]["title"] as? String, String(repeating: "t", count: 119) + "…")
+        XCTAssertEqual(points[1]["detail"] as? String, String(repeating: "é", count: 119) + "…")
+        XCTAssertEqual(points[2]["detail"] as? String, String(repeating: "é", count: 120))
+        for point in points {
+            for name in ["title", "detail"] {
+                let text = try XCTUnwrap(point[name] as? String)
+                XCTAssertLessThanOrEqual(text.count, MobileManager.maxPointerCharacters)
+                XCTAssertTrue(text.unicodeScalars.allSatisfy {
+                    MobileManager.isText($0) && $0 != "\n" && $0 != "\t"
+                }, text)
+            }
+        }
+        XCTAssertEqual(MobileManager.maxPointerCharacters, 120)
+        XCTAssertEqual(MobileManager.pointerLine("a\u{2028}b"), "a b")
+        XCTAssertEqual(MobileManager.pointerLine("\u{1B}\n"), "")
+    }
+
+    func testAPointerCanBeDismissedByItsKey() {
+        XCTAssertTrue(MobileManager.hasReview("point:devbox:billing:0", in: pointerBoard()))
+        XCTAssertTrue(MobileManager.hasReview("point:localhost:reports", in: pointerBoard()))
+        XCTAssertFalse(MobileManager.hasReview("point:localhost:nope", in: pointerBoard()))
+        XCTAssertFalse(MobileManager.hasReview("point:devbox:billing:0", in: board()))
     }
 
     func testATurnInFlightIsInTheBodyAndReadsAsBusy() throws {

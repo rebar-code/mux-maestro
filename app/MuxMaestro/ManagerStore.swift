@@ -25,6 +25,13 @@ struct ManagerReviewItem: Equatable {
     let text: String
     let updatedAt: Int
     let dismissed: Bool
+
+    /// The key prefix `mux point` owns. `mux review add` refuses it, so a row
+    /// with this prefix names a session the CLI checked.
+    static let pointerPrefix = "point:"
+
+    /// A pointer at a session that needs the human, not a plain review note.
+    var isPointer: Bool { key.hasPrefix(Self.pointerPrefix) }
 }
 
 /// A transient toast the agent raised via `mux notify`.

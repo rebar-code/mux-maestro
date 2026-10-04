@@ -110,6 +110,30 @@ text). Nagging a dismissed item is a failure.
 Pair a toast with a review item only for `blocked`-severity events; the
 review list alone is enough for everything else.
 
+### Pointing at a session
+
+When a session waits on a permission prompt or a question, or when the human
+asks "what needs me", point at it. A pointer is a `blocked` review item the app
+and the phone show as "<session> <reason>", and it opens that session.
+
+```sh
+mux point <session>[:<window>] --reason "needs your approval" [--host <host>]
+
+# Resolved (answered, or the session moved on)? Clear it:
+mux point <session>[:<window>] --done [--host <host>]
+```
+
+- **One pointer per session.** Re-running `mux point` updates it in place and
+  shows it again if the human had ticked it off, so re-point only when the
+  session waits on something new.
+- **The reason reads after the session name**: "needs your approval", "asks
+  which database to use". One line, 120 characters at most.
+- The session must be in `mux sessions` for that host; `mux point` refuses a
+  name it does not list. Keys starting with `point:` belong to `mux point`:
+  `mux review add` refuses them.
+- **Pointing only records a pointer.** Never type into that session and never
+  answer its prompt. The human answers it.
+
 ## Linking to a pane
 
 A `muxmaestro://` link in toast or review text renders as a short clickable

@@ -27,6 +27,8 @@ usage: mux <command> …
                  [--severity info|warn|blocked]
   mux review done --key K
   mux review list
+  mux point SESSION[:WINDOW] --reason TEXT [--host H]  # point the human at a session
+  mux point SESSION[:WINDOW] --done [--host H]         # clear that pointer
   mux name --session S --window N NAME…      # name a local tmux window (sticks)
   mux name --pane %ID TITLE…                 # set a local tmux pane's title
   mux spin --repo PATH --branch B --session S [--base X] [--agent claude|codex]
@@ -450,6 +452,9 @@ cmd_review_add() {
         esac
     done
     [ -n "$key" ] || die "review add: --key is required"
+    case "$key" in
+        point:*) die "review add: keys starting with point: are reserved for mux point";;
+    esac
     [ -n "$text" ] || die "review add: --text is required"
     case "$severity" in
         info|warn|blocked) ;;
@@ -501,6 +506,81 @@ cmd_review() {
         list) cmd_review_list;;
         *) usage;;
     esac
+}
+
+# The longest reason `mux point` takes, in characters.
+POINT_REASON_MAX=120
+
+# Point the human at a session that needs them ("compass needs your approval").
+# A pointer is a review row with a key this verb owns, so it rides the same list
+# the app and the phone already read. It only writes that row: it never calls
+# tmux, never types into the session and never answers its prompt. Unlike
+# `review add` it checks the session against the app's snapshot, so a pointer
+# always names a session the app can open.
+cmd_point() {
+    target=""
+    reason=""
+    have_reason=0
+    host="localhost"
+    done_flag=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --reason) [ $# -ge 2 ] || die "--reason requires a value"; reason=$2; have_reason=1; shift 2;;
+            --host) [ $# -ge 2 ] || die "--host requires a value"; host=$2; shift 2;;
+            --done) done_flag=1; shift;;
+            -*) die "point: unexpected argument: $1";;
+            *)
+                [ -z "$target" ] || die "point: unexpected argument: $1"
+                target=$1; shift;;
+        esac
+    done
+    [ -n "$target" ] || die "point: a session is required"
+    [ -n "$host" ] || die "point: --host must not be empty"
+
+    # A tmux session name holds no colon, so the last one starts the window.
+    case "$target" in
+        *:*) session=${target%:*}; window=${target##*:}
+            case "$window" in
+                ''|*[!0-9]*) die "point: window must be an integer: $target";;
+            esac
+            window_sql=$window
+            key="point:$host:$session:$window";;
+        *) session=$target; window_sql=NULL
+            key="point:$host:$session";;
+    esac
+    [ -n "$session" ] || die "point: a session is required"
+
+    if [ "$done_flag" -eq 1 ]; then
+        [ "$have_reason" -eq 0 ] || die "point: --done takes no --reason"
+        sql "DELETE FROM review WHERE key='$(sq "$key")';"
+        return
+    fi
+
+    [ "$have_reason" -eq 1 ] || die "point: --reason is required"
+    # One line of text. The x keeps a trailing newline, which $(…) would drop.
+    clean=$(printf %s "$reason" | LC_ALL=C tr -d '\000-\037\177'; printf x)
+    [ "${clean%x}" = "$reason" ] \
+        || die "point: --reason must be one line with no control characters"
+    reason=$(printf %s "$reason" | sed 's/^ *//; s/ *$//')
+    [ -n "$reason" ] || die "point: --reason must not be empty"
+    # Characters, not bytes: every byte except a UTF-8 continuation byte.
+    length=$(printf %s "$reason" | LC_ALL=C tr -d '\200-\277' | wc -c | tr -d ' ')
+    [ "$length" -le "$POINT_REASON_MAX" ] \
+        || die "point: --reason is $length characters; shorten it to $POINT_REASON_MAX or fewer"
+
+    known=$(sql "SELECT COUNT(*) FROM sessions WHERE host='$(sq "$host")' AND name='$(sq "$session")';")
+    [ "$known" -gt 0 ] || die "point: no such session: $session on $host"
+
+    sql "INSERT INTO review(key, host, session, window, severity, text, created_at, updated_at)
+VALUES('$(sq "$key")', '$(sq "$host")', '$(sq "$session")', $window_sql, 'blocked', '$(sq "$reason")', $(now), $(now))
+ON CONFLICT(key) DO UPDATE SET
+  host=excluded.host,
+  session=excluded.session,
+  window=excluded.window,
+  severity=excluded.severity,
+  text=excluded.text,
+  updated_at=excluded.updated_at,
+  dismissed=0;"
 }
 
 # Name a local tmux window (or set a pane title). This is a tmux write, not a DB
@@ -677,6 +757,7 @@ case "$cmd" in
     sessions) cmd_sessions "$@";;
     notify) cmd_notify "$@";;
     review) cmd_review "$@";;
+    point) cmd_point "$@";;
     name) cmd_name "$@";;
     spin) cmd_spin "$@";;
     link) cmd_link "$@";;
