@@ -18,10 +18,19 @@ else
     DB=$(cd "$(dirname "$0")/.." && pwd)/manager.db
 fi
 
+# The request list lives beside the DB (<home>/requests.json).
+# MUX_MANAGER_REQUESTS overrides it (used by tests).
+if [ -n "${MUX_MANAGER_REQUESTS:-}" ]; then
+    REQUESTS=$MUX_MANAGER_REQUESTS
+else
+    REQUESTS=$(cd "$(dirname "$0")/.." && pwd)/requests.json
+fi
+
 usage() {
     cat >&2 <<'EOF'
 usage: mux <command> …
   mux sessions [--json]                      # survey every session the app sees
+  mux requests [--json] [--open|--done]      # what the human asked for, newest first
   mux notify [--session S] [--host H] TEXT…
   mux review add --key K --text T [--session S] [--host H] [--window N]
                  [--severity info|warn|blocked]
@@ -414,6 +423,53 @@ ORDER BY CASE status WHEN 'waiting' THEN 0 WHEN 'active' THEN 1 ELSE 2 END,
     fi
 }
 
+# What the human asked for, from requests.json. Read-only, and it never opens
+# manager.db: the file is read into an in-memory SQLite, which also parses it.
+# The phone ticks requests done in this same file, so this is how to see the
+# list as it is now. A file that does not parse is an error, never a short list.
+cmd_requests() {
+    json=0
+    where=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --json) json=1; shift;;
+            --open) where="WHERE json_extract(value, '\$.state') <> 'done'"; shift;;
+            --done) where="WHERE json_extract(value, '\$.state') = 'done'"; shift;;
+            *) die "requests: unexpected argument: $1";;
+        esac
+    done
+
+    # No file yet is an empty list, as the app reads it.
+    if [ ! -e "$REQUESTS" ]; then
+        [ "$json" -eq 0 ] || printf '{"requests":[]}\n'
+        return 0
+    fi
+    file=$(sq "$REQUESTS")
+    doc="CAST(readfile('$file') AS TEXT)"
+    ok=$("$SQLITE" :memory: "SELECT COALESCE(json_valid($doc), 0)
+  AND COALESCE(json_type($doc, '\$.requests') = 'array', 0);" 2>/dev/null) || ok=0
+    [ "$ok" = 1 ] || die "requests: $REQUESTS is not a readable list; read it again before any write"
+
+    # Newest first; requests asked the same day keep the file's order.
+    rows="SELECT value FROM json_each($doc, '\$.requests') $where
+          ORDER BY json_extract(value, '\$.asked') DESC, key"
+    if [ "$json" -eq 1 ]; then
+        "$SQLITE" :memory: "SELECT json_object(
+  'updated', json_extract($doc, '\$.updated'),
+  'requests', COALESCE((SELECT json_group_array(json(value)) FROM ($rows)), json('[]')),
+  'blockers', json(COALESCE(json_extract($doc, '\$.blockers'), '[]')),
+  'open_questions', json(COALESCE(json_extract($doc, '\$.open_questions'), '[]'))
+);"
+    else
+        # state|id|project|asked|title — one line per request, the same
+        # pipe-separated shape as `sessions`.
+        "$SQLITE" :memory: "SELECT json_extract(value, '\$.state'), json_extract(value, '\$.id'),
+  COALESCE(json_extract(value, '\$.project'), ''), COALESCE(json_extract(value, '\$.asked'), ''),
+  json_extract(value, '\$.title')
+FROM ($rows);"
+    fi
+}
+
 cmd_notify() {
     session=""
     host="localhost"
@@ -666,6 +722,13 @@ EOF
 if [ "$1" = event ]; then
     shift
     cmd_event "$@"
+    exit 0
+fi
+
+# The request list is a file of its own: reading it never touches the DB.
+if [ "$1" = requests ]; then
+    shift
+    cmd_requests "$@"
     exit 0
 fi
 

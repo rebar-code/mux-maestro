@@ -141,6 +141,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 return (ManagerHome.sessionName, io)
             }),
+        requests: ManagerHome.defaultHome().map {
+            RequestTracker(url: $0.appendingPathComponent(RequestTracker.fileName))
+        },
         // The phone's takes use the Mac's own engine. Nothing plays here: the
         // phone gets the samples.
         voice: MobileServer.Voice(

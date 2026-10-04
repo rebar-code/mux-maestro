@@ -193,6 +193,9 @@ final class MobileServer {
     private let sources: Sources
     private let limits: Limits
     private let manager: Manager?
+    /// The list of what the human asked for. nil where there is none (the dev
+    /// server): the request routes then answer 503.
+    private let requests: RequestTracker?
     private let voice: Voice?
     private let serving: Serving?
     /// The phones that asked for notifications. nil where nothing is sent
@@ -245,12 +248,14 @@ final class MobileServer {
 
     init(
         staticRoot: URL?, sources: Sources, limits: Limits = Limits(), manager: Manager? = nil,
-        voice: Voice? = nil, serving: Serving? = nil, push: MobilePushCenter? = nil
+        requests: RequestTracker? = nil, voice: Voice? = nil, serving: Serving? = nil,
+        push: MobilePushCenter? = nil
     ) {
         self.staticRoot = staticRoot
         self.sources = sources
         self.limits = limits
         self.manager = manager
+        self.requests = requests
         self.voice = voice
         self.serving = serving
         self.push = push
@@ -773,6 +778,22 @@ final class MobileServer {
                 MobileReply.press(
                     press.key, prompt: press.prompt, terminal: press.terminal, target: target, io: io,
                     state: state)
+            }
+        case .requests:
+            guard let requests else {
+                return send(.error(503, "unavailable"), to: client, head: head)
+            }
+            // The file is read off the server queue: a read can wait on a writer.
+            reply(to: client) { MobileRequests.response(requests.read()) }
+        case .requestState:
+            guard let change = MobileRequests.change(in: request.body) else {
+                return send(.error(400, "bad_request"), to: client, head: head)
+            }
+            guard let requests else {
+                return send(.error(503, "unavailable"), to: client, head: head)
+            }
+            reply(to: client) {
+                MobileRequests.response(requests.setState(change.state, of: change.id))
             }
         case .voice:
             startVoice(request, client: client)

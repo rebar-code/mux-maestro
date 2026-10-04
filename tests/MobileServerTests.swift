@@ -19,6 +19,19 @@ final class MobileServerTests: XCTestCase {
     private lazy var push = MobilePushCenter(
         keys: MemoryTokenStore(), store: MemoryTokenStore(), transport: pushTransport)
     private var home: URL { root.appendingPathComponent("home") }
+    /// The request list the server reads and writes.
+    private var requestsFile: URL { root.appendingPathComponent(RequestTracker.fileName) }
+    private static let requestList = """
+    {
+      "schema": 1,
+      "updated": "2026-10-03T16:20:00Z",
+      "requests": [
+        { "id": "req-002", "title": "Dark mode", "project": "acme-app", "state": "in_progress" },
+        { "id": "req-001", "title": "Nightly backup", "project": "devbox", "state": "todo" }
+      ]
+    }
+
+    """
 
     /// The manager pane, scripted. The server calls it from its own queues.
     private final class FakeManager {
@@ -98,7 +111,9 @@ final class MobileServerTests: XCTestCase {
             changed: { [changes] in changes.add() }, home: home.path,
             artifacts: withLocal ? local.artifactSource : nil,
             running: withLocal ? local.runningSource : nil),
-            limits: limits, manager: manager.source, serving: withLocal ? local.serving : nil,
+            limits: limits, manager: manager.source,
+            requests: withLocal ? RequestTracker(url: requestsFile) : nil,
+            serving: withLocal ? local.serving : nil,
             push: withLocal ? push : nil)
     }
 
@@ -592,6 +607,103 @@ final class MobileServerTests: XCTestCase {
         }
         XCTAssertEqual(manager.sent, [])
         XCTAssertEqual(manager.dismissed, [])
+    }
+
+    // MARK: The request list
+
+    private func requestsOnDisk() -> String {
+        (try? String(contentsOf: requestsFile, encoding: .utf8)) ?? "<no file>"
+    }
+
+    func testTheRequestListIsServedAsTheFileHoldsIt() throws {
+        managerOn()
+        // No file yet is an empty list.
+        let none = get("/api/requests")
+        XCTAssertEqual(none.status, 200)
+        XCTAssertEqual(none.body, #"{"schema":1,"requests":[]}"#)
+
+        try Data(Self.requestList.utf8).write(to: requestsFile)
+        let list = get("/api/requests")
+        XCTAssertEqual(list.status, 200)
+        XCTAssertEqual(list.body, Self.requestList)
+        XCTAssertTrue(list.head.contains("Cache-Control: no-store"))
+    }
+
+    func testATickFromThePhoneIsWrittenToTheFile() throws {
+        managerOn()
+        try Data(Self.requestList.utf8).write(to: requestsFile)
+        let ticked = post("/api/requests/state", json: #"{"id":"req-001","state":"done"}"#)
+        XCTAssertEqual(ticked.status, 200)
+        // The answer is the list after the write, and so is the file.
+        XCTAssertEqual(ticked.body, requestsOnDisk())
+        XCTAssertTrue(requestsOnDisk().contains(
+            #"{ "id": "req-001", "title": "Nightly backup", "project": "devbox", "state": "done" }"#))
+        // The other request is as it was; only the time changed besides.
+        XCTAssertTrue(requestsOnDisk().contains(
+            #"{ "id": "req-002", "title": "Dark mode", "project": "acme-app", "state": "in_progress" }"#))
+        XCTAssertFalse(requestsOnDisk().contains("2026-10-03T16:20:00Z"))
+        XCTAssertEqual(get("/api/requests").body, requestsOnDisk())
+
+        // And back.
+        XCTAssertEqual(
+            post("/api/requests/state", json: #"{"id":"req-001","state":"todo"}"#).status, 200)
+        XCTAssertTrue(requestsOnDisk().contains(#""id": "req-001", "title": "Nightly backup", "project": "devbox", "state": "todo""#))
+    }
+
+    func testABadTickIsRefusedAndWritesNothing() throws {
+        managerOn()
+        try Data(Self.requestList.utf8).write(to: requestsFile)
+        XCTAssertEqual(
+            post("/api/requests/state", json: #"{"id":"req-001","state":"finished"}"#).status, 400)
+        XCTAssertEqual(post("/api/requests/state", json: #"{"state":"done"}"#).status, 400)
+        let missing = post("/api/requests/state", json: #"{"id":"req-999","state":"done"}"#)
+        XCTAssertEqual(missing.status, 404)
+        XCTAssertEqual(missing.body, #"{"error":"not_found"}"#)
+        // A page from somewhere else cannot tick.
+        XCTAssertEqual(
+            post("/api/requests/state", json: #"{"id":"req-001","state":"done"}"#, writeHeader: false)
+                .status, 403)
+        XCTAssertEqual(
+            post("/api/requests/state", json: #"{"id":"req-001","state":"done"}"#, origin: "https://evil.example")
+                .status, 403)
+        XCTAssertEqual(get("/api/requests/state").status, 405)
+        XCTAssertEqual(requestsOnDisk(), Self.requestList)
+    }
+
+    func testAListThatDoesNotReadIsAnErrorAndIsLeftAlone() throws {
+        managerOn()
+        let half = String(Self.requestList.prefix(120))
+        try Data(half.utf8).write(to: requestsFile)
+        let list = get("/api/requests")
+        XCTAssertEqual(list.status, 500)
+        XCTAssertEqual(list.body, #"{"error":"corrupt","message":"requests.json is not valid JSON"}"#)
+        let ticked = post("/api/requests/state", json: #"{"id":"req-001","state":"done"}"#)
+        XCTAssertEqual(ticked.status, 500)
+        XCTAssertEqual(ticked.body, #"{"error":"corrupt","message":"requests.json is not valid JSON"}"#)
+        XCTAssertEqual(requestsOnDisk(), half)
+    }
+
+    func testTheRequestRoutesNeedTheManagerSwitchAndAList() throws {
+        try Data(Self.requestList.utf8).write(to: requestsFile)
+        for refused in [
+            get("/api/requests"),
+            post("/api/requests/state", json: #"{"id":"req-001","state":"done"}"#),
+        ] {
+            XCTAssertEqual(refused.status, 403)
+            XCTAssertEqual(refused.body, #"{"error":"disabled"}"#)
+        }
+        XCTAssertEqual(get("/api/requests", token: nil).status, 401)
+        XCTAssertEqual(requestsOnDisk(), Self.requestList)
+
+        // A server with no list (the dev server) says so.
+        server.stop()
+        server = makeServer(withLocal: false)
+        start(server)
+        managerOn()
+        XCTAssertEqual(get("/api/requests").status, 503)
+        XCTAssertEqual(
+            post("/api/requests/state", json: #"{"id":"req-001","state":"done"}"#).status, 503)
+        XCTAssertEqual(requestsOnDisk(), Self.requestList)
     }
 
     func testAManagerPostFromAnotherOriginIsRefusedAndTypesNothing() {

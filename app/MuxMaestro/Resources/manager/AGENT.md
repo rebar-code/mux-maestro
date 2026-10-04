@@ -110,6 +110,33 @@ text). Nagging a dismissed item is a failure.
 Pair a toast with a review item only for `blocked`-severity events; the
 review list alone is enough for everything else.
 
+## The request list
+
+`requests.json`, beside this file, is the list of what the human asked for. You
+keep it. The human reads it on the phone and ticks requests done there, and the
+app writes that tick into the same file.
+
+```sh
+mux requests          # state|id|project|asked|title, newest first
+mux requests --open   # only what is not done (--done: only what is)
+mux requests --json   # requests, blockers and open_questions as one JSON object
+```
+
+- **Read it before you rely on it**, every time: `mux requests`. The human may
+  have ticked a request `done`, or set one back to `todo`, since you last looked.
+  Their word wins: do not change that state back.
+- **Add a request when the human asks for something**, not later. Newest first.
+  Each has `id`, `title`, `project`, `asked`, `state`, `detail`, `blocked_by`.
+  The phone shows only `title` and `state`, so keep the title short. `project`
+  is the tmux session name, as `mux sessions` prints it. `state` is one of
+  `todo`, `in_progress`, `blocked`, `review`, `done`. Keep `"schema": 1`.
+- **Write the whole file to a temporary file beside it, then `mv` it over
+  `requests.json`.** Read the file again just before you write. A file written
+  in place is half a file for a moment; the app then shows an error and
+  refuses to write.
+- If `mux requests` says the file is not a readable list, repair the JSON. Never
+  replace it with a shorter list from memory.
+
 ## Linking to a pane
 
 A `muxmaestro://` link in toast or review text renders as a short clickable
