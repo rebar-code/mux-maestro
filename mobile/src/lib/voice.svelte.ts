@@ -1,3 +1,4 @@
+import { blockReloadWhile } from './update';
 import { live } from './live.svelte';
 import type { VoiceEnd, VoiceMode } from './types';
 import { replayVoice, sendVoice, warmVoice, type VoiceHandlers } from './voice/api';
@@ -77,6 +78,12 @@ function session(type: 'playback' | 'play-and-record'): void {
  * starts and ends a take; see `Capture`.
  */
 class Voice {
+	constructor() {
+		// A take, the wait for its answer and the spoken reply are one turn:
+		// a new build does not reload the page in the middle of it.
+		blockReloadWhile(() => this.status !== 'idle' || this.abort !== null);
+	}
+
 	status = $state<VoiceStatus>('idle');
 	/** The reply is paused, not stopped. */
 	paused = $state(false);

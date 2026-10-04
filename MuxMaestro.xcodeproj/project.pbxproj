@@ -45,6 +45,7 @@
 		A00C1011 /* MobileVoice.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00C1001 /* MobileVoice.swift */; };
 		A00C1021 /* MobileVoice.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00C1001 /* MobileVoice.swift */; };
 		A00C1022 /* MobileVoiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00C1002 /* MobileVoiceTests.swift */; };
+		A0AB1022 /* LoopbackClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0AB1002 /* LoopbackClient.swift */; };
 		A00D1011 /* MobileReply.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00D1001 /* MobileReply.swift */; };
 		A00D1021 /* MobileReply.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00D1001 /* MobileReply.swift */; };
 		A00D1022 /* MobileReplyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00D1002 /* MobileReplyTests.swift */; };
@@ -282,6 +283,7 @@
 		A00B100A /* MobileManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileManagerTests.swift; sourceTree = "<group>"; };
 		A00C1001 /* MobileVoice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileVoice.swift; sourceTree = "<group>"; };
 		A00C1002 /* MobileVoiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileVoiceTests.swift; sourceTree = "<group>"; };
+		A0AB1002 /* LoopbackClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoopbackClient.swift; sourceTree = "<group>"; };
 		A00D1001 /* MobileReply.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileReply.swift; sourceTree = "<group>"; };
 		A00D1002 /* MobileReplyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileReplyTests.swift; sourceTree = "<group>"; };
 		A00D2001 /* MobileActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileActions.swift; sourceTree = "<group>"; };
@@ -596,6 +598,7 @@
 				A00B1006 /* MobileServerTests.swift */,
 				A00B100A /* MobileManagerTests.swift */,
 				A00C1002 /* MobileVoiceTests.swift */,
+				A0AB1002 /* LoopbackClient.swift */,
 				A00D1002 /* MobileReplyTests.swift */,
 				A00D2002 /* MobileActionsTests.swift */,
 				A00D3002 /* MobileArtifactsTests.swift */,
@@ -884,6 +887,7 @@
 				A00B102A /* MobileManagerTests.swift in Sources */,
 				A00C1021 /* MobileVoice.swift in Sources */,
 				A00C1022 /* MobileVoiceTests.swift in Sources */,
+				A0AB1022 /* LoopbackClient.swift in Sources */,
 				A00D1021 /* MobileReply.swift in Sources */,
 				A00D1022 /* MobileReplyTests.swift in Sources */,
 				A00D2021 /* MobileActions.swift in Sources */,

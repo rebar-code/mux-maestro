@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { keepFocus } from './focus';
 	import Icon from './Icon.svelte';
 	import { live, OFF_LABEL } from './live.svelte';
 	import { voice, type VoiceSink, type VoiceTarget } from './voice.svelte';
@@ -74,6 +75,7 @@
 		data-first-text-ms={voice.timing.text}
 		data-first-audio-ms={voice.timing.audio}
 		{@attach voice.attach}
+		{@attach keepFocus}
 	>
 		{#if part === 'all'}{@render line()}{/if}
 		<div class="vrow">

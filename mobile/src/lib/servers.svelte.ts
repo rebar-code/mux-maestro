@@ -50,6 +50,35 @@ export class Servers {
 		this.asking = port;
 	}
 
+	private mappable(port: number): boolean {
+		const running = this.running;
+		if (!running) return false;
+		return (
+			running.servers.some((server) => server.port === port && server.mappable) ||
+			[...running.stacks, ...running.containers].some((row) =>
+				row.links.some((link) => link.port === port && link.mappable)
+			)
+		);
+	}
+
+	/**
+	 * A tap on a local address in the chat. The phone cannot reach it as
+	 * written: a published port opens at its tailnet address, and one that is
+	 * not published asks first. Returns whether it opened.
+	 */
+	reach(port: number, rest: string): boolean {
+		const mapping = this.mapping(port);
+		if (mapping) {
+			const base = mapping.url.endsWith('/') ? mapping.url : `${mapping.url}/`;
+			window.open(`${base}${rest.replace(/^\/+/, '')}`, '_blank', 'noopener,noreferrer');
+			return true;
+		}
+		void this.load().then(() => {
+			if (!this.mapping(port) && this.mappable(port)) this.tap(port);
+		});
+		return false;
+	}
+
 	confirm = (): void => {
 		const port = this.asking;
 		this.asking = null;

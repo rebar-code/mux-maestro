@@ -424,8 +424,11 @@ test('a push shows a notification, and a tap on it opens that thread', async ({
 		[{ title: 'MuxMaestro', body: 'A thread finished', tag: 'demo-tag' }]
 	);
 	// A message that cannot be read still shows something.
-	await pushed(page, 'not json');
-	await expect.poll(async () => (await shown(worker)).length).toBe(2);
+	// Sent again if the notification centre drops it, as `pushUntil` does: it has one tag.
+	await expect(async () => {
+		await pushed(page, 'not json');
+		await expect.poll(async () => (await shown(worker)).length, { timeout: 1500 }).toBe(2);
+	}).toPass({ timeout: 15_000 });
 
 	await tapped(worker, 'demo-tag');
 	await expect(page).toHaveURL(threadAddress);

@@ -35,6 +35,12 @@ async function openBoard(page: Page, stop: 1 | 2 = 2): Promise<void> {
 		.toBe(true);
 }
 const box = (page: Page) => page.getByRole('textbox', { name: 'Ask the Maestro' });
+/**
+ * Submit the text box's form, as its Send button does. (On a phone, Return in
+ * the box is a new line; `compose.spec.ts` covers the keys.)
+ */
+const submit = (page: Page): Promise<void> =>
+	page.locator('form.compose').evaluate((form: HTMLFormElement) => form.requestSubmit());
 const offBox = (page: Page) => page.getByRole('textbox', { name: 'Off in MuxMaestro Settings' });
 const homeRow = (page: Page) => drawer(page).locator('[data-home]');
 const review = (page: Page) => page.locator('[data-review]');
@@ -80,10 +86,10 @@ test('a message to the Maestro streams its reply onto the home', async ({ page }
 	await expect(page.getByRole('alert')).toHaveCount(0);
 });
 
-test('Enter sends too', async ({ page }) => {
+test('the form sends too', async ({ page }) => {
 	await fresh(page);
 	await box(page).fill('what needs me?');
-	await box(page).press('Enter');
+	await submit(page);
 	await expect(said(page).locator('.a').last()).toContainText('2 threads need you');
 });
 
@@ -349,7 +355,7 @@ test('the app sends the pairing token with a Maestro turn', async ({ page }) => 
 	await fresh(page);
 	await box(page).fill('what needs me?');
 	const sent = page.waitForRequest((request) => request.url().endsWith('/api/manager/text'));
-	await box(page).press('Enter');
+	await submit(page);
 	expect((await sent).headers()['x-muxmaestro-token']).toBe(TOKEN);
 	await expect(said(page).locator('.a').last()).toContainText('2 threads need you');
 });
@@ -377,7 +383,7 @@ test('the Maestro status is drawn while a message cannot go to it', async ({ pag
 	await page.reload();
 	await expect(status).toHaveText('Maestro is busy');
 	await box(page).fill('what needs me?');
-	await box(page).press('Enter');
+	await submit(page);
 	await expect(page.getByRole('alert')).toHaveText('Maestro is busy');
 	await expect(box(page)).toHaveValue('what needs me?');
 
@@ -386,7 +392,7 @@ test('the Maestro status is drawn while a message cannot go to it', async ({ pag
 	await page.reload();
 	await expect(status).toHaveText('Maestro is not ready');
 	await box(page).fill('what needs me?');
-	await box(page).press('Enter');
+	await submit(page);
 	await expect(page.getByRole('alert')).toHaveText('Maestro is not ready');
 
 	await page.request.post('/__fixture/manager-status?value=idle');
@@ -419,15 +425,15 @@ test('Enter does not send a second turn while one runs', async ({ page }) => {
 	);
 	await expect(said(page).locator('.u')).toHaveText('how are the builds?');
 	await box(page).fill('and after that?');
-	await box(page).press('Enter');
-	await box(page).press('Enter');
+	await submit(page);
+	await submit(page);
 	await expect(said(page).locator('.a').last()).toHaveText(reply);
 	expect(turns).toBe(0);
 	await expect(box(page)).toHaveValue('and after that?');
 
-	// The turn is over: now Enter sends.
+	// The turn is over: now it sends.
 	await expect(page.getByRole('button', { name: '↑ Send' })).toBeEnabled();
-	await box(page).press('Enter');
+	await submit(page);
 	await expect(said(page).locator('.u').last()).toHaveText('and after that?');
 	expect(turns).toBe(1);
 });
@@ -436,8 +442,9 @@ test('a message over the size limit says so and is given back', async ({ page })
 	await fresh(page);
 	const long = 'a'.repeat(8193);
 	await box(page).fill(long);
-	await box(page).press('Enter');
-	await expect(page.getByRole('alert')).toHaveText('The message is too long');
+	await submit(page);
+	// The phone counts the bytes itself: it says so before anything is sent.
+	await expect(page.getByRole('alert')).toHaveText('Too long by 1 byte');
 	await expect(box(page)).toHaveValue(long);
 });
 
@@ -483,7 +490,7 @@ test('the Maestro page is its thread: left-aligned rows and the Chat/Terminal to
 test('the Maestro thread shows tool lines and user turns like any chat', async ({ page }) => {
 	await fresh(page);
 	await box(page).fill('what needs me?');
-	await box(page).press('Enter');
+	await submit(page);
 	await expect(said(page).locator('.a').last()).toContainText('2 threads need you');
 	const turn = said(page).locator('.u');
 	await expect(turn).toHaveText('what needs me?');
@@ -894,7 +901,7 @@ test('the waiting state is shown once, with a way to the terminal', async ({ pag
 	await expect(page.getByText('Maestro is waiting on a prompt')).toHaveCount(1);
 	// A refused send says it once too, not beside the status.
 	await box(page).fill('what needs me?');
-	await box(page).press('Enter');
+	await submit(page);
 	await expect(page.getByRole('alert')).toHaveText('Maestro is waiting on a prompt');
 	await expect(page.getByText('Maestro is waiting on a prompt')).toHaveCount(1);
 
@@ -911,7 +918,7 @@ test('a waiting state that ends on the Mac ends on the phone, with no reload', a
 	await expect(page.locator('[data-status]')).toHaveText('Maestro is waiting on a prompt');
 	// A send is refused, and the refusal is on screen.
 	await box(page).fill('what needs me?');
-	await box(page).press('Enter');
+	await submit(page);
 	await expect(page.getByRole('alert')).toHaveText('Maestro is waiting on a prompt');
 
 	// The prompt ends on the Mac (answered, or cancelled). The next board
@@ -922,7 +929,7 @@ test('a waiting state that ends on the Mac ends on the phone, with no reload', a
 	await expect(page.locator('[data-status]')).toHaveCount(0);
 	// The text that was given back goes through now.
 	await expect(box(page)).toHaveValue('what needs me?');
-	await box(page).press('Enter');
+	await submit(page);
 	await expect(said(page).locator('.a').last()).toContainText('2 threads need you');
 });
 

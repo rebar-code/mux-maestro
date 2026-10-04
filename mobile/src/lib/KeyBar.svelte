@@ -1,4 +1,5 @@
 <script lang="ts">
+	import Icon from './Icon.svelte';
 	import { barKeys, type KeySink } from './reply';
 	import { keepFocus } from './reply.svelte';
 
@@ -6,9 +7,25 @@
 	 * The keys a phone keyboard lacks, in one pill that scrolls sideways. With
 	 * no text box there is nothing to type into: only the pane's keys show.
 	 */
-	const { reply, composer }: { reply: KeySink; composer: boolean } = $props();
+	const {
+		reply,
+		composer,
+		hides = composer
+	}: {
+		reply: KeySink;
+		/** A text box takes the strip's text keys. */
+		composer: boolean;
+		/** Something on this page brings the on-screen keyboard up, so the strip can put it away. */
+		hides?: boolean;
+	} = $props();
 
 	const keys = $derived(barKeys(composer));
+
+	/** Put the on-screen keyboard away: whatever takes the typing gives up the focus. */
+	function hide(): void {
+		const typing = document.activeElement;
+		if (typing instanceof HTMLElement) typing.blur();
+	}
 </script>
 
 <div class="kbar" data-keybar>
@@ -25,6 +42,12 @@
 			>
 		{/each}
 	</div>
+	{#if hides}
+		<!-- Fixed at the strip's end. The one control that does not keep the focus: it gives it up. -->
+		<button class="hide" type="button" aria-label="Hide keyboard" onclick={hide}>
+			<Icon name="keyboardDown" size={17} />
+		</button>
+	{/if}
 </div>
 
 <style>
@@ -87,5 +110,34 @@
 
 	.keys button:active {
 		filter: brightness(1.4);
+	}
+
+	.hide {
+		position: relative;
+		/* Its touch area reaches past the slim strip: it stays on top there. */
+		z-index: 1;
+		flex: none;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 34px;
+		height: 23px;
+		border-radius: 8px;
+		color: #cfcfcf;
+	}
+
+	/* The look is the strip's; the touch area is a full 44pt. */
+	.hide::after {
+		content: '';
+		position: absolute;
+		left: 50%;
+		top: 50%;
+		width: var(--hit);
+		height: var(--hit);
+		transform: translate(-50%, -50%);
+	}
+
+	.hide:active {
+		background: #0c0c0c;
 	}
 </style>

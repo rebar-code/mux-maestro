@@ -436,9 +436,16 @@ final class MobileTerminalSocketTests: XCTestCase {
         private var reading = false
 
         init(port: Int) {
-            connection = NWConnection(
-                host: "127.0.0.1", port: NWEndpoint.Port(rawValue: UInt16(port))!, using: .tcp)
-            connection.start(queue: queue)
+            // Opened through the shared client, which waits out a machine
+            // with no free local port. A port nobody listens on still gives a
+            // connection, started as before, whose reads then end at once.
+            if case .open(let opened) = LoopbackClient.connect(port: port, queue: queue) {
+                connection = opened
+            } else {
+                connection = NWConnection(
+                    host: "127.0.0.1", port: NWEndpoint.Port(rawValue: UInt16(port))!, using: .tcp)
+                connection.start(queue: queue)
+            }
         }
 
         /// Read what the server sends. A phone that never calls this is one

@@ -143,86 +143,12 @@ final class MobileServerTests: XCTestCase {
 
     // MARK: client
 
-    /// How long a closed TCP connection keeps its local port (twice the
-    /// system's 15 s segment lifetime), and a little more.
-    private static let portWait: TimeInterval = 35
-
     /// Send `raw` and read until `done` says the reply is whole (or 5 s pass).
-    ///
-    /// Each exchange is a new connection from a new local port, and a closed
-    /// connection keeps its port for 30 s. The system has 16 384 of them, so
-    /// when test runs, dev servers and browsers on one machine close more
-    /// than that in 30 s, a connect fails with "Address already in use" until
-    /// some come free. That is waited out: nothing was sent, so asking again
-    /// cannot repeat a write.
     private func exchange(_ raw: String, until done: @escaping (String) -> Bool) -> String {
-        let deadline = Date().addingTimeInterval(Self.portWait)
-        while true {
-            switch attempt(raw, until: done) {
-            case .reply(let text): return text
-            case .refused: return ""
-            case .noLocalPort where Date() < deadline: Thread.sleep(forTimeInterval: 0.5)
-            case .noLocalPort:
-                XCTFail("no free local port in \(Int(Self.portWait)) s")
-                return ""
-            }
-        }
-    }
-
-    private enum Attempt {
-        case reply(String)
-        /// Nothing listens on the port.
-        case refused
-        /// The connect failed for want of a local port.
-        case noLocalPort
-    }
-
-    private func attempt(_ raw: String, until done: @escaping (String) -> Bool) -> Attempt {
-        let connection = NWConnection(
-            host: "127.0.0.1", port: NWEndpoint.Port(rawValue: UInt16(port))!, using: .tcp)
-        let queue = DispatchQueue(label: "mobile-server-tests")
-        let finished = DispatchSemaphore(value: 0)
-        var received = Data()
-        var unopened: Attempt?
-        var opened = false
-        connection.stateUpdateHandler = { state in
-            switch state {
-            case .ready:
-                opened = true
-            case .waiting(let error), .failed(let error):
-                // Only before the connection opened: after that an error is
-                // the server hanging up, which the read sees.
-                guard !opened, unopened == nil else { return }
-                switch error {
-                case .posix(.EADDRINUSE), .posix(.EADDRNOTAVAIL): unopened = .noLocalPort
-                case .posix(.ECONNREFUSED): unopened = .refused
-                default: return
-                }
-                finished.signal()
-            default:
-                break
-            }
-        }
-        func read() {
-            connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { data, _, complete, error in
-                if let data { received.append(data) }
-                if complete || error != nil || done(String(decoding: received, as: UTF8.self)) {
-                    finished.signal()
-                } else {
-                    read()
-                }
-            }
-        }
-        connection.start(queue: queue)
-        // Queued until the connection opens; never sent when it does not.
-        connection.send(content: Data(raw.utf8), completion: .contentProcessed { _ in })
-        read()
-        _ = finished.wait(timeout: .now() + 5)
-        connection.cancel()
-        return queue.sync {
-            if let unopened, received.isEmpty { return unopened }
-            return .reply(String(decoding: received, as: UTF8.self))
-        }
+        let reply = LoopbackClient.exchange(
+            port: port, send: Data(raw.utf8), label: "mobile-server-tests"
+        ) { done(String(decoding: $0, as: UTF8.self)) }
+        return String(decoding: reply, as: UTF8.self)
     }
 
     private func whole(_ text: String) -> Bool {

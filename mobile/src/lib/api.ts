@@ -1,3 +1,4 @@
+import { drafts } from './drafts';
 import { tokenFrom, withoutPair } from './pairing';
 import { frameParser, readOrStall, STALLED, type Frame } from './sse';
 import type {
@@ -33,6 +34,8 @@ export function hasToken(): boolean {
 }
 
 export function setToken(value: string | null): void {
+	// Unpaired, or paired anew: what was typed under the old pairing does not stay.
+	if (value !== token) drafts.clear();
 	token = value;
 	try {
 		if (value === null) localStorage.removeItem(TOKEN_KEY);

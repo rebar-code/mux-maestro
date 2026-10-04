@@ -1,6 +1,6 @@
 <script lang="ts">
 	import ArtifactInline from './ArtifactInline.svelte';
-	import { inlineArtifacts } from './artifacts';
+	import { hasThumb, inlineArtifacts, resolveArtifact } from './artifacts';
 	import { ARTIFACTS, Artifacts } from './artifacts.svelte';
 	import ArtifactsPage from './ArtifactsPage.svelte';
 	import AttachButton from './AttachButton.svelte';
@@ -12,7 +12,6 @@
 	import { dotClass, statusLabel } from './format';
 	import { pages, pullToRefresh, ui } from './gestures.svelte';
 	import KeyBar from './KeyBar.svelte';
-	import { overKeyboard } from './keyboard';
 	import { can, live, OFF_LABEL } from './live.svelte';
 	import LiveTerminal from './LiveTerminal.svelte';
 	import { LiveTerm } from './liveterm.svelte';
@@ -20,6 +19,9 @@
 	import NextBar from './NextBar.svelte';
 	import NoteLine from './NoteLine.svelte';
 	import PromptCard from './PromptCard.svelte';
+	import Prose from './Prose.svelte';
+	import type { ProseLinks } from './prose';
+	import { renderer } from './renderer.svelte';
 	import PullIndicator from './PullIndicator.svelte';
 	import { push } from './push.svelte';
 	import { liveLines, nextWaiting } from './reply';
@@ -30,7 +32,7 @@
 	import SlashList from './SlashList.svelte';
 	import { text } from './textsize.svelte';
 	import { ThreadFeed, type Mode } from './thread.svelte';
-	import type { ArtifactFile } from './types';
+	import type { ArtifactFile, ChatMessage } from './types';
 	import { voice } from './voice.svelte';
 	import VoiceBar from './VoiceBar.svelte';
 
@@ -113,6 +115,35 @@
 	function openInline(file: ArtifactFile): void {
 		artifacts.show(file, 'chat');
 		ui.goTo(tabs.indexOf(ARTIFACTS));
+	}
+
+	/** A local address in the chat goes the way the Servers tab does. */
+	function openLocal(port: number, rest: string): void {
+		if (!servers.reach(port, rest)) ui.goTo(tabs.indexOf(SERVERS));
+	}
+
+	/** What a tap inside a rendered message can reach. */
+	const links: ProseLinks = {
+		get files() {
+			return artifactsOn ? (artifacts.list?.files ?? []) : [];
+		},
+		url: (file) => artifacts.url(file),
+		open: openInline,
+		get local() {
+			return serversOn ? openLocal : null;
+		}
+	};
+
+	/** The files drawn under a message: not a picture the message itself shows. */
+	function below(message: ChatMessage): ArtifactFile[] {
+		const files = inline?.get(message.n) ?? [];
+		if (!files.length || message.role !== 'assistant') return files;
+		const drawn = new Set(
+			(renderer.api?.imagePaths(message.text) ?? []).map(
+				(path) => resolveArtifact(path, links.files)?.id
+			)
+		);
+		return files.filter((file) => !(hasThumb(file) && drawn.has(file.id)));
 	}
 	const color = $derived(thread?.hostColor ?? '#2a2a2a');
 
@@ -330,17 +361,21 @@
 									{#if message.role === 'user'}
 										<div class="u">{@render body()}</div>
 									{:else if message.role === 'assistant'}
-										<div class="a">{@render body()}</div>
+										<div class="a">
+											<Prose text={message.text} {hits} current={find.current} {links} />
+										</div>
 									{:else}
 										<div class="tool"><b>{message.tool}</b> {@render body()}</div>
 									{/if}
-									{#each inline?.get(message.n) ?? [] as file (file.id)}
+									{#each below(message) as file (file.id)}
 										<ArtifactInline {file} {artifacts} onopen={openInline} />
 									{/each}
 								{/each}
 								{#if reply.turn}
 									{#if spoken.prompt}<div class="u" data-live>{reply.turn.prompt}</div>{/if}
-									{#if spoken.reply}<div class="a" data-live>{reply.turn.reply}</div>{/if}
+									{#if spoken.reply}
+										<div class="a" data-live><Prose text={reply.turn.reply} {links} live /></div>
+									{/if}
 								{/if}
 								{#if pending}
 									<div class="u" data-pending>{pending}</div>
@@ -441,7 +476,6 @@
 	<div
 		class="dock"
 		data-dock
-		{@attach overKeyboard}
 		{@attach (repliesOn || keysOn) && reply.watch}
 		{@attach reply.files.watch}
 	>
@@ -479,7 +513,8 @@
 					target={id}
 					sink={reply.voice}
 					{voiceOn}
-					blocked={reply.blocked || reply.sending || reply.files.pending}
+					blocked={reply.blocked || reply.files.pending}
+					sending={reply.sending}
 					note={reply.note}
 					onsend={send}
 					oninput={reply.typed}
@@ -606,7 +641,14 @@
 		flex: none;
 		display: flex;
 		flex-direction: column;
-		padding-bottom: var(--kb, 0px);
+	}
+
+	/*
+	 * With the keyboard up the screen is short: what is not for typing gives
+	 * its room to the chat and the text box.
+	 */
+	:global([data-kb]) .dock :global(:is(.next, .vbar.off)) {
+		display: none;
 	}
 
 	.u {
@@ -620,10 +662,8 @@
 	}
 
 	.a {
-		max-width: 94%;
 		padding-bottom: 6px;
 		color: #e2e2e2;
-		white-space: pre-wrap;
 		overflow-wrap: anywhere;
 	}
 

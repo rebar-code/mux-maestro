@@ -39,6 +39,22 @@ function names(text: string, file: ArtifactFile): boolean {
 	return false;
 }
 
+/**
+ * The file a path in a message names: its whole path, a tail of it, or its
+ * name alone. Null when the thread has no such file.
+ */
+export function resolveArtifact(path: string, files: ArtifactFile[]): ArtifactFile | null {
+	const token = path.replace(/^\.\//, '');
+	if (!token) return null;
+	const there = files.filter((file) => file.exists);
+	return (
+		there.find((file) => pathOf(file) === token) ??
+		there.find((file) => pathOf(file).endsWith(`/${token}`)) ??
+		there.find((file) => file.name === token) ??
+		null
+	);
+}
+
 /** The agent's own rows count: what it wrote and what it said, not what the human typed. */
 function mentions(message: ChatMessage, file: ArtifactFile): boolean {
 	return message.role !== 'user' && names(message.text, file);
