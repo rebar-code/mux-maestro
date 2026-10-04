@@ -416,7 +416,16 @@ export function gestures(node: HTMLElement): () => void {
 		mid: number;
 		offset: number;
 	}
-	let pinch: { size: number; distance: number; lineHeight: number; x: Axis; y: Axis } | null = null;
+	/** The element the fingers began on, and how far down it they were (0 to 1). */
+	interface Held {
+		scroller: HTMLElement;
+		el: Element;
+		at: number;
+	}
+	let pinch:
+		| { size: number; distance: number; lineHeight: number; x: Axis; y: Axis }
+		| { size: number; distance: number; held: Held }
+		| null = null;
 
 	const lineHeightOf = (el: HTMLElement): number => parseFloat(getComputedStyle(el).lineHeight);
 
@@ -432,6 +441,21 @@ export function gestures(node: HTMLElement): () => void {
 		const zoom = (event.touches[0].target as Element).closest<HTMLElement>('[data-zoom]');
 		if (!zoom || !zoom.contains(event.touches[1].target as Node)) return false;
 		cancelDrag();
+		// Text that wraps (the chat) grows by more than its size, so no ratio places
+		// it: the element under the fingers is held there instead.
+		if (zoom.dataset.zoom === 'wrap') {
+			const mid = middle(event.touches);
+			const under = document.elementFromPoint(mid.x, mid.y);
+			const el = under && zoom.contains(under) ? under : zoom;
+			const box = el.getBoundingClientRect();
+			cancelAnimationFrame(momentum);
+			pinch = {
+				size: text.size,
+				distance: spread(event.touches),
+				held: { scroller: zoom, el, at: box.height > 0 ? (mid.y - box.top) / box.height : 0 }
+			};
+			return true;
+		}
 		// The text scrolls down in `zoom` and sideways in its `data-hscroll` child.
 		const wide = zoom.querySelector<HTMLElement>('[data-hscroll]') ?? zoom;
 		const zoomBox = zoom.getBoundingClientRect();
@@ -467,8 +491,16 @@ export function gestures(node: HTMLElement): () => void {
 		text.preview(pinchSize(pinch.size, pinch.distance, spread(event.touches)));
 		// Lay the text out at its new size now, so the scroll positions below hold.
 		flushSync();
-		const ratio = text.size / pinch.size;
 		const mid = middle(event.touches);
+		if ('held' in pinch) {
+			const { scroller, el, at } = pinch.held;
+			// A message drawn again while it arrives is a new element: nothing to hold.
+			if (!el.isConnected) return;
+			const box = el.getBoundingClientRect();
+			scroller.scrollTop += box.top + box.height * at - mid.y;
+			return;
+		}
+		const ratio = text.size / pinch.size;
 		const { x, y } = pinch;
 		x.el.scrollLeft = anchorScroll({
 			...x,
@@ -493,6 +525,8 @@ export function gestures(node: HTMLElement): () => void {
 		pull = null;
 		if (event.touches.length === 2) {
 			lastTap = null;
+			// Two fingers are a pinch or nothing: the one left behind raises no board.
+			rise = null;
 			beginPinch(event);
 			return;
 		}

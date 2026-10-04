@@ -3,6 +3,7 @@ import { drag, expectDrawerClosed, fresh, threadPath, touchDrag, twoFingers } fr
 
 const LOCAL = 'localhost:1';
 const REMOTE = 'devbox:2';
+const MAKER = 'localhost:6';
 
 const size = (page: Page, selector = '.screen'): Promise<number> =>
 	page
@@ -295,6 +296,156 @@ test('chat text follows the size', async ({ page }) => {
 	// The same size shows in the terminal.
 	await page.locator('[data-tab="main"]').click();
 	expect(await size(page)).toBe(16);
+});
+
+/** Screenshots are taken only when SHOTS names a directory outside the repo. */
+async function shot(page: Page, name: string): Promise<void> {
+	const dir = process.env.SHOTS;
+	if (!dir) return;
+	await page.waitForTimeout(300);
+	await page.screenshot({ path: `${dir}/${name}.png` });
+}
+
+async function chat(page: Page, id = LOCAL): Promise<void> {
+	await fresh(page, threadPath(id));
+	await expect(page.locator('[data-view="chat"] .u').first()).toBeVisible();
+	expect(await size(page, '.a')).toBe(15);
+}
+
+test('a pinch on the chat changes the text size as on the terminal; the page never zooms', async ({
+	page
+}) => {
+	await chat(page);
+	await shot(page, 'chat-before');
+	// Fingers 100px apart move to 160px apart: 15px x 1.6.
+	await twoFingers(
+		page,
+		[
+			[150, 300],
+			[250, 300]
+		],
+		[
+			[120, 300],
+			[280, 300]
+		]
+	);
+	expect(await size(page, '.a')).toBeCloseTo(24, 1);
+	expect(await size(page, '.u')).toBeCloseTo(24, 1);
+	await shot(page, 'chat-pinched-out');
+	expect(await page.evaluate(() => window.visualViewport?.scale)).toBe(1);
+	expect(await page.evaluate(() => document.documentElement.clientWidth)).toBe(390);
+	await expectDrawerClosed(page);
+
+	// 200px apart to 100px apart: half.
+	await twoFingers(
+		page,
+		[
+			[100, 300],
+			[300, 300]
+		],
+		[
+			[150, 300],
+			[250, 300]
+		]
+	);
+	expect(await size(page, '.a')).toBeCloseTo(12, 1);
+	expect(await page.evaluate(() => window.visualViewport?.scale)).toBe(1);
+
+	// The size is kept, and the terminal has it too.
+	await page.reload();
+	await expect(page.locator('[data-view="chat"] .u').first()).toBeVisible();
+	expect(await size(page, '.a')).toBeCloseTo(12, 1);
+	await page.locator('[data-tab="main"]').click();
+	expect(await size(page)).toBeCloseTo(8.8, 1);
+});
+
+test('the chat message under the fingers stays under them', async ({ page }) => {
+	// A long thread of paragraphs that wrap, read from the middle.
+	await fresh(page, '/');
+	const paragraph = 'The export reads every row before it writes the first one. '.repeat(6);
+	for (let n = 1; n <= 12; n += 1) {
+		await page.request.post(
+			`/__fixture/say?id=${MAKER}&role=assistant&text=${encodeURIComponent(`Step ${n}. ${paragraph}`)}`
+		);
+	}
+	await page.goto(threadPath(MAKER));
+	await expect(page.locator('[data-view="chat"] .u').first()).toBeVisible();
+	const scroller = page.locator('[data-view="chat"]');
+	await scroller.evaluate((el) => (el.scrollTop = Math.round(el.scrollTop / 2)));
+	expect(await scroller.evaluate((el) => el.scrollTop)).toBeGreaterThan(600);
+	const MID: [number, number] = [200, 400];
+	/** How far the point the fingers began on is from them now, in pixels. */
+	const drift = await page.evaluateHandle(([x, y]) => {
+		const held = document.elementFromPoint(x, y)!;
+		const box = held.getBoundingClientRect();
+		const at = (y - box.top) / box.height;
+		return () => {
+			const now = held.getBoundingClientRect();
+			return now.top + now.height * at - y;
+		};
+	}, MID);
+	const lift = await twoFingers(
+		page,
+		[
+			[150, 400],
+			[250, 400]
+		],
+		[
+			[110, 400],
+			[290, 400]
+		],
+		true
+	);
+	expect(await size(page, '.a')).toBeCloseTo(27, 1);
+	// Within a line of the larger text.
+	expect(Math.abs(await drift.evaluate((measure) => measure()))).toBeLessThan(30);
+	await lift();
+	expect(Math.abs(await drift.evaluate((measure) => measure()))).toBeLessThan(30);
+});
+
+test('a double tap on the chat resets the size', async ({ page }) => {
+	await chat(page);
+	await stored(page, 16, '.u');
+	expect(await size(page, '.a')).toBeCloseTo(21.82, 1);
+	const box = (await page.locator('[data-view="chat"] .a').first().boundingBox())!;
+	const at: [number, number] = [box.x + box.width / 2, box.y + box.height / 2];
+	await page.touchscreen.tap(...at);
+	await page.waitForTimeout(500);
+	expect(await size(page, '.a')).toBeCloseTo(21.82, 1);
+	await page.touchscreen.tap(...at);
+	await page.touchscreen.tap(...at);
+	await expect.poll(() => size(page, '.a')).toBe(15);
+});
+
+test('a pinch at the end of the home thread changes the text size and does not raise the board', async ({
+	page
+}) => {
+	await fresh(page);
+	const thread = page.locator('[data-view="chat"]');
+	await expect(thread.locator('.a').first()).toBeVisible();
+	const board = page.locator('[data-board]');
+	await expect(board).toHaveAttribute('data-stop', '0');
+	const before = await size(page, '.a');
+	// One finger goes up by more than a swipe; the other goes down.
+	const box = (await thread.boundingBox())!;
+	const x = box.x + box.width / 2;
+	const y = box.y + box.height / 2;
+	const lift = await twoFingers(
+		page,
+		[
+			[x, y - 20],
+			[x, y + 20]
+		],
+		[
+			[x, y - 120],
+			[x, y + 120]
+		],
+		true
+	);
+	expect(await size(page, '.a')).toBeGreaterThan(before);
+	await lift();
+	await page.waitForTimeout(300);
+	await expect(board).toHaveAttribute('data-stop', '0');
 });
 
 test('reduced motion: a size change is not animated', async ({ page }) => {
