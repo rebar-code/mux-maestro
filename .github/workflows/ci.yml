@@ -85,6 +85,11 @@ jobs:
         env:
           DEVELOPER_DIR: /Applications/Xcode_16.2.app/Contents/Developer
 
+      # Seconds, with stub tools: a signing identity whose name has spaces or
+      # parentheses must reach xcodebuild as one argument.
+      - name: Check signing identity quoting
+        run: make signing-selftest
+
       # The live terminal's tests run against a tmux server of their own
       # (`tmux -L`). Without tmux they are skipped.
       - name: Install tmux
