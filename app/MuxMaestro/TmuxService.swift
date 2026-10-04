@@ -1870,6 +1870,32 @@ final class TmuxService {
         return tmux(FileTransfer.captureScrollbackArgv(target: target, lines: lines))
     }
 
+    // MARK: Phone replies
+
+    /// What the phone server may do to a pane on this host. Each call runs one
+    /// argv the server built (`MobileReply`); nothing here goes through a shell
+    /// on this Mac.
+    func phonePane(
+        target: String, state: @escaping (MobileThread) -> MobilePaneState
+    ) -> MobilePaneIO {
+        MobilePaneIO(
+            tmux: { [self] args, stdin in tmux(args, stdin: stdin) },
+            screen: { [self] in capturePane(target: target) },
+            state: state,
+            save: { [self] data, path in
+                guard let alias = host.sshAlias else {
+                    return FileTransfer.writeExclusive(data, to: path)
+                }
+                // An upload to a remote host can take longer than a tmux call.
+                let (ssh, args) = FileTransfer.exclusiveWriteArgv(alias: alias, path: path)
+                return FileTransfer.saved(remoteOutput: slow.run(ssh, args, stdin: data))
+            },
+            cursorRow: { [self] in
+                tmux(["display-message", "-p", "-t", target, "#{cursor_y}"])
+                    .flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            })
+    }
+
     /// Drop a local file onto a session on this host: resolve the session's cwd,
     /// copy the file there (cp local / scp remote), then PASTE the resulting path
     /// into the session's active pane (no auto-run — the M11 decision). Returns

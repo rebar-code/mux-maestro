@@ -2,13 +2,17 @@
 	import { resolve } from '$app/paths';
 	import BoardSheet from '$lib/BoardSheet.svelte';
 	import { age } from '$lib/format';
+	import Composer from '$lib/Composer.svelte';
 	import { pullToRefresh, ui } from '$lib/gestures.svelte';
 	import { counts } from '$lib/group';
+	import KeyBar from '$lib/KeyBar.svelte';
 	import { can, isOff, live, OFF_LABEL } from '$lib/live.svelte';
 	import { boardSummary, needsYouCards, thinkingText } from '$lib/manager';
 	import { sheetHeight } from '$lib/pager';
 	import { manager } from '$lib/manager.svelte';
+	import NoteLine from '$lib/NoteLine.svelte';
 	import PullIndicator from '$lib/PullIndicator.svelte';
+	import { Reply } from '$lib/reply.svelte';
 	import TalkButton from '$lib/TalkButton.svelte';
 	import ThreadView from '$lib/ThreadView.svelte';
 	import { voice } from '$lib/voice.svelte';
@@ -22,7 +26,6 @@
 	const voiceOn = $derived(managerOn && can('voice'));
 	const boxLabel = $derived(isOff('manager') ? OFF_LABEL : 'Ask the manager');
 	const waiting = $derived(needsYouCards(live.threads ?? [], []));
-	const canSend = $derived(manager.draft.trim() !== '');
 	/** What the board holds, on the footer's grabber. */
 	const summary = $derived(
 		boardSummary({
@@ -47,8 +50,25 @@
 		return () => clearInterval(timer);
 	}
 
-	function submit(event: SubmitEvent): void {
-		event.preventDefault();
+	// The manager pane's prompts and keys. Its text goes through the manager's own turn.
+	const reply = new Reply(
+		'manager',
+		{
+			refresh: () => {
+				// An answer or a key can end the wait: the pane's status is read again too.
+				void manager.load();
+				return manager.feed.load(terminal ? 'terminal' : 'chat');
+			},
+			// A card that comes up is what the human has to act on: it is brought into view.
+			stick: (change, appeared) =>
+				manager.feed.keepEnd(terminal ? 'terminal' : 'chat', appeared, change),
+			terminal: () => terminal
+		},
+		manager.target
+	);
+	const keysOn = $derived(managerOn && can('keyBar'));
+
+	function send(): void {
 		// A typed turn takes over: a reply that is still being read stops.
 		if (voiceOn) voice.skip();
 		void manager.send();
@@ -111,6 +131,7 @@
 			{header}
 			{tail}
 			pending={manager.pending}
+			{reply}
 			bind:terminal
 		/>
 	</div>
@@ -161,30 +182,28 @@
 			<span class="bar"></span>
 			<span class="sum">{summary}</span>
 		</button>
+		<!--
+			The manager pane's keys, and what the last one came to. In the footer,
+			under the grabber: the board is below the footer and the footer rises
+			with it, so neither ever covers them.
+		-->
+		{#if reply.note}<NoteLine note={reply.note} />{/if}
+		{#if keysOn}<KeyBar {reply} composer={false} />{/if}
 		<VoiceBar target="manager" sink={manager.voice} off={!voiceOn} />
 	{/if}
-	<form class="compose" onsubmit={submit}>
-		{#if managerOn}
-			<!-- With the keyboard open the footer sits on it and the board stays shut. -->
-			<input
-				bind:value={manager.draft}
-				placeholder="Ask the manager"
-				aria-label="Ask the manager"
-				enterkeyhint="send"
-				autocomplete="off"
-				autocapitalize="sentences"
-				onfocus={() => ui.lockSheet(true)}
-				onblur={() => ui.lockSheet(false)}
-			/>
-		{:else}
-			<input disabled placeholder={boxLabel} aria-label={boxLabel} data-off={isOff('manager')} />
-		{/if}
-		{#if managerOn && canSend}
-			<button class="pill send grow" type="submit" disabled={manager.busy}>↑ Send</button>
-		{:else}
-			<TalkButton target="manager" sink={manager.voice} off={!voiceOn} />
-		{/if}
-	</form>
+	<!-- With the keyboard open the footer sits on it and the board stays shut. -->
+	<Composer
+		bind:value={manager.draft}
+		label={boxLabel}
+		target="manager"
+		sink={manager.voice}
+		{voiceOn}
+		off={!managerOn}
+		blocked={manager.busy}
+		onsend={send}
+		onfocus={() => ui.lockSheet(true)}
+		onblur={() => ui.lockSheet(false)}
+	/>
 </div>
 {#if managerOn}
 	<BoardSheet />
@@ -263,67 +282,9 @@
 		height: 24px;
 	}
 
-	/*
-	 * The bottom inset is counted once: here while the footer is the last row,
-	 * and on the board once the board shows under it.
-	 */
-	.compose {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		margin: 0;
-		padding: 6px max(10px, env(safe-area-inset-right))
-			calc(10px + max(0px, env(safe-area-inset-bottom) - var(--board, 0px)))
-			max(10px, env(safe-area-inset-left));
-	}
-
-	.compose input {
-		flex: 1;
-		min-width: 0;
-		min-height: var(--hit);
-		padding: 10px 14px;
-		border-radius: 22px;
-		border: 1px solid var(--border);
-		background: var(--surface);
-		color: var(--text);
-		/* 16px: a smaller box makes iOS zoom the page on focus. */
-		font: inherit;
-		font-size: 16px;
-		outline: none;
-	}
-
-	.foot.bare .compose {
+	/* The footer draws the top edge and the background: the text box row draws neither. */
+	.foot.bare :global(.compose) {
 		padding-top: 8px;
-	}
-
-	.compose input:disabled {
-		opacity: 1;
-		color: var(--muted);
-		-webkit-text-fill-color: var(--muted);
-	}
-
-	.compose input:focus-visible {
-		border-color: var(--accent);
-	}
-
-	.pill {
-		position: relative;
-		flex: none;
-		height: 40px;
-		padding: 0 16px;
-		border-radius: 20px;
-		background: #fff;
-		color: #000;
-		font-weight: 600;
-		font-size: 14px;
-		white-space: nowrap;
-		/* As wide as the Talk button it replaces, so the text box does not move. */
-		min-width: 104px;
-	}
-
-	.pill.send {
-		background: var(--accent);
-		color: #fff;
 	}
 
 	/* The manager's thread. It gets shorter as the footer rises. */

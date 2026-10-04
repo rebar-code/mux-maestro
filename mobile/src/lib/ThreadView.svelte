@@ -1,11 +1,24 @@
 <script lang="ts">
+	import AttachButton from './AttachButton.svelte';
+	import AttachTiles from './AttachTiles.svelte';
+	import Composer from './Composer.svelte';
 	import type { Snippet } from 'svelte';
 	import { dotClass, statusLabel } from './format';
 	import { pages, pullToRefresh, ui } from './gestures.svelte';
-	import { live } from './live.svelte';
+	import KeyBar from './KeyBar.svelte';
+	import { overKeyboard } from './keyboard';
+	import { can, live, OFF_LABEL } from './live.svelte';
+	import NextBar from './NextBar.svelte';
+	import NoteLine from './NoteLine.svelte';
+	import PromptCard from './PromptCard.svelte';
 	import PullIndicator from './PullIndicator.svelte';
+	import { liveLines, nextWaiting } from './reply';
+	import { Reply } from './reply.svelte';
+	import SlashList from './SlashList.svelte';
 	import { text } from './textsize.svelte';
 	import { ThreadFeed, type Mode } from './thread.svelte';
+	import { voice } from './voice.svelte';
+	import VoiceBar from './VoiceBar.svelte';
 
 	interface Props {
 		id: string;
@@ -22,6 +35,12 @@
 		pending?: string | null;
 		/** The first tab shows the terminal, not the chat. */
 		terminal?: boolean;
+		/**
+		 * What asks and answers prompts on a pane that is not a listed thread
+		 * (the manager). The view then draws the pane's prompt card; the page
+		 * that gives it draws its own keys and text box.
+		 */
+		reply?: Reply;
 	}
 
 	/* eslint-disable prefer-const */
@@ -32,7 +51,8 @@
 		header,
 		tail,
 		pending = null,
-		terminal = $bindable(false)
+		terminal = $bindable(false),
+		reply: givenReply
 	}: Props = $props();
 	/* eslint-enable prefer-const */
 
@@ -53,6 +73,47 @@
 	const closed = $derived(listed && ((live.threads !== null && !thread) || feed.gone));
 	const color = $derived(thread?.hostColor ?? '#2a2a2a');
 
+	// svelte-ignore state_referenced_locally
+	const reply =
+		givenReply ??
+		new Reply(id, {
+			refresh: () => feed.load(mode),
+			stick: (change) => feed.keepEnd(mode, false, change),
+			terminal: () => mode === 'terminal'
+		});
+	/** The pane's prompts are shown and answered here: a listed thread, or a pane given its own `reply`. */
+	// svelte-ignore state_referenced_locally
+	const asks = listed || givenReply !== undefined;
+
+	const repliesOn = $derived(can('replies'));
+	const keysOn = $derived(can('keyBar'));
+	// A take goes to the thread as a reply, so voice needs that switch too.
+	const voiceOn = $derived(repliesOn && can('voice'));
+	// A listed thread's reply box is always there: switched off on the Mac, it says so and
+	// takes nothing. The manager pane is not a listed thread: it has no reply routes, and
+	// its page brings its own box, so it gets no dock, no card and no Next bar.
+	const docked = $derived(listed && !closed);
+	const next = $derived(listed && repliesOn ? nextWaiting(live.threads ?? [], id) : null);
+	// The pane can ask while its status says nothing of it: the prompt decides.
+	// With the key bar alone the card is read-only: it shows what a key would answer.
+	const cardId = $derived(asks && (repliesOn || keysOn) ? reply.promptId : null);
+	const card = $derived(cardId === null ? null : reply.prompt);
+
+	/** The card shows only part of the pane's text: the terminal has it all. */
+	function showTerminal(): void {
+		// What a key was told before ("open the terminal") is done now.
+		reply.note = null;
+		terminal = true;
+		ui.goTo(0);
+	}
+	const spoken = $derived(liveLines(feed.messages ?? [], reply.turn));
+
+	function send(): void {
+		// A typed reply takes over: a reply that is still being read stops.
+		if (voiceOn) voice.skip();
+		void reply.send();
+	}
+
 	function selectTab(index: number): void {
 		// The first tab is also a switch: a tap while it is showing flips the
 		// page between the chat and the pane's terminal.
@@ -60,6 +121,18 @@
 		ui.goTo(index);
 	}
 </script>
+
+{#snippet promptCard(shown: string, onterminal?: () => void)}
+	<PromptCard
+		id={shown}
+		prompt={card}
+		readonly={!repliesOn}
+		answering={reply.answering}
+		onanswer={reply.answer}
+		oncancel={repliesOn ? reply.cancel : undefined}
+		{onterminal}
+	/>
+{/snippet}
 
 {#if header}
 	{@render header()}
@@ -118,11 +191,13 @@
 
 <div
 	class="pager"
+	class:docked
 	data-thread-pages
 	style:--term-size="{text.size}px"
 	style:--chat-size="{text.chat}px"
 	{@attach pages(TAB_KEYS)}
 	{@attach feed.watch(mode)}
+	{@attach !listed && asks && (repliesOn || keysOn) && reply.watch}
 >
 	<div
 		class="track"
@@ -158,10 +233,17 @@
 										<div class="tool"><b>{message.tool}</b> {message.text}</div>
 									{/if}
 								{/each}
+								{#if reply.turn}
+									{#if spoken.prompt}<div class="u" data-live>{reply.turn.prompt}</div>{/if}
+									{#if spoken.reply}<div class="a" data-live>{reply.turn.reply}</div>{/if}
+								{/if}
 								{#if pending}
 									<div class="u" data-pending>{pending}</div>
 								{/if}
 								{@render tail?.()}
+							{/if}
+							{#if cardId !== null}
+								{@render promptCard(cardId, showTerminal)}
 							{/if}
 						</div>
 					</div>
@@ -208,6 +290,9 @@
 								</div>
 							</div>
 						{/if}
+						{#if cardId !== null}
+							<div class="chat">{@render promptCard(cardId)}</div>
+						{/if}
 					</div>
 					{#if !feed.atBottom}
 						<button class="jump" aria-label="Jump to bottom" onclick={feed.jumpToBottom}>↓</button>
@@ -217,6 +302,67 @@
 		{/each}
 	</div>
 </div>
+
+{#if docked}
+	<div
+		class="dock"
+		data-dock
+		{@attach overKeyboard}
+		{@attach (repliesOn || keysOn) && reply.watch}
+		{@attach reply.files.watch}
+	>
+		{#if next}<NextBar thread={next} />{/if}
+		{#if repliesOn && reply.matches.length}
+			<SlashList commands={reply.matches} onpick={reply.pick} />
+		{/if}
+		{#if !repliesOn && reply.note}
+			<!-- With no composer below, the bar's own refusals are said here. -->
+			<NoteLine note={reply.note} />
+		{/if}
+		{#if keysOn}<KeyBar {reply} composer={repliesOn} />{/if}
+		<!-- Voice switched off on the Mac: the bar stays and says so, like the manager's. -->
+		{#if repliesOn}<VoiceBar target={id} sink={reply.voice} off={!voiceOn} />{/if}
+		{#if repliesOn}
+			<Composer
+				bind:value={reply.draft}
+				box={reply.box}
+				label="Reply"
+				target={id}
+				sink={reply.voice}
+				{voiceOn}
+				blocked={reply.blocked || reply.sending || reply.files.pending}
+				note={reply.note}
+				onsend={send}
+				oninput={reply.typed}
+				onbeforeinput={reply.beforeInput}
+				onpaste={reply.pasted}
+			>
+				{#snippet above()}
+					{#if reply.files.items.length}<AttachTiles files={reply.files} />{/if}
+				{/snippet}
+				{#snippet leading()}
+					<AttachButton off={!can('upload')} onpick={reply.files.add} onoff={reply.uploadOff} />
+				{/snippet}
+			</Composer>
+		{:else}
+			<!-- Same box, same place: nothing moves when the Mac switches replies on. -->
+			<Composer
+				value=""
+				label={OFF_LABEL}
+				target={id}
+				sink={reply.voice}
+				voiceOn={false}
+				off
+				bare
+				onsend={() => {}}
+			>
+				{#snippet leading()}
+					<AttachButton disabled />
+				{/snippet}
+			</Composer>
+		{/if}
+	</div>
+{/if}
 
 <style>
 	.thread {
@@ -289,6 +435,19 @@
 		gap: 10px;
 		padding: 10px 14px calc(16px + var(--below, env(safe-area-inset-bottom)));
 		font-size: var(--chat-size);
+	}
+
+	/* The bar below keeps clear of the home indicator. */
+	.docked .chat,
+	.docked .screen {
+		padding-bottom: 16px;
+	}
+
+	.dock {
+		flex: none;
+		display: flex;
+		flex-direction: column;
+		padding-bottom: var(--kb, 0px);
 	}
 
 	.u {
@@ -418,6 +577,10 @@
 		border: 1px solid var(--border);
 		box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
 		font-size: 18px;
+	}
+
+	.docked .jump {
+		bottom: 14px;
 	}
 
 	.jump:active {

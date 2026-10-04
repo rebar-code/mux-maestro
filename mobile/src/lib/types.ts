@@ -66,6 +66,7 @@ export const CAPABILITIES = [
 	'manager',
 	'voice',
 	'replies',
+	'keyBar',
 	'upload',
 	'sessionActions',
 	'kill',
@@ -84,6 +85,49 @@ export interface Config {
 	grouping: 'recent' | 'host' | 'directory';
 	/** What a phone starts with until its own voice controls are used. */
 	voice?: VoiceDefaults;
+	upload?: UploadLimits;
+}
+
+export interface UploadLimits {
+	/** The largest file the Mac accepts. */
+	maxBytes: number;
+}
+
+export interface PromptOption {
+	/** The number the pane takes for this answer. Past 9 it has no key: read-only. */
+	n: number;
+	label: string;
+}
+
+/** What a waiting pane asks: a permission, or a question. */
+export interface Prompt {
+	id: string;
+	kind: 'permission' | 'question';
+	title: string;
+	detail: string;
+	question: string;
+	options: PromptOption[];
+	/** The option the pane's cursor is on: what Enter takes. */
+	selected?: number;
+	/** The menu is scrolled: it has rows above, or below, the ones listed. */
+	moreAbove?: boolean;
+	moreBelow?: boolean;
+	/** The pane shows more of the detail than the Mac sent. */
+	truncated?: boolean;
+}
+
+/** The answer of `GET /prompt`. */
+export interface PromptState {
+	prompt: Prompt | null;
+	/** Names what the pane waits on, also when it has no readable choices. */
+	id: string | null;
+}
+
+/** A slash command of a thread. `name` has no leading slash. */
+export interface Command {
+	name: string;
+	description: string;
+	source: 'skill' | 'command' | 'builtin';
 }
 
 export type VoiceMode = 'auto' | 'manual';

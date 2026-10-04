@@ -569,6 +569,8 @@ final class MobileVoiceServerTests: XCTestCase {
     private var port = 0
     private var root: URL!
     private let speech = FakeSpeech()
+    private let pane = FakePane()
+    private var threadTranscript: URL { root.appendingPathComponent("thread.jsonl") }
     private let lock = NSLock()
     private var sent: [String] = []
     private var warmed: [Bool] = []
@@ -589,7 +591,10 @@ final class MobileVoiceServerTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         server = MobileServer(
             staticRoot: nil,
-            sources: MobileServer.Sources(screen: { _, _ in nil }, transcript: { _ in nil }),
+            sources: MobileServer.Sources(
+                screen: { _, _ in nil },
+                transcript: { [unowned self] _ in (threadTranscript.path, false) },
+                pane: { [pane] _ in pane.io }),
             manager: MobileServer.Manager(
                 pane: { [unowned self] in locked { (status, transcript) } },
                 send: { [unowned self] text, onDelta, completion in
@@ -612,6 +617,14 @@ final class MobileVoiceServerTests: XCTestCase {
         }
         wait(for: [started], timeout: 5)
         server.configure(MobileConfig(capabilities: [.manager, .voice]))
+        var agent = TmuxPane(id: "%12", index: 0, command: "claude", title: "", active: true)
+        agent.claudeSessionId = "c1"
+        agent.attention = .idle
+        server.update(MobileSnapshot.build([MobileHostInput(
+            host: .local, colorHex: "#3291ff", reachability: .reachable, stats: nil,
+            sessions: [TmuxSession(name: "acme-app", attached: true, windows: [
+                TmuxWindow(index: 1, name: "deploy-fix", active: true, panes: [agent]),
+            ])])]))
     }
 
     override func tearDown() {
@@ -854,10 +867,84 @@ final class MobileVoiceServerTests: XCTestCase {
         XCTAssertEqual(speech.synthesized, [])
     }
 
-    func testRefusesAThreadTargetABadQueryAndMissingModels() {
-        let thread = post("/api/voice?target=local:12&speaker=1", body: Self.take)
-        XCTAssertEqual(thread.status, 400)
-        XCTAssertEqual(thread.body, #"{"error":"unsupported_target","message":"Voice goes to the manager only"}"#)
+    private static let threadTake = "/api/voice?target=localhost%3A12&speaker=0"
+
+    func testATakeIntoAThreadNeedsTheRepliesSwitchAndALiveThread() {
+        // Voice is on; typing into a thread is its own switch.
+        let off = post(Self.threadTake, body: Self.take)
+        XCTAssertEqual(off.status, 403)
+        XCTAssertEqual(off.body, #"{"error":"disabled"}"#)
+        XCTAssertEqual(post("/api/voice/replay?target=localhost%3A12").status, 403)
+
+        server.configure(MobileConfig(capabilities: [.voice, .replies]))
+        XCTAssertEqual(post("/api/voice?target=localhost%3A99&speaker=0", body: Self.take).status, 404)
+        // Replies alone do not turn voice on.
+        server.configure(MobileConfig(capabilities: [.replies]))
+        XCTAssertEqual(post(Self.threadTake, body: Self.take).status, 403)
+        XCTAssertEqual(speech.transcribed, [])
+        XCTAssertEqual(pane.argv.count, 0)
+    }
+
+    func testATakeIntoAThreadGoesDownTheTypedTextPath() {
+        server.configure(MobileConfig(capabilities: [.voice, .replies]))
+        speech.transcript = "run the tests"
+        let turn = post(Self.threadTake, body: Self.take)
+        XCTAssertEqual(turn.status, 200)
+        let all = events(turn.body)
+        XCTAssertEqual(all.map(\.name), ["transcript", "end"])
+        XCTAssertEqual(all.last?.data["outcome"] as? String, "done")
+        // One bracketed paste and one Enter, as a typed reply.
+        XCTAssertTrue(FakePane.sendArgv(pane.argv, target: "%12"), "\(pane.argv)")
+        XCTAssertEqual(pane.calls[1].stdin, "run the tests")
+        XCTAssertEqual(speech.synthCalls, 0)
+        // Nothing went to the manager.
+        XCTAssertEqual(locked { sent }, [])
+    }
+
+    func testATakeIntoABusyOrWaitingThreadIsRefusedBeforeItCostsAnything() {
+        server.configure(MobileConfig(capabilities: [.voice, .replies]))
+        for (status, code) in [(AttentionStatus.busy, "busy"), (.waiting, "waiting")] {
+            pane.status = status
+            let refused = post(Self.threadTake, body: Self.take)
+            XCTAssertEqual(refused.status, 409)
+            XCTAssertTrue(refused.body.contains(#""error":"\#(code)""#), refused.body)
+        }
+        XCTAssertEqual(speech.transcribed, [])
+        XCTAssertEqual(pane.argv.count, 0)
+    }
+
+    func testWordsThatAreNotTextNeverReachAThreadsPane() {
+        server.configure(MobileConfig(capabilities: [.voice, .replies]))
+        speech.transcript = "stop\u{03}now"
+        let turn = post(Self.threadTake, body: Self.take)
+        XCTAssertEqual(events(turn.body).last?.data["outcome"] as? String, "failed")
+        XCTAssertEqual(pane.argv.count, 0)
+    }
+
+    func testAPromptThatComesUpWhileATakeIsHeardGetsNoEnter() {
+        server.configure(MobileConfig(capabilities: [.voice, .replies]))
+        pane.status = .idle
+        pane.statusAfterPaste = .waiting
+        let turn = post(Self.threadTake, body: Self.take)
+        let end = events(turn.body).last
+        XCTAssertEqual(end?.data["outcome"] as? String, "refused")
+        XCTAssertEqual(end?.data["message"] as? String, "Thread is waiting on a prompt")
+        XCTAssertFalse(pane.argv.contains { $0.contains("Enter") })
+        // A prompt is in front: no key goes to it, not even one that clears.
+        XCTAssertEqual(pane.argv.map(\.first), ["copy-mode", "load-buffer", "paste-buffer"])
+    }
+
+    func testReplayReadsAThreadsLastReplyAgain() throws {
+        server.configure(MobileConfig(capabilities: [.voice, .replies]))
+        let line = #"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"All 12 pass."}]}}"#
+        try Data((line + "\n").utf8).write(to: threadTranscript)
+        let replay = post("/api/voice/replay?target=localhost%3A12")
+        XCTAssertEqual(replay.status, 200)
+        XCTAssertEqual(events(replay.body).first?.data["text"] as? String, "All 12 pass.")
+        XCTAssertEqual(pane.argv.count, 0)
+    }
+
+    func testRefusesABadQueryAndMissingModels() {
         XCTAssertEqual(post("/api/voice", body: Self.take).status, 400)
 
         speech.modelsReady = false

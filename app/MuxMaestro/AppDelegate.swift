@@ -85,6 +85,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             transcript: { thread in
                 [thread.claudeSessionId, thread.codexSessionId].compactMap { $0 }
                     .compactMap { TranscriptTailReader.shared.transcript(sessionId: $0) }.first
+            },
+            pane: { [registry, agentStates = AgentStateReader()] thread in
+                registry.service(for: thread.host).phonePane(target: thread.pane) { latest in
+                    // The hooks' own rows, read now: newer than the tree.
+                    MobileReply.state(
+                        thread: latest, rows: agentStates.rows(),
+                        now: Int(Date().timeIntervalSince1970))
+                }
             }),
         manager: MobileServer.Manager(
             pane: { [weak self] in
@@ -105,6 +113,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             screen: { [registry] lines in
                 registry.local.captureScrollback(target: ManagerHome.sessionName, lines: lines)
+            },
+            io: { [registry] in
+                // The server takes the manager's state from `pane` above; the
+                // per-thread state source is not used for it.
+                let io = registry.local.phonePane(target: ManagerHome.sessionName) { thread in
+                    MobilePaneState(status: thread.status, since: thread.since)
+                }
+                return (ManagerHome.sessionName, io)
             }),
         // The phone's takes use the Mac's own engine. Nothing plays here: the
         // phone gets the samples.
@@ -974,6 +990,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             setup.phone.onVoice = { [weak self] voice in
                 Settings.setPhoneVoice(voice)
+                self?.mobileServer.configure(Settings.phoneConfig())
+            }
+            setup.phone.onUploadLimit = { [weak self] bytes in
+                Settings.setPhoneUploadLimit(bytes)
                 self?.mobileServer.configure(Settings.phoneConfig())
             }
             setup.phone.onRotate = { [weak self] in self?.phoneLink.rotateToken() }

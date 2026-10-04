@@ -2,6 +2,101 @@ import { expect, type Locator, type Page } from '@playwright/test';
 
 export const WIDTH = 390;
 
+declare global {
+	interface Window {
+		__mic: {
+			opened: number;
+			speak: (on: boolean) => void;
+			live: () => number;
+			/** The next `getUserMedia` fails with this error name. */
+			fail: string | null;
+			/** As iOS does: the mic prompt leaves the page's audio suspended. */
+			suspendOnOpen: boolean;
+		};
+		/** The app's own audio context: the one the first tap made. */
+		__app: AudioContext | null;
+		/** The audio session type the app asked for (iOS 17). */
+		__session: () => string;
+		/** Screen wake locks the app holds. */
+		__awake: () => number;
+		/** Reply clips that started to play. */
+		__clips: number;
+	}
+}
+
+/**
+ * Give the page a microphone the test controls: a tone that is "speech" while
+ * `window.__mic.speak(true)` and silence otherwise. No real device.
+ */
+export async function fakeMic(page: Page): Promise<void> {
+	await page.addInitScript(() => {
+		let gain: GainNode | null = null;
+		const streams: MediaStream[] = [];
+		// The app's context is the first one made outside the fake microphone.
+		let making = false;
+		window.__app = null;
+		const Real = window.AudioContext;
+		window.AudioContext = class extends Real {
+			constructor(options?: AudioContextOptions) {
+				super(options);
+				if (!making && (window.__app === null || window.__app.state === 'closed')) {
+					window.__app = this;
+				}
+			}
+		};
+		const audioSession = { type: 'auto' };
+		Object.defineProperty(navigator, 'audioSession', { value: audioSession });
+		window.__session = () => audioSession.type;
+		let held = 0;
+		Object.defineProperty(navigator, 'wakeLock', {
+			value: {
+				request: async () => {
+					held += 1;
+					return { release: async () => void (held -= 1) };
+				}
+			}
+		});
+		window.__awake = () => held;
+		window.__mic = {
+			opened: 0,
+			fail: null,
+			suspendOnOpen: false,
+			speak: (on) => {
+				if (gain) gain.gain.value = on ? 0.5 : 0;
+			},
+			// Streams the page still holds open: what lights the phone's mic indicator.
+			live: () =>
+				streams.filter((stream) => stream.getTracks().some((track) => track.readyState === 'live'))
+					.length
+		};
+		navigator.mediaDevices.getUserMedia = async () => {
+			if (window.__mic.fail) throw new DOMException('refused', window.__mic.fail);
+			if (window.__mic.suspendOnOpen) await window.__app?.suspend();
+			window.__mic.opened += 1;
+			making = true;
+			const context = new AudioContext();
+			making = false;
+			await context.resume();
+			const tone = context.createOscillator();
+			tone.frequency.value = 220;
+			gain = context.createGain();
+			gain.gain.value = 0;
+			const out = context.createMediaStreamDestination();
+			tone.connect(gain).connect(out);
+			tone.start();
+			streams.push(out.stream);
+			return out.stream;
+		};
+		// A reply clip is longer than the cue that follows a take.
+		window.__clips = 0;
+		const start = AudioBufferSourceNode.prototype.start;
+		AudioBufferSourceNode.prototype.start = function (...args) {
+			if ((this.buffer?.duration ?? 0) > 0.5) window.__clips += 1;
+			return start.apply(this, args);
+		};
+	});
+}
+
 export async function reset(page: Page): Promise<void> {
 	await page.request.post('/__fixture/reset');
 }

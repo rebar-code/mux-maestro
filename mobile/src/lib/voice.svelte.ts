@@ -11,7 +11,7 @@ export type VoiceStatus = 'idle' | 'recording' | 'thinking' | 'speaking';
 /** Where a take goes: `manager`, or a thread's id. */
 export type VoiceTarget = string;
 
-/** Where a target draws its turn. The manager home has one; a thread will. */
+/** Where a target draws its turn: the manager home, or an open thread. */
 export interface VoiceSink {
 	/** The Mac heard `prompt` and handed it to the target. */
 	begin(prompt: string): void;
@@ -106,7 +106,7 @@ class Voice {
 	private capture: Capture | null = null;
 	private abort: AbortController | null = null;
 	/** The bar Auto listens for: the last one that opened the mic. */
-	private bound: { target: VoiceTarget; sink: VoiceSink } | null = null;
+	private bound = $state.raw<{ target: VoiceTarget; sink: VoiceSink } | null>(null);
 	/** The turn in flight has begun at its target. */
 	private sink: VoiceSink | null = null;
 	/** Skip was pressed: the rest of this reply is not played. */
@@ -590,9 +590,10 @@ class Voice {
 	};
 
 	/**
-	 * Attachment for a voice bar. The first tap anywhere on the page unlocks
-	 * the speaker. When the page is hidden or left, or the bar goes away, the
-	 * mic and the audio are given back.
+	 * Attachment for a voice bar, the manager's or a thread's. The first tap
+	 * anywhere on the page unlocks the speaker. When the page is hidden or
+	 * left, or the bar goes away, the mic and the audio are given back, and
+	 * Auto forgets its target: speech never goes to a bar that is not on screen.
 	 */
 	attach = (): (() => void) => {
 		const unlock = (): void => this.unlock();
@@ -609,6 +610,7 @@ class Voice {
 			document.removeEventListener('visibilitychange', hidden);
 			window.removeEventListener('pagehide', this.release);
 			this.release();
+			this.bound = null;
 		};
 	};
 }

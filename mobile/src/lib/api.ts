@@ -1,6 +1,15 @@
 import { tokenFrom, withoutPair } from './pairing';
 import { frameParser, readOrStall, STALLED, type Frame } from './sse';
-import type { ChatPage, Config, Host, ManagerHome, Thread, TurnEnd } from './types';
+import type {
+	ChatPage,
+	Command,
+	Config,
+	Host,
+	ManagerHome,
+	PromptState,
+	Thread,
+	TurnEnd
+} from './types';
 
 const TOKEN_KEY = 'mm.token';
 const TOKEN_HEADER = 'X-MuxMaestro-Token';
@@ -51,7 +60,11 @@ export class ApiError extends Error {
 		/** The `error` word in the response body, if it had one. */
 		readonly code: string | null,
 		/** The sentence the server sent for the human, if it sent one. */
-		readonly detail: string | null = null
+		readonly detail: string | null = null,
+		/** Why a `not_sent` text was not submitted. */
+		readonly reason: string | null = null,
+		/** A `not_sent` text was taken out of the pane's input box again. */
+		readonly cleared: boolean | null = null
 	) {
 		super(detail ?? `HTTP ${status}${code ? ` ${code}` : ''}`);
 	}
@@ -72,16 +85,21 @@ export class ApiError extends Error {
 
 async function failure(response: Response): Promise<ApiError> {
 	try {
-		const body = (await response.json()) as { error?: unknown; message?: unknown };
+		const body = (await response.json()) as Record<string, unknown>;
 		return new ApiError(
 			response.status,
 			typeof body.error === 'string' ? body.error : null,
-			typeof body.message === 'string' ? body.message : null
+			typeof body.message === 'string' ? body.message : null,
+			typeof body.reason === 'string' ? body.reason : null,
+			typeof body.cleared === 'boolean' ? body.cleared : null
 		);
 	} catch {
 		return new ApiError(response.status, null);
 	}
 }
+
+/** What a write sends: JSON, or bytes of a named type (or nothing). */
+type Write = { json: unknown } | { bytes: BodyInit | null; type?: string };
 
 /** Every API call goes through here, so every one carries the pairing token. */
 async function request(
@@ -90,9 +108,10 @@ async function request(
 	as?: string,
 	signal?: AbortSignal,
 	extra: Record<string, string> = {},
-	write?: unknown
+	write?: Write
 ): Promise<Response> {
 	const sent = as ?? token;
+	const type = write && ('json' in write ? 'application/json' : write.type);
 	const response = await fetch(path, {
 		cache: 'no-store',
 		headers: {
@@ -101,9 +120,12 @@ async function request(
 			...(sent ? { [TOKEN_HEADER]: sent } : {}),
 			// The server refuses a write without this header, and a page on
 			// another origin cannot send it.
-			...(write === undefined ? {} : { 'content-type': 'application/json', 'x-muxmaestro': '1' })
+			...(write ? { 'x-muxmaestro': '1' } : {}),
+			...(type ? { 'content-type': type } : {})
 		},
-		...(write === undefined ? {} : { method: 'POST', body: JSON.stringify(write) }),
+		...(write
+			? { method: 'POST', body: 'json' in write ? JSON.stringify(write.json) : write.bytes }
+			: {}),
 		signal
 	});
 	// "Not modified": the answer to a request that named what it already has.
@@ -116,29 +138,26 @@ async function request(
  * A write whose body is a recording, or nothing. It carries the token and the
  * write header like every other write; the answer is an event stream.
  */
-export async function postAudio(
+export function postAudio(
 	path: string,
 	audio: ArrayBuffer | null,
 	signal?: AbortSignal
 ): Promise<Response> {
-	const response = await fetch(path, {
-		method: 'POST',
-		cache: 'no-store',
-		headers: {
-			accept: 'text/event-stream',
-			...(token ? { [TOKEN_HEADER]: token } : {}),
-			'x-muxmaestro': '1',
-			...(audio ? { 'content-type': 'audio/wav' } : {})
-		},
-		body: audio,
-		signal
-	});
-	if (!response.ok) throw await failure(response);
-	return response;
+	return request(
+		path,
+		'text/event-stream',
+		undefined,
+		signal,
+		{},
+		{
+			bytes: audio,
+			...(audio ? { type: 'audio/wav' } : {})
+		}
+	);
 }
 
 function post(path: string, body: unknown, accept = 'application/json'): Promise<Response> {
-	return request(path, accept, undefined, undefined, {}, body);
+	return request(path, accept, undefined, undefined, {}, { json: body });
 }
 
 async function get<T>(path: string, as?: string): Promise<T> {
@@ -222,6 +241,131 @@ export async function fetchScreen(
 /** `as`: ask with this token, not the stored one (to test a token before keeping it). */
 export function fetchConfig(as?: string): Promise<Config> {
 	return get<Config>('/api/config', as);
+}
+
+/** Type `text` into the thread's pane and submit it. */
+export async function sendText(id: string, text: string): Promise<void> {
+	await post(`${threadPath(id)}/text`, { text });
+}
+
+/**
+ * Press one key in a pane. `base`: `threadPath(id)` or `MANAGER_PATH`. `key`
+ * is a name from `reply.ts`. `prompt` names the prompt the phone shows: a
+ * pane that waits on another one answers 409 `stale` and takes no key.
+ * `terminal`: the pane's own text was on screen at the tap, so the human could
+ * read a prompt the card cannot hold.
+ */
+export async function sendKey(
+	base: string,
+	key: string,
+	prompt: string | null,
+	terminal: boolean
+): Promise<void> {
+	await post(`${base}/key`, {
+		key,
+		...(prompt ? { prompt } : {}),
+		...(terminal ? { terminal } : {})
+	});
+}
+
+/** What a pane asks now. `base`: `threadPath(id)` or `MANAGER_PATH`. */
+export async function fetchPrompt(base: string): Promise<PromptState> {
+	const body = await get<Partial<PromptState>>(`${base}/prompt`);
+	const prompt = body.prompt ?? null;
+	return { prompt, id: body.id ?? prompt?.id ?? null };
+}
+
+/**
+ * Answer the prompt `prompt` with one of its options, or cancel it. A prompt
+ * that changed answers 409 `stale`. `base`: `threadPath(id)` or `MANAGER_PATH`.
+ */
+export async function answerPrompt(
+	base: string,
+	prompt: string,
+	choice: { option: number } | { cancel: true }
+): Promise<void> {
+	await post(`${base}/answer`, { prompt, ...choice });
+}
+
+export async function fetchCommands(id: string): Promise<Command[]> {
+	return (await get<{ commands: Command[] }>(`${threadPath(id)}/commands`)).commands;
+}
+
+/** What the Mac says of a file it saved. */
+export interface Uploaded {
+	/** Where the file is on the Mac. A name that was taken got a number. */
+	path: string;
+	/** The path as it is typed into a pane: quoted when it has to be. */
+	text: string;
+}
+
+function refusalOf(xhr: XMLHttpRequest): ApiError {
+	try {
+		const body = JSON.parse(xhr.responseText) as Record<string, unknown>;
+		return new ApiError(
+			xhr.status,
+			typeof body.error === 'string' ? body.error : null,
+			typeof body.message === 'string' ? body.message : null,
+			typeof body.reason === 'string' ? body.reason : null,
+			typeof body.cleared === 'boolean' ? body.cleared : null
+		);
+	} catch {
+		return new ApiError(xhr.status, null);
+	}
+}
+
+/**
+ * Put `file` in the thread's directory under `name`. Nothing is typed into
+ * the pane: the caller gets the path, to put it in the reply.
+ *
+ * The one request that is not a `fetch`: `fetch` cannot say how much of a
+ * body has gone out, and a photo over a phone link needs a progress bar. It
+ * carries the token and the write header like every other write, and a
+ * refusal is the same `ApiError`. No answer at all (offline, or the Mac out
+ * of reach) rejects with a plain `Error`; `signal` aborts it.
+ */
+export function uploadFile(
+	id: string,
+	file: Blob,
+	name: string,
+	onProgress: (sent: number, total: number) => void,
+	signal: AbortSignal
+): Promise<Uploaded> {
+	return new Promise((resolve, reject) => {
+		if (signal.aborted) return reject(new DOMException('Aborted', 'AbortError'));
+		const xhr = new XMLHttpRequest();
+		xhr.open('POST', `${threadPath(id)}/upload?name=${encodeURIComponent(name)}&paste=0`);
+		xhr.setRequestHeader('accept', 'application/json');
+		xhr.setRequestHeader('content-type', 'application/octet-stream');
+		xhr.setRequestHeader('x-muxmaestro', '1');
+		if (token) xhr.setRequestHeader(TOKEN_HEADER, token);
+		const abort = (): void => xhr.abort();
+		signal.addEventListener('abort', abort, { once: true });
+		const settle = (): void => signal.removeEventListener('abort', abort);
+		xhr.upload.onprogress = (event) => {
+			if (event.lengthComputable) onProgress(event.loaded, event.total);
+		};
+		xhr.onload = () => {
+			settle();
+			if (xhr.status < 200 || xhr.status >= 300) return reject(refusalOf(xhr));
+			try {
+				const body = JSON.parse(xhr.responseText) as Partial<Uploaded>;
+				const path = body.path ?? '';
+				resolve({ path, text: body.text ?? path });
+			} catch {
+				reject(new ApiError(xhr.status, null));
+			}
+		};
+		xhr.onerror = () => {
+			settle();
+			reject(new Error('No answer'));
+		};
+		xhr.onabort = () => {
+			settle();
+			reject(new DOMException('Aborted', 'AbortError'));
+		};
+		xhr.send(file);
+	});
 }
 
 export function fetchManager(): Promise<ManagerHome> {

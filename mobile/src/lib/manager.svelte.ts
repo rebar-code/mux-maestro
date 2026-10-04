@@ -2,6 +2,7 @@ import { untrack } from 'svelte';
 import { ApiError, dismissReview, fetchManager, MANAGER_PATH, sendManagerText } from './api';
 import { live } from './live.svelte';
 import { pendingPrompt } from './manager';
+import type { ReplyTarget } from './reply.svelte';
 import { ThreadFeed } from './thread.svelte';
 import type {
 	ChatMessage,
@@ -73,6 +74,27 @@ class Manager {
 	readonly feed = new ThreadFeed('manager', MANAGER_PATH, () => this.save());
 	/** The last chat row there was when the turn began. */
 	private turnBase = $state(-1);
+
+	private statusListeners = new Set<() => void>();
+	/**
+	 * The manager pane, for what asks and answers prompts on it and presses
+	 * its keys. It has no row in the thread list: its status is read here.
+	 */
+	readonly target: ReplyTarget = {
+		base: MANAGER_PATH,
+		state: () => this.status,
+		stamp: () => this.status,
+		subscribe: (listener) => {
+			this.statusListeners.add(listener);
+			return () => this.statusListeners.delete(listener);
+		}
+	};
+
+	private setStatus(status: ManagerStatus): void {
+		if (status === this.status) return;
+		this.status = status;
+		for (const listener of this.statusListeners) listener();
+	}
 
 	readonly busy: boolean = $derived(this.turn !== null);
 	/** The turn's prompt, until the chat holds it. */
@@ -165,7 +187,7 @@ class Manager {
 		try {
 			const home: ManagerHome = await fetchManager();
 			this.setCards(home);
-			this.status = home.status;
+			this.setStatus(home.status);
 			if (!this.sending) this.setTurn(home.turn);
 			this.save();
 		} catch (error) {

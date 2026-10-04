@@ -82,9 +82,16 @@ enum MobileHTTP {
     static let maxBodyBytes = 1_048_576
 
     /// The largest body a request to `path` may carry. Only a voice take, which
-    /// is audio, gets more than `maxBodyBytes`.
+    /// is audio, and an upload, which is a file, get more than `maxBodyBytes`.
+    /// The upload's own limit, from Settings, is checked when it is answered.
     static func bodyLimit(method: String, path: String) -> Int {
-        method == "POST" && path == "/api/voice" ? MobileVoice.maxBodyBytes : maxBodyBytes
+        guard method == "POST" else { return maxBodyBytes }
+        if path == "/api/voice" { return MobileVoice.maxBodyBytes }
+        let segments = path.split(separator: "/", omittingEmptySubsequences: true)
+        if segments.count == 4, segments[0] == "api", segments[1] == "threads", segments[3] == "upload" {
+            return MobileReply.maxUploadBytes
+        }
+        return maxBodyBytes
     }
 
     enum Parsed: Equatable {
@@ -186,18 +193,42 @@ enum MobileEndpoint: Equatable {
     case managerChat(after: UInt64?)
     /// The manager pane's terminal text, like a thread's screen.
     case managerScreen(lines: Int)
+    /// The prompt the manager's own pane waits on, as choices.
+    case managerPrompt
+    /// Pick one choice of that prompt, or back out of it.
+    case managerAnswer
+    /// Press one whitelisted key in the manager's pane.
+    case managerKey
     /// One voice take: audio in; transcript, reply and audio stream back.
     case voice
     /// Read the target's last reply again.
     case voiceReplay
     /// A take has started: load the models while the human talks.
     case voiceWarm
+    /// Paste text into a thread's pane and submit it.
+    case text(id: String)
+    /// Press one whitelisted key in a thread's pane.
+    case key(id: String)
+    /// The prompt a thread's pane waits on, as choices.
+    case prompt(id: String)
+    /// Pick one choice of that prompt.
+    case answer(id: String)
+    /// The thread's skills and commands, for the `/` list.
+    case commands(id: String)
+    /// Save a file in the thread's working directory. With `paste` its path
+    /// is pasted into the pane; without, the phone puts it in its reply box.
+    case upload(id: String, name: String, paste: Bool)
 
     var capability: MobileCapability {
         switch self {
         case .config, .threads, .hosts, .events, .chat, .screen: return .access
-        case .manager, .managerText, .managerDismiss, .managerChat, .managerScreen: return .manager
+        case .manager, .managerText, .managerDismiss, .managerChat, .managerScreen, .managerPrompt,
+             .managerAnswer, .managerKey:
+            return .manager
         case .voice, .voiceReplay, .voiceWarm: return .voice
+        case .text, .prompt, .answer, .commands: return .replies
+        case .key: return .keyBar
+        case .upload: return .upload
         }
     }
 
@@ -206,9 +237,22 @@ enum MobileEndpoint: Equatable {
     var method: String {
         switch self {
         case .config, .threads, .hosts, .events, .chat, .screen, .manager, .managerChat,
-             .managerScreen:
+             .managerScreen, .managerPrompt, .prompt, .commands:
             return "GET"
-        case .managerText, .managerDismiss, .voice, .voiceReplay, .voiceWarm: return "POST"
+        case .managerText, .managerDismiss, .managerAnswer, .managerKey, .voice, .voiceReplay,
+             .voiceWarm, .text, .key, .answer, .upload:
+            return "POST"
+        }
+    }
+
+    /// A second feature the endpoint needs besides its own. Answering the
+    /// manager's prompt types into its pane, as a reply to a thread does, so
+    /// it needs the switch for that too.
+    var also: MobileCapability? {
+        switch self {
+        case .managerAnswer: return .replies
+        case .managerKey: return .keyBar
+        default: return nil
         }
     }
 }
@@ -233,7 +277,10 @@ enum MobileCapability: String, CaseIterable {
     case access
     case manager
     case voice
+    /// Text into a thread and answers to its prompts.
     case replies
+    /// Key presses from the key bar.
+    case keyBar
     case upload
     case sessionActions
     case kill
@@ -256,6 +303,8 @@ struct MobileConfig: Equatable {
     var capabilities: Set<MobileCapability> = []
     var grouping = MobileGrouping.recent
     var voice = MobileVoiceDefaults()
+    /// The largest file the phone may upload, in bytes.
+    var uploadLimit = MobileReply.defaultUploadLimit
 
     func allows(_ capability: MobileCapability) -> Bool {
         capability == .access || capabilities.contains(capability)
@@ -269,6 +318,7 @@ struct MobileConfig: Equatable {
             }),
             "grouping": grouping.rawValue,
             "voice": voice.json,
+            "upload": ["maxBytes": min(uploadLimit, MobileReply.maxUploadBytes)],
         ]
         return (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]))
             ?? Data("{}".utf8)
@@ -305,7 +355,8 @@ enum MobileAPI {
         case "tmux": return segments.count >= 3 && segments[2] == "kill" ? .kill : .sessionActions
         case "threads" where segments.count >= 4:
             switch segments[3] {
-            case "text", "key": return .replies
+            case "text", "prompt", "answer", "commands": return .replies
+            case "key": return .keyBar
             case "upload": return .upload
             case "artifacts", "file": return .artifacts
             default: return nil
@@ -322,7 +373,12 @@ enum MobileAPI {
         }
         // Checked before the route is matched: a feature that is off refuses
         // every path under it, built or not.
-        if let capability = capability(forSegments: segments), !config.allows(capability) {
+        // The prompt's id is what a key into a waiting pane must carry, so the
+        // key bar alone may read it too.
+        let promptForKeys = segments.count == 4 && segments[1] == "threads"
+            && segments[3] == "prompt" && config.allows(.keyBar)
+        if let capability = capability(forSegments: segments), !config.allows(capability),
+           !promptForKeys {
             return .disabled(capability)
         }
         let endpoint: MobileEndpoint
@@ -338,6 +394,9 @@ enum MobileAPI {
             endpoint = .managerChat(after: request.query["after"].flatMap(UInt64.init))
         case 3 where segments[1] == "manager" && segments[2] == "screen":
             endpoint = .managerScreen(lines: screenLines(request.query["lines"]))
+        case 3 where segments[1] == "manager" && segments[2] == "prompt": endpoint = .managerPrompt
+        case 3 where segments[1] == "manager" && segments[2] == "answer": endpoint = .managerAnswer
+        case 3 where segments[1] == "manager" && segments[2] == "key": endpoint = .managerKey
         case 2 where segments[1] == "voice": endpoint = .voice
         case 3 where segments[1] == "voice" && segments[2] == "replay": endpoint = .voiceReplay
         case 3 where segments[1] == "voice" && segments[2] == "warm": endpoint = .voiceWarm
@@ -345,9 +404,29 @@ enum MobileAPI {
             endpoint = .chat(id: segments[2], after: request.query["after"].flatMap(UInt64.init))
         case 4 where segments[1] == "threads" && segments[3] == "screen":
             endpoint = .screen(id: segments[2], lines: screenLines(request.query["lines"]))
+        case 4 where segments[1] == "threads" && segments[3] == "text":
+            endpoint = .text(id: segments[2])
+        case 4 where segments[1] == "threads" && segments[3] == "key":
+            endpoint = .key(id: segments[2])
+        case 4 where segments[1] == "threads" && segments[3] == "prompt":
+            endpoint = .prompt(id: segments[2])
+        case 4 where segments[1] == "threads" && segments[3] == "answer":
+            endpoint = .answer(id: segments[2])
+        case 4 where segments[1] == "threads" && segments[3] == "commands":
+            endpoint = .commands(id: segments[2])
+        case 4 where segments[1] == "threads" && segments[3] == "upload":
+            endpoint = .upload(
+                id: segments[2], name: request.query["name"] ?? "", paste: request.query["paste"] != "0")
         default: return .notFound
         }
-        guard config.allows(endpoint.capability) else { return .disabled(endpoint.capability) }
+        guard config.allows(endpoint.capability) || promptForKeys else {
+            return .disabled(endpoint.capability)
+        }
+        if let also = endpoint.also, !config.allows(also) { return .disabled(also) }
+        // The manager's prompt is read by whichever can act on it.
+        if endpoint == .managerPrompt, !config.allows(.replies), !config.allows(.keyBar) {
+            return .disabled(.replies)
+        }
         return request.method == endpoint.method ? .api(endpoint) : .methodNotAllowed
     }
 

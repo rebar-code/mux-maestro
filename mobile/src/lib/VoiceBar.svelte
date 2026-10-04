@@ -2,7 +2,7 @@
 	import { live, OFF_LABEL } from './live.svelte';
 	import { voice, type VoiceSink, type VoiceTarget } from './voice.svelte';
 
-	/** The bar of one target: the manager, or (later) a thread. */
+	/** The bar of one target: the manager, or a thread. */
 	const {
 		target,
 		sink,
