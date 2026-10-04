@@ -298,7 +298,10 @@ final class MobileTerminalSocketTests: XCTestCase {
                 if client.process.isRunning { client.process.terminate() }
                 close(client.master)
             }
+            // The server leaves its socket file behind: take that away too.
+            let socket = run(["display-message", "-p", "#{socket_path}"])
             run(["kill-server"])
+            if socket.contains(name) { unlink(socket) }
         }
     }
 
