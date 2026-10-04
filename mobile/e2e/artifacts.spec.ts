@@ -592,7 +592,7 @@ test('the app shell comes with a policy that runs only its own scripts', async (
 	).toBe(0);
 });
 
-test('the manager home is not a thread: it has no Artifacts or Servers tab and asks for none', async ({
+test('the Maestro home is not a thread: it has no Artifacts or Servers tab and asks for none', async ({
 	page
 }) => {
 	const asked: string[] = [];

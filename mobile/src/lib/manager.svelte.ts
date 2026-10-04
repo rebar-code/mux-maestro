@@ -27,10 +27,10 @@ const DRAFT = 'manager';
 const POLL_MS = 10_000;
 
 const STATUS_NOTES: Partial<Record<ManagerStatus, string>> = {
-	off: 'Manager is not running',
-	unknown: 'Manager is not ready',
-	waiting: 'Manager is waiting on a prompt',
-	busy: 'Manager is busy'
+	off: 'Maestro is not running',
+	unknown: 'Maestro is not ready',
+	waiting: 'Maestro is waiting on a prompt',
+	busy: 'Maestro is busy'
 };
 
 /** How many chat rows are kept for the next visit's first paint. */
@@ -61,6 +61,8 @@ class Manager {
 	/** `null`: nothing to show yet, draw skeleton cards. */
 	review = $state.raw<ManagerItem[] | null>(this.start?.review ?? null);
 	needsYou = $state.raw<ManagerItem[]>(this.start?.needsYou ?? []);
+	/** Sessions the Maestro points the user at. */
+	points = $state.raw<ManagerItem[]>([]);
 	updates = $state.raw<ManagerUpdate[]>([]);
 	status = $state<ManagerStatus>('idle');
 	turn = $state.raw<ManagerTurn | null>(null);
@@ -147,10 +149,13 @@ class Manager {
 	}
 
 	private setCards(body: ManagerLive): void {
+		const points = body.points ?? [];
 		for (const key of this.dismissed) {
-			if (!body.review.some((item) => item.key === key)) this.dismissed.delete(key);
+			if (![...body.review, ...points].some((item) => item.key === key)) this.dismissed.delete(key);
 		}
-		this.review = body.review.filter((item) => item.key === null || !this.dismissed.has(item.key));
+		const kept = (item: ManagerItem): boolean => item.key === null || !this.dismissed.has(item.key);
+		this.review = body.review.filter(kept);
+		this.points = points.filter(kept);
 		this.needsYou = body.needsYou;
 		this.updates = body.updates;
 	}
@@ -261,7 +266,7 @@ class Manager {
 	/** How the Mac ended a turn, as `finish` takes it. */
 	private ended(end: TurnEnd | VoiceEnd): Promise<void> {
 		return end.outcome === 'refused' || end.outcome === 'unreachable'
-			? this.finish(end.message ?? 'The manager did not take the message', null)
+			? this.finish(end.message ?? 'The Maestro did not take the message', null)
 			: this.finish(null, end.message);
 	}
 
@@ -299,6 +304,7 @@ class Manager {
 	dismiss = async (key: string): Promise<void> => {
 		this.dismissed.add(key);
 		this.review = (this.review ?? []).filter((item) => item.key !== key);
+		this.points = this.points.filter((item) => item.key !== key);
 		this.save();
 		try {
 			await dismissReview(key);

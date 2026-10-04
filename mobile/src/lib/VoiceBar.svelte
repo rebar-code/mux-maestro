@@ -74,7 +74,7 @@
 		data-voice={status}
 		data-first-text-ms={voice.timing.text}
 		data-first-audio-ms={voice.timing.audio}
-		{@attach voice.attach}
+		{@attach voice.attach(target)}
 		{@attach keepFocus}
 	>
 		{#if part === 'all'}{@render line()}{/if}

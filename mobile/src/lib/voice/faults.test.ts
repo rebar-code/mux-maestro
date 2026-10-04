@@ -34,8 +34,8 @@ describe('fault labels', () => {
 		);
 		expect(requestFault(refused(413, null))).toBe('Take too long');
 		// The Mac's own sentence, when it sent one.
-		expect(requestFault(refused(409, 'waiting', 'Manager is waiting on a prompt'))).toBe(
-			'Manager is waiting on a prompt'
+		expect(requestFault(refused(409, 'waiting', 'Maestro is waiting on a prompt'))).toBe(
+			'Maestro is waiting on a prompt'
 		);
 		expect(requestFault(refused(404, 'nothing', 'Nothing to replay'))).toBe('Nothing to replay');
 		expect(requestFault(refused(502, null))).toBe('Mac not reachable');
