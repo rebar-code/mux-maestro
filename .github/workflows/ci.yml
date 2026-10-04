@@ -107,7 +107,9 @@ jobs:
   mobile:
     name: phone app (unit + e2e)
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    runs-on: ubuntu-latest
+    # macOS, as the tests were written on: some compare a box to the pixel,
+    # and text is a pixel or two wider in another system's fonts.
+    runs-on: macos-14
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
@@ -132,7 +134,7 @@ jobs:
         run: pnpm -C mobile check
 
       - name: Install the browser
-        run: pnpm -C mobile exec playwright install --with-deps chromium
+        run: pnpm -C mobile exec playwright install chromium
 
       # Some tests time a turn against the fixture server; a busy runner can
       # make one late. A test that fails is run again, twice at most.
