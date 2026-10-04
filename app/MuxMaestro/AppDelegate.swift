@@ -1056,10 +1056,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let snapshot = sidebar.mobileSnapshot()
         mobileServer.update(snapshot)
         // A published dev server is closed once it stops, or its thread goes.
-        phoneLink.sweepMappings(gone: MobileServing.gone(
-            phoneLink.mappings, snapshot: snapshot,
-            running: { sidebar.runningSet(paneID: $0.pane, host: $0.host) },
-            ownPort: Settings.phonePort()))
+        phoneLink.sweep(snapshot: snapshot) { sidebar.runningSet(paneID: $0.pane, host: $0.host) }
     }
 
     /// Run a Setup install recipe in the terminal, like the remote mosh install:

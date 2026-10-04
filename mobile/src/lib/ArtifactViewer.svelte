@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { fileSize, framedHtml, ICONS, isViewable } from './artifacts';
+	import { fileSize, framedHtml, ICONS, isViewable, withoutTargets } from './artifacts';
 	import { share, type Artifacts } from './artifacts.svelte';
 	import { ui } from './gestures.svelte';
 	import type { ArtifactFile } from './types';
@@ -88,7 +88,11 @@
 					The page is untrusted. An empty `sandbox` runs no script and gives the
 					frame no origin, so it cannot read the pairing token or call the API.
 				-->
-				<iframe title={file.name} sandbox="" referrerpolicy="no-referrer" srcdoc={framedHtml(text)}
+				<iframe
+					title={file.name}
+					sandbox=""
+					referrerpolicy="no-referrer"
+					srcdoc={framedHtml(withoutTargets(text))}
 				></iframe>
 				<!-- A frame keeps the touches on it: the edges stay ours, for the swipes. -->
 				<span class="edge left"></span>

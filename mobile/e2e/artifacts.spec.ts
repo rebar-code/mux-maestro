@@ -285,9 +285,14 @@ test('an HTML artifact is sandboxed: no script runs, no origin, nothing loads', 
 	expect(await frame.getAttribute('srcdoc')).toMatch(/^<!doctype html><meta http-equiv/i);
 	expect(await inside.locator('html').evaluate(() => document.compatMode)).toBe('CSS1Compat');
 	// A tapped link loads nothing in the frame.
-	await inside.locator('#out').click();
-	await page.waitForTimeout(300);
-	await expect(inside.locator('h2')).toHaveText('Coverage');
+	// Also one that asks for this frame or for the whole window by name.
+	for (const link of ['#out', '#self', '#top']) {
+		await inside.locator(link).click();
+		await page.waitForTimeout(300);
+		await expect(inside.locator('h2'), link).toHaveText('Coverage');
+		await expect(inside.locator('.ln'), link).toHaveCount(3);
+	}
+	await expect(page).toHaveURL(/\/t\//);
 	expect(told).toEqual([]);
 	// Its image was stopped by the frame's policy, and its fetch never ran.
 	expect(answered).toEqual([]);

@@ -1,3 +1,4 @@
+import { untrack } from 'svelte';
 import { goto } from '$app/navigation';
 import { ApiError, fetchPushKey, focusPush, subscribePush, unsubscribePush } from './api';
 import { can, live } from './live.svelte';
@@ -32,9 +33,12 @@ class Push {
 	private endpoint: string | null = null;
 	/** The thread on screen. */
 	private thread: string | null = null;
+	/** Counts the reads, so an older one that ends late changes nothing. */
+	private reads = 0;
 
 	/** Read the phone's state. A subscription it holds is sent to the Mac again. */
 	refresh = async (): Promise<void> => {
+		const read = ++this.reads;
 		const ok = supported();
 		let held: PushSubscription | null = null;
 		try {
@@ -42,18 +46,20 @@ class Push {
 		} catch {
 			// No service worker yet: not subscribed.
 		}
-		this.endpoint = null;
+		let endpoint: string | null = null;
 		if (held && can('notifications') && Notification.permission === 'granted') {
 			try {
 				const { key } = await fetchPushKey();
 				if (sameKey(held.options.applicationServerKey, key)) {
 					await subscribePush(held.toJSON());
-					this.endpoint = held.endpoint;
+					endpoint = held.endpoint;
 				}
 			} catch (error) {
 				live.fail(error);
 			}
 		}
+		if (read !== this.reads) return;
+		this.endpoint = endpoint;
 		this.status = pushStatus({
 			ios: isIOS(navigator.userAgent, navigator.platform, navigator.maxTouchPoints),
 			standalone: standalone(),
@@ -156,7 +162,17 @@ export const push = new Push();
  */
 export function notifications(): () => void {
 	void push.refresh();
-	if (!('serviceWorker' in navigator)) return () => {};
+	// Again each time the Mac turns its switch on or off: the first config of
+	// a new phone, and a switch flipped while the app is open. The switch and
+	// the "this thread is on screen" calls follow it without a reload.
+	let allowed = untrack(() => can('notifications'));
+	const offConfig = live.onConfig(() => {
+		const now = untrack(() => can('notifications'));
+		if (now === allowed) return;
+		allowed = now;
+		void push.refresh();
+	});
+	if (!('serviceWorker' in navigator)) return offConfig;
 	const onMessage = (event: MessageEvent): void => {
 		const data = event.data as { type?: string; url?: string } | null;
 		// Only an address of this app: a path, never another origin.
@@ -166,5 +182,8 @@ export function notifications(): () => void {
 		void goto(data.url);
 	};
 	navigator.serviceWorker.addEventListener('message', onMessage);
-	return () => navigator.serviceWorker.removeEventListener('message', onMessage);
+	return () => {
+		offConfig();
+		navigator.serviceWorker.removeEventListener('message', onMessage);
+	};
 }

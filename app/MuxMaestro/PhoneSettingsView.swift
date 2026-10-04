@@ -45,14 +45,14 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
     private let localServers = NSSwitch()
     private let notifications = NSSwitch()
     private let liveTerminal = NSSwitch()
-    /// How many phones are subscribed.
-    private let pushCount = NSTextField(labelWithString: "")
     private let pushEvents = NSPopUpButton()
     private let pushText = NSPopUpButton()
     /// The VAPID contact: a `mailto:` address or an `https:` URL.
     private let pushSubject = NSTextField(string: "")
     private let pushTest = NSButton(title: "Send Test Notification", target: nil, action: nil)
     private let pushTestStatus = NSTextField(labelWithString: "")
+    private let pushContactRow = NSStackView()
+    private let pushTestRow = NSStackView()
     /// The ports of the dev servers published on the tailnet now.
     private let mappings = NSTextField(labelWithString: "")
     private let url = NSTextField(labelWithString: "")
@@ -72,9 +72,9 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
     private static let voiceSpeakers: [(Bool, String)] = [(true, "Two-way"), (false, "Input only")]
     private static let uploadLimits = MobileReply.uploadLimits.map { ($0, "\($0 / 1_048_576) MB") }
     private static let pushEventChoices: [(waiting: Bool, done: Bool, title: String)] = [
-        (true, true, "Needs you and finished"), (true, false, "Needs you"), (false, true, "Finished"),
+        (true, true, "Both events"), (true, false, "Needs you"), (false, true, "Finished"),
     ]
-    private static let pushTextChoices: [(Bool, String)] = [(false, "Generic"), (true, "Session and prompt")]
+    private static let pushTextChoices: [(Bool, String)] = [(false, "Generic"), (true, "Detailed")]
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -143,14 +143,12 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
         mappings.setAccessibilityLabel("Open local servers")
         notifications.action = #selector(notificationsToggled)
         liveTerminal.action = #selector(liveTerminalToggled)
-        for label in [pushCount, pushTestStatus] {
-            label.font = .systemFont(ofSize: 12)
-            label.textColor = theme.muted
-            label.lineBreakMode = .byTruncatingTail
-            label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        }
-        pushCount.setAccessibilityLabel("Subscribed phones")
-        pushTestStatus.setAccessibilityLabel("Test notification result")
+        // The subscribed phones, until a test is sent; then what the test came to.
+        pushTestStatus.font = .systemFont(ofSize: 12)
+        pushTestStatus.textColor = theme.muted
+        pushTestStatus.lineBreakMode = .byTruncatingTail
+        pushTestStatus.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        pushTestStatus.setAccessibilityLabel("Subscribed phones and test result")
         for (popup, titles) in [
             (pushEvents, Self.pushEventChoices.map(\.title)), (pushText, Self.pushTextChoices.map(\.1)),
         ] {
@@ -166,7 +164,21 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
         pushSubject.target = self
         pushSubject.action = #selector(pushPicked)
         pushSubject.lineBreakMode = .byTruncatingTail
-        pushSubject.widthAnchor.constraint(equalToConstant: 220).isActive = true
+        pushSubject.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        pushSubject.setAccessibilityLabel("Push contact")
+        pushText.toolTip = "Detailed: session name and prompt text"
+        pushSubject.toolTip = "mailto: address or https: URL sent to the push service"
+        // The contact and the test are wider than the grid's control column:
+        // in it they would take the status column's room. They get rows of their own.
+        let contactName = NSTextField(labelWithString: "Push contact")
+        contactName.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
+        contactName.textColor = theme.text
+        contactName.setContentHuggingPriority(.required, for: .horizontal)
+        pushContactRow.setViews([contactName, pushSubject], in: .leading)
+        pushContactRow.spacing = 16
+        pushTestRow.setViews([pushTest, pushTestStatus], in: .leading)
+        pushTestRow.spacing = 8
+        pushTest.setContentHuggingPriority(.required, for: .horizontal)
         pushTest.bezelStyle = .rounded
         pushTest.controlSize = .small
         pushTest.target = self
@@ -199,11 +211,9 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
             ("Find", NSGridCell.emptyContentView, find),
             ("Artifacts", NSGridCell.emptyContentView, artifacts),
             ("Local servers", mappings, localServers),
-            ("Notifications", pushCount, notifications),
+            ("Notifications", NSGridCell.emptyContentView, notifications),
             ("Notify on", NSGridCell.emptyContentView, pushEvents),
             ("Notification text", NSGridCell.emptyContentView, pushText),
-            ("Push contact", NSGridCell.emptyContentView, pushSubject),
-            ("Test notification", pushTestStatus, pushTest),
             ("Live terminal", NSGridCell.emptyContentView, liveTerminal),
         ]
         for (title, middle, control) in rows {
@@ -248,11 +258,12 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
         failure.isSelectable = true
         failure.setAccessibilityLabel("Phone access error")
 
-        let stack = NSStackView(views: [header, grid, failure, urlRow, qr, buttonRow])
+        let stack = NSStackView(
+            views: [header, grid, pushContactRow, pushTestRow, failure, urlRow, qr, buttonRow])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 8
-        stack.setCustomSpacing(12, after: grid)
+        stack.setCustomSpacing(12, after: pushTestRow)
         stack.setCustomSpacing(12, after: urlRow)
         stack.setCustomSpacing(12, after: qr)
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -263,6 +274,8 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
             stack.trailingAnchor.constraint(equalTo: trailingAnchor),
             stack.bottomAnchor.constraint(equalTo: bottomAnchor),
             grid.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            pushContactRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            pushTestRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
             failure.widthAnchor.constraint(equalTo: stack.widthAnchor),
             urlRow.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor),
             qr.widthAnchor.constraint(equalToConstant: Self.qrSize),
@@ -436,17 +449,30 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
     }
 
     func renderPushCount(_ count: Int) {
-        pushCount.stringValue = count == 0 ? "" : count == 1 ? "1 phone" : "\(count) phones"
+        let text = count == 0 ? "No phone" : count == 1 ? "1 phone" : "\(count) phones"
+        pushTestStatus.stringValue = text
+        pushTestStatus.toolTip = text
     }
 
+    /// What the test came to. A refusal shows what the push service said
+    /// (a contact it does not accept is "403 BadJwtToken"); the tooltip has
+    /// the whole line when the column cuts it.
     func renderPushTest(_ result: MobilePushCenter.TestResult) {
+        let text: String
         switch result {
-        case .noPhone: pushTestStatus.stringValue = "No phone"
-        case .unavailable: pushTestStatus.stringValue = "Failed"
-        case .sent(let accepted, let total):
-            pushTestStatus.stringValue = accepted == total
-                ? "Sent" : accepted == 0 ? "Failed" : "Sent to \(accepted) of \(total)"
+        case .noPhone: text = "No phone"
+        case .unavailable: text = "Failed"
+        case .sent(let accepted, let total, let error):
+            if accepted == total {
+                text = "Sent"
+            } else if accepted == 0 {
+                text = error.isEmpty ? "Failed" : "Failed: \(error)"
+            } else {
+                text = "Sent to \(accepted) of \(total)" + (error.isEmpty ? "" : ": \(error)")
+            }
         }
+        pushTestStatus.stringValue = text
+        pushTestStatus.toolTip = text
     }
 
     /// Show the dev-server ports that are published on the tailnet now.

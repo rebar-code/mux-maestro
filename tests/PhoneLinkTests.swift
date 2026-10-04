@@ -59,8 +59,14 @@ private final class MemoryPorts: PhonePortStore {
 private final class MemoryTokens: PhoneTokenStore {
     var token: String?
     var refuses = false
+    /// Reads fail; what is stored stays stored.
+    var unreadable = false
 
-    func load() -> String? { token }
+    func load() -> String? { unreadable ? nil : token }
+
+    func read() -> PhoneTokenRead {
+        unreadable ? .failed : token.map(PhoneTokenRead.found) ?? .missing
+    }
 
     func save(_ token: String) -> Bool {
         guard !refuses else { return false }
@@ -77,6 +83,7 @@ final class PhoneLinkTests: XCTestCase {
     private var clock = Date(timeIntervalSince1970: 1_700_000_000)
     private var published: [[Int]] = []
     private var server: MobileServer!
+    private var push: MobilePushCenter!
     private var states: [PhoneLink.State] = []
     private let lock = NSLock()
 
@@ -85,8 +92,10 @@ final class PhoneLinkTests: XCTestCase {
         tokens = MemoryTokens()
         ports = MemoryPorts()
         published = []
+        push = MobilePushCenter(
+            keys: MemoryTokenStore(), store: MemoryTokenStore(), transport: FakePushTransport())
         server = MobileServer(staticRoot: nil, sources: MobileServer.Sources(
-            screen: { _, _ in nil }, transcript: { _ in nil }))
+            screen: { _, _ in nil }, transcript: { _ in nil }), push: push)
         states = []
     }
 
@@ -164,6 +173,43 @@ final class PhoneLinkTests: XCTestCase {
         XCTAssertNotEqual(fresh, "stored-token")
         while link.state == .on(url: url, pairing: pairing), Date() < deadline { usleep(10_000) }
         XCTAssertEqual(link.state, .on(url: url, pairing: url + "#pair=" + fresh))
+        link.shutdown()
+    }
+
+    func testATokenThatCannotBeReadIsNotReplaced() {
+        tokens.token = "stored-token"
+        tokens.unreadable = true
+        XCTAssertEqual(push.subscribe(FakePhone().body).status, 200)
+        let link = link()
+        link.turnOn()
+        settle(link)
+        // The phones hold the stored token: a new one would sign them all out.
+        XCTAssertEqual(link.state, .failed("Keychain did not give the pairing token"))
+        XCTAssertEqual(tokens.token, "stored-token")
+        XCTAssertFalse(tailscale.calls.contains { $0.contains("--bg") })
+        XCTAssertEqual(push.count, 1)
+
+        tokens.unreadable = false
+        link.turnOn()
+        settle(link)
+        guard case .on(_, let pairing) = link.state else { return XCTFail("\(link.state)") }
+        XCTAssertTrue(pairing.hasSuffix("#pair=stored-token"))
+        // The same token as before: the phones stay subscribed.
+        XCTAssertEqual(push.count, 1)
+        link.shutdown()
+    }
+
+    func testANewTokenMadeAtStartForgetsTheSubscribedPhones() {
+        // The stored token is gone, so every phone is signed out. None of
+        // them may go on getting notifications.
+        XCTAssertEqual(push.subscribe(FakePhone().body).status, 200)
+        XCTAssertNil(tokens.token)
+        let link = link()
+        link.turnOn()
+        settle(link)
+        guard case .on = link.state else { return XCTFail("\(link.state)") }
+        XCTAssertNotNil(tokens.token)
+        XCTAssertEqual(push.count, 0)
         link.shutdown()
     }
 
@@ -418,6 +464,62 @@ final class PhoneLinkTests: XCTestCase {
             XCTAssertEqual(ports.stored, [:])
             XCTAssertEqual(published.last, [])
         }
+    }
+
+    /// What the app does with each new tree: one call with the tree and a way
+    /// to ask what a pane runs. No port list is worked out by the caller.
+    func testTheSweepWithATreeClosesAStoppedServerAndAThreadThatLeft() throws {
+        let (link, own) = try linkOn()
+        let drain = { _ = link.isKeepingAwake }
+        XCTAssertEqual(open(link, 5173), .ok)
+        XCTAssertEqual(open(link, 6006), .ok)
+        func tree(_ panes: [String]) -> MobileSnapshot {
+            MobileSnapshot.build([MobileHostInput(
+                host: .local, colorHex: "#3291ff", reachability: .reachable, stats: nil,
+                sessions: [TmuxSession(name: "acme-app", attached: true, windows: panes.enumerated().map {
+                    TmuxWindow(index: $0.offset + 1, name: "w", active: true, panes: [
+                        TmuxPane(id: $0.element, index: 0, command: "zsh", title: "", active: true),
+                    ])
+                })])])
+        }
+        func runs(_ ports: [Int], known: Bool = true) -> RunningSet {
+            RunningSet(
+                known: known,
+                resources: ports.map {
+                    RunningResource(
+                        kind: .server(port: $0), host: Running.localHostName, paneID: "%12",
+                        label: "acme-app", tooltip: "", url: "http://localhost:\($0)", pid: 4242)
+                },
+                unknowns: known ? [] : ["ports not checked yet on localhost"])
+        }
+
+        // Both servers run: nothing closes. The same when the scan has no answer yet.
+        link.sweep(snapshot: tree(["%12"])) { _ in runs([5173, 6006]) }
+        link.sweep(snapshot: tree(["%12"])) { _ in runs([], known: false) }
+        drain()
+        XCTAssertEqual(link.mappings.map(\.port), [5173, 6006])
+
+        // The server on 6006 stopped.
+        link.sweep(snapshot: tree(["%12"])) { _ in runs([5173]) }
+        drain()
+        XCTAssertEqual(link.mappings.map(\.port), [5173])
+        XCTAssertEqual(serves(own: own).last, ["serve", "--https=6006", "off"])
+
+        // The phone server's own port among a thread's servers changes nothing.
+        link.sweep(snapshot: tree(["%12"])) { _ in runs([5173, own]) }
+        drain()
+        XCTAssertEqual(link.mappings.map(\.port), [5173])
+
+        // The thread left the tree: its mapping goes, and its pane is not asked.
+        var asked = 0
+        link.sweep(snapshot: tree(["%13"])) { _ in
+            asked += 1
+            return runs([5173])
+        }
+        drain()
+        XCTAssertEqual(link.mappings, [])
+        XCTAssertEqual(serves(own: own).last, ["serve", "--https=5173", "off"])
+        XCTAssertEqual(asked, 0)
     }
 
     func testTheSwitchGoingOffAStoppedServerAndHalfAnHourEachCloseAMapping() throws {

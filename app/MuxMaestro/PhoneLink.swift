@@ -1,11 +1,27 @@
 import Foundation
 import Security
 
+/// What a read of the token store came to. "Not there" and "could not be
+/// read" are different answers: only the first may be answered with a new
+/// secret, because a new one replaces what every paired phone holds.
+enum PhoneTokenRead: Equatable {
+    case found(String)
+    case missing
+    /// Locked, refused or broken. The stored value may still be there.
+    case failed
+}
+
 /// Where the pairing token is kept between launches.
 protocol PhoneTokenStore {
     func load() -> String?
     /// False when the token could not be stored.
     func save(_ token: String) -> Bool
+    func read() -> PhoneTokenRead
+}
+
+extension PhoneTokenStore {
+    /// A store that cannot fail to read: nothing loaded is nothing stored.
+    func read() -> PhoneTokenRead { load().map(PhoneTokenRead.found) ?? .missing }
 }
 
 /// The pairing token as a generic password in the login Keychain.
@@ -18,14 +34,30 @@ struct KeychainTokenStore: PhoneTokenStore {
          kSecAttrService as String: service, kSecAttrAccount as String: account]
     }
 
-    func load() -> String? {
+    func read() -> PhoneTokenRead {
         var item: CFTypeRef?
         let find = query.merging(
             [kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]) { $1 }
-        guard SecItemCopyMatching(find as CFDictionary, &item) == errSecSuccess,
-              let data = item as? Data, let token = String(data: data, encoding: .utf8), !token.isEmpty
-        else { return nil }
-        return token
+        return Self.outcome(status: SecItemCopyMatching(find as CFDictionary, &item), data: item as? Data)
+    }
+
+    /// Only `errSecItemNotFound` means there is no token. A denied dialog, a
+    /// locked Keychain and every other status mean it could not be read.
+    static func outcome(status: OSStatus, data: Data?) -> PhoneTokenRead {
+        switch status {
+        case errSecSuccess:
+            guard let data, let token = String(data: data, encoding: .utf8) else { return .failed }
+            return token.isEmpty ? .missing : .found(token)
+        case errSecItemNotFound:
+            return .missing
+        default:
+            return .failed
+        }
+    }
+
+    func load() -> String? {
+        if case .found(let token) = read() { return token }
+        return nil
     }
 
     func save(_ token: String) -> Bool {
@@ -89,13 +121,21 @@ final class PhoneLink {
     private let lock = NSLock()
     private var current = State.off
     /// What `tailscale serve` publishes for us, while it does. Confined to `queue`.
-    private var served: (port: Int, identity: MobileIdentity)?
+    private var served: (port: Int, identity: MobileIdentity)? {
+        didSet {
+            lock.lock()
+            listedOwnPort = served?.port
+            lock.unlock()
+        }
+    }
     /// The idle-sleep assertion held while the server is on. Confined to `queue`.
     private var awake: NSObjectProtocol?
     /// The dev-server ports this app published, by port. Confined to `queue`.
     private var mapped: [Int: MobilePortMapping] = [:]
     /// The same, for readers on other queues. Guarded by `lock`.
     private var listed: [MobilePortMapping] = []
+    /// The port the phone server is published on, for the same readers.
+    private var listedOwnPort: Int?
 
     /// Called with each new state, through `notify` (the main queue in the app).
     var onChange: ((State) -> Void)?
@@ -221,10 +261,20 @@ final class PhoneLink {
             }
         }
         // Without a stored token nothing could pair, so nothing is published.
-        var stored = tokens.load()
-        if stored == nil {
+        // A token that could not be read is not replaced: the phones hold it.
+        var stored: String?
+        switch tokens.read() {
+        case .found(let token):
+            stored = token
+        case .failed:
+            return set(.failed("Keychain did not give the pairing token"))
+        case .missing:
             let fresh = MobileTailnet.newToken()
-            if tokens.save(fresh) { stored = fresh }
+            if tokens.save(fresh) {
+                stored = fresh
+                // No phone holds the new token, so none is left subscribed.
+                server.forgetPhones()
+            }
         }
         guard let token = stored else { return set(.failed("Keychain refused the pairing token")) }
         server.start(port: wanted, identity: identity, token: token) { [weak self] result in
@@ -335,6 +385,18 @@ final class PhoneLink {
         queue.async {
             self.unmap(MobileServing.stale(Array(self.mapped.values), gone: gone, now: self.now()))
         }
+    }
+
+    /// The sweep the app runs with each new tree: close what is stale, and
+    /// what `MobileServing.gone` finds for `snapshot`. `running` is what a
+    /// thread's pane runs now, or nil when the pane cannot be asked.
+    func sweep(snapshot: MobileSnapshot, running: (MobileThread) -> RunningSet?) {
+        lock.lock()
+        let (open, ownPort) = (listed, listedOwnPort)
+        lock.unlock()
+        // `running` belongs to the caller's thread, so it is asked here.
+        sweepMappings(gone: MobileServing.gone(
+            open, snapshot: snapshot, running: running, ownPort: ownPort))
     }
 
     private func unmap(_ closing: [Int]) {

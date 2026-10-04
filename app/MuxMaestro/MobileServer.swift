@@ -316,13 +316,18 @@ final class MobileServer {
         setStreamCount(0)
     }
 
+    /// Drop every push subscription. Called with every new pairing token: a
+    /// phone that was signed out gets no more notifications either.
+    func forgetPhones() {
+        push?.forgetAll()
+    }
+
     /// Replace the pairing token. Every open stream is closed: a phone holding
     /// the old token is signed out at once.
     func setToken(_ token: String) {
         queue.async {
             guard self.listener != nil else { return }
             self.token = token
-            // A signed-out phone gets no more notifications either.
             self.push?.forgetAll()
             for client in self.clients.values where client.streaming { self.drop(client) }
         }
@@ -736,8 +741,7 @@ final class MobileServer {
         case .prompt(let id):
             guard let (_, io) = pane(id, client: client) else { return }
             reply(to: client) { [weak self] in
-                .json(MobileReply.promptBody(
-                    state: self?.state(of: id, io: io), screen: io.screen(), io: io))
+                .json(MobileReply.promptBody(state: self?.state(of: id, io: io), io: io))
             }
         case .answer(let id):
             guard let answer = MobileReply.answer(in: request.body) else {
@@ -1368,7 +1372,7 @@ final class MobileServer {
         work.async { [weak self, weak client] in
             let ready = voice.speech.modelsReady
             let take = ready ? MobileVoice.take(wav: request.body) : .samples([])
-            let refusal = MobileReply.refusal(state: self?.state(of: id, io: io), screen: io.screen)
+            let refusal = MobileReply.refusal(state: self?.state(of: id, io: io), io: io)
             self?.queue.async {
                 guard let self else { return }
                 self.voiceStarting = false

@@ -19,7 +19,8 @@ import {
 	slashQuery,
 	textRefusal,
 	type BarKey,
-	type LiveTurn
+	type LiveTurn,
+	type QueuedKey
 } from './reply';
 import type { Command, Prompt } from './types';
 import type { VoiceSink } from './voice.svelte';
@@ -113,7 +114,9 @@ export class Reply {
 	private seen: string | undefined;
 	private ctrlTimer: ReturnType<typeof setTimeout> | undefined;
 	/** Key presses that wait for the one in flight. */
-	private keys: string[] = [];
+	private keys: QueuedKey[] = [];
+	/** A prompt was asked for while one was being fetched: fetch again after. */
+	private promptAgain = false;
 	private pressing = false;
 	private loadingPrompt = false;
 	private answered: { id: string; at: number } | null = null;
@@ -181,7 +184,8 @@ export class Reply {
 	 * presses go one by one, in the order they were tapped.
 	 */
 	key = (name: string): void => {
-		this.keys = queueKey(this.keys, name);
+		// The id is the card's at this tap, whatever the pane shows when the key goes.
+		this.keys = queueKey(this.keys, name, this.promptId);
 		void this.press();
 	};
 
@@ -189,9 +193,11 @@ export class Reply {
 		if (this.pressing) return;
 		this.pressing = true;
 		try {
-			for (let name = this.keys.shift(); name !== undefined; name = this.keys.shift()) {
-				await sendKey(this.id, name, this.promptId);
+			for (let next = this.keys.shift(); next !== undefined; next = this.keys.shift()) {
+				await sendKey(this.id, next.key, next.prompt);
 				this.note = null;
+				// The key may have moved the pane's cursor: the card and its id follow.
+				if (next.prompt !== null) void this.loadPrompt();
 			}
 			void this.host.refresh();
 		} catch (error) {
@@ -290,8 +296,13 @@ export class Reply {
 	}
 
 	private async loadPrompt(): Promise<void> {
-		if (this.loadingPrompt) return;
+		if (this.loadingPrompt) {
+			// The answer on its way may be older than this request.
+			this.promptAgain = true;
+			return;
+		}
 		this.loadingPrompt = true;
+		this.promptAgain = false;
 		try {
 			const state = await fetchPrompt(this.id);
 			const answered = this.answered;
@@ -309,6 +320,7 @@ export class Reply {
 		} finally {
 			this.loadingPrompt = false;
 		}
+		if (this.promptAgain) await this.loadPrompt();
 	}
 
 	answer = async (option: number): Promise<void> => {
