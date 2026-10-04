@@ -6,8 +6,10 @@ const WAITING = 'localhost:1'; // acme-app · checkout-fix, needs you
 
 const head = (page: Page, key = ACME): Locator => drawer(page).locator(`[data-session="${key}"]`);
 const fold = (page: Page, key = ACME): Locator => head(page, key).locator('.fold');
-const rows = (page: Page, key = ACME): Locator =>
-	drawer(page).locator(`[id="s-${key}"] [data-thread]`);
+/** The session's windows: the element its header button controls. */
+const windows = (page: Page, key = ACME): Locator =>
+	drawer(page).locator(`[data-session="${key}"] + .windows`);
+const rows = (page: Page, key = ACME): Locator => windows(page, key).locator('[data-thread]');
 
 async function openDrawer(page: Page): Promise<void> {
 	await page.getByRole('button', { name: 'Menu' }).click();
@@ -31,8 +33,7 @@ test('a tap on the session header collapses its windows, and a second tap expand
 	await expect(fold(page)).toHaveAttribute('aria-expanded', 'false');
 	await expect(rows(page).first()).toBeHidden();
 	// The rows take no room: the next header sits right under this one.
-	const windows = drawer(page).locator(`[id="s-${ACME}"]`);
-	await expect.poll(async () => (await windows.boundingBox())?.height ?? -1).toBe(0);
+	await expect.poll(async () => (await windows(page).boundingBox())?.height ?? -1).toBe(0);
 	const next = drawer(page).locator('.shead').nth(1);
 	const below = async (): Promise<number> =>
 		((await next.boundingBox())?.y ?? 0) -
@@ -64,6 +65,11 @@ test('a collapsed session keeps its name, host colour, window count and stronges
 			.locator('[data-summary]')
 			.evaluate((el) => getComputedStyle(el).backgroundColor)
 	).toBe('rgb(248, 81, 73)');
+	// A screen reader hears it: the dot carries text, and so does the button's name.
+	await expect(head(page).locator('[data-summary] .sr')).toHaveText('needs you');
+	await expect(fold(page)).toHaveAccessibleName(/acme-app.*needs you/);
+	const sr = await head(page).locator('[data-summary] .sr').boundingBox();
+	expect(sr?.width).toBeLessThanOrEqual(1);
 	// An open session shows no summary: its rows carry their own dots.
 	await fold(page).click();
 	await expect(head(page).locator('[data-summary]')).toHaveCount(0);
@@ -79,6 +85,57 @@ test('a thread that starts to need you shows on its collapsed session', async ({
 		'data-summary',
 		'waiting'
 	);
+});
+
+test('the keyboard toggles the session, and its windows leave the tab order', async ({ page }) => {
+	await fold(page).focus();
+	await page.keyboard.press('Enter');
+	await expect(fold(page)).toHaveAttribute('aria-expanded', 'false');
+	await expect(windows(page)).toHaveAttribute('inert', '');
+	// Tab goes from the header past the hidden rows: focus never lands in them.
+	await page.keyboard.press('Tab');
+	await page.keyboard.press('Tab');
+	expect(await windows(page).evaluate((el) => el.contains(document.activeElement))).toBe(false);
+
+	await fold(page).focus();
+	await page.keyboard.press('Space');
+	await expect(fold(page)).toHaveAttribute('aria-expanded', 'true');
+	await expect(rows(page).first()).toBeVisible();
+});
+
+test('aria-controls names the windows, even for a session name with a space', async ({ page }) => {
+	for (const key of [ACME, 'devbox/billing']) {
+		const id = await fold(page, key).getAttribute('aria-controls');
+		expect(id).toMatch(/^s-[A-Za-z0-9_.-]+$/);
+		expect(await windows(page, key).getAttribute('id')).toBe(id);
+		expect(await page.locator(`[id="${id}"]`).count()).toBe(1);
+	}
+});
+
+test('sessions that no longer exist are dropped from storage on the next save', async ({
+	page
+}) => {
+	await page.evaluate(() =>
+		localStorage.setItem('mm.collapsed', JSON.stringify(['localhost/gone', 'devbox/old one']))
+	);
+	await page.reload();
+	await openDrawer(page);
+	await fold(page).click();
+	expect(await page.evaluate(() => localStorage.getItem('mm.collapsed'))).toBe(
+		JSON.stringify([ACME])
+	);
+});
+
+test("folding another session leaves the open thread's session open", async ({ page }) => {
+	// Stored as collapsed, then opened by its link before the list has loaded.
+	await fold(page).click();
+	await page.goto(threadPath(WAITING));
+	await openDrawer(page);
+	await expect(fold(page)).toHaveAttribute('aria-expanded', 'true');
+	await fold(page, 'localhost/docs-site').click();
+	await expect(fold(page, 'localhost/docs-site')).toHaveAttribute('aria-expanded', 'false');
+	await expect(fold(page)).toHaveAttribute('aria-expanded', 'true');
+	await expect(drawer(page).locator(`[data-thread="${WAITING}"]`)).toBeVisible();
 });
 
 test('the + on the header does not toggle the session', async ({ page }) => {
