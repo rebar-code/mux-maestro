@@ -11,12 +11,15 @@ import {
 	liveLines,
 	needsPrompt,
 	nextWaiting,
+	queuedLines,
 	queueKey,
 	refusalLabel,
+	sendReduce,
 	slashQuery,
 	textRefusal,
 	type QueuedKey,
-	type Refusal
+	type Refusal,
+	type SendStage
 } from './reply';
 import type { ChatMessage, Command, Thread } from './types';
 
@@ -87,6 +90,9 @@ describe('key bar', () => {
 		expect(barKeys(true)).toHaveLength(14);
 		expect(barKeys(false).every((key) => key.send !== undefined)).toBe(true);
 		expect(barKeys(false)).toHaveLength(9);
+		// A sink that pastes gets the Paste key, first.
+		expect(barKeys(true, true)).toHaveLength(15);
+		expect(barKeys(true, true)[0].paste).toBe(true);
 	});
 });
 
@@ -316,5 +322,97 @@ describe('liveLines', () => {
 
 	it('draws no empty reply', () => {
 		expect(liveLines([], { prompt: 'x', reply: '' })).toEqual({ prompt: true, reply: false });
+	});
+});
+
+describe('sendReduce: the two-stage send', () => {
+	const tap = (stage: SendStage, busy: boolean, text: boolean): ReturnType<typeof sendReduce> =>
+		sendReduce(stage, { type: 'tap', busy, text });
+
+	it('sends in one tap to an idle agent', () => {
+		expect(tap('idle', false, true)).toEqual({ stage: 'idle', action: 'send' });
+		// Nothing in the box: nothing to send.
+		expect(tap('idle', false, false)).toEqual({ stage: 'idle', action: null });
+	});
+
+	it('queues on the first tap to a busy agent, and arms the interrupt', () => {
+		expect(tap('idle', true, true)).toEqual({ stage: 'armed', action: 'queue' });
+		// A second message while the first is queued goes the same way.
+		expect(tap('queued', true, true)).toEqual({ stage: 'armed', action: 'queue' });
+	});
+
+	it('interrupts only on a tap of the armed button with an empty box', () => {
+		expect(tap('armed', true, false)).toEqual({ stage: 'idle', action: 'interrupt' });
+		// Text in the box is queued, armed or not: a second message never cuts the turn short.
+		expect(tap('armed', true, true)).toEqual({ stage: 'armed', action: 'queue' });
+		// Never from `idle` or `queued`, with text or without: one tap cannot interrupt.
+		for (const stage of ['idle', 'queued'] as const)
+			for (const text of [true, false]) expect(tap(stage, true, text).action).not.toBe('interrupt');
+	});
+
+	it('arms again on a tap of the queued button, and sends nothing', () => {
+		expect(tap('queued', true, false)).toEqual({ stage: 'armed', action: null });
+		// With nothing queued and nothing typed there is nothing to arm for.
+		expect(tap('idle', true, false)).toEqual({ stage: 'idle', action: null });
+	});
+
+	it('disarms by itself after the timeout, back to queued', () => {
+		expect(sendReduce('armed', { type: 'timeout' })).toEqual({ stage: 'queued', action: null });
+		// A late timer changes nothing else.
+		expect(sendReduce('queued', { type: 'timeout' })).toEqual({ stage: 'queued', action: null });
+		expect(sendReduce('idle', { type: 'timeout' })).toEqual({ stage: 'idle', action: null });
+	});
+
+	it('disarms when the turn ends: the agent has the queued text', () => {
+		for (const stage of ['idle', 'queued', 'armed'] as const)
+			expect(sendReduce(stage, { type: 'turn-end' })).toEqual({ stage: 'idle', action: null });
+	});
+
+	it('never interrupts an agent that is idle by the time of the tap', () => {
+		// The button was armed, the turn ended, and the tap came before the phone heard of it.
+		expect(tap('armed', false, true)).toEqual({ stage: 'idle', action: 'send' });
+		expect(tap('armed', false, false)).toEqual({ stage: 'idle', action: null });
+		expect(tap('queued', false, true)).toEqual({ stage: 'idle', action: 'send' });
+	});
+
+	it('takes two taps, and no fewer, from typed text to an interrupt', () => {
+		const first = tap('idle', true, true);
+		expect(first.action).toBe('queue');
+		expect(tap(first.stage, true, false).action).toBe('interrupt');
+		// After the timeout it takes two again: arm, then interrupt.
+		const dropped = sendReduce(first.stage, { type: 'timeout' }).stage;
+		const again = tap(dropped, true, false);
+		expect(again).toEqual({ stage: 'armed', action: null });
+		expect(tap(again.stage, true, false).action).toBe('interrupt');
+	});
+});
+
+describe('queuedLines', () => {
+	const row = (n: number, role: ChatMessage['role'], text: string): ChatMessage => ({
+		n,
+		role,
+		text
+	});
+
+	it('draws a queued text until the transcript holds it', () => {
+		const queued = [{ text: 'use the new name', after: 40 }];
+		const chat = [row(10, 'user', 'rename it'), row(40, 'assistant', 'Working on it.')];
+		expect(queuedLines(chat, queued)).toEqual(['use the new name']);
+		expect(queuedLines([...chat, row(52, 'user', 'use the new name')], queued)).toEqual([]);
+	});
+
+	it('is not fooled by the same words said before, or by the agent', () => {
+		const queued = [{ text: 'again', after: 40 }];
+		expect(queuedLines([row(10, 'user', 'again')], queued)).toEqual(['again']);
+		expect(queuedLines([row(52, 'assistant', 'again')], queued)).toEqual(['again']);
+	});
+
+	it('keeps the order they were queued in', () => {
+		const queued = [
+			{ text: 'one', after: 40 },
+			{ text: 'two', after: 40 }
+		];
+		expect(queuedLines([], queued)).toEqual(['one', 'two']);
+		expect(queuedLines([row(52, 'user', 'one')], queued)).toEqual(['two']);
 	});
 });

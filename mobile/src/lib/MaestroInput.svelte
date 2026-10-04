@@ -1,4 +1,6 @@
 <script lang="ts">
+	import AttachButton from './AttachButton.svelte';
+	import AttachTiles from './AttachTiles.svelte';
 	import Composer from './Composer.svelte';
 	import KeyBar from './KeyBar.svelte';
 	import { can, isOff, OFF_LABEL } from './live.svelte';
@@ -12,6 +14,7 @@
 	 * The Maestro's text box with its voice bar and its pane's keys: the home
 	 * page's footer and the panel's. Both write the same draft, so text typed
 	 * in one shows in the other, and both send through the Maestro's one turn.
+	 * The attach button and its tiles are a thread's: the box is one thing.
 	 */
 	const { onfocus, onblur }: { onfocus?: () => void; onblur?: () => void } = $props();
 
@@ -29,13 +32,28 @@
 	}
 </script>
 
+{#snippet attach()}
+	{#if managerOn}
+		<AttachButton
+			slim={keysOn}
+			off={!can('upload')}
+			onpick={manager.files.add}
+			onoff={reply.uploadOff}
+		/>
+	{:else}
+		<AttachButton disabled />
+	{/if}
+{/snippet}
+
 {#if managerOn}
 	<!--
 		The Maestro pane's keys, and what the last one came to. Above the voice
 		bar and the text box, so nothing that rises under them covers the keys.
 	-->
+	<!-- Typing clears it, as it does in a thread's box. -->
 	{#if reply.note}<NoteLine note={reply.note} />{/if}
-	{#if keysOn}<KeyBar {reply} composer={false} hides />{/if}
+	<!-- With a key bar the attach button is at its start; without one it is beside the text box. -->
+	{#if keysOn}<KeyBar {reply} composer={false} hides leading={attach} />{/if}
 	<VoiceBar target="manager" sink={manager.voice} off={!voiceOn} />
 {/if}
 <Composer
@@ -45,9 +63,18 @@
 	sink={manager.voice}
 	{voiceOn}
 	off={!managerOn}
-	blocked={manager.busy}
+	blocked={manager.busy || manager.files.pending}
 	sending={manager.sending}
 	onsend={send}
+	oninput={() => (reply.note = null)}
+	onpaste={managerOn ? reply.pasted : undefined}
 	{onfocus}
 	{onblur}
-/>
+>
+	{#snippet above()}
+		{#if manager.files.items.length}<AttachTiles files={manager.files} />{/if}
+	{/snippet}
+	{#snippet leading()}
+		{#if !keysOn}{@render attach()}{/if}
+	{/snippet}
+</Composer>

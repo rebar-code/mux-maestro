@@ -74,6 +74,25 @@ final class SpeechifyTests: XCTestCase {
         XCTAssertEqual(out.last, "— code omitted — \nDone.")
     }
 
+    func testAWholeMessageReadsAsProse() {
+        let message = """
+            **Deploy** is done.
+
+            ```swift
+            let answer = 42
+            ```
+
+            See [the PR](https://example.com/acme-app/pull/1) for details.
+            """
+        let clean = Speechify.clean(message)
+        XCTAssertTrue(clean.contains("— code omitted —"), clean)
+        XCTAssertTrue(clean.hasPrefix("Deploy is done."), clean)
+        XCTAssertTrue(clean.hasSuffix("See the PR for details."), clean)
+        for marker in ["*", "`", "[", "](", "answer"] {
+            XCTAssertFalse(clean.contains(marker), "\(marker) in \(clean)")
+        }
+    }
+
     func testFenceSplitAcrossDeltas() {
         let fence = FenceFilter()
         var text = fence.feed("Look: `")

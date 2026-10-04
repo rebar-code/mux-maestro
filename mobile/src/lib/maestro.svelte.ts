@@ -52,7 +52,9 @@ class Maestro {
 				manager.feed.keepEnd(this.terminal ? 'terminal' : 'chat', appeared, change),
 			terminal: () => this.terminal
 		},
-		manager.target
+		manager.target,
+		// A file's path goes into the Maestro's own text box.
+		manager.files
 	);
 
 	get open(): boolean {

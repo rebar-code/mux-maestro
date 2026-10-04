@@ -19,6 +19,14 @@ export function chatSize(size: number): number {
 	return (CHAT_BASE * size) / DEFAULT_SIZE;
 }
 
+/** The smallest text a text box has: under 16px iOS zooms the page when the box takes the focus. */
+export const BOX_MIN = 16;
+
+/** A text box's size: the chat's, and never under `BOX_MIN`. */
+export function boxSize(size: number): number {
+	return Math.max(BOX_MIN, Math.round(chatSize(size) * 10) / 10);
+}
+
 export interface Anchor {
 	/** Scroll position when the pinch began. */
 	scroll: number;

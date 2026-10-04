@@ -14,16 +14,21 @@ export interface ProseLinks {
 
 const COPIED_MS = 1500;
 
-async function copy(button: Element): Promise<void> {
-	const code = button.parentElement?.querySelector('pre')?.textContent ?? '';
+/** Put `text` on the clipboard, and mark `button` as done for a moment. */
+export async function copyText(button: Element, text: string): Promise<void> {
 	try {
-		await navigator.clipboard.writeText(code.replace(/\n$/, ''));
+		await navigator.clipboard.writeText(text);
 	} catch {
-		// No clipboard here: the code can still be selected.
+		// No clipboard here: the text can still be selected.
 		return;
 	}
 	button.setAttribute('data-copied', '');
 	setTimeout(() => button.removeAttribute('data-copied'), COPIED_MS);
+}
+
+function copy(button: Element): Promise<void> {
+	const code = button.parentElement?.querySelector('pre')?.textContent ?? '';
+	return copyText(button, code.replace(/\n$/, ''));
 }
 
 /**

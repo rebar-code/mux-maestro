@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import { fakeMic, forget, pairingLink, reset } from './helpers';
+import { fakeMic, forget, pairingLink, reset, threadPath } from './helpers';
 
 interface Take {
 	riff: boolean;
@@ -82,7 +82,7 @@ test('the voice controls are drawn only in talk mode', async ({ page }) => {
 
 test('Manual: tap to start, tap to send, and a pause never cuts the take', async ({ page }) => {
 	await open(page);
-	await expect(status(page)).toHaveText('Start talking');
+	await expect(status(page)).toHaveCount(0);
 
 	await primary(page).click();
 	await expect(bar(page, 'Manual')).toHaveAttribute('aria-pressed', 'true');
@@ -113,7 +113,7 @@ test('Manual: tap to start, tap to send, and a pause never cuts the take', async
 	await expect(primary(page)).toHaveText('❚❚ Pause');
 	await expect(said(page).locator('.a').last()).toHaveText(REPLY);
 	// The reply has two sentences: two clips, played in order, then it rests.
-	await expect(status(page)).toHaveText('Start talking', { timeout: 8000 });
+	await expect(status(page)).toHaveCount(0, { timeout: 8000 });
 	await expect(primary(page)).toHaveText('Talk');
 	expect(await page.evaluate(() => window.__clips)).toBe(2);
 
@@ -184,7 +184,7 @@ test('input only: the speech becomes text and nothing is read back', async ({ pa
 
 	await expect(said(page).locator('.u')).toHaveText('What needs me?');
 	await expect(said(page).locator('.a').last()).toHaveText(REPLY);
-	await expect(status(page)).toHaveText('Start talking');
+	await expect(status(page)).toHaveCount(0);
 	await expect(primary(page)).toHaveText('Talk');
 	expect(await page.evaluate(() => window.__clips)).toBe(0);
 	expect((await takes(page))[0].speaker).toBe(false);
@@ -203,7 +203,7 @@ test('interrupt: Stop while it thinks, Pause, Resume and Skip while it speaks', 
 	await expect(primary(page)).toHaveText('■ Stop');
 	await primary(page).click();
 	// Stopped before the Mac had the words: nothing was sent to the manager.
-	await expect(status(page)).toHaveText('Start talking');
+	await expect(status(page)).toHaveCount(0);
 	await expect(primary(page)).toHaveText('Talk');
 	await page.waitForTimeout(2800);
 	await expect(said(page).locator('.u')).toHaveCount(0);
@@ -225,7 +225,7 @@ test('interrupt: Stop while it thinks, Pause, Resume and Skip while it speaks', 
 
 	await expect(bar(page, 'Skip')).toBeEnabled();
 	await bar(page, 'Skip').click();
-	await expect(status(page)).toHaveText('Start talking');
+	await expect(status(page)).toHaveCount(0);
 	await expect(bar(page, 'Skip')).toBeDisabled();
 	// The reply stays as text.
 	await expect(said(page).locator('.a').last()).toHaveText(REPLY);
@@ -246,14 +246,14 @@ test('Replay reads the last reply again, and Talk during it starts a take', asyn
 	await bar(page, 'Replay').click();
 	await expect(status(page)).toHaveText('Speaking…');
 	expect(await page.evaluate(() => window.__clips)).toBeGreaterThan(before);
-	await expect(status(page)).toHaveText('Start talking', { timeout: 12000 });
+	await expect(status(page)).toHaveCount(0, { timeout: 12000 });
 });
 
 test('the button is Send while the box has text, and Talk when it is empty', async ({ page }) => {
 	await open(page);
 	await box(page).fill('status?');
 	await expect(primary(page)).toHaveCount(0);
-	const send = page.getByRole('button', { name: '↑ Send' });
+	const send = page.getByRole('button', { name: /^Send(ing)?$/ });
 	await expect(send).toBeEnabled();
 	await box(page).fill('');
 	await expect(send).toHaveCount(0);
@@ -271,7 +271,7 @@ test('mode and speaker are remembered on this phone; the Mac sets the start', as
 	// A phone that has picked nothing starts with the Mac's defaults.
 	await open(page, ['/__fixture/voice?mode=auto&speaker=0']);
 	// No tap yet, so no mic: Auto says so by not claiming to listen.
-	await expect(status(page)).toHaveText('Start talking');
+	await expect(status(page)).toHaveCount(0);
 	expect(await page.evaluate(() => window.__mic.opened)).toBe(0);
 	await primary(page).click();
 	await expect(bar(page, 'Auto')).toHaveAttribute('aria-pressed', 'true');
@@ -306,7 +306,7 @@ test('a muted mic takes nothing, and a refused take says why', async ({ page }) 
 	await bar(page, 'Manual').click();
 	await expect(bar(page, 'Microphone')).toHaveCount(0);
 	await expect(primary(page)).toBeEnabled();
-	await expect(status(page)).toHaveText('Start talking');
+	await expect(status(page)).toHaveCount(0);
 
 	await page.request.post('/__fixture/manager-status?value=waiting');
 	await primary(page).click();
@@ -337,7 +337,7 @@ test('the mic is given back when it is not needed', async ({ page }) => {
 	await primary(page).click();
 	await expect(primary(page)).toHaveText('■ Stop');
 	expect(await live()).toBe(0);
-	await expect(status(page)).toHaveText('Start talking', { timeout: 10000 });
+	await expect(status(page)).toHaveCount(0, { timeout: 10000 });
 	expect(await live()).toBe(0);
 
 	// A take that is stopped, not sent, gives it back too.
@@ -363,7 +363,7 @@ test('the mic is given back when it is not needed', async ({ page }) => {
 	expect(await live()).toBe(1);
 	await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
 	expect(await live()).toBe(0);
-	await expect(status(page)).toHaveText('Start talking');
+	await expect(status(page)).toHaveCount(0);
 	// One tap brings it back.
 	await primary(page).click();
 	await expect(primary(page)).toHaveText('↑ Submit');
@@ -406,7 +406,7 @@ test('the level meter moves with the voice while the mic is open', async ({ page
 	await expect(meter).toHaveCount(0);
 
 	// Auto shows it while it waits for speech too.
-	await expect(status(page)).toHaveText('Start talking', { timeout: 8000 });
+	await expect(status(page)).toHaveCount(0, { timeout: 8000 });
 	await bar(page, 'Auto').click();
 	await expect(status(page)).toHaveText('Listening…');
 	await expect(meter).toBeVisible();
@@ -482,7 +482,7 @@ test('the phone is told what the audio is for, and the screen stays on for a tur
 	expect(await awake()).toBe(1);
 	await expect(status(page)).toHaveText('Speaking…');
 	expect(await session()).toBe('playback');
-	await expect(status(page)).toHaveText('Start talking', { timeout: 8000 });
+	await expect(status(page)).toHaveCount(0, { timeout: 8000 });
 	expect(await awake()).toBe(0);
 });
 
@@ -530,38 +530,36 @@ test('an interruption ends a take with a label and holds a reply for Resume', as
 	await expect(primary(page)).toHaveText('▶ Resume');
 	await primary(page).click();
 	await expect(status(page)).toHaveText('Speaking…');
-	await expect(status(page)).toHaveText('Start talking', { timeout: 8000 });
+	await expect(status(page)).toHaveCount(0, { timeout: 8000 });
 });
 
-test('on the footer a tap never drags the board and a drag never starts a take', async ({
+test('on the footer a drag never starts a take or presses a control; a tap does', async ({
 	page
 }) => {
 	await open(page);
-	const board = page.locator('[data-board]');
 	const foot = page.locator('[data-foot]');
 	const opened = (): Promise<number> => page.evaluate(() => window.__mic.opened);
 	const centre = async (target: Locator): Promise<[number, number]> => {
 		const box = (await target.boundingBox())!;
 		return [box.x + box.width / 2, box.y + box.height / 2];
 	};
-	const lower = async (): Promise<void> => {
-		while ((await board.getAttribute('data-stop')) !== '0') {
-			await page.locator('[data-grab]').click();
-			await page.waitForTimeout(350);
-		}
+	const bottom = async (): Promise<number> => {
+		const box = (await foot.boundingBox())!;
+		return box.y + box.height;
 	};
+	const rest = await bottom();
 
-	// A drag up that starts on Talk raises the board. It is not a take.
+	// A drag up that starts on Talk is not a take.
 	let [x, y] = await centre(primary(page));
 	await page.mouse.move(x, y);
 	await page.mouse.down();
 	await page.mouse.move(x, y - 160, { steps: 12 });
 	await page.waitForTimeout(120);
 	await page.mouse.up();
-	await expect(board).not.toHaveAttribute('data-stop', '0');
+	await page.waitForTimeout(350);
 	await expect(primary(page)).toHaveText('Talk');
 	expect(await opened()).toBe(0);
-	await lower();
+	expect(await bottom()).toBe(rest);
 
 	// Up and back down onto the button, which a browser calls a click: still no take.
 	[x, y] = await centre(primary(page));
@@ -573,7 +571,6 @@ test('on the footer a tap never drags the board and a drag never starts a take',
 	await page.waitForTimeout(350);
 	await expect(primary(page)).toHaveText('Talk');
 	expect(await opened()).toBe(0);
-	await lower();
 
 	// The same on the other voice controls: a drag from Auto does not switch the mode.
 	await talkMode(page);
@@ -586,7 +583,6 @@ test('on the footer a tap never drags the board and a drag never starts a take',
 	await page.mouse.up();
 	await expect(bar(page, 'Manual')).toHaveAttribute('aria-pressed', 'true');
 	expect(await opened()).toBe(held);
-	await lower();
 
 	// A drag to the side that starts on the button is not a take either.
 	[x, y] = await centre(primary(page));
@@ -600,12 +596,10 @@ test('on the footer a tap never drags the board and a drag never starts a take',
 	if (await page.locator('[data-drawer]').isVisible()) {
 		await page.getByRole('button', { name: 'Close sidebar' }).click();
 	}
-	await lower();
 	await expect(primary(page)).toHaveText('Talk');
 
 	// A tap, with the small slip a finger makes, starts the take and the
-	// footer stays where it is.
-	const rest = (await foot.boundingBox())!.y;
+	// footer stays where it is: its status line comes in above, its foot does not move.
 	[x, y] = await centre(primary(page));
 	await page.mouse.move(x, y);
 	await page.mouse.down();
@@ -613,13 +607,12 @@ test('on the footer a tap never drags the board and a drag never starts a take',
 	await page.mouse.up();
 	await expect(primary(page)).toHaveText('↑ Submit');
 	expect(await opened()).toBe(held + 1);
-	await expect(board).toHaveAttribute('data-stop', '0');
-	expect((await foot.boundingBox())!.y).toBe(rest);
+	expect(await bottom()).toBe(rest);
 	// And the tap to send does not move it either.
 	await say(page, 500);
 	await primary(page).click();
 	await expect(primary(page)).toHaveText('■ Stop');
-	await expect(board).toHaveAttribute('data-stop', '0');
+	expect(await bottom()).toBe(rest);
 });
 
 test('the delays of a turn are measured', async ({ page }) => {
@@ -706,44 +699,30 @@ test('every voice control has a 44pt touch area, clear of its neighbours', async
 	expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);
 });
 
-test('the voice controls rise with the footer and work at every stop of the board', async ({
-	page
-}) => {
+test('the voice controls work with the Board tab showing', async ({ page }) => {
 	await open(page);
 	await talkMode(page);
-	const board = page.locator('[data-board]');
-	const foot = page.locator('[data-foot]');
-	for (const stop of [1, 2]) {
-		await page.locator('[data-grab]').click();
-		await expect(board).toHaveAttribute('data-stop', String(stop));
-		await expect
-			.poll(async () => {
-				const first = (await foot.boundingBox())?.y;
-				await page.waitForTimeout(80);
-				return (await foot.boundingBox())?.y === first;
-			})
-			.toBe(true);
-		// The bar is on the footer, above the board, and a tap reaches each control.
-		const voicebar = (await page.locator('[data-voicebar]').boundingBox())!;
-		const list = (await board.boundingBox())!;
-		expect(voicebar.y + voicebar.height).toBeLessThanOrEqual(list.y + 60);
-		for (const control of [bar(page, 'Auto'), bar(page, 'Speaker'), primary(page)]) {
-			const reached = await control.evaluate((element) => {
-				const box = element.getBoundingClientRect();
-				const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
-				return hit === element || element.contains(hit);
-			});
-			expect(reached, `stop ${stop}`).toBe(true);
-		}
+	await page.locator('[data-tab="board"]').click();
+	await expect(page.locator('[data-page="board"]')).not.toHaveAttribute('inert', '');
+	// The bar is on the footer, under the board, and a tap reaches each control.
+	const voicebar = (await page.locator('[data-voicebar]').boundingBox())!;
+	const list = (await page.locator('[data-board]').boundingBox())!;
+	expect(voicebar.y).toBeGreaterThanOrEqual(list.y + list.height - 1);
+	for (const control of [bar(page, 'Auto'), bar(page, 'Speaker'), primary(page)]) {
+		const reached = await control.evaluate((element) => {
+			const box = element.getBoundingClientRect();
+			const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+			return hit === element || element.contains(hit);
+		});
+		expect(reached).toBe(true);
 	}
-	// A take works with the board up.
+	// A take works from the board.
 	await primary(page).click();
 	await expect(status(page)).toHaveText('Recording — tap to send');
 	await say(page, 600);
 	await primary(page).click();
 	await expect(primary(page)).toHaveText('■ Stop');
 	expect(await takes(page)).toHaveLength(1);
-	await expect(board).toHaveAttribute('data-stop', '2');
 });
 
 test('with reduced motion nothing in the bar animates', async ({ page }) => {
@@ -758,4 +737,167 @@ test('with reduced motion nothing in the bar animates', async ({ page }) => {
 			).length
 	);
 	expect(animated).toBe(0);
+});
+
+/** Two quick taps of one finger on the text of a message. */
+async function doubleTap(page: Page, row: Locator): Promise<void> {
+	const box = await row.boundingBox();
+	if (!box) throw new Error('the message is not on the screen');
+	await page.touchscreen.tap(box.x + 24, box.y + 12);
+	await page.touchscreen.tap(box.x + 24, box.y + 12);
+}
+
+async function openMessages(page: Page, thread: string): Promise<void> {
+	await fakeMic(page);
+	await reset(page);
+	// Voice alone: reading aloud types nothing, so Replies stays off.
+	await page.request.post('/__fixture/capability?name=voice&on=1');
+	await page.request.post('/__fixture/voice?delay=700');
+	await page.request.post(
+		`/__fixture/say?id=${thread}&text=${encodeURIComponent('Pushed to the branch. CI is green.')}`
+	);
+	await forget(page);
+	await page.goto(pairingLink(threadPath(thread)));
+	await expect(page.locator('.a').nth(1)).toContainText('Pushed to the branch.');
+}
+
+test('a double tap on an agent message opens its menu under it, one menu at a time', async ({
+	page,
+	context
+}) => {
+	await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+	await openMessages(page, 'localhost:7');
+	const menus = page.locator('[data-menu]');
+	const first = page.locator('.a').nth(0);
+	const second = page.locator('.a').nth(1);
+	// Nothing under a message until it is asked for.
+	await expect(menus).toHaveCount(0);
+	await expect(page.locator('[data-say]')).toHaveCount(0);
+
+	// One tap is not the gesture, and neither are two slow ones.
+	await first.tap({ position: { x: 24, y: 12 } });
+	await page.waitForTimeout(450);
+	await first.tap({ position: { x: 24, y: 12 } });
+	await page.waitForTimeout(450);
+	await expect(menus).toHaveCount(0);
+	// The human's messages have no menu.
+	await doubleTap(page, page.locator('.u').first());
+	await expect(menus).toHaveCount(0);
+
+	await doubleTap(page, first);
+	await expect(menus).toHaveCount(1);
+	await expect(first.locator('[data-menu]')).toBeVisible();
+	await expect(first.getByRole('button', { name: 'Play' })).toBeVisible();
+	await expect(first.getByRole('button', { name: 'Copy' })).toBeVisible();
+	// In the flow, between the message's text and the message after it.
+	const text = await first.locator('.prose').boundingBox();
+	const menu = await first.locator('[data-menu]').boundingBox();
+	const after = await second.boundingBox();
+	expect(menu!.y).toBeGreaterThanOrEqual(text!.y + text!.height);
+	expect(after!.y).toBeGreaterThanOrEqual(menu!.y + menu!.height);
+	// The double tap selected no word and did not zoom the page.
+	expect(await page.evaluate(() => String(getSelection()))).toBe('');
+	expect(await page.evaluate(() => window.visualViewport?.scale)).toBe(1);
+	if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/menu-open.png` });
+
+	// Each button is a full touch target.
+	for (const name of ['Play', 'Copy']) {
+		const target = await first
+			.getByRole('button', { name })
+			.evaluate((el) => getComputedStyle(el, '::after').height);
+		expect(parseFloat(target)).toBeGreaterThanOrEqual(44);
+	}
+	await first.getByRole('button', { name: 'Copy' }).tap();
+	await expect(first.getByRole('button', { name: 'Copy' })).toHaveAttribute('data-copied', '');
+	expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
+		'Done. 4 files changed, tests pass. Nothing else is needed from you.'
+	);
+	await expect(menus).toHaveCount(1);
+
+	// A double tap on another message moves the menu there.
+	await doubleTap(page, second);
+	await expect(menus).toHaveCount(1);
+	await expect(second.locator('[data-menu]')).toBeVisible();
+	// A second double tap on the message that has it closes it.
+	await doubleTap(page, second);
+	await expect(menus).toHaveCount(0);
+
+	// A tap outside closes it: on another message, on the human's, on the bar.
+	for (const outside of [first, page.locator('.u').first(), page.locator('header .title')]) {
+		await doubleTap(page, second);
+		await expect(menus).toHaveCount(1);
+		await page.waitForTimeout(350);
+		await outside.tap({ position: { x: 24, y: 12 } });
+		await expect(menus).toHaveCount(0);
+		await page.waitForTimeout(350);
+	}
+
+	// A mouse opens it the same way.
+	const box = await first.boundingBox();
+	await page.mouse.dblclick(box!.x + 24, box!.y + 12);
+	await expect(first.locator('[data-menu]')).toBeVisible();
+	expect(await page.evaluate(() => String(getSelection()))).toBe('');
+});
+
+test('Play in the menu of a message reads it aloud, one message at a time', async ({ page }) => {
+	const THREAD = 'localhost:7';
+	const playButton = (row: Locator): Locator => row.locator('[data-say]');
+	const clips = (): Promise<number> => page.evaluate(() => window.__clips);
+	const said = async (): Promise<{ target: string; n: number; cached: boolean }[]> =>
+		((await (await page.request.post('/__fixture/voice-said')).json()) as { said: never[] }).said;
+
+	await openMessages(page, THREAD);
+	const first = page.locator('.a').nth(0);
+	const second = page.locator('.a').nth(1);
+	await doubleTap(page, first);
+	await expect(page.locator('[data-say]')).toHaveCount(1);
+	await expect(playButton(first)).toHaveAccessibleName('Play');
+	await expect(playButton(first).locator('[data-icon="play"]')).toBeVisible();
+
+	// A tap asks the Mac for that row. Until audio comes the button shows progress, not Play.
+	const asked = page.waitForRequest((request) => request.url().includes('/api/voice/say'));
+	await playButton(first).tap();
+	const request = await asked;
+	expect(request.method()).toBe('POST');
+	expect(new URL(request.url()).search).toMatch(/^\?target=localhost%3A7&n=\d+$/);
+	expect(request.headers()['x-muxmaestro']).toBe('1');
+	await expect(playButton(first)).toHaveAttribute('data-say', 'loading');
+	await expect(playButton(first)).toHaveAttribute('aria-busy', 'true');
+	await expect(playButton(first).locator('[data-icon]')).toHaveCount(0);
+	if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/play-loading.png` });
+
+	// Audio plays on this phone: the button is Stop.
+	await expect(playButton(first)).toHaveAttribute('data-say', 'playing');
+	await expect(playButton(first)).toHaveAccessibleName('Stop');
+	await expect(playButton(first).locator('[data-icon="stop"]')).toBeVisible();
+	expect(await clips()).toBeGreaterThan(0);
+	if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/play-playing.png` });
+
+	// A tap outside closes no menu of a message that is read: its Stop stays in reach.
+	await page.locator('.u').first().tap();
+	await expect(playButton(first)).toHaveAttribute('data-say', 'playing');
+	// So does the menu of another message.
+	await doubleTap(page, second);
+	await expect(playButton(first)).toHaveAttribute('data-say', 'playing');
+	await expect(playButton(second)).toHaveAttribute('data-say', 'idle');
+
+	// Play on another message stops this one: they never talk over each other.
+	await playButton(second).tap();
+	await expect(playButton(first)).toHaveCount(0);
+	await expect(playButton(second)).toHaveAttribute('data-say', 'playing');
+	// A tap on the message that is read is its Stop: nothing new is asked for.
+	await playButton(second).tap();
+	await expect(playButton(second)).toHaveAttribute('data-say', 'idle');
+	expect((await said()).map((one) => one.cached)).toEqual([false, false]);
+
+	// The same message again comes from the Mac's cache, and starts sooner.
+	await doubleTap(page, first);
+	const again = Date.now();
+	await playButton(first).tap();
+	await expect(playButton(first)).toHaveAttribute('data-say', 'playing');
+	expect(Date.now() - again).toBeLessThan(700);
+	expect((await said()).at(-1)?.cached).toBe(true);
+	// Read to its end: the button is Play again.
+	await expect(playButton(first)).toHaveAttribute('data-say', 'idle', { timeout: 8000 });
+	await expect(playButton(first)).toHaveAccessibleName('Play');
 });

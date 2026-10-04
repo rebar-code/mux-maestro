@@ -77,8 +77,12 @@ export class LiveTerm implements KeySink {
 		this.sync?.(true);
 	};
 
+	/** A phone cannot paste into the terminal by itself: the key bar has a key for it. */
+	readonly pastes = true;
+
 	/** A key of the key bar was tapped. */
 	tap = (key: BarKey): void => {
+		if (key.paste) return void this.paste();
 		if (key.ctrl) {
 			this.ctrl = !this.ctrl;
 			return;
@@ -86,6 +90,17 @@ export class LiveTerm implements KeySink {
 		const text = barKeyText(key, this.term?.modes.applicationCursorKeysMode ?? false);
 		if (text !== null) this.type(text);
 	};
+
+	/** Type the phone's clipboard, as a paste: a program that asks for the marks gets them. */
+	private async paste(): Promise<void> {
+		let text = '';
+		try {
+			text = await navigator.clipboard.readText();
+		} catch {
+			// The phone refused, or the tap on its Paste prompt never came.
+		}
+		if (text) this.term?.paste(text);
+	}
 
 	/** Send what was typed, with sticky Ctrl applied. Ctrl holds for one key. */
 	private type(text: string): void {

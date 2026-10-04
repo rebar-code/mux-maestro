@@ -8,6 +8,7 @@
 // /__fixture/capability?name=&on=, /__fixture/manager-status?value=,
 // /__fixture/mac-turn?text=&reply=&spinner=&ms= (ms: the pause between words),
 // /__fixture/voice?mode=&speaker=&heard=&delay=, /__fixture/voice-takes,
+// /__fixture/voice-said (the messages the phone had read aloud, and which came from the cache),
 // /__fixture/replies, /__fixture/prompt?id=&pid=&kind=,
 // /__fixture/upload-max?value=, /__fixture/status?id=&value=,
 // /__fixture/panes?id=&value=, /__fixture/find-busy?value=,
@@ -25,6 +26,7 @@
 // /__fixture/append?count= (adds lines to pane buildbox:8),
 // /__fixture/screen?default=&max= (the screen endpoint's default and cap)
 // /__fixture/point?key=&thread=&title=&reason= (the Maestro points at a session; no thread: one that is gone),
+// /__fixture/no-updates (the Maestro's updates list is empty),
 // /__fixture/terminal (what the live terminal's sockets were sent, and how they were opened),
 // /__fixture/terminal-drop (cut every live socket), /__fixture/terminal-say?text=,
 // /__fixture/terminal-refuse?code= (close the next sockets with that code; 0 to stop)
@@ -657,6 +659,8 @@ let findBusy;
 let phoneLogs;
 // Uploads: the paths taken, the threads with one in flight, how slow they are, a refusal for the next.
 let saved, uploadLocks, uploadSlow, uploadFail;
+// The texts each busy thread's agent holds until its turn ends.
+let held;
 // Set: the server holds a newer build than the one a phone may have cached.
 let buildTag = null;
 // How long a reply's answer takes to come back.
@@ -718,8 +722,10 @@ function reset() {
 	findBusy = 0;
 	phoneLogs = [];
 	uploadMax = 10485760;
+	held = {};
 	replies = {
 		texts: [],
+		interrupts: [],
 		keys: [],
 		answers: [],
 		cancels: [],
@@ -732,7 +738,16 @@ function reset() {
 	};
 	// The Mac's voice defaults, what the next take is heard as, how long the
 	// Mac "thinks" before it has the transcript, and every take it was sent.
-	voice = { mode: 'manual', speaker: true, heard: 'What needs me?', delay: 300, takes: [] };
+	voice = {
+		mode: 'manual',
+		speaker: true,
+		heard: 'What needs me?',
+		delay: 300,
+		takes: [],
+		// Every read-aloud asked for, and the messages already synthesized once.
+		said: [],
+		spoken: new Set()
+	};
 	manager = {
 		status: 'idle',
 		turn: null,
@@ -922,6 +937,16 @@ function setStatus(thread, status) {
 	if (status !== 'waiting') delete prompts[thread.id];
 	push('threads', threadsBody());
 	if (capabilities.manager) push('manager', managerLive());
+	if (status === 'idle') takeUpHeld(thread);
+}
+
+/** The turn is over: the agent takes up what it held, each text a row of its own. */
+function takeUpHeld(thread) {
+	const texts = held[thread.id];
+	if (!texts?.length) return;
+	delete held[thread.id];
+	for (const text of texts.slice(0, -1)) chatRow(thread, 'user', text);
+	runThreadTurn(thread, texts.at(-1));
 }
 
 const chatRow = (thread, role, text) => {
@@ -930,8 +955,9 @@ const chatRow = (thread, role, text) => {
 };
 
 /** The pane's 409 while it cannot take free text, or `null`. */
-function refusedBy(thread) {
-	if (thread.status === 'busy')
+/** `queue`: the text may go to a busy agent, which holds it until its turn ends. */
+function refusedBy(thread, queue = false) {
+	if (thread.status === 'busy' && !queue)
 		return { error: 'busy', message: `${thread.name} is running a turn` };
 	if (thread.status === 'waiting' || promptOf(thread))
 		return { error: 'waiting', message: `${thread.name} is waiting on a prompt` };
@@ -1190,10 +1216,28 @@ function replyApi(req, res, url, thread, route, body) {
 		});
 	// text
 	const text = typeof json.text === 'string' ? json.text.trim() : '';
+	const mode = json.mode ?? 'idle';
+	if (!['idle', 'queue', 'interrupt'].includes(mode))
+		return send(res, 400, { error: 'bad_request' });
 	if (!text || CONTROL.test(text)) return send(res, 400, { error: 'bad_request' });
 	if (Buffer.byteLength(text) > TEXT_MAX) return send(res, 413, { error: 'too_large' });
-	const refused = refusedBy(thread);
+	if (mode === 'interrupt') {
+		// Escape, and nothing typed: `text` names what the agent holds.
+		if (thread.status === 'waiting' || promptOf(thread))
+			return send(res, 409, refusedBy({ ...thread, status: 'waiting' }));
+		if (thread.status !== 'busy') return send(res, 200, { ok: true, interrupted: false });
+		replies.interrupts.push({ thread: thread.id, text });
+		setStatus(thread, 'idle');
+		return send(res, 200, { ok: true, interrupted: true });
+	}
+	const refused = refusedBy(thread, mode === 'queue');
 	if (refused) return send(res, 409, refused);
+	if (mode === 'queue' && thread.status === 'busy') {
+		// A soft submit: the turn runs on, and the agent holds the text.
+		replies.texts.push({ thread: thread.id, text, mode });
+		(held[thread.id] ??= []).push(text);
+		return void setTimeout(() => send(res, 200, { ok: true }), textSlow);
+	}
 	if (notSent) {
 		// Pasted, not submitted. The Mac tried to take it out of the input box again.
 		const { reason } = notSent;
@@ -1297,6 +1341,20 @@ function sameOriginWrite(req) {
 		origin !== undefined &&
 		new URL(origin).host === req.headers.host
 	);
+}
+
+/** The directory the Maestro's pane works in: a file for it is saved here. */
+const MANAGER_DIR = '/Users/me/Library/Application Support/MuxMaestro/manager';
+
+/** `POST /api/manager/upload`: saved like a thread's `paste=0` upload, and never typed. */
+function managerUpload(req, res, url, body) {
+	if (!capabilities.manager || !capabilities.upload) return send(res, 403, { error: 'disabled' });
+	if (req.method !== 'POST') return send(res, 405, { error: 'method_not_allowed' });
+	const name = url.searchParams.get('name');
+	if (!name || name.includes('/') || body.length === 0)
+		return send(res, 400, { error: 'bad_request' });
+	if (body.length > uploadMax) return send(res, 413, { error: 'too_large' });
+	return saveOnly(req, res, { id: 'manager', cwd: MANAGER_DIR }, name, body);
 }
 
 function requestsApi(req, res, path, body) {
@@ -1439,12 +1497,15 @@ function voiceApi(req, res, url, body) {
 	if (!capabilities.voice) return send(res, 403, { error: 'disabled' });
 	if (req.method !== 'POST') return send(res, 405, { error: 'method_not_allowed' });
 	if (path === '/api/voice/warm') return send(res, 200, { ok: true });
-	if (path !== '/api/voice' && path !== '/api/voice/replay')
+	if (path !== '/api/voice' && path !== '/api/voice/replay' && path !== '/api/voice/say')
 		return send(res, 404, { error: 'not_found' });
 	const target = url.searchParams.get('target');
 	const thread = threads.find((t) => t.id === target);
 	if (target !== 'manager' && !thread) return send(res, 404, { error: 'not_found' });
-	if (!capabilities[thread ? 'replies' : 'manager']) return send(res, 403, { error: 'disabled' });
+	// Reading a message aloud types nothing: a thread needs the Voice switch alone.
+	const typed = path !== '/api/voice/say';
+	if (!thread && !capabilities.manager) return send(res, 403, { error: 'disabled' });
+	if (thread && typed && !capabilities.replies) return send(res, 403, { error: 'disabled' });
 	const stream = () =>
 		res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' });
 	const event = (name, data) => res.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
@@ -1452,6 +1513,30 @@ function voiceApi(req, res, url, body) {
 		reply
 			.split(/(?<=[.!?:])\s+/)
 			.forEach((text, seq) => event('audio', { seq, text, wav: clip(0.9) }));
+
+	if (path === '/api/voice/say') {
+		const n = Number(url.searchParams.get('n') ?? 'none');
+		if (!Number.isInteger(n) || n < 0) return send(res, 400, { error: 'bad_request' });
+		const row = (thread ? (chats[thread.id] ?? []) : manager.chat).find((one) => one.n === n);
+		if (row?.role !== 'assistant')
+			return send(res, 404, { error: 'nothing', message: 'Nothing to replay' });
+		const key = `${target} ${n}`;
+		const cached = voice.spoken.has(key);
+		voice.said.push({ target, n, cached });
+		stream();
+		const mine = voice;
+		// The first time the Mac has to synthesize; after that the clips are kept.
+		return void setTimeout(
+			() => {
+				if (voice !== mine || res.destroyed) return res.end();
+				mine.spoken.add(key);
+				speak(row.text);
+				event('end', { outcome: 'done', reply: row.text, message: null });
+				res.end();
+			},
+			cached ? 0 : voice.delay
+		);
+	}
 
 	if (path === '/api/voice/replay') {
 		const said = thread ? (chats[thread.id] ?? []) : manager.chat;
@@ -1844,6 +1929,7 @@ function api(req, res, url, body) {
 	if (path === '/api/threads') return send(res, 200, threadsBody());
 	if (path === '/api/hosts') return send(res, 200, hostsBody());
 	if (path === '/api/config') return send(res, 200, configBody());
+	if (path === '/api/manager/upload') return managerUpload(req, res, url, body);
 	if (path.startsWith('/api/manager')) return managerApi(req, res, url, String(body));
 	if (path === '/api/requests' || path.startsWith('/api/requests/'))
 		return requestsApi(req, res, path, String(body));
@@ -1957,6 +2043,7 @@ function hook(res, url) {
 				idleStage: 'awake'
 			});
 			if (thread.status !== 'waiting') delete prompts[thread.id];
+			if (thread.status === 'idle') takeUpHeld(thread);
 			break;
 		case '/__fixture/find-busy':
 			findBusy = Number(url.searchParams.get('value') ?? 1);
@@ -2158,6 +2245,9 @@ function hook(res, url) {
 			];
 			break;
 		}
+		case '/__fixture/no-updates':
+			manager.updates = [];
+			break;
 		case '/__fixture/manager-status':
 			manager.status = url.searchParams.get('value') ?? 'idle';
 			break;
@@ -2172,6 +2262,8 @@ function hook(res, url) {
 			break;
 		case '/__fixture/voice-takes':
 			return send(res, 200, { takes: voice.takes });
+		case '/__fixture/voice-said':
+			return send(res, 200, { said: voice.said });
 		case '/__fixture/mac-turn':
 			// A turn typed into the Mac rail: the phone must follow it.
 			runTurn(

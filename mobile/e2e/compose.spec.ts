@@ -1,6 +1,6 @@
 import { mkdirSync } from 'node:fs';
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import { forget, pairingLink, reset, threadPath } from './helpers';
+import { forget, pairingLink, reset, threadPath, touchDrag, twoFingers } from './helpers';
 
 /** Idle, local, with a chat. */
 const IDLE = 'localhost:7';
@@ -14,7 +14,7 @@ interface Received {
 
 const box = (page: Page): Locator => page.getByRole('textbox', { name: 'Reply' });
 const ask = (page: Page): Locator => page.getByRole('textbox', { name: 'Ask the Maestro' });
-const sendButton = (page: Page): Locator => page.getByRole('button', { name: '↑ Send' });
+const sendButton = (page: Page): Locator => page.getByRole('button', { name: /^Send(ing)?$/ });
 const note = (page: Page): Locator => page.locator('[data-note]');
 const keybar = (page: Page): Locator => page.locator('[data-keybar]');
 const dock = (page: Page): Locator => page.locator('[data-dock]');
@@ -388,11 +388,22 @@ test('Send shows a send on its way, and takes no second tap', async ({ page }) =
 
 	await box(page).fill('ship it');
 	// A full touch target.
-	expect((await sendButton(page).boundingBox())?.height).toBeGreaterThanOrEqual(44);
+	const face = (await sendButton(page).boundingBox())!;
+	expect(face.height).toBeGreaterThanOrEqual(44);
+	// An icon alone: no word on the button, which is as wide as it is tall and still has a name.
+	await expect(sendButton(page)).toHaveText('');
+	expect(face.width).toBe(face.height);
+	await expect(sendButton(page).locator('[data-icon="send"]')).toBeVisible();
+	await expect(sendButton(page)).toHaveAccessibleName('Send');
 	await expect(page.locator('[data-send-busy]')).toHaveCount(0);
+	await shot(page, 'send-icon');
 	await sendButton(page).tap();
 	await expect(sendButton(page)).toBeDisabled();
 	await expect(sendButton(page)).toHaveAttribute('aria-busy', 'true');
+	// The arrow gives way to the sign; the name says the same.
+	await expect(sendButton(page)).toHaveAccessibleName('Sending');
+	await expect(sendButton(page).locator('[data-icon]')).toHaveCount(0);
+	await expect(sendButton(page)).toHaveText('');
 	// Seen, not only announced: a sign on the button, which keeps its colour.
 	await expect(page.locator('[data-send-busy]')).toBeVisible();
 	expect(
@@ -797,4 +808,92 @@ test('drafts are cleared when the phone is unpaired, and when it is paired anew'
 	// And nothing but the token itself was stored to notice the change.
 	const keys = await page.evaluate(() => Object.keys(localStorage));
 	expect(keys.filter((key) => /draft/.test(key))).toEqual([]);
+});
+
+test('a pull down on the messages puts the keyboard away', async ({ page }) => {
+	await open(page, threadPath(IDLE), ['replies']);
+	await box(page).tap();
+	await box(page).fill('half a thought');
+	await expect(box(page)).toBeFocused();
+	const chat = (await page.locator('[data-view="chat"]').boundingBox())!;
+	const x = chat.x + chat.width / 2;
+	const y = chat.y + 120;
+	// A pull up reads on: the keyboard stays.
+	await touchDrag(page, [x, y + 90], [x, y]);
+	await expect(box(page)).toBeFocused();
+	// A short pull down is not one. (Past the 15px a browser still calls a tap.)
+	await touchDrag(page, [x, y], [x, y + 20]);
+	await expect(box(page)).toBeFocused();
+	// A pull down inside the text box scrolls its text: the keyboard stays.
+	const typing = (await box(page).boundingBox())!;
+	await touchDrag(
+		page,
+		[typing.x + 40, typing.y + 6],
+		[typing.x + 40, typing.y + typing.height + 60]
+	);
+	await expect(box(page)).toBeFocused();
+	// A pull down on the messages puts it away, and the text stays in the box.
+	await touchDrag(page, [x, y], [x, y + 90]);
+	await expect(box(page)).not.toBeFocused();
+	await expect(box(page)).toHaveValue('half a thought');
+	// The same on the Maestro page: the text box is one thing everywhere.
+	await page.request.post('/__fixture/capability?name=manager&on=1');
+	await page.goto('/');
+	await ask(page).tap();
+	await expect(ask(page)).toBeFocused();
+	const said = (await page.locator('[data-view="chat"]').boundingBox())!;
+	await touchDrag(page, [said.x + 100, said.y + 60], [said.x + 100, said.y + 150]);
+	await expect(ask(page)).not.toBeFocused();
+});
+
+test('two fingers on the text box change its text size, never under 16px', async ({ page }) => {
+	await open(page, threadPath(IDLE), ['replies']);
+	await box(page).fill('one\ntwo\nthree');
+	const size = (): Promise<number> =>
+		box(page).evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
+	expect(await size()).toBe(16);
+	const middle = async (): Promise<[number, number]> => {
+		const at = (await box(page).boundingBox())!;
+		return [at.x + at.width / 2, at.y + at.height / 2];
+	};
+	// The fingers move apart: the text grows, and the size is kept on this phone.
+	let [x, y] = await middle();
+	await twoFingers(
+		page,
+		[
+			[x - 20, y],
+			[x + 20, y]
+		],
+		[
+			[x - 60, y],
+			[x + 60, y]
+		]
+	);
+	const grown = await size();
+	expect(grown).toBeGreaterThan(24);
+	expect(Number(await page.evaluate(() => localStorage.getItem('mm.textSize')))).toBeGreaterThan(
+		11
+	);
+	// The box grows with its text: every line is still whole.
+	expect(await box(page).evaluate((el) => el.scrollHeight - el.clientHeight)).toBeLessThanOrEqual(
+		1
+	);
+	// Two taps in the box pick a word. They do not put the size back.
+	[x, y] = await middle();
+	await page.touchscreen.tap(x - 40, y);
+	await page.touchscreen.tap(x - 40, y);
+	expect(await size()).toBe(grown);
+	// The fingers close all the way: iOS zooms the page for a box under 16px, so it stops there.
+	await twoFingers(
+		page,
+		[
+			[x - 100, y],
+			[x + 100, y]
+		],
+		[
+			[x - 8, y],
+			[x + 8, y]
+		]
+	);
+	expect(await size()).toBe(16);
 });

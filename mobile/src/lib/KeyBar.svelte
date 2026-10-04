@@ -23,7 +23,7 @@
 		leading?: Snippet;
 	} = $props();
 
-	const keys = $derived(barKeys(composer));
+	const keys = $derived(barKeys(composer, reply.pastes));
 
 	/** Put the on-screen keyboard away: whatever takes the typing gives up the focus. */
 	function hide(): void {

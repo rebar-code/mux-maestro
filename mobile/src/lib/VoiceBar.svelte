@@ -25,6 +25,8 @@
 	const status = $derived(voice.statusOf(target));
 	/** Outside talk mode the controls are not drawn: the Talk button starts it. */
 	const active = $derived(voice.activeOn(target));
+	/** The status line. With nothing to say it is not drawn, and takes no room. */
+	const said = $derived(voice.note ?? voice.label(target));
 	/** The mic is open for this bar: a take, or Auto waiting for one. */
 	const hearing = $derived(
 		!off && !voice.micMuted && (status === 'recording' || (status === 'idle' && voice.listening))
@@ -42,7 +44,10 @@
 		</div>
 	</div>
 {:else if part === 'status'}
-	<div class="vbar alone" data-voice-line>{@render line()}</div>
+	<!-- The bar's top edge stays; the line is there only while it says something. -->
+	<div class="vbar alone" data-voice-line>
+		{#if said}{@render line()}{/if}
+	</div>
 {:else}
 	{@render controls()}
 {/if}
@@ -64,7 +69,7 @@
 		{:else}
 			<span class="wave" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
 		{/if}
-		{voice.note ?? voice.label(target)}
+		{said}
 	</div>
 {/snippet}
 
@@ -81,7 +86,7 @@
 		{@attach voice.attach(target)}
 		{@attach keepFocus}
 	>
-		{#if part === 'all'}{@render line()}{/if}
+		{#if part === 'all' && said}{@render line()}{/if}
 		{#if active}
 			<div class="vrow">
 				<div class="vseg" role="group" aria-label="Voice mode">

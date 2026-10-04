@@ -221,7 +221,7 @@ test('a new build waits while a text box holds text that was not sent', async ({
 	await expect(box).toHaveValue('still typing this');
 
 	// Sent: now it reloads, and nothing was lost.
-	await page.getByRole('button', { name: '↑ Send' }).tap();
+	await page.getByRole('button', { name: /^Send(ing)?$/ }).tap();
 	await expect.poll(() => build(page), { timeout: 20_000 }).toBe('3');
 	await expect(box).toHaveValue('');
 	await expect(page.locator('.u').last()).toHaveText('still typing this');

@@ -168,6 +168,7 @@ final class MobileAPITests: XCTestCase {
         let gated: [(String, String, MobileCapability)] = [
             ("GET", "/api/manager", .manager),
             ("POST", "/api/manager/text", .manager),
+            ("POST", "/api/manager/upload?name=a.png", .manager),
             ("POST", "/api/voice", .voice),
             ("POST", "/api/threads/localhost%3A1/text", .replies),
             ("GET", "/api/threads/localhost%3A1/prompt", .replies),
@@ -213,6 +214,15 @@ final class MobileAPITests: XCTestCase {
         XCTAssertEqual(
             MobileAPI.route(request("/api/threads/localhost%3A1/upload", method: "POST"), config: config),
             .disabled(.upload))
+        // A file for the manager needs both of its switches.
+        let managerUpload = request("/api/manager/upload?name=a.png", method: "POST")
+        XCTAssertEqual(
+            MobileAPI.route(managerUpload, config: MobileConfig(capabilities: [.manager])), .disabled(.upload))
+        XCTAssertEqual(
+            MobileAPI.route(managerUpload, config: MobileConfig(capabilities: [.manager, .upload])),
+            .api(.managerUpload(name: "a.png")))
+        XCTAssertEqual(
+            MobileHTTP.bodyLimit(method: "POST", path: "/api/manager/upload"), MobileReply.maxUploadBytes)
         // Kill has its own switch: session actions alone do not allow it.
         let actions = MobileConfig(capabilities: [.sessionActions])
         XCTAssertEqual(

@@ -4,6 +4,8 @@
 	import type { FormEventHandler } from 'svelte/elements';
 	import { limitLabel } from './compose';
 	import GrowingText from './GrowingText.svelte';
+	import Icon from './Icon.svelte';
+	import type { SendStage } from './reply';
 	import { keepFocus } from './reply.svelte';
 	import TalkButton from './TalkButton.svelte';
 	import type { VoiceSink, VoiceTarget } from './voice.svelte';
@@ -24,6 +26,8 @@
 		voiceOn,
 		blocked = false,
 		sending = false,
+		busy = false,
+		stage = 'idle',
 		off = false,
 		bare = false,
 		note = null,
@@ -45,8 +49,12 @@
 		voiceOn: boolean;
 		/** Nothing can be sent now. The box still takes text. */
 		blocked?: boolean;
-		/** A send is on its way: the button says so, and takes no second tap. */
+		/** A send is on its way: the button shows it, and takes no second tap. */
 		sending?: boolean;
+		/** The agent is mid-turn: Send is a soft submit, and the button shows it. */
+		busy?: boolean;
+		/** Where the two-stage send is: see `sendReduce`. */
+		stage?: SendStage;
 		/**
 		 * The feature is switched off: the box holds its place and takes nothing.
 		 * The caller's `label` then says where the switch is.
@@ -72,13 +80,36 @@
 	/* eslint-enable prefer-const */
 
 	const canSend = $derived(value.trim() !== '');
+	/** Text queued to a busy agent keeps the button on screen with nothing in the box. */
+	const staged = $derived(stage !== 'idle');
+	/**
+	 * What the next tap does, and so what the button shows. Three shapes, not
+	 * three colours: the arrow, the arrow over the queue's lines, the arrow
+	 * over a stop square. Text in the box is never an interrupt.
+	 */
+	const face = $derived.by(() => {
+		if (stage === 'armed' && !canSend)
+			return { look: 'interrupt', icon: 'interrupt', name: 'Interrupt and send' } as const;
+		if (busy || staged)
+			return {
+				look: 'queue',
+				icon: 'sendQueued',
+				name: canSend ? 'Send, queued' : 'Queued'
+			} as const;
+		return { look: 'send', icon: 'send', name: 'Send' } as const;
+	});
 
 	/** Over what the Mac takes in one message: said before anything is sent. */
 	const tooLong = $derived(limitLabel(value));
 	const shown = $derived(tooLong ? { text: tooLong, bad: true } : note);
 
 	function send(): void {
-		if (canSend && !blocked && !sending && !off && !tooLong) onsend();
+		if ((canSend || staged) && !blocked && !sending && !off && !tooLong) onsend();
+	}
+
+	/** Enter on real keys sends text. It never arms or fires the interrupt. */
+	function enter(): void {
+		if (canSend) send();
 	}
 
 	function submit(event: SubmitEvent & { currentTarget: HTMLFormElement }): void {
@@ -103,7 +134,7 @@
 		bind:value
 		{label}
 		disabled={off}
-		onsend={send}
+		onsend={enter}
 		{oninput}
 		{onbeforeinput}
 		{onpaste}
@@ -112,20 +143,27 @@
 		{box}
 	/>
 	<!-- Typing is always there: with text in the box the button sends it. -->
-	{#if canSend && !off}
+	{#if (canSend || staged) && !off}
+		<!-- An icon alone: the row's width is the text box's. The name is for a screen reader. -->
 		<button
-			class="pill send grow"
+			class="send grow"
+			class:armed={face.look === 'interrupt'}
 			type="submit"
 			disabled={blocked || sending || tooLong !== null}
 			aria-busy={sending}
-			data-send
+			aria-label={sending ? 'Sending' : face.name}
+			data-send={face.look}
 			{@attach keepFocus}
 		>
-			<!-- The arrow keeps its place and its name; while a send is out, the sign is drawn over it. -->
-			<span class="mark" class:out={sending}
-				>↑{#if sending}<i class="busy" data-send-busy aria-hidden="true"></i>{/if}</span
-			> Send
+			<!-- While a send is out, the sign takes the arrow's place. -->
+			{#if sending}
+				<i class="busy" data-send-busy aria-hidden="true"></i>
+			{:else}
+				<Icon name={face.icon} size={20} />
+			{/if}
 		</button>
+		<!-- The armed button is said aloud when it arms, not only when it is found. -->
+		<span class="said" role="status">{face.look === 'interrupt' ? 'Interrupt armed' : ''}</span>
 	{:else}
 		<TalkButton {target} {sink} off={!voiceOn} />
 	{/if}
@@ -180,53 +218,48 @@
 		margin-bottom: 2px;
 	}
 
-	.compose > .pill.send {
+	.compose > .send {
 		margin-bottom: 0;
 	}
 
-	.pill {
+	.send {
 		position: relative;
 		flex: none;
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
-		gap: 6px;
 		/* A full touch target, as tall as one line of the box beside it. */
+		width: var(--hit);
 		height: var(--hit);
-		margin-bottom: 0;
-		padding: 0 16px;
-		border-radius: 22px;
+		border-radius: 50%;
 		background: var(--accent);
 		color: #fff;
-		font-weight: 600;
-		font-size: 14px;
-		white-space: nowrap;
-		/* As wide as the voice button, so the text box beside it never moves. */
-		min-width: 104px;
 	}
 
 	/* A send on its way keeps its colour: dimmed like "off" it would read as broken. */
-	.pill[aria-busy='true']:disabled {
+	.send[aria-busy='true']:disabled {
 		opacity: 0.75;
 	}
 
-	.mark {
-		position: relative;
-		display: inline-block;
+	/* The next tap cuts the turn short. The shape says so; the colour says it again. */
+	.send.armed {
+		background: var(--red);
 	}
 
-	.mark.out {
-		color: transparent;
+	/* Heard, not seen. */
+	.said {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		overflow: hidden;
+		clip-path: inset(50%);
+		white-space: nowrap;
 	}
 
 	/* The sign that it is on its way. With reduced motion it is a still ring. */
 	.busy {
-		position: absolute;
-		left: 50%;
-		top: 50%;
-		margin: -6.5px 0 0 -6.5px;
-		width: 13px;
-		height: 13px;
+		width: 16px;
+		height: 16px;
 		border-radius: 50%;
 		border: 2px solid rgba(255, 255, 255, 0.4);
 		border-top-color: #fff;
