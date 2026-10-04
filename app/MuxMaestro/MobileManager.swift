@@ -70,7 +70,7 @@ enum MobileManager {
     static let paneBusyMessage = ManagerPaneDriver.busyMessage
     static let waitingMessage = ManagerPaneDriver.waitingMessage
     static let notReadyMessage = ManagerPaneDriver.notReadyMessage
-    static let offMessage = "Manager is not running"
+    static let offMessage = "Maestro is not running"
 
     /// The phone thread a rail link points at, or nil when no listed thread
     /// matches. The phone opens threads by id, never by a tmux address.

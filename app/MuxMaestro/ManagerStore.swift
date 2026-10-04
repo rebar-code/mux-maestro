@@ -149,9 +149,9 @@ enum ManagerStoreError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .open(let m): return "manager DB open failed: \(m)"
-        case .prepare(let m): return "manager DB prepare failed: \(m)"
-        case .step(let m): return "manager DB step failed: \(m)"
+        case .open(let m): return "Maestro DB open failed: \(m)"
+        case .prepare(let m): return "Maestro DB prepare failed: \(m)"
+        case .step(let m): return "Maestro DB step failed: \(m)"
         }
     }
 }

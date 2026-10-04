@@ -44,7 +44,7 @@
 				href={resolve('/')}
 				onclick={() => ui.closeDrawer()}
 			>
-				<span>✦ Manager</span>
+				<span>✦ Maestro</span>
 				{#if waiting}<span class="badge">{waiting}</span>{/if}
 			</a>
 		{:else}

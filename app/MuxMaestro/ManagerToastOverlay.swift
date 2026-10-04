@@ -127,7 +127,7 @@ final class ManagerToastOverlay: NSViewController {
     /// replacing any toast already up and resetting the auto-dismiss clock.
     /// `extra` > 0 appends a "+N more" hint.
     func show(over parent: NSWindow, notification: ManagerNotification, extra: Int) {
-        let session = notification.session.isEmpty ? "manager" : notification.session
+        let session = notification.session.isEmpty ? "Maestro" : notification.session
         let suffix = extra > 0 ? "   +\(extra) more" : ""
         present(
             over: parent, glyph: "🤖", title: session + suffix, text: notification.text,

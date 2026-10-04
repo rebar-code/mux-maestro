@@ -1040,11 +1040,11 @@ function managerApi(req, res, path, body) {
 	if (Buffer.byteLength(text) > TEXT_MAX) return send(res, 413, { error: 'too_large' });
 	if (manager.turn) return send(res, 409, { error: 'busy', message: 'A turn is running' });
 	if (manager.status === 'waiting')
-		return send(res, 409, { error: 'waiting', message: 'Manager is waiting on a prompt' });
+		return send(res, 409, { error: 'waiting', message: 'Maestro is waiting on a prompt' });
 	if (manager.status === 'unknown')
-		return send(res, 503, { error: 'not_ready', message: 'Manager is not ready' });
+		return send(res, 503, { error: 'not_ready', message: 'Maestro is not ready' });
 	if (manager.status === 'busy')
-		return send(res, 409, { error: 'busy', message: 'Manager is busy' });
+		return send(res, 409, { error: 'busy', message: 'Maestro is busy' });
 	res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' });
 	const event = (name, data) => res.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
 	const reply = managerReply();
@@ -1139,7 +1139,7 @@ function voiceApi(req, res, url, body) {
 	if (!thread) {
 		if (manager.turn) return send(res, 409, { error: 'busy', message: 'A turn is running' });
 		if (manager.status === 'waiting')
-			return send(res, 409, { error: 'waiting', message: 'Manager is waiting on a prompt' });
+			return send(res, 409, { error: 'waiting', message: 'Maestro is waiting on a prompt' });
 	}
 	voice.takes.push(take);
 	stream();

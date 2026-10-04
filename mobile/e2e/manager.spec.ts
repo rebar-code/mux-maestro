@@ -11,7 +11,7 @@ import {
 } from './helpers';
 
 const said = (page: Page) => page.locator('[data-said]');
-const box = (page: Page) => page.getByRole('textbox', { name: 'Ask the manager' });
+const box = (page: Page) => page.getByRole('textbox', { name: 'Ask the Maestro' });
 const review = (page: Page) => page.locator('[data-review]');
 
 test('the app opens on the manager home', async ({ page }) => {
@@ -67,7 +67,7 @@ test('a refused turn says why and gives the text back', async ({ page }) => {
 	await page.request.post('/__fixture/manager-status?value=waiting');
 	await box(page).fill('what needs me?');
 	await page.getByRole('button', { name: '↑ Send' }).click();
-	await expect(page.getByRole('alert')).toHaveText('Manager is waiting on a prompt');
+	await expect(page.getByRole('alert')).toHaveText('Maestro is waiting on a prompt');
 	await expect(box(page)).toHaveValue('what needs me?');
 	await expect(said(page).locator('.u')).toHaveCount(0);
 
@@ -162,7 +162,7 @@ test('a right swipe on the home still opens the sidebar, over a review card too'
 test('the Manager row in the sidebar opens the home', async ({ page }) => {
 	await fresh(page, threadPath('localhost:1'));
 	await page.getByRole('button', { name: 'Menu' }).click();
-	await drawer(page).getByText('Manager').click();
+	await drawer(page).getByText('✦ Maestro').click();
 	await expect(page).toHaveURL(/\/$/);
 	await expectDrawerClosed(page);
 	await expect(box(page)).toBeVisible();
@@ -175,7 +175,7 @@ test('with the Manager switch off the home and its row are hidden', async ({ pag
 	await expect(box(page)).toHaveCount(0);
 	await expect(said(page)).toHaveCount(0);
 	await expect(review(page)).toHaveCount(0);
-	await expect(page.getByRole('button', { name: 'Talk to the manager' })).toHaveCount(0);
+	await expect(page.getByRole('button', { name: 'Talk to the Maestro' })).toHaveCount(0);
 	await expect(page.locator('[data-voicebar]')).toHaveCount(0);
 	// The threads that wait are still listed: they come from the thread list.
 	await expect(page.locator('.sect').first()).toHaveText('Needs you · 2');
@@ -186,7 +186,7 @@ test('with the Manager switch off the home and its row are hidden', async ({ pag
 		)
 	).toBe(403);
 	await page.getByRole('button', { name: 'Menu' }).click();
-	await expect(drawer(page).getByText('Manager')).toHaveCount(0);
+	await expect(drawer(page).getByText('✦ Maestro')).toHaveCount(0);
 
 	// Off at first paint too: nothing of the manager is drawn from the cache.
 	await page.reload();
@@ -254,24 +254,24 @@ test('the manager status is drawn while a message cannot go to it', async ({ pag
 	await page.request.post('/__fixture/manager-status?value=waiting');
 	await page.reload();
 	const status = page.locator('[data-status]');
-	await expect(status).toHaveText('Manager is waiting on a prompt');
+	await expect(status).toHaveText('Maestro is waiting on a prompt');
 	await expect(status).toHaveAttribute('data-status', 'waiting');
 
 	await page.request.post('/__fixture/manager-status?value=busy');
 	await page.reload();
-	await expect(status).toHaveText('Manager is busy');
+	await expect(status).toHaveText('Maestro is busy');
 	await box(page).fill('what needs me?');
 	await box(page).press('Enter');
-	await expect(page.getByRole('alert')).toHaveText('Manager is busy');
+	await expect(page.getByRole('alert')).toHaveText('Maestro is busy');
 	await expect(box(page)).toHaveValue('what needs me?');
 
 	// Running, but its pane's state is not known: not idle.
 	await page.request.post('/__fixture/manager-status?value=unknown');
 	await page.reload();
-	await expect(status).toHaveText('Manager is not ready');
+	await expect(status).toHaveText('Maestro is not ready');
 	await box(page).fill('what needs me?');
 	await box(page).press('Enter');
-	await expect(page.getByRole('alert')).toHaveText('Manager is not ready');
+	await expect(page.getByRole('alert')).toHaveText('Maestro is not ready');
 
 	await page.request.post('/__fixture/manager-status?value=idle');
 	await page.reload();

@@ -16,7 +16,7 @@ const status = (page: Page): Locator => page.locator('[data-voice-status]');
 const primary = (page: Page): Locator => page.locator('[data-primary]');
 const orb = (page: Page): Locator => page.locator('[data-orb]');
 const said = (page: Page): Locator => page.locator('[data-said]');
-const box = (page: Page): Locator => page.getByRole('textbox', { name: 'Ask the manager' });
+const box = (page: Page): Locator => page.getByRole('textbox', { name: 'Ask the Maestro' });
 const bar = (page: Page, name: string): Locator =>
 	page.locator('[data-voicebar]').getByRole('button', { name, exact: true });
 
@@ -235,16 +235,16 @@ test('the button is Send while the box has text, and Talk when it is empty', asy
 
 test('the large button is the same control', async ({ page }) => {
 	await open(page);
-	await expect(orb(page)).toHaveAccessibleName('Talk to the manager');
+	await expect(orb(page)).toHaveAccessibleName('Talk to the Maestro');
 	await orb(page).click();
 	await expect(primary(page)).toHaveText('↑ Submit');
-	await expect(orb(page)).toHaveAccessibleName('Submit to the manager');
+	await expect(orb(page)).toHaveAccessibleName('Submit to the Maestro');
 	await say(page, 600);
 	// The button breathes while a take is open, so it never holds still.
 	await orb(page).click({ force: true });
 	await expect(orb(page)).toHaveClass(/thinking/);
 	await expect(orb(page)).toHaveClass(/speaking/);
-	await expect(orb(page)).toHaveAccessibleName('Pause to the manager');
+	await expect(orb(page)).toHaveAccessibleName('Pause to the Maestro');
 	await expect(status(page)).toHaveText('Start talking', { timeout: 8000 });
 	expect(await takes(page)).toHaveLength(1);
 });
@@ -285,7 +285,7 @@ test('a muted mic takes nothing, and a refused take says why', async ({ page }) 
 	await primary(page).click();
 	await say(page, 600);
 	await primary(page).click();
-	await expect(status(page)).toHaveText('Manager is waiting on a prompt');
+	await expect(status(page)).toHaveText('Maestro is waiting on a prompt');
 	await expect(primary(page)).toHaveText('🎙 Talk');
 
 	// A take with no words in it.

@@ -194,7 +194,7 @@ test('an open thread tells the Mac it is on screen, and says so when it is left'
 	await drawer(page).locator(`a[href="/t/${THREAD}"]`).click();
 	await expect.poll(async () => (await held(page)).focus[ENDPOINT]).toBe(THREAD);
 	await page.getByRole('button', { name: 'Menu' }).click();
-	await drawer(page).getByText('Manager').click();
+	await drawer(page).getByText('✦ Maestro').click();
 	await expect.poll(async () => (await held(page)).focus[ENDPOINT]).toBeNull();
 });
 
@@ -239,7 +239,7 @@ test('when the Mac has dropped the phone, the switch stops saying on', async ({ 
 	await toggle(page).click();
 	await expect(toggle(page)).toHaveAttribute('aria-checked', 'true');
 	await page.request.post('/__fixture/push-forget');
-	await drawer(page).getByText('Manager').click();
+	await drawer(page).getByText('✦ Maestro').click();
 	await expect.poll(async () => (await held(page)).subscriptions.length).toBe(1);
 	await page.getByRole('button', { name: 'Menu' }).click();
 	await expect(toggle(page)).toHaveAttribute('aria-checked', 'true');

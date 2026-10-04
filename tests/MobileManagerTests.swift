@@ -336,7 +336,7 @@ final class MobileManagerTests: XCTestCase {
         // Enter lands, so the phone does not send into it.
         let paneBusy = MobileManager.refusal(status: .busy, turnRunning: false)
         XCTAssertEqual(paneBusy?.status, 409)
-        XCTAssertEqual(error(paneBusy), ["error": "busy", "message": "Manager is busy"])
+        XCTAssertEqual(error(paneBusy), ["error": "busy", "message": "Maestro is busy"])
 
         let busy = MobileManager.refusal(status: .busy, turnRunning: true)
         XCTAssertEqual(busy?.status, 409)
@@ -345,15 +345,15 @@ final class MobileManagerTests: XCTestCase {
         // Text typed into a pane that sits on a prompt would answer the prompt.
         let waiting = MobileManager.refusal(status: .waiting, turnRunning: false)
         XCTAssertEqual(waiting?.status, 409)
-        XCTAssertEqual(error(waiting), ["error": "waiting", "message": "Manager is waiting on a prompt"])
+        XCTAssertEqual(error(waiting), ["error": "waiting", "message": "Maestro is waiting on a prompt"])
 
         let unknown = MobileManager.refusal(status: .unknown, turnRunning: false)
         XCTAssertEqual(unknown?.status, 503)
-        XCTAssertEqual(error(unknown), ["error": "not_ready", "message": "Manager is not ready"])
+        XCTAssertEqual(error(unknown), ["error": "not_ready", "message": "Maestro is not ready"])
 
         let off = MobileManager.refusal(status: .off, turnRunning: false)
         XCTAssertEqual(off?.status, 503)
-        XCTAssertEqual(error(off), ["error": "unavailable", "message": "Manager is not running"])
+        XCTAssertEqual(error(off), ["error": "unavailable", "message": "Maestro is not running"])
         XCTAssertTrue(busy?.serialized().starts(with: Data("HTTP/1.1 409 Conflict\r\n".utf8)) ?? false)
     }
 
@@ -370,8 +370,8 @@ final class MobileManagerTests: XCTestCase {
         XCTAssertEqual(
             end(.timeout(reply: "")), ["outcome": "timeout", "reply": "", "message": "Still working"])
         XCTAssertEqual(
-            end(.refused("Manager is waiting on a prompt")),
-            ["outcome": "refused", "reply": "", "message": "Manager is waiting on a prompt"])
+            end(.refused("Maestro is waiting on a prompt")),
+            ["outcome": "refused", "reply": "", "message": "Maestro is waiting on a prompt"])
         XCTAssertEqual(
             end(.unreachable("No mux-manager session")),
             ["outcome": "unreachable", "reply": "", "message": "No mux-manager session"])

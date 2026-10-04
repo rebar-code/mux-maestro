@@ -900,14 +900,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         sidebarLayout.keyEquivalentModifierMask = [.command, .control]
         sessionMenu.addItem(sidebarLayout)
         let toggleManager = NSMenuItem(
-            title: "Toggle Manager", action: #selector(actionToggleManager), keyEquivalent: "m")
+            title: "Toggle Maestro", action: #selector(actionToggleManager), keyEquivalent: "m")
         toggleManager.keyEquivalentModifierMask = [.command, .shift]
         sessionMenu.addItem(toggleManager)
-        let talk = NSMenuItem(title: "Talk to Manager", action: #selector(actionTalk), keyEquivalent: "t")
+        let talk = NSMenuItem(title: "Talk to Maestro", action: #selector(actionTalk), keyEquivalent: "t")
         talk.keyEquivalentModifierMask = [.command, .shift]
         sessionMenu.addItem(talk)
         let restartManager = NSMenuItem(
-            title: "Restart Manager Agent", action: #selector(actionRestartManager), keyEquivalent: "")
+            title: "Restart Maestro Agent", action: #selector(actionRestartManager), keyEquivalent: "")
         sessionMenu.addItem(restartManager)
         // ⌘F searches the pane on screen (tmux scrollback); ⌘⇧F opens the search
         // panel, whose scope switch chooses every pane or the selected repo.
@@ -2697,7 +2697,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         completion: @escaping (ManagerTurnOutcome) -> Void = { _ in }
     ) {
         guard let manager = managerController else {
-            completion(.unreachable("Manager not running"))
+            completion(.unreachable("Maestro not running"))
             return
         }
         // The phone follows the same turn. A second call while one runs is
@@ -4370,7 +4370,7 @@ extension AppDelegate: NSToolbarDelegate {
         case Self.tbSidebar:
             return toolbarButton(itemIdentifier, label: "Sidebar", symbol: "sidebar.right", action: #selector(actionToggleSidebar), shortcut: "⌘B")
         case Self.tbManager:
-            let item = toolbarButton(itemIdentifier, label: "Manager", symbol: "sidebar.right", action: #selector(actionToggleManager), shortcut: "⌘⇧M")
+            let item = toolbarButton(itemIdentifier, label: "Maestro", symbol: "sidebar.right", action: #selector(actionToggleManager), shortcut: "⌘⇧M")
             item.image = Self.robotToolbarImage()
             return item
         case Self.tbOpenDir:

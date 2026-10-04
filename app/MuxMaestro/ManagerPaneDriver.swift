@@ -402,7 +402,7 @@ struct ManagerTurnWatcher {
     static let grace: TimeInterval = 6
     /// What a turn that never started says: nothing reached the transcript and
     /// the pane never went busy, so the prompt was not submitted.
-    static let neverStarted = "The manager did not pick up the message"
+    static let neverStarted = "The Maestro did not pick up the message"
     /// Hard ceiling on a single turn.
     static let timeout: TimeInterval = 90
     /// After a permission prompt, how long to wait for the keyboard.
@@ -619,9 +619,9 @@ final class ManagerPaneDriver {
         }
     }
 
-    static let waitingMessage = "Manager is waiting on a prompt"
-    static let busyMessage = "Manager is busy"
-    static let notReadyMessage = "Manager is not ready"
+    static let waitingMessage = "Maestro is waiting on a prompt"
+    static let busyMessage = "Maestro is busy"
+    static let notReadyMessage = "Maestro is not ready"
 
     /// The pane's status now, read apart from any turn: safe on any queue.
     /// nil when the pane has no session yet or its state is not known.
@@ -702,7 +702,7 @@ final class ManagerPaneDriver {
             // multi-line prompt with metacharacters is safe by construction.
             let paste = TmuxCommands.pastePrompt(session: self.config.tmuxSession)
             guard self.tmux(paste.load, stdin: Data(text.utf8)), self.tmux(paste.paste) else {
-                self.report(.unreachable("Could not paste into the manager pane"), to: completion)
+                self.report(.unreachable("Could not paste into the Maestro pane"), to: completion)
                 return
             }
 
@@ -728,7 +728,7 @@ final class ManagerPaneDriver {
                     return
                 }
                 guard self.tmux(["send-keys", "-t", self.config.tmuxSession, "Enter"]) else {
-                    self.finish(.unreachable("Could not send Enter to the manager pane"))
+                    self.finish(.unreachable("Could not send Enter to the Maestro pane"))
                     return
                 }
                 self.poll(generation: generation)

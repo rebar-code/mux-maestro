@@ -154,7 +154,7 @@
 	{/if}
 	<Composer
 		bind:value={manager.draft}
-		label="Ask the manager"
+		label="Ask the Maestro"
 		target="manager"
 		sink={manager.voice}
 		{voiceOn}

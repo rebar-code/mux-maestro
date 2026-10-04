@@ -198,7 +198,7 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
             ("Port", NSGridCell.emptyContentView, port),
             ("Default grouping", NSGridCell.emptyContentView, grouping),
             ("Keep Mac awake", NSGridCell.emptyContentView, keepAwake),
-            ("Run manager agent", NSGridCell.emptyContentView, manager),
+            ("Run Maestro agent", NSGridCell.emptyContentView, manager),
             ("Voice", NSGridCell.emptyContentView, voice),
             ("Voice mode", NSGridCell.emptyContentView, voiceMode),
             ("Voice speaker", NSGridCell.emptyContentView, voiceSpeaker),
