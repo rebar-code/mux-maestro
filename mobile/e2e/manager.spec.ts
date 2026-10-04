@@ -1,7 +1,7 @@
+import { mkdirSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
 import {
 	drag,
-	dragStart,
 	drawer,
 	expectDrawerClosed,
 	expectDrawerOpen,
@@ -9,30 +9,42 @@ import {
 	threadPath,
 	TOKEN,
 	TOKEN_HEADER,
-	touchDrag
+	touchDrag,
+	WIDTH
 } from './helpers';
 
 /** The manager's thread: its chat rows. */
 const said = (page: Page) => page.locator('[data-view="chat"]');
-/** The board: the list below the footer. */
-const sheet = (page: Page) => page.locator('[data-board]');
-/** The footer: the top edge of the board drawer. */
+/** The board: the list on the home's Board tab. */
+const board = (page: Page) => page.locator('[data-board]');
+/** The footer: the text box area. */
 const foot = (page: Page) => page.locator('[data-foot]');
-/** The grabber on the footer's top edge. */
-const grip = (page: Page) => page.locator('[data-grab]');
+const tab = (page: Page, name: string) => page.locator(`[data-tab="${name}"]`);
+const pageOf = (page: Page, name: string) => page.locator(`[data-page="${name}"]`);
 
-/** Raise the footer to a stop with its grabber: 1 open, 2 tall. */
-async function openBoard(page: Page, stop: 1 | 2 = 2): Promise<void> {
-	for (let at = 0; at < stop; at += 1) await grip(page).click();
-	await expect(sheet(page)).toHaveAttribute('data-stop', String(stop));
-	// Let the sheet settle before anything is measured or dragged.
+/** The pager shows its page `index`: 0 Chat, 1 Board. */
+async function expectTab(page: Page, index: number): Promise<void> {
 	await expect
-		.poll(async () => {
-			const first = (await foot(page).boundingBox())?.y;
-			await page.waitForTimeout(80);
-			return (await foot(page).boundingBox())?.y === first;
-		})
-		.toBe(true);
+		.poll(() =>
+			page.locator('.track').evaluate((el) => Math.round(el.getBoundingClientRect().left))
+		)
+		.toBe(index === 0 ? 0 : -index * WIDTH);
+}
+
+/** Show the Board tab, and let the pager come to rest on it. */
+async function openBoard(page: Page): Promise<void> {
+	await tab(page, 'board').click();
+	await expect(pageOf(page, 'board')).not.toHaveAttribute('inert', '');
+	await expectTab(page, 1);
+}
+
+/** Screenshots are taken only when SHOTS names a directory outside the repo. */
+async function shot(page: Page, name: string): Promise<void> {
+	const dir = process.env.SHOTS;
+	if (!dir) return;
+	mkdirSync(dir, { recursive: true });
+	await page.waitForTimeout(250);
+	await page.screenshot({ path: `${dir}/${name}.png` });
 }
 const box = (page: Page) => page.getByRole('textbox', { name: 'Ask the Maestro' });
 /**
@@ -128,7 +140,7 @@ test('a turn typed on the Mac shows on the phone, and holds Send until it ends',
 
 test('a "Needs you" card opens its thread', async ({ page }) => {
 	await fresh(page);
-	await openBoard(page, 1);
+	await openBoard(page);
 	await page.locator('a.item[data-thread="localhost:1"]').click();
 	await expect(page).toHaveURL(/\/t\/localhost(:|%3A)1$/);
 	await expect(page.locator('.tbar .title b')).toHaveText('acme-app · checkout-fix');
@@ -169,7 +181,8 @@ test('a left swipe dismisses a review item, on the Mac too', async ({ page }) =>
 	// It did not open the thread, and it stays gone.
 	await expect(page).toHaveURL(/\/$/);
 	await page.reload();
-	await expect(grip(page)).toContainText('2 need you · 2 updates');
+	await expect(board(page).locator('[data-update]')).toHaveCount(2);
+	await expect(board(page).locator('.sect').first()).toHaveText('Needs you · 2');
 	await expect(review(page)).toHaveCount(0);
 });
 
@@ -179,11 +192,12 @@ test('the dismiss button does the same as the swipe', async ({ page }) => {
 	await page.getByRole('button', { name: 'Dismiss billing · invoices-pdf' }).click();
 	await expect(review(page)).toHaveCount(0);
 	await page.reload();
-	await expect(grip(page)).toContainText('2 need you · 2 updates');
+	await expect(board(page).locator('[data-update]')).toHaveCount(2);
+	await expect(board(page).locator('.sect').first()).toHaveText('Needs you · 2');
 	await expect(review(page)).toHaveCount(0);
 });
 
-test('a right swipe on the home still opens the sidebar, over a review card too', async ({
+test('a right swipe over a review card turns back to Chat and leaves the card', async ({
 	page
 }) => {
 	await fresh(page);
@@ -191,7 +205,9 @@ test('a right swipe on the home still opens the sidebar, over a review card too'
 	const card = await review(page).boundingBox();
 	if (!card) throw new Error('no review card');
 	await drag(page, [60, card.y + 20], [300, card.y + 24]);
-	await expectDrawerOpen(page);
+	await expectTab(page, 0);
+	await expect(tab(page, 'main')).toHaveAttribute('aria-selected', 'true');
+	await expectDrawerClosed(page);
 	await expect(review(page)).toHaveCount(1);
 });
 
@@ -408,6 +424,7 @@ test('the updates are listed, and one with a thread opens it', async ({ page }) 
 	await expect(updates.first()).toContainText('Search box wired to the new index');
 	await expect(updates.nth(1)).toContainText('Nightly build is green');
 	await openBoard(page);
+	await expect(updates.first()).toBeInViewport();
 	await updates.first().click();
 	await expect(page).toHaveURL(/\/t\/localhost(:|%3A)3$/);
 });
@@ -530,113 +547,120 @@ test('thinking: with no spinner line the phrases rotate, with a timer', async ({
 	await expect(thinking).toHaveText(/^Reading the threads… [4-7]s$/, { timeout: 8000 });
 });
 
-/** How much of the board shows under the footer, in pixels. */
-const boardHeight = async (page: Page): Promise<number> =>
-	Math.round((await sheet(page).boundingBox())?.height ?? 0);
 const footTop = async (page: Page): Promise<number> => (await foot(page).boundingBox())?.y ?? 0;
-const settled = async (page: Page, stop: string): Promise<void> => {
-	await expect(sheet(page)).toHaveAttribute('data-stop', stop);
-	await page.waitForTimeout(450);
-};
 
-test('the board is under the footer: off screen at rest, then open, then 70% tall', async ({
-	page
-}) => {
+test('the home has two tabs, Chat and Board, in the strip a thread uses', async ({ page }) => {
 	await fresh(page);
-	// Rest: the footer is the last thing on screen, and the board has no height.
-	await expect(sheet(page)).toHaveAttribute('data-stop', '0');
-	expect(await boardHeight(page)).toBe(0);
-	const rest = await foot(page).boundingBox();
-	expect(Math.round((rest?.y ?? 0) + (rest?.height ?? 0))).toBe(844);
-	await expect(sheet(page)).toHaveAttribute('inert', '');
-	// The grabber on its top edge says what is under it.
-	await expect(grip(page)).toContainText('2 need you · 1 review · 2 updates');
-	const grab = await grip(page).boundingBox();
-	expect(Math.abs((grab?.y ?? 0) - (rest?.y ?? 0))).toBeLessThan(3);
-	const thread = (await said(page).boundingBox())?.height ?? 0;
+	const tabs = page.locator('.tabs .seg [role="tab"]');
+	await expect(tabs).toHaveText([/Chat\s*⇄/, 'Board']);
+	await expect(tab(page, 'main')).toHaveAttribute('aria-selected', 'true');
+	await expect(tab(page, 'board')).toHaveAttribute('aria-selected', 'false');
+	await expect(pageOf(page, 'board')).toHaveAttribute('inert', '');
+	// No drawer under the footer: the footer is the text box.
+	await expect(page.locator('[data-grab], [data-sheet]')).toHaveCount(0);
+	await expect(foot(page).locator('[data-stop]')).toHaveCount(0);
 
-	// Open: the footer itself has moved up, and the first cards show below it.
-	await openBoard(page, 1);
-	const open = await boardHeight(page);
-	expect(open).toBe(Math.round(844 * 0.3));
-	expect(Math.round(await footTop(page))).toBe(Math.round((rest?.y ?? 0) - open));
-	const board = await sheet(page).boundingBox();
-	const raised = await foot(page).boundingBox();
-	// The board starts where the footer ends, and ends at the bottom of the screen.
-	expect(Math.round(board?.y ?? 0)).toBe(Math.round((raised?.y ?? 0) + (raised?.height ?? 0)));
-	expect(Math.round((board?.y ?? 0) + (board?.height ?? 0))).toBe(844);
+	await tab(page, 'board').click();
+	await expectTab(page, 1);
+	await expect(tab(page, 'board')).toHaveAttribute('aria-selected', 'true');
+	await expect(tab(page, 'main')).toHaveAttribute('aria-selected', 'false');
+	await expect(pageOf(page, 'board')).not.toHaveAttribute('inert', '');
 	await expect(page.locator('a.item[data-thread="localhost:1"]')).toBeInViewport();
-	// The text box moved with the footer and is still on screen; the thread got shorter.
-	await expect(box(page)).toBeInViewport();
-	await expect(page.locator('[data-voicebar]')).toBeInViewport();
-	expect((await said(page).boundingBox())?.height ?? 0).toBeLessThan(thread - open + 2);
+	await expect(review(page)).toBeInViewport();
+	// The board sits between the tabs and the footer.
+	const strip = await page.locator('.tabs').boundingBox();
+	const list = await board(page).boundingBox();
+	expect(list?.y ?? 0).toBeGreaterThanOrEqual((strip?.y ?? 0) + (strip?.height ?? 0) - 1);
+	expect((list?.y ?? 0) + (list?.height ?? 0)).toBeLessThanOrEqual((await footTop(page)) + 1);
+	await shot(page, 'maestro-board-tab');
 
-	// Tall: the board fills 70% of the screen.
-	await grip(page).click();
-	await settled(page, '2');
-	expect(await boardHeight(page)).toBeGreaterThan(560);
-	expect(await boardHeight(page)).toBeLessThanOrEqual(Math.round(844 * 0.7));
-	await expect(box(page)).toBeInViewport();
-	// The counters stay where they are.
-	await expect(page.locator('.chip').first()).toBeInViewport();
-
-	// From the top the grabber goes back to rest.
-	await grip(page).click();
-	await settled(page, '0');
-	expect(await boardHeight(page)).toBe(0);
-	expect(await foot(page).boundingBox()).toEqual(rest);
+	await tab(page, 'main').click();
+	await expectTab(page, 0);
+	await expect(tab(page, 'main')).toHaveAttribute('aria-selected', 'true');
+	await expect(said(page).locator('.a').first()).toBeInViewport();
 });
 
-test('a swipe up on the footer raises it; a swipe down steps back', async ({ page }) => {
-	await fresh(page);
-	const rest = await footTop(page);
-	// On the voice controls, not the grabber: the whole footer is the handle.
-	const bar = await page.locator('[data-voicebar]').boundingBox();
-	const x = 195;
-	const y = (bar?.y ?? 0) + 8;
-
-	// It follows the finger before it settles.
-	await dragStart(page, [x, y], [x, y - 120]);
-	expect(await footTop(page)).toBeLessThan(rest - 90);
-	expect(await footTop(page)).toBeGreaterThan(rest - 125);
-	expect(await boardHeight(page)).toBeGreaterThan(90);
-	await page.mouse.up();
-	await settled(page, '1');
-
-	// A second swipe up on the footer pulls it to the tall stop.
-	let top = await footTop(page);
-	await drag(page, [x, top + 40], [x, top - 60]);
-	await settled(page, '2');
-
-	// Down steps back one stop at a time.
-	top = await footTop(page);
-	await drag(page, [x, top + 40], [x, top + 160]);
-	await settled(page, '1');
-	top = await footTop(page);
-	await drag(page, [x, top + 40], [x, top + 160]);
-	await settled(page, '0');
-	expect(await footTop(page)).toBe(rest);
-
-	// A small move springs back, and a swipe down at rest does nothing.
-	await drag(page, [x, y], [x, y - 14]);
-	await settled(page, '0');
-	await drag(page, [x, y], [x, y + 60]);
-	await settled(page, '0');
-	expect(await footTop(page)).toBe(rest);
-	expect(await boardHeight(page)).toBe(0);
-});
-
-test('a drag on a footer control moves the drawer and does not press it; a tap presses it', async ({
+test('a left swipe on the chat shows the board; a right swipe comes back, then opens the sidebar', async ({
 	page
 }) => {
 	await fresh(page);
-	// A drag that starts on the grabber raises the footer one stop, not two.
-	const grab = await grip(page).boundingBox();
-	const gx = (grab?.x ?? 0) + (grab?.width ?? 0) / 2;
-	const gy = (grab?.y ?? 0) + (grab?.height ?? 0) / 2;
-	await drag(page, [gx, gy], [gx, gy - 90]);
-	await settled(page, '1');
-	// A drag that starts on Send moves the drawer and sends nothing.
+	await expect(said(page).locator('.a').first()).toBeVisible();
+	await drag(page, [320, 420], [90, 424]);
+	await expectTab(page, 1);
+	await expect(tab(page, 'board')).toHaveAttribute('aria-selected', 'true');
+	await expectDrawerClosed(page);
+
+	// The last page stays.
+	await drag(page, [320, 420], [90, 424]);
+	await expectTab(page, 1);
+
+	await drag(page, [70, 420], [300, 424]);
+	await expectTab(page, 0);
+	await expect(tab(page, 'main')).toHaveAttribute('aria-selected', 'true');
+	await expectDrawerClosed(page);
+
+	// From Chat a right swipe opens the sidebar.
+	await drag(page, [70, 420], [300, 424]);
+	await expectDrawerOpen(page);
+	await expectTab(page, 0);
+});
+
+test('a listed thread has no Board tab, and the panel has none either', async ({ page }) => {
+	await fresh(page, threadPath('localhost:3'));
+	await expect(page.locator('.tbar .title b')).toHaveText('docs-site · search');
+	await expect(tab(page, 'main')).toBeVisible();
+	await expect(tab(page, 'board')).toHaveCount(0);
+	await expect(pageOf(page, 'board')).toHaveCount(0);
+
+	// The panel draws its own board, under its text box, and has no tab for it.
+	const panel = page.locator('[data-panel]');
+	await page.locator('[data-maestro]').click();
+	await expect(panel).toHaveAttribute('data-stop', '1');
+	await panel.locator('[data-panel-grab]').click();
+	await expect(panel).toHaveAttribute('data-stop', '2');
+	await expect(panel.locator('.tabs')).toBeVisible();
+	await expect(panel.locator('[data-tab="board"]')).toHaveCount(0);
+	await expect(panel.locator('[data-tab]')).toHaveCount(1);
+});
+
+test('an empty board says Nothing waiting', async ({ page }) => {
+	await fresh(page);
+	await openBoard(page);
+	const blank = page.locator('[data-board-blank]');
+	await expect(review(page)).toHaveCount(1);
+	await expect(blank).toHaveCount(0);
+
+	// Each thing on the board goes, live: the review item, the updates, the threads that wait.
+	await page.getByRole('button', { name: 'Dismiss billing · invoices-pdf' }).click();
+	await page.request.post('/__fixture/no-updates');
+	await page.request.post('/__fixture/status?id=localhost:1&value=idle');
+	await expect(blank).toHaveCount(0);
+	await page.request.post('/__fixture/status?id=devbox:2&value=idle');
+	await expect(blank).toHaveText('Nothing waiting');
+	await expect(blank).toBeInViewport();
+	await expect(board(page).locator('a.item, [data-review], [data-update], .sect')).toHaveCount(0);
+
+	// A thread that waits again takes its place.
+	await page.request.post('/__fixture/wait?id=localhost:3');
+	await expect(page.locator('a.item[data-thread="localhost:3"]')).toBeVisible();
+	await expect(blank).toHaveCount(0);
+});
+
+test('Refresh on the Board tab asks the Mac for the board again', async ({ page }) => {
+	await fresh(page);
+	await openBoard(page);
+	await expect(review(page)).toHaveCount(1);
+	const asked = page.waitForRequest(
+		(request) => new URL(request.url()).pathname === '/api/manager' && request.method() === 'GET',
+		{ timeout: 3000 }
+	);
+	await page.getByRole('button', { name: 'Refresh' }).click();
+	await asked;
+	await expect(review(page)).toHaveCount(1);
+});
+
+test('a drag that starts on Send does not press it; a tap does', async ({ page }) => {
+	await fresh(page);
 	let turns = 0;
 	page.on('request', (request) => {
 		if (request.url().endsWith('/api/manager/text')) turns += 1;
@@ -646,48 +670,33 @@ test('a drag on a footer control moves the drawer and does not press it; a tap p
 	const send = await page.getByRole('button', { name: /^Send(ing)?$/ }).boundingBox();
 	const sx = (send?.x ?? 0) + (send?.width ?? 0) / 2;
 	const sy = (send?.y ?? 0) + (send?.height ?? 0) / 2;
-	await drag(page, [sx, sy], [sx, sy + 120]);
-	await settled(page, '0');
+	const rest = await footTop(page);
+	await drag(page, [sx, sy], [sx, sy - 120]);
+	await page.waitForTimeout(300);
 	expect(turns).toBe(0);
 	await expect(box(page)).toHaveValue('what needs me?');
+	expect(await footTop(page)).toBe(rest);
 	// A tap on it still sends.
 	await page.getByRole('button', { name: /^Send(ing)?$/ }).click();
 	await expect(said(page).locator('.a').last()).toContainText('2 threads need you');
 	expect(turns).toBe(1);
 });
 
-test('typing does not move the drawer, and with the keyboard up the board stays shut', async ({
-	page
-}) => {
+test('a drag in the text box leaves the footer where it is, and typing works', async ({ page }) => {
 	await fresh(page);
 	const rest = await footTop(page);
-	// A drag that begins in the text box is not the drawer's.
 	const input = await box(page).boundingBox();
 	const ix = (input?.x ?? 0) + 60;
 	const iy = (input?.y ?? 0) + (input?.height ?? 0) / 2;
 	await drag(page, [ix, iy], [ix, iy - 140]);
-	await settled(page, '0');
+	await page.waitForTimeout(300);
 	expect(await footTop(page)).toBe(rest);
+	await expectTab(page, 0);
 
-	// Open the board, then take the keyboard: the board shuts.
-	await openBoard(page, 1);
 	await box(page).focus();
-	await settled(page, '0');
-	expect(await boardHeight(page)).toBe(0);
-	// While the box has the keyboard, neither the grabber nor a swipe opens it.
-	await grip(page).dispatchEvent('click');
-	await expect(sheet(page)).toHaveAttribute('data-stop', '0');
-	const bar = await page.locator('[data-voicebar]').boundingBox();
-	await drag(page, [195, (bar?.y ?? 0) + 8], [195, (bar?.y ?? 0) - 110]);
-	await settled(page, '0');
 	await box(page).pressSequentially('what needs me?');
 	await expect(box(page)).toHaveValue('what needs me?');
-	await expect(sheet(page)).toHaveAttribute('data-stop', '0');
-
-	// The keyboard closes: the drawer works again.
-	await box(page).blur();
-	await grip(page).click();
-	await settled(page, '1');
+	await expectTab(page, 0);
 });
 
 test('with the keyboard open the footer sits on the keyboard', async ({ page }) => {
@@ -698,13 +707,15 @@ test('with the keyboard open the footer sits on the keyboard', async ({ page }) 
 	await page.evaluate(() => {
 		const visible = window.visualViewport;
 		if (!visible) throw new Error('no visual viewport');
-		Object.defineProperty(visible, 'height', { configurable: true, get: () => 844 - 336 });
+		Object.defineProperty(visible, 'height', {
+			configurable: true,
+			get: () => 844 - 336
+		});
 		visible.dispatchEvent(new Event('resize'));
 	});
 	await box(page).focus();
 	const raised = await foot(page).boundingBox();
 	expect(Math.round((raised?.y ?? 0) + (raised?.height ?? 0))).toBe(844 - 336);
-	expect(await boardHeight(page)).toBe(0);
 	// The thread is still there above it, at its latest message.
 	await expect(said(page).locator('.a').last()).toBeInViewport();
 	await expect(page.locator('.chip').first()).toBeInViewport();
@@ -713,19 +724,19 @@ test('with the keyboard open the footer sits on the keyboard', async ({ page }) 
 	await page.evaluate(() => {
 		const visible = window.visualViewport;
 		if (!visible) throw new Error('no visual viewport');
-		Object.defineProperty(visible, 'height', { configurable: true, get: () => 844 });
+		Object.defineProperty(visible, 'height', {
+			configurable: true,
+			get: () => 844
+		});
 		visible.dispatchEvent(new Event('resize'));
 	});
 	await box(page).blur();
 	const back = await foot(page).boundingBox();
 	expect(Math.round((back?.y ?? 0) + (back?.height ?? 0))).toBe(844);
 });
-
-test("the board's list scrolls only at the tall stop, and scrolls back before the drawer steps down", async ({
-	page
-}) => {
+test('a long board scrolls under a finger, and stays on its tab', async ({ page }) => {
 	await fresh(page);
-	// Enough cards that the list is longer than the tall board.
+	// Enough cards that the list is longer than the page.
 	for (const id of [
 		'localhost:3',
 		'localhost:4',
@@ -737,114 +748,14 @@ test("the board's list scrolls only at the tall stop, and scrolls back before th
 	]) {
 		await page.request.post(`/__fixture/wait?id=${id}`);
 	}
-	await expect(grip(page)).toContainText('9 need you');
-	const scrolled = (): Promise<number> => sheet(page).evaluate((el) => el.scrollTop);
-	const top = async (): Promise<number> => (await sheet(page).boundingBox())?.y ?? 0;
-
-	// Open: a swipe up on the list moves the drawer, not the list.
-	await openBoard(page, 1);
-	await drag(page, [195, (await top()) + 160], [195, (await top()) + 60]);
-	await settled(page, '2');
+	await openBoard(page);
+	await expect(board(page).locator('.sect').first()).toHaveText('Needs you · 9');
+	const scrolled = (): Promise<number> => board(page).evaluate((el) => el.scrollTop);
 	expect(await scrolled()).toBe(0);
-
-	// Tall: a swipe up scrolls the list.
-	const tall = await top();
-	await drag(page, [195, tall + 400], [195, tall + 200]);
-	await expect(sheet(page)).toHaveAttribute('data-stop', '2');
-	expect(await scrolled()).toBeGreaterThan(120);
-
-	// A swipe down scrolls it back first; the drawer stays tall.
-	await drag(page, [195, tall + 200], [195, tall + 520]);
-	await expect.poll(scrolled).toBe(0);
-	await expect(sheet(page)).toHaveAttribute('data-stop', '2');
-	// From the top of the list, the next swipe down steps the drawer back.
-	await drag(page, [195, tall + 200], [195, tall + 320]);
-	await settled(page, '1');
-});
-
-test('the thread shrinks as the footer rises and stays at its latest message', async ({ page }) => {
-	await fresh(page);
-	const reply = (
-		'A long reply to fill the thread. ' + 'More detail follows here. '.repeat(90)
-	).trim();
-	await page.request.post(
-		`/__fixture/mac-turn?text=${encodeURIComponent('summarise everything')}&reply=${encodeURIComponent(reply)}&ms=1`
-	);
-	await expect(said(page).locator('.a').last()).toHaveText(reply);
-	const gap = (): Promise<number> =>
-		said(page).evaluate((el) => Math.round(el.scrollHeight - el.scrollTop - el.clientHeight));
-	await expect.poll(gap).toBeLessThan(3);
-	const before = (await said(page).boundingBox())?.height ?? 0;
-
-	for (const stop of [1, 2] as const) {
-		await grip(page).click();
-		await settled(page, String(stop));
-		// Shorter, and still showing the end of the reply.
-		expect((await said(page).boundingBox())?.height ?? 0).toBeLessThan(before);
-		await expect.poll(gap).toBeLessThan(3);
-	}
-	await grip(page).click();
-	await settled(page, '0');
-	await expect.poll(gap).toBeLessThan(3);
-	expect((await said(page).boundingBox())?.height ?? 0).toBe(before);
-});
-
-test('a swipe up on the thread at its end raises the footer', async ({ page }) => {
-	await fresh(page);
-	await expect(said(page).locator('.a').first()).toBeVisible();
-	await expect(sheet(page)).toHaveAttribute('data-stop', '0');
-	// A swipe down there does nothing to the board.
-	await touchDrag(page, [195, 300], [195, 420]);
-	await expect(sheet(page)).toHaveAttribute('data-stop', '0');
-	await touchDrag(page, [195, 420], [195, 300]);
-	await expect(sheet(page)).toHaveAttribute('data-stop', '1');
-});
-
-test('the drawer does not fight the sidebar swipe or the toggle', async ({ page }) => {
-	await fresh(page);
-	await openBoard(page, 1);
-	const top = await footTop(page);
-	// A sideways drag on the footer, and on the board, opens the sidebar and leaves the drawer alone.
-	await drag(page, [60, top + 50], [300, top + 56]);
-	await expectDrawerOpen(page);
-	await expect(sheet(page)).toHaveAttribute('data-stop', '1');
-	await drag(page, [300, 300], [60, 304]);
-	await expectDrawerClosed(page);
-	const board = (await sheet(page).boundingBox())?.y ?? 0;
-	await drag(page, [60, board + 150], [300, board + 156]);
-	await expectDrawerOpen(page);
-	await expect(sheet(page)).toHaveAttribute('data-stop', '1');
-	await drag(page, [300, 300], [60, 304]);
-	await expectDrawerClosed(page);
-	// The toggle above it still switches.
-	await page.locator('[data-tab="main"]').click();
-	await expect(page.locator('[data-tab="main"]')).toHaveText(/Terminal\s*⇄/);
-	await expect(sheet(page)).toHaveAttribute('data-stop', '1');
-});
-
-test('no empty band under the board at any stop', async ({ page }) => {
-	await fresh(page);
-	for (const stop of ['0', '1', '2']) {
-		if (stop !== '0') await grip(page).click();
-		await settled(page, stop);
-		// The last thing on screen ends where the screen ends, and nothing is taller than it.
-		const last = stop === '0' ? await foot(page).boundingBox() : await sheet(page).boundingBox();
-		expect(Math.round((last?.y ?? 0) + (last?.height ?? 0))).toBe(844);
-		expect(await page.evaluate(() => document.documentElement.scrollHeight)).toBe(844);
-	}
-	// The bottom inset is counted once: on the footer at rest, on the board when it shows.
-	const rule = await page.evaluate(() => {
-		const found: string[] = [];
-		for (const sheet of [...document.styleSheets]) {
-			for (const rule of [...sheet.cssRules]) {
-				if (rule instanceof CSSStyleRule && /\.compose\.|\.end\./.test(rule.selectorText)) {
-					if (rule.cssText.includes('safe-area-inset-bottom')) found.push(rule.cssText);
-				}
-			}
-		}
-		return found.join('\n');
-	});
-	expect(rule).toContain('var(--board');
+	await touchDrag(page, [195, 600], [195, 300]);
+	await expect.poll(scrolled).toBeGreaterThan(120);
+	await expectTab(page, 1);
+	await expect(page).toHaveURL(/\/$/);
 });
 
 test('layout: the page ends at the bottom of the screen, with no empty band', async ({ page }) => {

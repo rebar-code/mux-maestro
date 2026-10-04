@@ -5,6 +5,7 @@
 	import ArtifactsPage from './ArtifactsPage.svelte';
 	import AttachButton from './AttachButton.svelte';
 	import AttachTiles from './AttachTiles.svelte';
+	import BoardList from './BoardList.svelte';
 	import Composer from './Composer.svelte';
 	import { Find } from './find.svelte';
 	import FindBar from './FindBar.svelte';
@@ -16,6 +17,7 @@
 	import LiveTerminal from './LiveTerminal.svelte';
 	import { LiveTerm } from './liveterm.svelte';
 	import { maestro } from './maestro.svelte';
+	import { manager } from './manager.svelte';
 	import MaestroBack from './MaestroBack.svelte';
 	import Marked from './Marked.svelte';
 	import NextBar from './NextBar.svelte';
@@ -32,6 +34,7 @@
 	import { SERVERS, Servers } from './servers.svelte';
 	import ServersPage from './ServersPage.svelte';
 	import SlashList from './SlashList.svelte';
+	import { BOARD, MAIN, viewTabs } from './tabs';
 	import { text } from './textsize.svelte';
 	import { ThreadFeed, type Mode } from './thread.svelte';
 	import type { ArtifactFile, ChatMessage } from './types';
@@ -87,20 +90,28 @@
 	const turn = (index: number): void => {
 		if (!embedded) ui.goTo(index);
 	};
-	const MAIN = 'main';
 	// svelte-ignore state_referenced_locally
 	const listed = given === undefined;
-	// Files and servers belong to a listed thread. The manager pane is not one.
-	const artifactsOn = $derived(listed && can('artifacts'));
-	const serversOn = $derived(listed && can('localServers'));
-	// The pages of this view, left to right. A tab whose feature is off on the
-	// Mac is not there at all. Joined, so the same tabs are the same value and
-	// a config that says nothing new does not send the pager back to Chat.
+	// The pages of this view, left to right: `viewTabs` has the rule. Files and
+	// servers belong to a listed thread; the Maestro's page has the board
+	// instead. Joined, so the same tabs are the same value and a config that
+	// says nothing new does not send the pager back to Chat.
 	const tabNames = $derived(
-		[MAIN, ...(artifactsOn ? [ARTIFACTS] : []), ...(serversOn ? [SERVERS] : [])].join(' ')
+		viewTabs({
+			listed,
+			embedded,
+			artifacts: can('artifacts'),
+			servers: can('localServers')
+		}).join(' ')
 	);
 	const tabs = $derived(tabNames.split(' '));
-	const LABELS: Record<string, string> = { [ARTIFACTS]: 'Artifacts', [SERVERS]: 'Servers' };
+	const artifactsOn = $derived(tabs.includes(ARTIFACTS));
+	const serversOn = $derived(tabs.includes(SERVERS));
+	const LABELS: Record<string, string> = {
+		[ARTIFACTS]: 'Artifacts',
+		[SERVERS]: 'Servers',
+		[BOARD]: 'Board'
+	};
 
 	// svelte-ignore state_referenced_locally
 	const feed = given ?? new ThreadFeed(id);
@@ -348,6 +359,16 @@
 					<ArtifactsPage {artifacts} />
 				{:else if tab === SERVERS}
 					<ServersPage {servers} />
+				{:else if tab === BOARD}
+					<div
+						class="scroll board"
+						data-pull={BOARD}
+						data-board
+						{@attach pullToRefresh(BOARD, manager.load)}
+					>
+						<PullIndicator key={BOARD} />
+						<BoardList blank />
+					</div>
 				{:else if mode === 'chat'}
 					<div
 						class="scroll"
@@ -638,6 +659,10 @@
 		height: 100%;
 		/* An open file lies over its page. */
 		position: relative;
+	}
+
+	.board {
+		background: var(--mgr);
 	}
 
 	.chat {
