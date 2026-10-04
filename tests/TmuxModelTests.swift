@@ -11,8 +11,8 @@ final class TmuxModelTests: XCTestCase {
     func testParseSessions() {
         let out = [
             "my-site\(US)1",
-            "front-range\(US)0",
-            "pastors-workshop\(US)0",
+            "acme-app\(US)0",
+            "widget-shop\(US)0",
         ].joined(separator: "\n") + "\n"
 
         let rows = TmuxModel.parseSessions(out)

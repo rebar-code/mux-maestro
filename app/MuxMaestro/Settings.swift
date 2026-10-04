@@ -297,6 +297,19 @@ enum Settings {
         defaults.set(on, forKey: "phone.keepAwake")
     }
 
+    /// Where the phone's own log is kept (`MobileLog`). There is no row for it
+    /// in Settings: `defaults write is.rebar.MuxMaestro phone.logDir <dir>`
+    /// moves it, and `mux phone-log` reads the same key.
+    static func phoneLogDirectory(
+        defaults: UserDefaults = .standard,
+        support: URL? = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+    ) -> URL? {
+        if let path = defaults.string(forKey: "phone.logDir"), !path.isEmpty {
+            return URL(fileURLWithPath: (path as NSString).expandingTildeInPath, isDirectory: true)
+        }
+        return support?.appendingPathComponent("MuxMaestro/logs", isDirectory: true)
+    }
+
     /// One switch per phone feature. Each is off until turned on.
     static func phoneCapability(_ capability: MobileCapability, defaults: UserDefaults = .standard) -> Bool {
         defaults.bool(forKey: "phone.capability.\(capability.rawValue)")

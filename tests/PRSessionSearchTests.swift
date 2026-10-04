@@ -22,12 +22,12 @@ final class PRSessionSearchTests: XCTestCase {
         let out = """
         /a/1.jsonl:"prNumber":784,"prUrl":"https://github.com/o/acme-app/pull/784","prRepository":"o/acme-app"
         /a/1.jsonl:"prNumber":784,"prUrl":"https://github.com/o/other/pull/784"
-        /b/2.jsonl:github.com/o/frw/pull/784"
+        /b/2.jsonl:github.com/o/widget-shop/pull/784"
         /c/3.jsonl:no url here
         """
         let parsed = PRSessionSearch.parseMatches(out)
         XCTAssertEqual(parsed.map(\.path), ["/a/1.jsonl", "/b/2.jsonl"])
-        XCTAssertEqual(parsed.map(\.slug), ["o/acme-app", "o/frw"])
+        XCTAssertEqual(parsed.map(\.slug), ["o/acme-app", "o/widget-shop"])
     }
 
     func testDedupeKeepsNewestPerConversation() {
@@ -85,20 +85,20 @@ final class PRSessionSearchTests: XCTestCase {
         ])
         // A different PR whose number starts with 784.
         try write("claude/-proj/\(other).jsonl", [
-            #"{"type":"user","cwd":"/Users/j/code/frw"}"#,
-            #"{"type":"pr-link","prNumber":7840,"prUrl":"https://github.com/o/frw/pull/7840"}"#,
+            #"{"type":"user","cwd":"/Users/j/code/widget-shop"}"#,
+            #"{"type":"pr-link","prNumber":7840,"prUrl":"https://github.com/o/widget-shop/pull/7840"}"#,
         ])
         // Subagent transcripts are not resumable.
         try write("claude/-proj/\(linked)/subagents/agent-a1.jsonl", [
             #"{"cwd":"/x","type":"pr-link","prNumber":784,"prUrl":"https://github.com/o/acme-app/pull/784"}"#,
         ])
         try write("codex/2026/09/29/rollout-a.jsonl", [
-            #"{"type":"session_meta","payload":{"session_id":"01a0dd8e-98fb-7902-9924-bf7c90dfc4fb","cwd":"/Users/j/code/frw"}}"#,
-            #"{"type":"event","text":"opened https://github.com/o/frw/pull/784."}"#,
+            #"{"type":"session_meta","payload":{"session_id":"01a0dd8e-98fb-7902-9924-bf7c90dfc4fb","cwd":"/Users/j/code/widget-shop"}}"#,
+            #"{"type":"event","text":"opened https://github.com/o/widget-shop/pull/784."}"#,
         ])
         try write("codex/2026/09/29/rollout-b.jsonl", [
-            #"{"type":"session_meta","payload":{"session_id":"02","cwd":"/Users/j/code/frw"}}"#,
-            #"{"type":"event","text":"https://github.com/o/frw/pull/7841"}"#,
+            #"{"type":"session_meta","payload":{"session_id":"02","cwd":"/Users/j/code/widget-shop"}}"#,
+            #"{"type":"event","text":"https://github.com/o/widget-shop/pull/7841"}"#,
         ])
 
         let hits = PRSessionSearch.search(
@@ -108,7 +108,7 @@ final class PRSessionSearchTests: XCTestCase {
         let summary = hits.map { "\($0.agent.rawValue) \($0.sessionId) \($0.slug) \($0.cwd)" }.sorted()
         XCTAssertEqual(summary, [
             "claude \(linked) o/acme-app /Users/j/code/acme-app",
-            "codex 01a0dd8e-98fb-7902-9924-bf7c90dfc4fb o/frw /Users/j/code/frw",
+            "codex 01a0dd8e-98fb-7902-9924-bf7c90dfc4fb o/widget-shop /Users/j/code/widget-shop",
         ])
     }
 

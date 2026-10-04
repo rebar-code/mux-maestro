@@ -30,6 +30,11 @@
 // /__fixture/terminal (what the live terminal's sockets were sent, and how they were opened),
 // /__fixture/terminal-drop (cut every live socket), /__fixture/terminal-say?text=,
 // /__fixture/terminal-refuse?code= (close the next sockets with that code; 0 to stop)
+// /__fixture/requests (GET too: the request list as the Mac holds it),
+// /__fixture/requests-mode?value=ok|corrupt (the list file does not parse: reads and writes answer 500),
+// /__fixture/requests-fail?status=&error= (the next state write fails that way),
+// /__fixture/requests-set?id=&state= (the agent changed a row behind the phone's back)
+// /__fixture/logs (GET or POST: every batch of the phone log the phone sent to /api/log)
 //
 // Every /api/ request needs the header `X-MuxMaestro-Token: demo-token`.
 import { createHash } from 'node:crypto';
@@ -556,6 +561,86 @@ const LONG_ID = 'devbox:5';
 // A pane with 500 numbered, coloured lines of scrollback.
 const LOG_ID = 'buildbox:8';
 const E = '\x1b';
+// The things the human asked agents for, as the Mac's request list holds them.
+// `history` is how each got to its state, oldest first; entries are only appended.
+const ask = (at, verbatim) => ({ at, by: 'me', verbatim });
+const agent = (at, note) => ({ at, by: 'maestro', note });
+const REQUEST_HISTORY = {
+	'req-012': [
+		ask('2026-10-03', 'The checkout test fails about one run in five. Find out why and fix it.'),
+		agent(
+			'2026-10-03',
+			'The tax row renders after the total is read. The test now waits for it. PR is open.'
+		)
+	],
+	'req-013': [
+		ask('2026-10-03', 'Rotate the staging deploy keys before they expire.'),
+		agent('2026-10-03', 'Blocked: the new keys are not issued yet.')
+	],
+	'req-016': [
+		ask(
+			'2026-10-03',
+			'The CSV export runs out of memory on big accounts. Make it stream the rows instead of building the whole file first.'
+		),
+		agent('2026-10-03', 'Split the export into pages of 1,000 rows, one file per page.'),
+		ask('2026-10-04', 'No, one file, streamed. Ten files do not help the people who download it.'),
+		agent(
+			'2026-10-04',
+			'I misread the ask as paging. Removed the pages; the export now streams one file row by row.'
+		)
+	],
+	'req-018': [
+		ask('2026-09-28', 'Check the contrast on the settings page.'),
+		ask('2026-10-04', 'Still wanted, but after the release. Park it until then.'),
+		agent('2026-10-04', 'Parked until after the release.')
+	]
+};
+const REQUESTS = {
+	schema: 2,
+	updated: '2026-10-04T16:20:00Z',
+	requests: [
+		['req-011', 'Add proration to plan changes', 'acme-app', '2026-10-03', 'done'],
+		['req-012', 'Fix the flaky checkout test', 'acme-app', '2026-10-03', 'review'],
+		['req-013', 'Rotate the staging deploy keys', 'devbox', '2026-10-03', 'blocked'],
+		[
+			'req-014',
+			'Shorten every onboarding step label to two words',
+			'acme-app',
+			'2026-10-03',
+			'todo'
+		],
+		['req-015', 'Move the nightly backups to the new bucket', 'devbox', '2026-10-03', 'done'],
+		[
+			'req-016',
+			'Stream the CSV export instead of buffering it',
+			'acme-app',
+			'2026-10-04',
+			'in_progress'
+		],
+		['req-017', 'Find why the build cache misses on every run', 'devbox', '2026-10-04', 'todo'],
+		[
+			'req-018',
+			'Audit contrast on the settings page',
+			'acme-app',
+			'earlier, restated 2026-10-04',
+			'parked'
+		],
+		['req-019', 'Turn on log retention for the worker', 'devbox', '2026-10-04', 'in_progress']
+	].map(([id, title, project, asked, state]) => ({
+		id,
+		title,
+		project,
+		asked,
+		state,
+		detail: `Notes for ${id} that the phone does not show.`,
+		blocked_by: state === 'blocked' ? 'Waiting on new keys from the host provider' : null,
+		history: REQUEST_HISTORY[id] ?? [ask(asked, `${title}, please.`)]
+	})),
+	blockers: [{ id: 'blk-1', text: 'Staging keys expire on Friday' }],
+	open_questions: [{ id: 'q-1', text: 'Keep the old export format as an option?' }]
+};
+const REQUEST_STATES = ['todo', 'in_progress', 'blocked', 'review', 'done'];
+
 let started, threads, chats, grouping, deny, token, log, screenDefault, screenMax;
 let capabilities, manager, voice;
 // Per thread id: the prompt on the pane. And everything the phone wrote.
@@ -564,10 +649,14 @@ let prompts, replies, uploadMax, promptSeq, notSent, noInput, pasted, keyLocks, 
 let makeThread;
 // The ports published on the tailnet, and how the next publish is refused.
 let mappings, serveFails, tailnet;
+// The request tracker's list, whether its file reads as corrupt, and how the next state write fails.
+let requests, requestsCorrupt, requestsFail;
 // The phones subscribed to push, the thread each shows, and a full list.
 let pushSubs, pushFocus, pushLimit;
 // How many finds the Mac refuses as busy before it answers one.
 let findBusy;
+// Every batch of the phone's own log, as it was sent to `/api/log`.
+let phoneLogs;
 // Uploads: the paths taken, the threads with one in flight, how slow they are, a refusal for the next.
 let saved, uploadLocks, uploadSlow, uploadFail;
 // The texts each busy thread's agent holds until its turn ends.
@@ -610,6 +699,9 @@ function reset() {
 	pushFocus = {};
 	pushLimit = false;
 	mappings = [];
+	requests = structuredClone(REQUESTS);
+	requestsCorrupt = false;
+	requestsFail = null;
 	serveFails = null;
 	prompts = {};
 	// How the next text is refused after its paste, the panes with no input
@@ -628,6 +720,7 @@ function reset() {
 	textSlow = 0;
 	promptSeq = 0;
 	findBusy = 0;
+	phoneLogs = [];
 	uploadMax = 10485760;
 	held = {};
 	replies = {
@@ -1264,6 +1357,43 @@ function managerUpload(req, res, url, body) {
 	return saveOnly(req, res, { id: 'manager', cwd: MANAGER_DIR }, name, body);
 }
 
+function requestsApi(req, res, path, body) {
+	if (!capabilities.manager) return send(res, 403, { error: 'disabled' });
+	const corrupt = () =>
+		send(res, 500, { error: 'corrupt', message: 'requests.json is not valid JSON' });
+	if (path === '/api/requests') {
+		if (req.method !== 'GET') return send(res, 405, { error: 'method_not_allowed' });
+		return requestsCorrupt ? corrupt() : send(res, 200, requests);
+	}
+	if (path !== '/api/requests/state') return send(res, 404, { error: 'not_found' });
+	if (req.method !== 'POST') return send(res, 405, { error: 'method_not_allowed' });
+	let json = {};
+	try {
+		json = JSON.parse(body);
+	} catch {
+		// Not JSON: the checks below answer 400.
+	}
+	if (typeof json.id !== 'string' || !REQUEST_STATES.includes(json.state))
+		return send(res, 400, { error: 'bad_request' });
+	if (requestsFail) {
+		const { status, error } = requestsFail;
+		requestsFail = null;
+		return send(res, status, { error, message: 'The request list is being written' });
+	}
+	if (requestsCorrupt) return corrupt();
+	const row = requests.requests.find((request) => request.id === json.id);
+	if (!row) return send(res, 404, { error: 'not_found' });
+	// As the Mac does: every change from the phone is appended to the row's history.
+	row.history.push({
+		at: new Date().toISOString().slice(0, 10),
+		by: 'me',
+		note: `State changed from ${row.state} to ${json.state} on the phone.`
+	});
+	row.state = json.state;
+	requests.updated = new Date().toISOString();
+	return send(res, 200, requests);
+}
+
 function managerApi(req, res, url, body) {
 	const path = url.pathname;
 	if (!capabilities.manager) return send(res, 403, { error: 'disabled' });
@@ -1801,8 +1931,19 @@ function api(req, res, url, body) {
 	if (path === '/api/config') return send(res, 200, configBody());
 	if (path === '/api/manager/upload') return managerUpload(req, res, url, body);
 	if (path.startsWith('/api/manager')) return managerApi(req, res, url, String(body));
+	if (path === '/api/requests' || path.startsWith('/api/requests/'))
+		return requestsApi(req, res, path, String(body));
 	if (path.startsWith('/api/voice')) return voiceApi(req, res, url, body);
 	if (path.startsWith('/api/push/')) return pushApi(req, res, path, String(body));
+	if (path === '/api/log') {
+		if (req.method !== 'POST') return send(res, 405, { error: 'method' });
+		try {
+			phoneLogs.push(JSON.parse(String(body)));
+		} catch {
+			return send(res, 400, { error: 'bad_request' });
+		}
+		return send(res, 200, { ok: true });
+	}
 	if (path === '/api/events') {
 		res.writeHead(200, {
 			'content-type': 'text/event-stream',
@@ -1981,6 +2122,8 @@ function hook(res, url) {
 			return send(res, 200, { ok: true });
 		case '/__fixture/replies':
 			return send(res, 200, replies);
+		case '/__fixture/logs':
+			return send(res, 200, { batches: phoneLogs });
 		case '/__fixture/say':
 			if (!thread || !chats[thread.id]) return send(res, 404, { error: 'not_found' });
 			chats[thread.id].push({
@@ -2051,6 +2194,24 @@ function hook(res, url) {
 			break;
 		case '/__fixture/mappings':
 			return send(res, 200, { mappings });
+		case '/__fixture/requests':
+			return send(res, 200, requests);
+		case '/__fixture/requests-mode':
+			requestsCorrupt = url.searchParams.get('value') === 'corrupt';
+			break;
+		case '/__fixture/requests-fail':
+			requestsFail = {
+				status: Number(url.searchParams.get('status') ?? 409),
+				error: url.searchParams.get('error') ?? 'busy'
+			};
+			break;
+		case '/__fixture/requests-set': {
+			// The agent changed a row on the Mac, behind the phone's back.
+			const row = requests.requests.find((request) => request.id === id);
+			if (!row) return send(res, 404, { error: 'not_found' });
+			row.state = url.searchParams.get('state') ?? 'todo';
+			break;
+		}
 		case '/__fixture/manager-prompt': {
 			// The manager pane asks something: `kind`, `bare=1`, `scrolled=<last row>`, `pid=`.
 			const shape = url.searchParams.get('scrolled')
@@ -2292,7 +2453,11 @@ const server = createServer((req, res) => {
 			'text/html'
 		);
 	if (url.pathname.startsWith('/__fixture/'))
-		return req.method === 'POST' ? hook(res, url) : send(res, 405, { error: 'method' });
+		return req.method === 'POST' ||
+			(req.method === 'GET' &&
+				(url.pathname === '/__fixture/requests' || url.pathname === '/__fixture/logs'))
+			? hook(res, url)
+			: send(res, 405, { error: 'method' });
 	return asset(res, url);
 });
 server.on('upgrade', upgrade);

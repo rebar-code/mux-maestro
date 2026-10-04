@@ -14,11 +14,13 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 out="${TMPDIR:-/tmp}/muxmaestro-mobile-dev-server"
-# Every app source the test target compiles (they need no AppKit).
+# Every app source the test target compiles (they need no AppKit). A file of
+# the test target that is not under app/ is a test helper, and is left out.
 sources=$(sed -n '/A0000034 \/\* Sources \*\//,/runOnlyForDeploymentPostprocessing/p' \
     MuxMaestro.xcodeproj/project.pbxproj \
   | grep -oE '[A-Za-z0-9+]+\.swift in Sources' | sed 's/ in Sources//' \
-  | grep -v 'Tests\.swift$' | sort -u | sed 's|^|app/MuxMaestro/|')
+  | grep -v 'Tests\.swift$' | sort -u | sed 's|^|app/MuxMaestro/|' \
+  | while read -r file; do [ -f "$file" ] && echo "$file"; done)
 
 newest=$(ls -t $sources scripts/mobile-dev-server/main.swift | head -1)
 if [ ! -x "$out" ] || [ "$newest" -nt "$out" ]; then

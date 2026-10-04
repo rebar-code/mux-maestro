@@ -18,10 +18,22 @@ else
     DB=$(cd "$(dirname "$0")/.." && pwd)/manager.db
 fi
 
+# The request list lives beside the DB (<home>/requests.json).
+# MUX_MANAGER_REQUESTS overrides it (used by tests).
+if [ -n "${MUX_MANAGER_REQUESTS:-}" ]; then
+    REQUESTS=$MUX_MANAGER_REQUESTS
+else
+    REQUESTS=$(cd "$(dirname "$0")/.." && pwd)/requests.json
+fi
+
 usage() {
     cat >&2 <<'EOF'
 usage: mux <command> …
   mux sessions [--json]                      # survey every session the app sees
+  mux requests [--json] [--open|--done]      # what the human asked for, newest first
+  mux phone-log [--last N] [--severity info|warn|error] [--since 30m|2h|3d]
+                [--project SESSION] [--json] # what went wrong on the phone, oldest first
+  mux phone-log --projects [--since …]       # errors and warnings per project
   mux notify [--session S] [--host H] TEXT…
   mux review add --key K --text T [--session S] [--host H] [--window N]
                  [--severity info|warn|blocked]
@@ -427,6 +439,168 @@ ORDER BY CASE status WHEN 'waiting' THEN 0 WHEN 'active' THEN 1 ELSE 2 END,
     fi
 }
 
+# What the human asked for, from requests.json. Read-only, and it never opens
+# manager.db: the file is read into an in-memory SQLite, which also parses it.
+# The phone ticks requests done in this same file, so this is how to see the
+# list as it is now. A file that does not parse is an error, never a short list.
+cmd_requests() {
+    json=0
+    where=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --json) json=1; shift;;
+            --open) where="WHERE json_extract(value, '\$.state') <> 'done'"; shift;;
+            --done) where="WHERE json_extract(value, '\$.state') = 'done'"; shift;;
+            *) die "requests: unexpected argument: $1";;
+        esac
+    done
+
+    # No file yet is an empty list, as the app reads it.
+    if [ ! -e "$REQUESTS" ]; then
+        [ "$json" -eq 0 ] || printf '{"requests":[]}\n'
+        return 0
+    fi
+    file=$(sq "$REQUESTS")
+    doc="CAST(readfile('$file') AS TEXT)"
+    ok=$("$SQLITE" :memory: "SELECT COALESCE(json_valid($doc), 0)
+  AND COALESCE(json_type($doc, '\$.requests') = 'array', 0);" 2>/dev/null) || ok=0
+    [ "$ok" = 1 ] || die "requests: $REQUESTS is not a readable list; read it again before any write"
+
+    # Newest first, by the day in `asked`, which may be prose with a date at
+    # either end ("earlier, restated 2026-10-04"). Requests of one day, and
+    # the ones that name no day, keep the file's order.
+    day="[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]"
+    rows="SELECT value FROM (
+            SELECT value, key, COALESCE(json_extract(value, '\$.asked'), '') AS asked
+            FROM json_each($doc, '\$.requests') $where)
+          ORDER BY CASE WHEN asked GLOB '*$day' THEN substr(asked, -10)
+                        WHEN asked GLOB '$day*' THEN substr(asked, 1, 10)
+                        ELSE '' END DESC, key"
+    if [ "$json" -eq 1 ]; then
+        "$SQLITE" :memory: "SELECT json_object(
+  'updated', json_extract($doc, '\$.updated'),
+  'requests', COALESCE((SELECT json_group_array(json(value)) FROM ($rows)), json('[]')),
+  'blockers', json(COALESCE(json_extract($doc, '\$.blockers'), '[]')),
+  'open_questions', json(COALESCE(json_extract($doc, '\$.open_questions'), '[]'))
+);"
+    else
+        # state|id|project|asked|title — one line per request, the same
+        # pipe-separated shape as `sessions`.
+        "$SQLITE" :memory: "SELECT json_extract(value, '\$.state'), json_extract(value, '\$.id'),
+  COALESCE(json_extract(value, '\$.project'), ''), COALESCE(json_extract(value, '\$.asked'), ''),
+  json_extract(value, '\$.title')
+FROM ($rows);"
+    fi
+}
+
+# Where MuxMaestro keeps the phone's own log (see MobileLog.swift): the
+# directory the app's `phone.logDir` setting names, or `logs` beside the
+# manager home. MUX_PHONE_LOG_DIR overrides both (used by tests).
+phone_log_dir() {
+    if [ -n "${MUX_PHONE_LOG_DIR:-}" ]; then
+        printf %s "$MUX_PHONE_LOG_DIR"
+        return
+    fi
+    dir=$(/usr/bin/defaults read is.rebar.MuxMaestro phone.logDir 2>/dev/null || true)
+    case "$dir" in '~'*) dir=$HOME${dir#'~'};; esac
+    [ -n "$dir" ] || dir=$(cd "$(dirname "$0")/../.." && pwd)/logs
+    printf %s "$dir"
+}
+
+# What went wrong on the phone: the last N lines of the phone log at or above
+# a severity, oldest first. Read-only, and it never opens manager.db: the log
+# is JSON Lines in files, loaded into a throwaway in-memory SQLite to filter.
+# A project is a tmux session, as `mux sessions` names it.
+cmd_phone_log() {
+    last=20; severity=warn; since=""; project=""; json=0; projects=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --last) [ $# -ge 2 ] || usage; last=$2; shift 2;;
+            --severity) [ $# -ge 2 ] || usage; severity=$2; shift 2;;
+            --since) [ $# -ge 2 ] || usage; since=$2; shift 2;;
+            --project) [ $# -ge 2 ] || usage; project=$2; shift 2;;
+            --json) json=1; shift;;
+            --projects) projects=1; shift;;
+            *) die "phone-log: unexpected argument: $1";;
+        esac
+    done
+    case "$last" in ''|*[!0-9]*) die "phone-log: --last must be a number";; esac
+    case "$severity" in
+        info) min=0;; warn) min=1;; error) min=2;;
+        *) die "phone-log: --severity must be info, warn or error";;
+    esac
+    cutoff=0
+    if [ -n "$since" ]; then
+        amount=${since%[smhd]}
+        case "$amount" in ''|*[!0-9]*) die "phone-log: --since is a number and s, m, h or d: 30m, 2h, 3d";; esac
+        case "$since" in
+            *s) cutoff=$(( $(now) - amount ));;
+            *m) cutoff=$(( $(now) - amount * 60 ));;
+            *h) cutoff=$(( $(now) - amount * 3600 ));;
+            *d) cutoff=$(( $(now) - amount * 86400 ));;
+            *) die "phone-log: --since is a number and s, m, h or d: 30m, 2h, 3d";;
+        esac
+    fi
+
+    dir=$(phone_log_dir)
+    case "$dir" in *'"'*|*'
+'*) die "phone-log: cannot read a log directory with a quote or a newline in its name";; esac
+    # Oldest first: phone.<n>.jsonl from the highest n down, then phone.jsonl.
+    imports=""
+    n=20
+    while [ "$n" -ge 0 ]; do
+        if [ "$n" -eq 0 ]; then file=$dir/phone.jsonl; else file=$dir/phone.$n.jsonl; fi
+        [ -f "$file" ] && imports="$imports
+.import \"$file\" raw"
+        n=$((n - 1))
+    done
+    if [ -z "$imports" ]; then
+        printf 'mux: no phone log in %s — has the phone opened the app since this build?\n' "$dir" >&2
+        return 0
+    fi
+
+    # One line of the file is one row. The unit separator never occurs in a
+    # line (JSON escapes it), so a line is never split into columns.
+    rows="SELECT rowid AS r, line,
+  json_extract(line, '\$.t') AS t,
+  COALESCE(json_extract(line, '\$.sev'), 'info') AS sev,
+  COALESCE(json_extract(line, '\$.project'), '') AS project,
+  COALESCE(json_extract(line, '\$.build'), '') AS build,
+  COALESCE(json_extract(line, '\$.served'), '') AS served
+FROM raw WHERE json_valid(line)
+  AND CASE json_extract(line, '\$.sev') WHEN 'error' THEN 2 WHEN 'warn' THEN 1 ELSE 0 END >= $min
+  AND CAST(strftime('%s', json_extract(line, '\$.t')) AS INTEGER) >= $cutoff"
+    [ -z "$project" ] || rows="$rows
+  AND lower(json_extract(line, '\$.project')) = lower('$(sq "$project")')"
+
+    if [ "$projects" -eq 1 ]; then
+        # project|errors|warnings|last line — most errors first.
+        query="SELECT CASE project WHEN '' THEN '-' ELSE project END,
+  sum(sev = 'error'), sum(sev = 'warn'),
+  strftime('%Y-%m-%d %H:%M:%S', max(t), 'localtime')
+FROM ($rows) GROUP BY 1 ORDER BY 2 DESC, 3 DESC, 1;"
+    elif [ "$json" -eq 1 ]; then
+        query="SELECT line FROM ($rows ORDER BY r DESC LIMIT $last) ORDER BY r;"
+    else
+        # time|severity|project|build|kind|message — the build is the one the
+        # phone ran; when this Mac served another, the line says which.
+        query="SELECT strftime('%Y-%m-%d %H:%M:%S', t, 'localtime'), sev,
+  CASE project WHEN '' THEN '-' ELSE project END,
+  CASE WHEN served <> '' AND build <> '' AND served <> build
+       THEN build || ' (stale: Mac serves ' || served || ')' ELSE build END,
+  COALESCE(json_extract(line, '\$.kind'), ''),
+  replace(COALESCE(json_extract(line, '\$.msg'), ''), char(10), ' ')
+    || COALESCE(' @ ' || json_extract(line, '\$.src')
+         || COALESCE(':' || json_extract(line, '\$.line'), ''), '')
+    || CASE WHEN COALESCE(json_extract(line, '\$.n'), 1) > 1
+         AND COALESCE(json_extract(line, '\$.kind'), '') <> 'dropped'
+         THEN ' (x' || json_extract(line, '\$.n') || ')' ELSE '' END
+FROM ($rows ORDER BY r DESC LIMIT $last) ORDER BY r;"
+    fi
+    printf 'CREATE TABLE raw(line TEXT);\n.mode ascii\n.separator "\\037" "\\n"%s\n.mode list\n.separator "|" "\\n"\n%s\n' \
+        "$imports" "$query" | "$SQLITE" :memory:
+}
+
 cmd_notify() {
     session=""
     host="localhost"
@@ -798,6 +972,20 @@ EOF
 if [ "$1" = event ]; then
     shift
     cmd_event "$@"
+    exit 0
+fi
+
+# The request list is a file of its own: reading it never touches the DB.
+if [ "$1" = requests ]; then
+    shift
+    cmd_requests "$@"
+    exit 0
+fi
+
+# The phone log is files, not the DB: read it without creating or opening one.
+if [ "$1" = phone-log ]; then
+    shift
+    cmd_phone_log "$@"
     exit 0
 fi
 

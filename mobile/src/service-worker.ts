@@ -12,11 +12,46 @@ const CACHE = `shell-${version}`;
 const SHELL = '/index.html';
 const ASSETS = new Set([...build, ...files, SHELL]);
 
+/**
+ * Tell the open pages something about this worker, for the phone log
+ * (`observe.ts`). A worker has no pairing token, so it cannot post a line
+ * itself. `version` says which build the worker is from.
+ */
+async function tell(sev: 'info' | 'warn' | 'error', msg: string, to?: Client): Promise<void> {
+	try {
+		const pages = to
+			? [to]
+			: await sw.clients.matchAll({ type: 'window', includeUncontrolled: true });
+		const names = await caches.keys();
+		for (const page of pages) {
+			page.postMessage({
+				type: 'log',
+				sev,
+				msg,
+				version,
+				cache: CACHE,
+				caches: names,
+				hello: !!to
+			});
+		}
+	} catch {
+		// The log is never what stops a worker.
+	}
+}
+
 sw.addEventListener('install', (event) => {
 	event.waitUntil(
 		caches
 			.open(CACHE)
 			.then((cache) => cache.addAll([...ASSETS]))
+			.then(
+				() => tell('info', `worker ${version} installed`),
+				async (error: unknown) => {
+					// The old worker stays, and the phone stays on the old build.
+					await tell('error', `worker ${version} did not install: ${String(error)}`);
+					throw error;
+				}
+			)
 			.then(() => sw.skipWaiting())
 	);
 });
@@ -29,7 +64,15 @@ sw.addEventListener('activate', (event) => {
 				Promise.all(keys.filter((key) => key !== CACHE).map((key) => caches.delete(key)))
 			)
 			.then(() => sw.clients.claim())
+			.then(() => tell('info', `worker ${version} active`))
 	);
+});
+
+// A page asks which worker serves it, and from which cache.
+sw.addEventListener('message', (event) => {
+	const data = event.data as { type?: string } | null;
+	if (data?.type !== 'log-hello' || !(event.source instanceof Client)) return;
+	event.waitUntil(tell('info', `served by worker ${version}`, event.source));
 });
 
 sw.addEventListener('fetch', (event) => {
@@ -93,5 +136,9 @@ async function open(url: string): Promise<void> {
 
 async function cached(key: string, request: Request): Promise<Response> {
 	const cache = await caches.open(CACHE);
-	return (await cache.match(key)) ?? fetch(request);
+	const hit = await cache.match(key);
+	if (hit) return hit;
+	// The cache lost a file it was installed with: the page gets the Mac's.
+	void tell('warn', `not in ${CACHE}, read from the Mac: ${key}`);
+	return fetch(request);
 }

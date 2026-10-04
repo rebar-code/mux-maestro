@@ -48,16 +48,16 @@ final class TreehouseParseTests: XCTestCase {
     /// Verbatim `treehouse status --json` from the acme-app-monorepo pool on this
     /// Mac, 2026-08-21 — one dirty tree, one stale lease, one with live processes.
     private let sample = """
-    [{"name":"1","path":"/Users/me/.treehouse/pw-80d837/1/pw","status":"dirty",\
+    [{"name":"1","path":"/Users/me/.treehouse/acmeApp-80d837/1/acmeApp","status":"dirty",\
     "lease_id":"","lease_holder":"","leased_at":null,"processes":[]},\
-    {"name":"7","path":"/Users/me/.treehouse/pw-80d837/7/pw","status":"leased",\
+    {"name":"7","path":"/Users/me/.treehouse/acmeApp-80d837/7/acmeApp","status":"leased",\
     "lease_id":"874e7a37","lease_holder":"spin:feat/rate-auditor-field-capture",\
     "leased_at":"2026-08-19T14:10:28.97234-05:00","processes":[]},\
-    {"name":"11","path":"/Users/me/.treehouse/pw-80d837/11/pw","status":"leased",\
+    {"name":"11","path":"/Users/me/.treehouse/acmeApp-80d837/11/acmeApp","status":"leased",\
     "lease_id":"a394cd29","lease_holder":"spin:feat/rate-auditor-comp-set",\
     "leased_at":"2026-08-20T13:53:50.453603-05:00",\
     "processes":[{"pid":19486,"name":"2.1.237"},{"pid":19645,"name":"mcp-server-darwin-arm64"}]},\
-    {"name":"12","path":"/Users/me/.treehouse/pw-80d837/12/pw","status":"in-use",\
+    {"name":"12","path":"/Users/me/.treehouse/acmeApp-80d837/12/acmeApp","status":"in-use",\
     "lease_id":"","lease_holder":"","leased_at":null,"processes":[{"pid":70452,"name":"zsh"}]}]
     """
 
@@ -306,19 +306,19 @@ final class WorktreeChipTests: XCTestCase {
 /// Fixtures are the exact paths from
 /// `~/Downloads/worktree-rescue-20260819/untracked-classification-groundtruth.py`
 /// — 32 real untracked files hand-labelled during the 2026-08-19 purge across
-/// front-range-windows, acme-app-monorepo and infolk-pulso. No percentage from that
+/// widget-shop, acme-app-monorepo and my-site. No percentage from that
 /// run is encoded here: 32 files, one purge, three repos, one person's labels.
 final class UntrackedClassifierTests: XCTestCase {
-    /// front-range-windows really tracks `.png` and `.xlsx`; acme-app-monorepo
+    /// widget-shop really tracks `.png` and `.xlsx`; acme-app-monorepo
     /// authors `.ts` and `.md` but no `.mts`.
-    private let frw: Set<String> = ["ts", "svelte", "sql", "html", "png", "xlsx", "md", "json"]
-    private let pw: Set<String> = ["ts", "mjs", "svelte", "sql", "html", "xml", "md", "json"]
+    private let widgetShop: Set<String> = ["ts", "svelte", "sql", "html", "png", "xlsx", "md", "json"]
+    private let acmeApp: Set<String> = ["ts", "mjs", "svelte", "sql", "html", "xml", "md", "json"]
 
-    private func frwClass(_ p: String) -> UntrackedClass {
-        UntrackedClassifier.classify(path: p, authoredExtensions: frw)
+    private func widgetShopClass(_ p: String) -> UntrackedClass {
+        UntrackedClassifier.classify(path: p, authoredExtensions: widgetShop)
     }
-    private func pwClass(_ p: String) -> UntrackedClass {
-        UntrackedClassifier.classify(path: p, authoredExtensions: pw)
+    private func acmeAppClass(_ p: String) -> UntrackedClass {
+        UntrackedClassifier.classify(path: p, authoredExtensions: acmeApp)
     }
 
     /// The repo root is where downloads, screenshots and pasted files land.
@@ -327,7 +327,7 @@ final class UntrackedClassifierTests: XCTestCase {
                   "1786458674675_8872_Summerwalk_Tr._Pick_up_8-11-26.xlsx",
                   "Builder Import Issue.png", "image001.png", "render-check.png",
                   "shotA.png", "J43286.xls", "Screenshot 2026-08-19 at 12.43.12.png"] {
-            XCTAssertEqual(frwClass(p), .likelyScratch, p)
+            XCTAssertEqual(widgetShopClass(p), .likelyScratch, p)
         }
     }
 
@@ -336,7 +336,7 @@ final class UntrackedClassifierTests: XCTestCase {
         for p in [".lavish/after-app.png", ".lavish/legacy-footer-rows-status.html",
                   ".lavish/prod-now.png", ".lavish/workbook-left.png",
                   ".lavish/workbook-right.png"] {
-            XCTAssertEqual(frwClass(p), .likelyScratch, p)
+            XCTAssertEqual(widgetShopClass(p), .likelyScratch, p)
         }
     }
 
@@ -347,7 +347,7 @@ final class UntrackedClassifierTests: XCTestCase {
                   "scripts/sql/backfill-descriptions.sql",
                   "scripts/sql/backfill-window-screen-locations.sql",
                   "scripts/sql/runbook-window-screen-locations.html"] {
-            XCTAssertEqual(frwClass(p), .work, p)
+            XCTAssertEqual(widgetShopClass(p), .work, p)
         }
         for p in ["apps/admin/src/lib/server/connectors/adapters/pmc.ts",
                   "apps/admin/src/lib/server/connectors/adapters/pmc.test.ts",
@@ -358,7 +358,7 @@ final class UntrackedClassifierTests: XCTestCase {
                   "apps/admin/scripts/netsuite-probe.ts",
                   "supabase/migrations/20260814180754_location_canonical_fields.sql",
                   "tasks/todo.md"] {
-            XCTAssertEqual(pwClass(p), .work, p)
+            XCTAssertEqual(acmeAppClass(p), .work, p)
         }
     }
 
@@ -366,8 +366,8 @@ final class UntrackedClassifierTests: XCTestCase {
     /// `.ts` and `.mjs` but no `.mts`, so no extension rule can see them. `unknown`
     /// never counts as scratch — folding it in is what would hide them.
     func testUnfamiliarExtensionsAreUnknownNotScratch() {
-        XCTAssertEqual(pwClass("apps/admin/env-shim.mts"), .unknown)
-        XCTAssertEqual(pwClass("apps/admin/scrape-airgarage-once.mts"), .unknown)
+        XCTAssertEqual(acmeAppClass("apps/admin/env-shim.mts"), .unknown)
+        XCTAssertEqual(acmeAppClass("apps/admin/scrape-airgarage-once.mts"), .unknown)
     }
 
     /// **Known, accepted loss.** Both are labelled work, and both classify as
@@ -376,18 +376,18 @@ final class UntrackedClassifierTests: XCTestCase {
     /// scratch — and tuning the rule to catch them re-introduces false positives on
     /// the 14 root-level screenshots above. The cost here is only a quieter chip.
     func testRootLevelNotesAreAKnownAcceptedLoss() {
-        XCTAssertEqual(pwClass("LEARNINGS.md"), .likelyScratch)
-        XCTAssertEqual(pwClass("BRIEF.md"), .likelyScratch)
+        XCTAssertEqual(acmeAppClass("LEARNINGS.md"), .likelyScratch)
+        XCTAssertEqual(acmeAppClass("BRIEF.md"), .likelyScratch)
     }
 
-    /// The case an extension denylist gets wrong: front-range-windows tracks 17
+    /// The case an extension denylist gets wrong: widget-shop tracks 17
     /// `.png`, so a `.png` sitting in a real directory alongside the project's own
     /// images is work, not junk.
     func testATrackedImageTypeInARealDirectoryIsWorkNotScratch() {
-        XCTAssertEqual(frwClass("static/images/hero.png"), .work)
-        XCTAssertEqual(frwClass("docs/screens/workbook.png"), .work)
+        XCTAssertEqual(widgetShopClass("static/images/hero.png"), .work)
+        XCTAssertEqual(widgetShopClass("docs/screens/workbook.png"), .work)
         // ...and the same extension at the root is still scratch.
-        XCTAssertEqual(frwClass("hero.png"), .likelyScratch)
+        XCTAssertEqual(widgetShopClass("hero.png"), .likelyScratch)
     }
 
     func testAuthoredExtensionsAreLearnedFromLsFiles() {
