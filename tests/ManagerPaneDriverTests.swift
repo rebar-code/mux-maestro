@@ -356,11 +356,153 @@ final class ManagerPaneDriverTests: XCTestCase {
             // prompt would sit unsent in the input box.
             ["copy-mode", "-q", "-t", "mux-manager"],
             ["load-buffer", "-b", "sidekick", "-"],
-            ["paste-buffer", "-d", "-b", "sidekick", "-t", "mux-manager"],
+            ["paste-buffer", "-p", "-r", "-d", "-b", "sidekick", "-t", "mux-manager"],
             ["send-keys", "-t", "mux-manager", "Enter"],
         ])
         XCTAssertEqual(runner.stdinText(), "what is up", "the prompt goes in over stdin, not argv")
         XCTAssertEqual(runner.paths(), Array(repeating: "/usr/bin/tmux", count: 5))
+    }
+
+    /// A permission prompt that comes up between the paste and the Enter would
+    /// take the Enter as its answer.
+    func testSendDoesNotPressEnterWhenAPromptAppearsAfterThePaste() throws {
+        let dir = try makeClaudeDir()
+        try seedSession(in: dir, sessionId: "wanted")
+        let runner = FakeRunner()
+        let status = StatusBox(.busy)
+        // The pane reaches a prompt as soon as the text is pasted.
+        runner.onRun = { args in
+            if args.first == "paste-buffer" { status.value = .waiting }
+        }
+        let driver = ManagerPaneDriver(
+            config: config(claudeDir: dir), runner: runner,
+            statusOverride: { _ in status.value }, queue: DispatchQueue(label: "test.pane"))
+
+        let done = expectation(description: "refused")
+        driver.send("approve it", onDelta: { _ in XCTFail("no reply expected") }) { outcome in
+            XCTAssertEqual(outcome, .refused("Manager is waiting on a prompt"))
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 5)
+        XCTAssertFalse(
+            runner.recorded().contains(["send-keys", "-t", "mux-manager", "Enter"]),
+            "Enter must not reach a pane that is now on a prompt")
+        // The pasted text is taken out again, so a later Enter cannot send it.
+        XCTAssertEqual(Array(runner.recorded().suffix(2)), [
+            ["paste-buffer", "-p", "-r", "-d", "-b", "sidekick", "-t", "mux-manager"],
+            ["send-keys", "-t", "mux-manager", "C-u"],
+        ])
+
+        // The driver is free again: the refused turn is not left running.
+        status.value = .waiting
+        let again = expectation(description: "refused again")
+        driver.send("hello", onDelta: { _ in }) { outcome in
+            XCTAssertEqual(outcome, .refused("Manager is waiting on a prompt"))
+            again.fulfill()
+        }
+        wait(for: [again], timeout: 5)
+    }
+
+    func testOnlyAnIdlePaneTakesATurnThatRequiresIdle() {
+        XCTAssertNil(ManagerPaneDriver.refusal(status: .idle, requireIdle: true))
+        XCTAssertEqual(
+            ManagerPaneDriver.refusal(status: .busy, requireIdle: true), "Manager is busy")
+        XCTAssertEqual(
+            ManagerPaneDriver.refusal(status: nil, requireIdle: true), "Manager is not ready")
+        XCTAssertEqual(
+            ManagerPaneDriver.refusal(status: .waiting, requireIdle: true),
+            "Manager is waiting on a prompt")
+        // The rail's own turns are as before: only a prompt refuses.
+        XCTAssertNil(ManagerPaneDriver.refusal(status: .busy, requireIdle: false))
+        XCTAssertNil(ManagerPaneDriver.refusal(status: nil, requireIdle: false))
+        XCTAssertEqual(
+            ManagerPaneDriver.refusal(status: .waiting, requireIdle: false),
+            "Manager is waiting on a prompt")
+    }
+
+    func testAPhoneTurnTypesNothingIntoABusyOrUnknownPane() throws {
+        for (status, reason) in [(ManagerTurnStatus.busy as ManagerTurnStatus?, "Manager is busy"),
+                                 (nil, "Manager is not ready")] {
+            let dir = try makeClaudeDir()
+            // No session file: with no hook row either, the state is not known.
+            if status != nil { try seedSession(in: dir, sessionId: "wanted") }
+            let runner = FakeRunner()
+            let driver = ManagerPaneDriver(
+                config: config(claudeDir: dir), runner: runner,
+                statusOverride: { _ in status }, queue: DispatchQueue(label: "test.pane"))
+            let done = expectation(description: "refused")
+            driver.send("hello", requireIdle: true, onDelta: { _ in XCTFail("no reply expected") }) {
+                XCTAssertEqual($0, .refused(reason))
+                done.fulfill()
+            }
+            wait(for: [done], timeout: 5)
+            XCTAssertEqual(runner.recorded(), [], "nothing may be typed: \(reason)")
+        }
+    }
+
+    /// The pane was idle at the paste and is busy by the Enter (a turn typed on
+    /// the Mac started in between). It may reach a prompt next.
+    func testAPhoneTurnIsTakenBackWhenThePaneStopsBeingIdleBeforeTheEnter() throws {
+        let dir = try makeClaudeDir()
+        try seedSession(in: dir, sessionId: "wanted")
+        let runner = FakeRunner()
+        let status = StatusBox(.idle)
+        runner.onRun = { args in
+            if args.first == "paste-buffer" { status.value = .busy }
+        }
+        let driver = ManagerPaneDriver(
+            config: config(claudeDir: dir), runner: runner,
+            statusOverride: { _ in status.value }, queue: DispatchQueue(label: "test.pane"))
+
+        let done = expectation(description: "refused")
+        driver.send("first line\nsecond line", requireIdle: true, onDelta: { _ in }) {
+            XCTAssertEqual($0, .refused("Manager is busy"))
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 5)
+        XCTAssertFalse(runner.recorded().contains(["send-keys", "-t", "mux-manager", "Enter"]))
+        // Two lines were pasted: both are deleted.
+        XCTAssertEqual(runner.recorded().last, ["send-keys", "-t", "mux-manager", "C-u", "C-u"])
+    }
+
+    func testAPhoneTurnRunsFromAnIdlePane() throws {
+        let dir = try makeClaudeDir()
+        try seedSession(in: dir, sessionId: "wanted")
+        let transcript = try seedTranscript(
+            in: dir.appendingPathComponent("projects"), sessionId: "wanted", lines: [userPrompt])
+        let runner = FakeRunner()
+        let status = StatusBox(.idle)
+        // The Enter starts the turn.
+        runner.onRun = { args in
+            if args.last == "Enter" { status.value = .busy }
+        }
+        let driver = ManagerPaneDriver(
+            config: config(claudeDir: dir), runner: runner,
+            statusOverride: { _ in status.value }, queue: DispatchQueue(label: "test.pane"))
+        let done = expectation(description: "done")
+        driver.send("what is up", requireIdle: true, onDelta: { _ in }) { outcome in
+            XCTAssertEqual(outcome, .done(reply: "Second part."))
+            done.fulfill()
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.append(self.textTwo, to: transcript) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { status.value = .idle }
+        wait(for: [done], timeout: 10)
+        XCTAssertEqual(runner.recorded().last, ["send-keys", "-t", "mux-manager", "Enter"])
+        XCTAssertFalse(runner.recorded().contains { $0.contains("C-u") })
+    }
+
+    func testPaneStatusReadsTheHookRowThenTheSessionFile() throws {
+        let dir = try makeClaudeDir()
+        let none = ManagerPaneDriver(
+            config: config(claudeDir: dir), runner: FakeRunner(), queue: DispatchQueue(label: "test.pane"))
+        XCTAssertNil(none.paneStatus(), "no session yet: not known, and so not idle")
+
+        try seedSession(in: dir, sessionId: "wanted")
+        XCTAssertEqual(none.paneStatus(), .idle)
+        let hooked = ManagerPaneDriver(
+            config: config(claudeDir: dir), runner: FakeRunner(),
+            statusOverride: { $0 == "wanted" ? .waiting : nil }, queue: DispatchQueue(label: "test.pane"))
+        XCTAssertEqual(hooked.paneStatus(), .waiting)
     }
 
     func testSendRefusesASecondTurnWhileOneIsRunning() throws {
@@ -509,6 +651,9 @@ private final class StatusBox {
 /// is what a dead tmux session looks like.
 private final class FakeRunner: CommandRunner {
     var failing = false
+    /// Called with each argv as it runs, for a test that changes the pane's
+    /// state at one step.
+    var onRun: (([String]) -> Void)?
 
     private let lock = NSLock()
     private var calls: [(path: String, args: [String], stdin: Data?)] = []
@@ -518,6 +663,7 @@ private final class FakeRunner: CommandRunner {
         calls.append((path, args, stdin))
         let failing = self.failing
         lock.unlock()
+        onRun?(args)
         return failing ? nil : ""
     }
 

@@ -32,7 +32,7 @@ struct MobileResponse: Equatable {
 
     static let reasons = [
         200: "OK", 304: "Not Modified", 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found",
-        405: "Method Not Allowed", 413: "Payload Too Large",
+        405: "Method Not Allowed", 409: "Conflict", 413: "Payload Too Large",
         431: "Request Header Fields Too Large", 500: "Internal Server Error",
         503: "Service Unavailable",
     ]
@@ -54,6 +54,11 @@ struct MobileResponse: Equatable {
 
     static func error(_ status: Int, _ code: String) -> MobileResponse {
         json(["error": code], status: status)
+    }
+
+    /// An error the phone shows as it is: `message` is the sentence.
+    static func error(_ status: Int, _ code: String, message: String) -> MobileResponse {
+        json(["error": code, "message": message], status: status)
     }
 
     /// The bytes to write. A HEAD response keeps `Content-Length` and drops the body.
@@ -157,10 +162,31 @@ enum MobileEndpoint: Equatable {
     case chat(id: String, after: UInt64?)
     /// `lines` is how much scrollback to capture, already clamped.
     case screen(id: String, lines: Int)
+    /// The manager home: what needs the human, and the chat so far.
+    case manager
+    /// One manager turn. The reply streams back.
+    case managerText
+    case managerDismiss
+    /// The manager pane's transcript as chat rows, like a thread's chat.
+    case managerChat(after: UInt64?)
+    /// The manager pane's terminal text, like a thread's screen.
+    case managerScreen(lines: Int)
 
     var capability: MobileCapability {
         switch self {
         case .config, .threads, .hosts, .events, .chat, .screen: return .access
+        case .manager, .managerText, .managerDismiss, .managerChat, .managerScreen: return .manager
+        }
+    }
+
+    /// The one method the endpoint answers. A write is a POST, so it also has
+    /// to pass the write checks in `MobileAPI.authorize`.
+    var method: String {
+        switch self {
+        case .config, .threads, .hosts, .events, .chat, .screen, .manager, .managerChat,
+             .managerScreen:
+            return "GET"
+        case .managerText, .managerDismiss: return "POST"
         }
     }
 }
@@ -281,6 +307,13 @@ enum MobileAPI {
         case 2 where segments[1] == "threads": endpoint = .threads
         case 2 where segments[1] == "hosts": endpoint = .hosts
         case 2 where segments[1] == "events": endpoint = .events
+        case 2 where segments[1] == "manager": endpoint = .manager
+        case 3 where segments[1] == "manager" && segments[2] == "text": endpoint = .managerText
+        case 3 where segments[1] == "manager" && segments[2] == "dismiss": endpoint = .managerDismiss
+        case 3 where segments[1] == "manager" && segments[2] == "chat":
+            endpoint = .managerChat(after: request.query["after"].flatMap(UInt64.init))
+        case 3 where segments[1] == "manager" && segments[2] == "screen":
+            endpoint = .managerScreen(lines: screenLines(request.query["lines"]))
         case 4 where segments[1] == "threads" && segments[3] == "chat":
             endpoint = .chat(id: segments[2], after: request.query["after"].flatMap(UInt64.init))
         case 4 where segments[1] == "threads" && segments[3] == "screen":
@@ -288,7 +321,7 @@ enum MobileAPI {
         default: return .notFound
         }
         guard config.allows(endpoint.capability) else { return .disabled(endpoint.capability) }
-        return request.method == "GET" ? .api(endpoint) : .methodNotAllowed
+        return request.method == endpoint.method ? .api(endpoint) : .methodNotAllowed
     }
 
     /// Scrollback lines a screen request gets when it names none, and the most
@@ -367,11 +400,20 @@ enum MobileAPI {
         else { return .denied("host") }
         guard request.method != "GET", request.method != "HEAD" else { return .allowed }
         guard request.header(writeHeader) != nil else { return .denied("write header") }
+        // The origin is this Mac's name on the port the request came to: another
+        // `tailscale serve` mapping on the same name is another origin.
         guard let origin = request.header("origin"),
               let url = URL(string: origin), url.scheme == "https",
-              (url.host ?? "").caseInsensitiveCompare(identity.dnsName) == .orderedSame
+              (url.host ?? "").caseInsensitiveCompare(identity.dnsName) == .orderedSame,
+              (url.port ?? 443) == hostPort(host)
         else { return .denied("origin") }
         return .allowed
+    }
+
+    /// The port of a `host[:port]` header; 443 when it names none, as HTTPS does.
+    static func hostPort(_ header: String) -> Int? {
+        let parts = header.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+        return parts.count == 2 ? Int(parts[1]) : 443
     }
 
     /// `host[:port]` without the port. Tailnet names are never IPv6 literals.

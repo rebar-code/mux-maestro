@@ -85,6 +85,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             transcript: { thread in
                 [thread.claudeSessionId, thread.codexSessionId].compactMap { $0 }
                     .compactMap { TranscriptTailReader.shared.transcript(sessionId: $0) }.first
+            }),
+        manager: MobileServer.Manager(
+            pane: { [weak self] in
+                // The controller belongs to the main thread; its readers do not.
+                guard let reader = DispatchQueue.main.sync(execute: {
+                    self?.managerController?.paneReader()
+                }) else { return (.off, nil) }
+                return (MobileManagerStatus(reader.status()), reader.transcript()?.path)
+            },
+            send: { [weak self] text, onDelta, completion in
+                DispatchQueue.main.async {
+                    guard let self else { return completion(.unreachable(MobileManager.offMessage)) }
+                    self.runPhoneManagerTurn(text, onDelta: onDelta, completion: completion)
+                }
+            },
+            dismiss: { [weak self] key in
+                DispatchQueue.main.async { self?.managerController?.dismiss(key: key) }
+            },
+            screen: { [registry] lines in
+                registry.local.captureScrollback(target: ManagerHome.sessionName, lines: lines)
             }))
     private lazy var phoneLink: PhoneLink = {
         let link = PhoneLink(server: mobileServer)
@@ -100,6 +120,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var managerRailVC: ManagerRailViewController?
     private var managerRailItem: NSSplitViewItem?
     private var managerController: ManagerController?
+    /// A manager turn is in flight, from the rail or from the phone.
+    private var managerTurnRunning = false
     private var managerToast: ManagerToastOverlay?
     /// Push-to-talk, built on first press. The manager pane is its only target
     /// today.
@@ -362,7 +384,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // right away when the rail was open last quit / a manager session from a
         // previous run is still alive; see managerAutoStartCheck).
         let manager = ManagerController(service: registry.local)
-        manager.onSnapshot = { [weak managerRail] in managerRail?.setSnapshot($0) }
+        manager.onSnapshot = { [weak self, weak managerRail] snapshot in
+            managerRail?.setSnapshot(snapshot)
+            self?.mobileServer.updateManager(snapshot.mobileBoard)
+        }
         manager.onToast = { [weak self] notification, extra in
             self?.showManagerToast(notification, extra: extra)
         }
@@ -377,6 +402,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         managerRail.onShowTerminal = { [weak self] in self?.installManagerTerminalIfNeeded() }
         self.managerController = manager
         if Settings.managerRailShown() { startManagerMachinery() }
+        startManagerForPhoneIfNeeded()
 
         // Drive libghostty. wakeup_cb also ticks on demand, but a steady timer
         // keeps animations/cursor blink and the renderer healthy.
@@ -923,6 +949,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             setup.phone.onToggle = { [weak self] on in
                 Settings.setPhoneEnabled(on)
                 if on { self?.phoneLink.turnOn() } else { self?.phoneLink.turnOff() }
+                self?.startManagerForPhoneIfNeeded()
+            }
+            setup.phone.onCapability = { [weak self] capability, on in
+                Settings.setPhoneCapability(capability, on)
+                self?.mobileServer.configure(Settings.phoneConfig())
+                self?.startManagerForPhoneIfNeeded()
             }
             setup.phone.onPort = { [weak self] port in
                 Settings.setPhonePort(port)
@@ -2584,6 +2616,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// and the voice take both come through here.
     private func runManagerTurn(
         _ text: String,
+        requireIdle: Bool = false,
         onDelta: @escaping (String) -> Void = { _ in },
         completion: @escaping (ManagerTurnOutcome) -> Void = { _ in }
     ) {
@@ -2591,17 +2624,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             completion(.unreachable("Manager not running"))
             return
         }
+        // The phone follows the same turn. A second call while one runs is
+        // refused by the driver and must not end the first one's record.
+        let tracked = !managerTurnRunning
+        if tracked {
+            managerTurnRunning = true
+            mobileServer.managerTurnBegan(text)
+        }
         managerRailVC?.beginTurn(text)
         manager.send(
             text,
+            requireIdle: requireIdle,
             onDelta: { [weak self] delta in
                 self?.managerRailVC?.appendReply(delta)
+                if tracked { self?.mobileServer.managerTurnAppended(delta) }
                 onDelta(delta)
             },
             completion: { [weak self] outcome in
                 self?.managerRailVC?.endTurn(outcome)
+                if tracked {
+                    self?.managerTurnRunning = false
+                    self?.mobileServer.managerTurnEnded()
+                }
                 completion(outcome)
             })
+    }
+
+    /// A turn the phone sent: the same turn as one typed into the rail, so it
+    /// shows there too. The rail holds its input while a turn runs; the phone
+    /// has no such hold, so a second turn is refused here, before it is drawn.
+    private func runPhoneManagerTurn(
+        _ text: String,
+        onDelta: @escaping (String) -> Void,
+        completion: @escaping (ManagerTurnOutcome) -> Void
+    ) {
+        guard !managerTurnRunning else { return completion(.refused(MobileManager.busyMessage)) }
+        // The phone cannot see the pane: its turn starts only from idle.
+        runManagerTurn(text, requireIdle: true, onDelta: onDelta, completion: completion)
+    }
+
+    /// The phone's manager home needs the manager running, rail shown or not.
+    private func startManagerForPhoneIfNeeded() {
+        guard Settings.phoneEnabled(), Settings.phoneCapability(.manager) else { return }
+        startManagerMachinery()
     }
 
     /// Boot the manager machinery (home + store + session + timers). Idempotent.

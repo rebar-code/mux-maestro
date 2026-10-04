@@ -68,6 +68,26 @@ struct ManagerSnapshot: Equatable {
     }
 }
 
+extension ManagerSnapshot {
+    /// The same rows for the phone's manager home.
+    var mobileBoard: MobileManagerBoard {
+        MobileManagerBoard(
+            items: needsYou.map { item in
+                switch item.kind {
+                case .agent(let row):
+                    return MobileManagerItem(
+                        kind: .agent, title: item.title, detail: item.detail,
+                        at: row.since, link: item.link)
+                case .review(let review):
+                    return MobileManagerItem(
+                        kind: .review, key: review.key, title: item.title, detail: item.detail,
+                        severity: review.severity, at: review.updatedAt, link: item.link)
+                }
+            },
+            updates: updates)
+    }
+}
+
 /// One "Needs you" row: an agent blocked on the human, or a review item the
 /// manager agent raised. The view draws `title`/`detail` and opens `link`; the
 /// kind is kept so a review row can still offer its dismiss checkbox.
@@ -225,6 +245,7 @@ final class ManagerController {
     /// lands, `completion` fires once with the outcome (both on main).
     func send(
         _ text: String,
+        requireIdle: Bool = false,
         onDelta: @escaping (String) -> Void,
         completion: @escaping (ManagerTurnOutcome) -> Void
     ) {
@@ -232,7 +253,17 @@ final class ManagerController {
             DispatchQueue.main.async { completion(.unreachable("tmux not found")) }
             return
         }
-        driver.send(text, onDelta: onDelta, completion: completion)
+        driver.send(text, requireIdle: requireIdle, onDelta: onDelta, completion: completion)
+    }
+
+    /// The manager pane's status and transcript, for the phone server. Take it
+    /// on the main thread; the two readers may then run on any queue. nil until
+    /// the machinery has started.
+    func paneReader() -> (status: () -> ManagerTurnStatus?, transcript: () -> URL?)? {
+        guard started, let driver else { return nil }
+        return (
+            status: { driver.paneStatus() },
+            transcript: { driver.transcript() })
     }
 
     /// Publish the app's freshly-refreshed session tree into the shared DB, where

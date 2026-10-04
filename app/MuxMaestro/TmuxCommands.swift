@@ -27,6 +27,22 @@ enum TmuxCommands {
         )
     }
 
+    /// The same two steps for a prompt that is then submitted. `-p` makes the
+    /// text one bracketed paste and `-r` keeps its newlines as newlines, so no
+    /// byte of it is read as a key press and a newline cannot submit it early.
+    static func pastePrompt(session: String) -> (load: [String], paste: [String]) {
+        (
+            load: ["load-buffer", "-b", sendBuffer, "-"],
+            paste: ["paste-buffer", "-p", "-r", "-d", "-b", sendBuffer, "-t", session]
+        )
+    }
+
+    /// Take back a prompt that was pasted and must not be sent: Ctrl-U deletes
+    /// an input line, once per line of the text. It presses no Enter.
+    static func clearInput(target: String, lines: Int) -> [String] {
+        ["send-keys", "-t", target] + Array(repeating: "C-u", count: min(max(lines, 1), 64))
+    }
+
     /// Create a detached session named `name` in directory `dir`. tmux requires
     /// the session name to be non-empty; callers should validate first. A nil/empty
     /// `dir` omits `-c` (same convention as `newWindow`/`splitWindow`) — the

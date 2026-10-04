@@ -10,6 +10,48 @@ final class MobileServerTests: XCTestCase {
     private var port = 0
     private var root: URL!
     private var transcript: URL!
+    private let manager = FakeManager()
+
+    /// The manager pane, scripted. The server calls it from its own queues.
+    private final class FakeManager {
+        private let lock = NSLock()
+        private var _status = MobileManagerStatus.idle
+        private var _sent: [String] = []
+        private var _dismissed: [String] = []
+        /// What a turn says: the deltas, then the outcome.
+        var script: (deltas: [String], outcome: ManagerTurnOutcome) = ([], .done(reply: ""))
+        var transcript: String?
+        /// When set, a turn says nothing until this is signalled.
+        var gate: DispatchSemaphore?
+        private var _screen: String? = "$ claude\n\u{1B}[32m⏺\u{1B}[0m Ready.\n\n\n"
+        /// What the manager pane shows.
+        var screen: String? {
+            get { lock.lock(); defer { lock.unlock() }; return _screen }
+            set { lock.lock(); _screen = newValue; lock.unlock() }
+        }
+
+        var status: MobileManagerStatus {
+            get { lock.lock(); defer { lock.unlock() }; return _status }
+            set { lock.lock(); _status = newValue; lock.unlock() }
+        }
+        var sent: [String] { lock.lock(); defer { lock.unlock() }; return _sent }
+        var dismissed: [String] { lock.lock(); defer { lock.unlock() }; return _dismissed }
+
+        var source: MobileServer.Manager {
+            MobileServer.Manager(
+                pane: { [self] in (status, transcript) },
+                send: { [self] text, onDelta, completion in
+                    lock.lock(); _sent.append(text); lock.unlock()
+                    DispatchQueue.global().async { [self] in
+                        gate?.wait()
+                        script.deltas.forEach(onDelta)
+                        completion(script.outcome)
+                    }
+                },
+                dismiss: { [self] key in lock.lock(); _dismissed.append(key); lock.unlock() },
+                screen: { [self] _ in screen })
+        }
+    }
     /// What the fake pane shows, and the line counts the server asked it for.
     private var screenText = "$ make test\n\u{1B}[32mok\u{1B}[0m\n\n\n"
     private var askedLines: [Int] = []
@@ -37,7 +79,7 @@ final class MobileServerTests: XCTestCase {
                 self?.askedLines.append(lines)
                 return thread.pane == "%12" ? (self?.screenText ?? "") : nil
             },
-            transcript: { _ in (transcript.path, false) }), limits: limits)
+            transcript: { _ in (transcript.path, false) }), limits: limits, manager: manager.source)
     }
 
     private func start(_ server: MobileServer) {
@@ -123,6 +165,31 @@ final class MobileServerTests: XCTestCase {
         let parts = text.components(separatedBy: "\r\n\r\n")
         let status = Int(text.split(separator: " ").dropFirst().first ?? "") ?? 0
         return (status, parts.first ?? "", parts.dropFirst().joined(separator: "\r\n\r\n"))
+    }
+
+    private static let origin = "https://devmac.example.ts.net:7433"
+
+    /// A POST as the app sends it; drop `origin` or `writeHeader` to be a page
+    /// from somewhere else.
+    private func post(
+        _ path: String, json: String, origin: String? = origin, writeHeader: Bool = true,
+        token: String? = "demo-token", until done: ((String) -> Bool)? = nil
+    ) -> (status: Int, head: String, body: String) {
+        var raw = "POST \(path) HTTP/1.1\r\nHost: devmac.example.ts.net:7433\r\n"
+            + "Tailscale-User-Login: me@example.com\r\nContent-Type: application/json\r\n"
+            + "Content-Length: \(json.utf8.count)\r\n"
+        if let origin { raw += "Origin: \(origin)\r\n" }
+        if writeHeader { raw += "X-MuxMaestro: 1\r\n" }
+        if let token { raw += "X-MuxMaestro-Token: \(token)\r\n" }
+        raw += "\r\n" + json
+        let text = exchange(raw, until: done ?? whole)
+        let parts = text.components(separatedBy: "\r\n\r\n")
+        let status = Int(text.split(separator: " ").dropFirst().first ?? "") ?? 0
+        return (status, parts.first ?? "", parts.dropFirst().joined(separator: "\r\n\r\n"))
+    }
+
+    private func managerOn() {
+        server.configure(MobileConfig(capabilities: [.manager]))
     }
 
     // MARK: tests
@@ -373,5 +440,422 @@ final class MobileServerTests: XCTestCase {
     func testListensOnLoopbackOnlyAndStops() {
         server.stop()
         XCTAssertEqual(get("/api/threads").status, 0)
+    }
+
+    // MARK: manager
+
+    func testManagerRoutesAnswer403WhileTheSwitchIsOff() {
+        for refused in [
+            get("/api/manager"),
+            post("/api/manager/text", json: #"{"text":"what needs me?"}"#),
+            post("/api/manager/dismiss", json: #"{"key":"billing:pr"}"#),
+        ] {
+            XCTAssertEqual(refused.status, 403)
+            XCTAssertEqual(refused.body, #"{"error":"disabled"}"#)
+        }
+        XCTAssertEqual(manager.sent, [])
+        XCTAssertEqual(manager.dismissed, [])
+    }
+
+    func testAManagerPostFromAnotherOriginIsRefusedAndTypesNothing() {
+        managerOn()
+        let body = #"{"text":"what needs me?"}"#
+        for refused in [
+            post("/api/manager/text", json: body, origin: "https://evil.example.com"),
+            post("/api/manager/text", json: body, origin: "http://127.0.0.1:\(port)"),
+            post("/api/manager/text", json: body, origin: nil),
+            post("/api/manager/text", json: body, writeHeader: false),
+            post("/api/manager/dismiss", json: #"{"key":"billing:pr"}"#, origin: "https://evil.example.com"),
+        ] {
+            XCTAssertEqual(refused.status, 403)
+            XCTAssertEqual(refused.body, #"{"error":"forbidden"}"#)
+        }
+        XCTAssertEqual(manager.sent, [])
+        XCTAssertEqual(manager.dismissed, [])
+    }
+
+    /// The turn route types into an agent that has a shell: the right login,
+    /// host, origin and write header are not enough without the pairing token.
+    func testAManagerPostWithoutThePairingTokenIsRefusedAndTypesNothing() {
+        managerOn()
+        let text = #"{"text":"what needs me?"}"#
+        for (path, body) in [("/api/manager/text", text), ("/api/manager/dismiss", #"{"key":"billing:pr"}"#)] {
+            for token in [nil, "wrong-token", ""] {
+                let refused = post(path, json: body, token: token)
+                XCTAssertEqual(refused.status, 401, path)
+                XCTAssertEqual(refused.body, #"{"error":"unpaired"}"#, path)
+            }
+        }
+        XCTAssertEqual(get("/api/manager", token: nil).status, 401)
+        XCTAssertEqual(manager.sent, [])
+        XCTAssertEqual(manager.dismissed, [])
+        // The same POST with the token goes through.
+        manager.script = ([], .done(reply: "ok"))
+        let turn = post("/api/manager/text", json: text) { $0.contains("event: end") }
+        XCTAssertEqual(turn.status, 200)
+        XCTAssertEqual(manager.sent, ["what needs me?"])
+    }
+
+    func testServesTheManagerHomeWithItsChat() throws {
+        managerOn()
+        let file = root.appendingPathComponent("manager.jsonl")
+        try Data((
+            #"{"type":"user","message":{"role":"user","content":"what needs me?"}}"# + "\n"
+                + #"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Two threads need you."}]}}"#
+                + "\n").utf8).write(to: file)
+        manager.transcript = file.path
+        server.updateManager(MobileManagerBoard(items: [
+            MobileManagerItem(
+                kind: .agent, title: "acme-app · checkout-fix", detail: "Permission · Bash",
+                at: 1_759_500_000, link: .thread(id: "c1")),
+            MobileManagerItem(
+                kind: .review, key: "acme-app:pr", title: "acme-app", detail: "PR open, CI green",
+                severity: .warn, at: 1_759_499_000,
+                link: .open(session: "acme-app", window: 1, pane: nil, host: "localhost")),
+        ]))
+        let home = get("/api/manager")
+        XCTAssertEqual(home.status, 200)
+        XCTAssertTrue(home.head.contains("Cache-Control: no-store"))
+        let body = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(home.body.utf8)) as? [String: Any])
+        XCTAssertEqual(body["status"] as? String, "idle")
+        XCTAssertEqual((body["needsYou"] as? [[String: Any]])?.first?["thread"] as? String, "localhost:12")
+        XCTAssertEqual((body["review"] as? [[String: Any]])?.first?["key"] as? String, "acme-app:pr")
+        XCTAssertNil(body["chat"])
+
+        // The chat is its own route, with the cursor a thread's chat has.
+        let chat = get("/api/manager/chat")
+        XCTAssertEqual(chat.status, 200)
+        let page = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(chat.body.utf8)) as? [String: Any])
+        let messages = page["messages"] as? [[String: Any]]
+        XCTAssertEqual(messages?.map { $0["text"] as? String }, ["what needs me?", "Two threads need you."])
+        XCTAssertEqual(messages?.map { $0["role"] as? String }, ["user", "assistant"])
+        let next = try XCTUnwrap(page["next"] as? Int)
+        XCTAssertTrue(get("/api/manager/chat?after=\(next)").body.contains(#""messages":[]"#))
+    }
+
+    func testTheManagerChatIsEmptyUntilThePaneHasATranscript() {
+        managerOn()
+        manager.transcript = nil
+        let chat = get("/api/manager/chat")
+        XCTAssertEqual(chat.status, 200)
+        XCTAssertEqual(chat.body, #"{"messages":[],"next":0,"reset":false}"#)
+    }
+
+    func testServesTheManagerPanesScreenLikeAThreads() {
+        managerOn()
+        let screen = get("/api/manager/screen?lines=50")
+        XCTAssertEqual(screen.status, 200)
+        // Colour escapes are kept, and the empty rows at the end are cut.
+        XCTAssertTrue(screen.body.contains(#""lines":50"#))
+        XCTAssertTrue(screen.body.contains("Ready."))
+        XCTAssertTrue(screen.body.contains(#"\u001b[32m"#))
+        XCTAssertFalse(screen.body.contains(#"Ready.\n"#))
+        XCTAssertTrue(screen.head.contains("ETag: "))
+
+        manager.screen = nil
+        XCTAssertEqual(get("/api/manager/screen").status, 503)
+    }
+
+    func testTheManagerChatAndScreenNeedTheSwitchAndTheToken() {
+        for path in ["/api/manager/chat", "/api/manager/screen"] {
+            let off = get(path)
+            XCTAssertEqual(off.status, 403, path)
+            XCTAssertEqual(off.body, #"{"error":"disabled"}"#, path)
+        }
+        managerOn()
+        for path in ["/api/manager/chat", "/api/manager/screen"] {
+            XCTAssertEqual(get(path, token: nil).status, 401, path)
+            XCTAssertEqual(get(path).status, 200, path)
+        }
+    }
+
+    func testTheSpinnerLineOfARunningTurnGoesOutOnTheEventStream() {
+        var limits = MobileServer.Limits()
+        limits.spinnerPoll = 0.05
+        restart(limits: limits)
+        managerOn()
+        let raw = "GET /api/events HTTP/1.1\r\nHost: devmac.example.ts.net\r\n"
+            + "Tailscale-User-Login: me@example.com\r\nX-MuxMaestro-Token: demo-token\r\n\r\n"
+        var step = 0
+        let text = exchange(raw) { [self] received in
+            if step == 0, received.contains("event: manager") {
+                step = 1
+                manager.screen = "✻ Incubating… (3s · esc to interrupt)\n│ >  │\n"
+                server.managerTurnBegan("summarise the morning")
+            }
+            if step == 1, received.contains(#"{"text":"Incubating… 3s"}"#) {
+                step = 2
+                manager.screen = "✻ Incubating… (4s · esc to interrupt)\n│ >  │\n"
+            }
+            if step == 2, received.contains(#"{"text":"Incubating… 4s"}"#) {
+                step = 3
+                // The pane stops showing a spinner: the phone is told that too.
+                manager.screen = "⏺ All quiet.\n│ >  │\n"
+            }
+            if step == 3, received.contains(#"event: manager-spinner\#ndata: {"text":null}"#) {
+                step = 4
+                server.managerTurnEnded()
+            }
+            return step == 4 && received.components(separatedBy: #""turn":null"#).count >= 3
+        }
+        XCTAssertEqual(step, 4)
+        let spinners = text.components(separatedBy: "\n\n").filter { $0.contains("event: manager-spinner") }
+        // Sent only when the line changed, not on every poll.
+        XCTAssertEqual(spinners.count, 3)
+
+        // The turn is over: the pane is no longer read.
+        manager.screen = "✻ Musing… (1s)\n"
+        usleep(200_000)
+        XCTAssertTrue(get("/api/manager").body.contains(#""turn":null"#))
+    }
+
+    func testAManagerTurnStreamsTheReplyThenEnds() {
+        managerOn()
+        manager.script = (["Two threads ", "need you."], .done(reply: "Two threads need you."))
+        let turn = post("/api/manager/text", json: #"{"text":"what needs me?"}"#) {
+            $0.contains("event: end") && $0.hasSuffix("\n\n")
+        }
+        XCTAssertEqual(turn.status, 200)
+        XCTAssertTrue(turn.head.contains("Content-Type: text/event-stream"))
+        XCTAssertEqual(manager.sent, ["what needs me?"])
+        let events = turn.body.components(separatedBy: "\n\n").filter { !$0.isEmpty }
+        XCTAssertEqual(events, [
+            "event: delta\ndata: {\"text\":\"Two threads \"}",
+            "event: delta\ndata: {\"text\":\"need you.\"}",
+            "event: end\ndata: {\"message\":null,\"outcome\":\"done\",\"reply\":\"Two threads need you.\"}",
+        ])
+    }
+
+    func testATurnIsRefusedWhileTheManagerWaitsOnAPromptOrRunsATurn() {
+        managerOn()
+        manager.status = .waiting
+        let waiting = post("/api/manager/text", json: #"{"text":"what needs me?"}"#)
+        XCTAssertEqual(waiting.status, 409)
+        XCTAssertEqual(waiting.body, #"{"error":"waiting","message":"Manager is waiting on a prompt"}"#)
+
+        // Busy with a turn the app does not track: it may reach a prompt.
+        manager.status = .busy
+        let paneBusy = post("/api/manager/text", json: #"{"text":"what needs me?"}"#)
+        XCTAssertEqual(paneBusy.status, 409)
+        XCTAssertEqual(paneBusy.body, #"{"error":"busy","message":"Manager is busy"}"#)
+
+        // A turn the Mac rail started is still running.
+        manager.status = .idle
+        server.managerTurnBegan("summarise the morning")
+        let busy = post("/api/manager/text", json: #"{"text":"what needs me?"}"#)
+        XCTAssertEqual(busy.status, 409)
+        XCTAssertEqual(busy.body, #"{"error":"busy","message":"A turn is running"}"#)
+        XCTAssertTrue(get("/api/manager").body.contains(#""status":"busy""#))
+
+        // The manager runs, but its pane's state is not known yet.
+        manager.status = .unknown
+        server.managerTurnEnded()
+        let unknown = post("/api/manager/text", json: #"{"text":"what needs me?"}"#)
+        XCTAssertEqual(unknown.status, 503)
+        XCTAssertEqual(unknown.body, #"{"error":"not_ready","message":"Manager is not ready"}"#)
+        XCTAssertTrue(get("/api/manager").body.contains(#""status":"unknown""#))
+
+        manager.status = .off
+        XCTAssertEqual(post("/api/manager/text", json: #"{"text":"what needs me?"}"#).status, 503)
+        XCTAssertEqual(post("/api/manager/text", json: #"{"text":" "}"#).status, 400)
+        XCTAssertEqual(manager.sent, [])
+    }
+
+    func testTheDriversLateRefusalEndsTheStreamWithItsReason() {
+        managerOn()
+        manager.script = ([], .refused("Manager is waiting on a prompt"))
+        let turn = post("/api/manager/text", json: #"{"text":"what needs me?"}"#) {
+            $0.contains("event: end") && $0.hasSuffix("\n\n")
+        }
+        XCTAssertEqual(turn.status, 200)
+        XCTAssertTrue(turn.body.contains(
+            #"{"message":"Manager is waiting on a prompt","outcome":"refused","reply":""}"#))
+    }
+
+    private func reviewBoard() -> MobileManagerBoard {
+        MobileManagerBoard(items: [MobileManagerItem(
+            kind: .review, key: "billing:pr", title: "billing", detail: "PR open, CI green",
+            severity: .warn, at: 1_759_499_000, link: nil)])
+    }
+
+    func testDismissPassesOnTheKeyOfAReviewItemOnly() {
+        managerOn()
+        server.updateManager(reviewBoard())
+        let done = post("/api/manager/dismiss", json: #"{"key":"billing:pr"}"#)
+        XCTAssertEqual(done.status, 200)
+        XCTAssertEqual(done.body, #"{"ok":true}"#)
+        XCTAssertEqual(manager.dismissed, ["billing:pr"])
+
+        // A key no review item has is not passed on.
+        let missing = post("/api/manager/dismiss", json: #"{"key":"no-such-item"}"#)
+        XCTAssertEqual(missing.status, 404)
+        XCTAssertEqual(missing.body, #"{"error":"not_found"}"#)
+        XCTAssertEqual(post("/api/manager/dismiss", json: "{}").status, 400)
+        let long = String(repeating: "k", count: MobileManager.maxKeyBytes + 1)
+        XCTAssertEqual(post("/api/manager/dismiss", json: #"{"key":"\#(long)"}"#).status, 413)
+        XCTAssertEqual(manager.dismissed, ["billing:pr"])
+    }
+
+    func testATextWithAKeyPressOrOverTheSizeLimitIsRefusedAndTypesNothing() {
+        managerOn()
+        // JSON escapes, as a client would send them: ESC [ Z is Shift+Tab,
+        // U+0003 is Ctrl-C, a carriage return is Enter.
+        for text in [#"a\u001b[Zb"#, #"a\u0003b"#, #"first\rsecond"#, #"a\u007fb"#, #"a\u009bZb"#] {
+            let refused = post("/api/manager/text", json: #"{"text":"\#(text)"}"#)
+            XCTAssertEqual(refused.status, 400, text)
+            XCTAssertEqual(refused.body, #"{"error":"bad_request"}"#, text)
+        }
+        let long = String(repeating: "a", count: MobileManager.maxTextBytes + 1)
+        let tooLong = post("/api/manager/text", json: #"{"text":"\#(long)"}"#)
+        XCTAssertEqual(tooLong.status, 413)
+        XCTAssertEqual(tooLong.body, #"{"error":"too_large"}"#)
+        XCTAssertEqual(manager.sent, [])
+
+        // Newlines are text: one request is one prompt.
+        manager.script = ([], .done(reply: "ok"))
+        let turn = post("/api/manager/text", json: #"{"text":"first\nsecond"}"#) {
+            $0.contains("event: end")
+        }
+        XCTAssertEqual(turn.status, 200)
+        XCTAssertEqual(manager.sent, ["first\nsecond"])
+    }
+
+    func testASecondPhoneIsRefusedWhileTheFirstOnesTurnRuns() {
+        managerOn()
+        let gate = DispatchSemaphore(value: 0)
+        manager.gate = gate
+        manager.script = (["Two threads need you."], .done(reply: "Two threads need you."))
+        let first = expectation(description: "first turn")
+        var firstBody = ""
+        DispatchQueue.global().async { [self] in
+            firstBody = post("/api/manager/text", json: #"{"text":"what needs me?"}"#) {
+                $0.contains("event: end") && $0.hasSuffix("\n\n")
+            }.body
+            first.fulfill()
+        }
+        // Wait until the first turn is with the manager, then send a second.
+        let deadline = Date().addingTimeInterval(5)
+        while manager.sent.isEmpty, Date() < deadline { usleep(10_000) }
+        let second = post("/api/manager/text", json: #"{"text":"and the builds?"}"#)
+        XCTAssertEqual(second.status, 409)
+        XCTAssertEqual(second.body, #"{"error":"busy","message":"A turn is running"}"#)
+
+        gate.signal()
+        wait(for: [first], timeout: 5)
+        XCTAssertTrue(firstBody.contains(#""outcome":"done""#))
+        XCTAssertEqual(manager.sent, ["what needs me?"])
+
+        // The first turn ended: the next one goes through.
+        manager.gate = nil
+        let third = post("/api/manager/text", json: #"{"text":"and the builds?"}"#) {
+            $0.contains("event: end")
+        }
+        XCTAssertEqual(third.status, 200)
+        XCTAssertEqual(manager.sent, ["what needs me?", "and the builds?"])
+    }
+
+    func testAQuietTurnStreamIsPingedOnItsOwnTimer() {
+        var limits = MobileServer.Limits()
+        limits.turnPing = 0.1
+        restart(limits: limits)
+        managerOn()
+        let gate = DispatchSemaphore(value: 0)
+        manager.gate = gate
+        manager.script = ([], .done(reply: "ok"))
+        // No tree update arrives while the turn is quiet: the ping is the stream's own.
+        var released = false
+        let turn = post("/api/manager/text", json: #"{"text":"what needs me?"}"#) {
+            if !released, $0.components(separatedBy: ": ping\n\n").count >= 3 {
+                released = true
+                gate.signal()
+            }
+            return $0.contains("event: end")
+        }
+        if !released { gate.signal() }
+        XCTAssertEqual(turn.status, 200)
+        XCTAssertGreaterThanOrEqual(turn.body.components(separatedBy: ": ping\n\n").count, 3)
+        XCTAssertTrue(turn.body.contains(#""outcome":"done""#))
+    }
+
+    func testAPhoneThatHangsUpMidTurnLeavesTheServerWorking() {
+        managerOn()
+        let gate = DispatchSemaphore(value: 0)
+        manager.gate = gate
+        manager.script = (["Two threads ", "need you."], .done(reply: "Two threads need you."))
+        // Read the stream's head only, then close the connection.
+        let head = post("/api/manager/text", json: #"{"text":"what needs me?"}"#) {
+            $0.contains("\r\n\r\n")
+        }
+        XCTAssertEqual(head.status, 200)
+        XCTAssertEqual(manager.sent, ["what needs me?"])
+        // The turn is still running on the Mac: a new one is refused.
+        XCTAssertEqual(post("/api/manager/text", json: #"{"text":"again"}"#).status, 409)
+
+        // It ends with nobody listening. Nothing breaks, and the next turn runs.
+        gate.signal()
+        manager.gate = nil
+        let deadline = Date().addingTimeInterval(5)
+        var next = (status: 0, head: "", body: "")
+        repeat {
+            // A refusal is whole once its body is in; a stream only at its end event.
+            next = post("/api/manager/text", json: #"{"text":"again"}"#) {
+                $0.contains("event: end") || (!$0.hasPrefix("HTTP/1.1 200") && self.whole($0))
+            }
+            if next.status != 200 { usleep(20_000) }
+        } while next.status != 200 && Date() < deadline
+        XCTAssertEqual(next.status, 200)
+        XCTAssertTrue(next.body.contains(#""outcome":"done""#))
+        XCTAssertEqual(manager.sent, ["what needs me?", "again"])
+        XCTAssertEqual(get("/api/threads").status, 200)
+    }
+
+    func testTheEventStreamFollowsAMacSideTurnOnlyWhileTheSwitchIsOn() {
+        let raw = "GET /api/events HTTP/1.1\r\nHost: devmac.example.ts.net\r\n"
+            + "Tailscale-User-Login: me@example.com\r\nX-MuxMaestro-Token: demo-token\r\n\r\n"
+        // Off: a turn on the Mac sends the phone nothing about the manager.
+        var pushed = false
+        let quiet = exchange(raw) { [self] received in
+            if !pushed, received.contains("event: hosts") {
+                pushed = true
+                server.managerTurnBegan("summarise the morning")
+                server.update(snapshot(status: .waiting))
+            }
+            return received.components(separatedBy: "event: threads").count == 3
+        }
+        XCTAssertFalse(quiet.contains("event: manager"))
+        server.managerTurnEnded()
+
+        managerOn()
+        var step = 0
+        let text = exchange(raw) { [self] received in
+            if step == 0, received.contains("event: manager") {
+                step = 1
+                server.managerTurnBegan("summarise the morning")
+                server.managerTurnAppended("All quiet.")
+                server.managerTurnEnded()
+            }
+            return received.components(separatedBy: "event: manager").count == 5
+        }
+        let events = text.components(separatedBy: "\n\n").filter { $0.contains("event: manager") }
+        XCTAssertEqual(events.count, 4)
+        XCTAssertTrue(events[0].contains(#""turn":null"#))
+        XCTAssertTrue(events[1].contains(#""turn":{"prompt":"summarise the morning","reply":"","spinner":null}"#))
+        // The reply grows by a small event of its own, not by the board again.
+        XCTAssertEqual(events[2], "event: manager-delta\ndata: {\"text\":\"All quiet.\"}")
+        XCTAssertTrue(events[3].hasPrefix("event: manager\n"))
+        XCTAssertTrue(events[3].contains(#""turn":null"#))
+    }
+
+    func testAPhoneThatJoinsMidTurnGetsTheReplySoFar() {
+        managerOn()
+        server.managerTurnBegan("summarise the morning")
+        server.managerTurnAppended("All quiet")
+        let raw = "GET /api/events HTTP/1.1\r\nHost: devmac.example.ts.net\r\n"
+            + "Tailscale-User-Login: me@example.com\r\nX-MuxMaestro-Token: demo-token\r\n\r\n"
+        let text = exchange(raw) { $0.contains("event: manager") && $0.hasSuffix("\n\n") }
+        XCTAssertTrue(text.contains(#""turn":{"prompt":"summarise the morning","reply":"All quiet","spinner":null}"#))
+        XCTAssertTrue(get("/api/manager").body.contains(#""reply":"All quiet""#))
     }
 }

@@ -1,6 +1,6 @@
 import { tokenFrom, withoutPair } from './pairing';
-import { frameParser, type Frame } from './sse';
-import type { ChatPage, Config, Host, Thread } from './types';
+import { frameParser, readOrStall, STALLED, type Frame } from './sse';
+import type { ChatPage, Config, Host, ManagerHome, Thread, TurnEnd } from './types';
 
 const TOKEN_KEY = 'mm.token';
 const TOKEN_HEADER = 'X-MuxMaestro-Token';
@@ -49,9 +49,11 @@ export class ApiError extends Error {
 	constructor(
 		readonly status: number,
 		/** The `error` word in the response body, if it had one. */
-		readonly code: string | null
+		readonly code: string | null,
+		/** The sentence the server sent for the human, if it sent one. */
+		readonly detail: string | null = null
 	) {
-		super(`HTTP ${status}${code ? ` ${code}` : ''}`);
+		super(detail ?? `HTTP ${status}${code ? ` ${code}` : ''}`);
 	}
 
 	/**
@@ -68,32 +70,50 @@ export class ApiError extends Error {
 	}
 }
 
-async function errorCode(response: Response): Promise<string | null> {
+async function failure(response: Response): Promise<ApiError> {
 	try {
-		const body = (await response.json()) as { error?: unknown };
-		return typeof body.error === 'string' ? body.error : null;
+		const body = (await response.json()) as { error?: unknown; message?: unknown };
+		return new ApiError(
+			response.status,
+			typeof body.error === 'string' ? body.error : null,
+			typeof body.message === 'string' ? body.message : null
+		);
 	} catch {
-		return null;
+		return new ApiError(response.status, null);
 	}
 }
 
+/** Every API call goes through here, so every one carries the pairing token. */
 async function request(
 	path: string,
 	accept: string,
 	as?: string,
 	signal?: AbortSignal,
-	extra: Record<string, string> = {}
+	extra: Record<string, string> = {},
+	write?: unknown
 ): Promise<Response> {
 	const sent = as ?? token;
 	const response = await fetch(path, {
 		cache: 'no-store',
-		headers: { accept, ...extra, ...(sent ? { [TOKEN_HEADER]: sent } : {}) },
+		headers: {
+			accept,
+			...extra,
+			...(sent ? { [TOKEN_HEADER]: sent } : {}),
+			// The server refuses a write without this header, and a page on
+			// another origin cannot send it.
+			...(write === undefined ? {} : { 'content-type': 'application/json', 'x-muxmaestro': '1' })
+		},
+		...(write === undefined ? {} : { method: 'POST', body: JSON.stringify(write) }),
 		signal
 	});
 	// "Not modified": the answer to a request that named what it already has.
 	if (response.status === 304) return response;
-	if (!response.ok) throw new ApiError(response.status, await errorCode(response));
+	if (!response.ok) throw await failure(response);
 	return response;
+}
+
+function post(path: string, body: unknown, accept = 'application/json'): Promise<Response> {
+	return request(path, accept, undefined, undefined, {}, body);
 }
 
 async function get<T>(path: string, as?: string): Promise<T> {
@@ -120,7 +140,10 @@ export async function readEvents(
 	}
 }
 
-const threadPath = (id: string): string => `/api/threads/${encodeURIComponent(id)}`;
+/** Where a thread's chat and screen are read from. */
+export const threadPath = (id: string): string => `/api/threads/${encodeURIComponent(id)}`;
+/** The manager pane is read the same way, from its own routes. */
+export const MANAGER_PATH = '/api/manager';
 
 export async function fetchThreads(): Promise<Thread[]> {
 	return (await get<{ threads: Thread[] }>('/api/threads')).threads;
@@ -130,8 +153,9 @@ export async function fetchHosts(): Promise<Host[]> {
 	return (await get<{ hosts: Host[] }>('/api/hosts')).hosts;
 }
 
-export function fetchChat(id: string, after?: number): Promise<ChatPage> {
-	return get<ChatPage>(`${threadPath(id)}/chat${after === undefined ? '' : `?after=${after}`}`);
+/** `base`: `threadPath(id)` or `MANAGER_PATH`. */
+export function fetchChat(base: string, after?: number): Promise<ChatPage> {
+	return get<ChatPage>(`${base}/chat${after === undefined ? '' : `?after=${after}`}`);
 }
 
 export interface ScreenPage {
@@ -149,12 +173,12 @@ export interface ScreenPage {
  * `etag`: the tag of the text already held; null comes back when it has not changed.
  */
 export async function fetchScreen(
-	id: string,
+	base: string,
 	lines?: number,
 	etag?: string | null
 ): Promise<ScreenPage | null> {
 	const response = await request(
-		`${threadPath(id)}/screen${lines === undefined ? '' : `?lines=${lines}`}`,
+		`${base}/screen${lines === undefined ? '' : `?lines=${lines}`}`,
 		'application/json',
 		undefined,
 		undefined,
@@ -173,4 +197,43 @@ export async function fetchScreen(
 /** `as`: ask with this token, not the stored one (to test a token before keeping it). */
 export function fetchConfig(as?: string): Promise<Config> {
 	return get<Config>('/api/config', as);
+}
+
+export function fetchManager(): Promise<ManagerHome> {
+	return get<ManagerHome>('/api/manager');
+}
+
+export async function dismissReview(key: string): Promise<void> {
+	await post('/api/manager/dismiss', { key });
+}
+
+/** The Mac pings a quiet turn stream every 15 s; three missed pings is a dead stream. */
+const TURN_STALL_MS = 45_000;
+
+/**
+ * Run one manager turn. `onDelta` gets the reply as it is written. A turn the
+ * Mac refuses to start throws an `ApiError` whose `detail` says why.
+ */
+export async function sendManagerText(
+	text: string,
+	onDelta: (text: string) => void
+): Promise<TurnEnd> {
+	const response = await post('/api/manager/text', { text }, 'text/event-stream');
+	const reader = response.body?.pipeThrough(new TextDecoderStream()).getReader();
+	const parse = frameParser();
+	while (reader) {
+		const chunk = await readOrStall(() => reader.read(), TURN_STALL_MS);
+		if (chunk === STALLED) {
+			void reader.cancel();
+			break;
+		}
+		const { done, value } = chunk;
+		if (done) break;
+		for (const frame of parse(value)) {
+			if (frame.event === 'delta') onDelta((JSON.parse(frame.data) as { text: string }).text);
+			else if (frame.event === 'end') return JSON.parse(frame.data) as TurnEnd;
+		}
+	}
+	// The stream closed with no end: the turn may still be running on the Mac.
+	return { outcome: 'timeout', reply: '', message: 'Connection lost' };
 }

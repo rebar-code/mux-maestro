@@ -2,7 +2,7 @@ import Foundation
 import Network
 
 /// The phone's HTTP server: a loopback-only listener that serves the static
-/// bundle and the read API. `tailscale serve` is the only way in from another
+/// bundle and the API. `tailscale serve` is the only way in from another
 /// device; `MobileAPI.authorize` checks every request it forwards.
 ///
 /// The server never polls. `update(_:)` hands it the tree the sidebar already
@@ -18,6 +18,24 @@ final class MobileServer {
         var transcript: (MobileThread) -> (path: String, codex: Bool)?
     }
 
+    /// The manager pane, as the app reaches it. nil where there is no manager
+    /// (the dev server): the manager routes then answer 503.
+    struct Manager {
+        /// The pane's status and its transcript file. Called off the server
+        /// queue and may block.
+        var pane: () -> (status: MobileManagerStatus, transcript: String?)
+        /// Run one turn, the way the Mac rail does. Both callbacks may come on
+        /// any queue; `completion` comes exactly once.
+        var send: (
+            _ text: String, _ onDelta: @escaping (String) -> Void,
+            _ completion: @escaping (ManagerTurnOutcome) -> Void
+        ) -> Void
+        var dismiss: (_ key: String) -> Void
+        /// The pane's last `lines` lines and its screen, with colour escapes.
+        /// Called off the server queue and may block.
+        var screen: (_ lines: Int) -> String?
+    }
+
     /// Bounds on what one listener holds, so a client that opens connections
     /// and never reads cannot take the app's memory or descriptors.
     struct Limits {
@@ -29,6 +47,12 @@ final class MobileServer {
         /// Bytes a stream may have queued and unsent before it is closed. A
         /// phone that fell asleep reconnects and gets the current lists.
         var streamBacklog = 1_048_576
+        /// A turn stream with nothing to say gets a comment line this often,
+        /// so the phone can tell a quiet turn from a dead connection.
+        var turnPing: TimeInterval = 15
+        /// How often the manager pane is read for its spinner line while a
+        /// turn runs.
+        var spinnerPoll: TimeInterval = 1
     }
 
     enum StartError: Error, Equatable {
@@ -40,7 +64,10 @@ final class MobileServer {
     private final class Client {
         let connection: NWConnection
         var buffer = Data()
+        /// The response has no end: the connection takes no more requests.
         var streaming = false
+        /// It holds the event stream, so it gets every broadcast.
+        var events = false
         var lastWrite = Date()
         /// When the connection last sent a request or was answered.
         var lastActive = Date()
@@ -59,6 +86,7 @@ final class MobileServer {
     private let staticRoot: URL?
     private let sources: Sources
     private let limits: Limits
+    private let manager: Manager?
     private let queue = DispatchQueue(label: "is.rebar.muxmaestro.mobile")
     private let work = DispatchQueue(label: "is.rebar.muxmaestro.mobile.work", attributes: .concurrent)
 
@@ -71,15 +99,27 @@ final class MobileServer {
     private var hostsBody = MobileSnapshot().hostsJSON()
     private var config = MobileConfig()
     private var clients: [ObjectIdentifier: Client] = [:]
+    private var board = MobileManagerBoard()
+    private var turn: MobileManagerTurn?
+    /// The last `manager` event's state, without the reply text: a reply
+    /// grows by `manager-delta` events, not by sending the board again.
+    private var managerKey = MobileManager.liveJSON(
+        board: MobileManagerBoard(), snapshot: MobileSnapshot(), turn: nil)
+    /// Turns this server started that have not ended. The app tells the server
+    /// about a running turn too, but only once the turn is on its way.
+    private var phoneTurns = 0
+    /// Counts turns, so a spinner poll from an earlier turn stops.
+    private var turnSerial = 0
 
     private let activityLock = NSLock()
     private var lastRequestAt = Date.distantPast
     private var streamCount = 0
 
-    init(staticRoot: URL?, sources: Sources, limits: Limits = Limits()) {
+    init(staticRoot: URL?, sources: Sources, limits: Limits = Limits(), manager: Manager? = nil) {
         self.staticRoot = staticRoot
         self.sources = sources
         self.limits = limits
+        self.manager = manager
     }
 
     /// Whether a phone asked for something lately or holds an event stream.
@@ -176,6 +216,8 @@ final class MobileServer {
                 self.hostsBody = hosts
                 self.broadcast(Self.event("hosts", hosts))
             }
+            // A card names its thread by id, and the ids come from the tree.
+            self.managerChanged()
             let now = Date()
             for client in self.clients.values
             where client.streaming && now.timeIntervalSince(client.lastWrite) >= Self.pingInterval {
@@ -185,13 +227,94 @@ final class MobileServer {
         }
     }
 
+    /// The rows of the Mac rail. Kept while the listener is off too, so the
+    /// first request after it starts has them.
+    func updateManager(_ board: MobileManagerBoard) {
+        queue.async {
+            self.board = board
+            self.managerChanged()
+        }
+    }
+
+    /// A manager turn started, on the Mac or from a phone. Open streams follow
+    /// it, so every screen shows the one conversation.
+    func managerTurnBegan(_ prompt: String) {
+        queue.async {
+            self.turn = MobileManagerTurn(prompt: prompt)
+            self.managerChanged()
+            self.turnSerial += 1
+            self.pollSpinner(serial: self.turnSerial)
+        }
+    }
+
+    func managerTurnAppended(_ delta: String) {
+        queue.async {
+            guard !delta.isEmpty, self.turn != nil else { return }
+            self.turn?.reply += delta
+            guard self.config.allows(.manager) else { return }
+            self.broadcast(Self.event("manager-delta", Self.json(["text": delta])))
+        }
+    }
+
+    func managerTurnEnded() {
+        queue.async {
+            self.turn = nil
+            self.managerChanged()
+        }
+    }
+
+    /// How many pane lines are read to find the spinner line.
+    private static let spinnerLines = 40
+
+    /// While a turn runs, read the pane's own spinner line and send it on when
+    /// it changes, so the phone shows what the agent shows.
+    private func pollSpinner(serial: Int) {
+        guard let manager else { return }
+        queue.asyncAfter(deadline: .now() + limits.spinnerPoll) { [weak self] in
+            guard let self, self.turn != nil, self.turnSerial == serial else { return }
+            self.work.async { [weak self] in
+                let line = manager.screen(Self.spinnerLines).flatMap(MobileSpinner.line(in:))
+                self?.queue.async {
+                    guard let self, self.turn != nil, self.turnSerial == serial else { return }
+                    if line != self.turn?.spinner {
+                        self.turn?.spinner = line
+                        if self.config.allows(.manager) {
+                            self.broadcast(Self.event(
+                                "manager-spinner", Self.json(["text": line ?? NSNull()])))
+                        }
+                    }
+                    self.pollSpinner(serial: serial)
+                }
+            }
+        }
+    }
+
+    private func managerChanged() {
+        let key = MobileManager.liveJSON(
+            board: board, snapshot: snapshot, turn: turn.map { MobileManagerTurn(prompt: $0.prompt) })
+        guard key != managerKey else { return }
+        managerKey = key
+        if config.allows(.manager) { broadcast(Self.event("manager", managerBody)) }
+    }
+
+    /// The `manager` event's data: the cards and the turn with its reply so far.
+    private var managerBody: Data {
+        MobileManager.liveJSON(board: board, snapshot: snapshot, turn: turn)
+    }
+
+    private static func json(_ object: [String: Any]) -> Data {
+        (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data("{}".utf8)
+    }
+
     /// The Settings the phone is held to. Applies to the next request, and tells
     /// open streams so the phone hides what was switched off.
     func configure(_ config: MobileConfig) {
         queue.async {
             guard config != self.config else { return }
+            let managerOn = config.allows(.manager) && !self.config.allows(.manager)
             self.config = config
             self.broadcast(Self.event("config", config.json()))
+            if managerOn { self.broadcast(Self.event("manager", self.managerBody)) }
         }
     }
 
@@ -226,7 +349,7 @@ final class MobileServer {
     private func drop(_ client: Client) {
         guard clients.removeValue(forKey: ObjectIdentifier(client)) != nil else { return }
         client.connection.cancel()
-        setStreamCount(clients.values.filter(\.streaming).count)
+        setStreamCount(clients.values.filter(\.events).count)
     }
 
     private func setStreamCount(_ count: Int) {
@@ -276,19 +399,19 @@ final class MobileServer {
 
     /// Queue `data` on an event stream. A stream that is not being read is
     /// closed once its unsent bytes pass the backlog limit.
-    private func write(_ data: Data, to client: Client) {
+    private func write(_ data: Data, to client: Client, close: Bool = false) {
         guard client.pending + data.count <= limits.streamBacklog else { return drop(client) }
         client.lastWrite = Date()
         client.pending += data.count
         client.connection.send(content: data, completion: .contentProcessed { [weak self, weak client] error in
             guard let client else { return }
             client.pending -= data.count
-            if error != nil { self?.drop(client) }
+            if close || error != nil { self?.drop(client) }
         })
     }
 
     private func broadcast(_ data: Data) {
-        for client in clients.values where client.streaming { write(data, to: client) }
+        for client in clients.values where client.events { write(data, to: client) }
     }
 
     static func event(_ name: String, _ json: Data) -> Data {
@@ -354,23 +477,81 @@ final class MobileServer {
                 return send(.error(404, "not_found"), to: client, head: head)
             }
             reply(to: client) { [sources] in
-                guard let text = sources.screen(thread, lines) else { return .error(503, "unavailable") }
-                // A pane is mostly empty rows below its prompt; the phone needs none of them.
-                let end = text.lastIndex { !$0.isNewline && !$0.isWhitespace }
-                var response = MobileResponse.json([
-                    "text": end.map { String(text[...$0]) } ?? "",
-                    "lines": lines, "max": MobileAPI.screenLinesMax,
-                ])
-                // A scrollback is long and mostly unchanged between polls: a
-                // phone that already holds this body gets 304 and no body.
-                let etag = MobileAPI.etag(response.body)
-                if MobileAPI.isFresh(request, etag: etag) {
-                    response = MobileResponse(status: 304, headers: ["Cache-Control": "no-store"])
-                }
-                response.headers["ETag"] = etag
-                return response
+                Self.screenResponse(sources.screen(thread, lines), lines: lines, request: request)
             }
+        case .managerChat(let after):
+            guard let manager else {
+                return send(.error(503, "unavailable", message: MobileManager.offMessage),
+                            to: client, head: head)
+            }
+            reply(to: client) {
+                // No transcript yet is an empty chat, not a missing thread.
+                let page = manager.pane().transcript
+                    .flatMap { MobileChat.read(path: $0, codex: false, after: after) }
+                return .json((page ?? MobileChatPage()).json)
+            }
+        case .managerScreen(let lines):
+            guard let manager else {
+                return send(.error(503, "unavailable", message: MobileManager.offMessage),
+                            to: client, head: head)
+            }
+            reply(to: client) {
+                Self.screenResponse(manager.screen(lines), lines: lines, request: request)
+            }
+        case .manager:
+            guard let manager else {
+                return send(.error(503, "unavailable", message: MobileManager.offMessage),
+                            to: client, head: head)
+            }
+            let (board, snapshot, turn) = (board, snapshot, turn)
+            reply(to: client) {
+                .json(MobileManager.body(
+                    board: board, snapshot: snapshot, turn: turn, status: manager.pane().status))
+            }
+        case .managerText:
+            let field = MobileManager.text(in: request.body)
+            guard case .value(let text) = field else {
+                return send(field.refusal ?? .error(400, "bad_request"), to: client, head: head)
+            }
+            startTurn(text, client: client)
+        case .managerDismiss:
+            let field = MobileManager.key(in: request.body)
+            guard case .value(let key) = field else {
+                return send(field.refusal ?? .error(400, "bad_request"), to: client, head: head)
+            }
+            guard let manager else {
+                return send(.error(503, "unavailable", message: MobileManager.offMessage),
+                            to: client, head: head)
+            }
+            // Only a review item on the board can be dismissed: the key is
+            // never passed on as it came.
+            guard MobileManager.hasReview(key, in: board) else {
+                return send(.error(404, "not_found"), to: client, head: head)
+            }
+            manager.dismiss(key)
+            send(.json(["ok": true]), to: client, head: head)
         }
+    }
+
+    /// A pane's text as the screen routes answer it; 503 when it could not be read.
+    private static func screenResponse(
+        _ text: String?, lines: Int, request: MobileRequest
+    ) -> MobileResponse {
+        guard let text else { return .error(503, "unavailable") }
+        // A pane is mostly empty rows below its prompt; the phone needs none of them.
+        let end = text.lastIndex { !$0.isNewline && !$0.isWhitespace }
+        var response = MobileResponse.json([
+            "text": end.map { String(text[...$0]) } ?? "",
+            "lines": lines, "max": MobileAPI.screenLinesMax,
+        ])
+        // A scrollback is long and mostly unchanged between polls: a
+        // phone that already holds this body gets 304 and no body.
+        let etag = MobileAPI.etag(response.body)
+        if MobileAPI.isFresh(request, etag: etag) {
+            response = MobileResponse(status: 304, headers: ["Cache-Control": "no-store"])
+        }
+        response.headers["ETag"] = etag
+        return response
     }
 
     /// Build a response off the server queue (a transcript read, a tmux call),
@@ -385,20 +566,76 @@ final class MobileServer {
         }
     }
 
+    // No Content-Length: a stream ends when either side closes.
+    private static let streamHead = Data((
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\n"
+            + "Connection: close\r\nX-Accel-Buffering: no\r\nX-Content-Type-Options: nosniff\r\n\r\n"
+    ).utf8)
+
     private func startStream(_ client: Client) {
         client.streaming = true
+        client.events = true
         client.buffer.removeAll()
-        setStreamCount(clients.values.filter(\.streaming).count)
-        // No Content-Length: the stream ends when either side closes.
-        var data = Data((
-            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\n"
-                + "Connection: close\r\nX-Accel-Buffering: no\r\nX-Content-Type-Options: nosniff\r\n\r\n"
-        ).utf8)
+        setStreamCount(clients.values.filter(\.events).count)
+        var data = Self.streamHead
         data.append(Self.event("config", config.json()))
         data.append(Self.event("threads", threadsBody))
         data.append(Self.event("hosts", hostsBody))
+        if config.allows(.manager) { data.append(Self.event("manager", managerBody)) }
         write(data, to: client)
         receive(client)
+    }
+
+    /// One manager turn. A turn that cannot start is a plain error; one that
+    /// starts answers with a stream of `delta` events and one `end` event.
+    private func startTurn(_ text: String, client: Client) {
+        guard let manager else {
+            return send(.error(503, "unavailable", message: MobileManager.offMessage),
+                        to: client, head: false)
+        }
+        work.async { [weak self, weak client] in
+            let status = manager.pane().status
+            self?.queue.async {
+                guard let self, let client, self.clients[ObjectIdentifier(client)] != nil else { return }
+                if let refusal = MobileManager.refusal(
+                    status: status, turnRunning: self.turn != nil || self.phoneTurns > 0) {
+                    return self.send(refusal, to: client, head: false)
+                }
+                self.phoneTurns += 1
+                client.streaming = true
+                client.buffer.removeAll()
+                self.write(Self.streamHead, to: client)
+                self.receive(client)
+                self.pingTurn(client)
+                // The turn runs to its end even when the phone hangs up: only
+                // the writes stop.
+                let event = { [weak self, weak client] (name: String, object: [String: Any], last: Bool) in
+                    let json = Self.json(object)
+                    self?.queue.async {
+                        guard let self else { return }
+                        if last { self.phoneTurns -= 1 }
+                        guard let client, self.clients[ObjectIdentifier(client)] != nil else { return }
+                        self.write(Self.event(name, json), to: client, close: last)
+                    }
+                }
+                manager.send(
+                    text,
+                    { delta in event("delta", ["text": delta], false) },
+                    { outcome in event("end", MobileManager.end(outcome), true) })
+            }
+        }
+    }
+
+    /// Keep a turn stream alive on a timer of its own: a turn can be quiet for
+    /// a long time, and the tree updates that ping the event stream may not come.
+    private func pingTurn(_ client: Client) {
+        queue.asyncAfter(deadline: .now() + limits.turnPing) { [weak self, weak client] in
+            guard let self, let client, self.clients[ObjectIdentifier(client)] != nil else { return }
+            if Date().timeIntervalSince(client.lastWrite) >= self.limits.turnPing * 0.9 {
+                self.write(Data(": ping\n\n".utf8), to: client)
+            }
+            self.pingTurn(client)
+        }
     }
 
     private func asset(_ path: String) -> MobileResponse {
