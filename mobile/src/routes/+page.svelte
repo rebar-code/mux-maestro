@@ -7,6 +7,7 @@
 	import { can, live } from '$lib/live.svelte';
 	import { needsYouCards } from '$lib/manager';
 	import { manager } from '$lib/manager.svelte';
+	import Prose from '$lib/Prose.svelte';
 	import PullIndicator from '$lib/PullIndicator.svelte';
 	import TalkButton from '$lib/TalkButton.svelte';
 	import { voice } from '$lib/voice.svelte';
@@ -68,7 +69,9 @@
 				{#if line.role === 'user'}
 					<div class="u">{line.text}</div>
 				{:else if line.text}
-					<div class="m" class:old={index < manager.lines.length - 1}>{line.text}</div>
+					<div class="m" class:old={index < manager.lines.length - 1}>
+						<Prose text={line.text} />
+					</div>
 				{:else}
 					<div class="m wait" role="status" aria-label="Thinking">
 						<i></i><i></i><i></i>
@@ -196,7 +199,6 @@
 	.m {
 		color: #dcdcf0;
 		font-size: 16px;
-		white-space: pre-wrap;
 		overflow-wrap: anywhere;
 	}
 

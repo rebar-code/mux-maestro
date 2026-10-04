@@ -2,6 +2,7 @@
 	import { fileSize, framedHtml, ICONS, isViewable, withoutTargets } from './artifacts';
 	import { share, type Artifacts } from './artifacts.svelte';
 	import { ui } from './gestures.svelte';
+	import { proseTaps } from './prose';
 	import type { ArtifactFile } from './types';
 	import { Zoom } from './zoom.svelte';
 
@@ -112,7 +113,7 @@
 			{:then body}
 				{#if file.kind === 'markdown'}
 					<!-- eslint-disable-next-line svelte/no-at-html-tags -- markdown.ts renders with raw HTML off -->
-					<div class="md">{@html body}</div>
+					<div class="md" {@attach proseTaps(() => undefined)}>{@html body}</div>
 				{:else}
 					<!-- eslint-disable-next-line svelte/no-at-html-tags -- markdown.ts escapes the text -->
 					<pre class="code mono hljs" data-hscroll><code>{@html body}</code></pre>

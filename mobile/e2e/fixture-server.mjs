@@ -3,7 +3,7 @@
 //
 //   PORT=5199 node e2e/fixture-server.mjs
 //
-// Test hooks (POST): /__fixture/reset, /__fixture/wait?id=, /__fixture/say?id=&text=,
+// Test hooks (POST): /__fixture/reset, /__fixture/wait?id=, /__fixture/say?id=&text=&role=,
 // /__fixture/grouping?value=, /__fixture/deny?on=1, /__fixture/rotate?value=, /__fixture/drop,
 // /__fixture/capability?name=&on=, /__fixture/manager-status?value=,
 // /__fixture/mac-turn?text=&reply=, /__fixture/voice?mode=&speaker=&heard=&delay=,
@@ -1641,7 +1641,7 @@ function hook(res, url) {
 			if (!thread || !chats[thread.id]) return send(res, 404, { error: 'not_found' });
 			chats[thread.id].push({
 				n: chats[thread.id].length,
-				role: 'assistant',
+				role: url.searchParams.get('role') ?? 'assistant',
 				text: url.searchParams.get('text') ?? ''
 			});
 			thread.lastActivityAt = now;
