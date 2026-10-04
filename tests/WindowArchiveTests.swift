@@ -703,7 +703,10 @@ final class WindowArchiveTests: XCTestCase {
         XCTAssertEqual(TmuxCommands.literal("a;b"), "a;b")
         // tmux copies a style marker through and does not collapse `##[`.
         XCTAssertEqual(TmuxCommands.literal("#[fg=red]r"), "#[fg=red]r")
-        XCTAssertEqual(TmuxCommands.literal("a##[x"), "a###[x")
+        // Any run of `#` before `[` goes through as written.
+        XCTAssertEqual(TmuxCommands.literal("a##[x"), "a##[x")
+        XCTAssertEqual(TmuxCommands.literal("a###[x#y"), "a###[x##y")
+        XCTAssertEqual(TmuxCommands.literal("##"), "####")
         XCTAssertEqual(
             TmuxCommands.renameWindow(target: "=web:1", to: "-n"),
             ["rename-window", "-t", "=web:1", "--", "-n"])
@@ -828,10 +831,10 @@ final class WindowArchiveTests: XCTestCase {
         }
 
         // Names and directories tmux would expand or split, restored as written.
-        let hostileDir = "\(real)/a#{session_name};"
+        let hostileDir = "\(real)/a#{session_name}##[b;"
         try fm.createDirectory(atPath: hostileDir, withIntermediateDirectories: true)
         let hostileName = "-n #(echo x) #[fg=red]r #{pane_id};"
-        XCTAssertNotNil(run(["new-window", "-d", "-t", "=acme-app:7", "-c", "\(real)/a##{session_name}" + #"\;"#]))
+        XCTAssertNotNil(run(["new-window", "-d", "-t", "=acme-app:7", "-c", "\(real)/a##{session_name}##[b" + #"\;"#]))
         XCTAssertNotNil(run(["rename-window", "-t", "=acme-app:7", "--", #"-n ##(echo x) #[fg=red]r ##{pane_id}\;"#]))
         waitFor("hostile fixture is up") { paths("=acme-app:7") == [hostileDir] }
         let hostile = try XCTUnwrap(

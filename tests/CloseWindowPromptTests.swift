@@ -33,10 +33,10 @@ final class CloseWindowPromptTests: XCTestCase {
 
     func testTitleKeepsSessionNamesWithSpaces() {
         let t = CloseWindowPrompt.Target(
-            session: "Acme App Demo", index: 2, name: "zsh")
+            session: "Front Range Windows", index: 2, name: "zsh")
         XCTAssertEqual(
             CloseWindowPrompt.title(t, .window),
-            "Archive window 2 “zsh” in “Acme App Demo”?")
+            "Archive window 2 “zsh” in “Front Range Windows”?")
     }
 
     // MARK: info

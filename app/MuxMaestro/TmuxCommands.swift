@@ -215,15 +215,22 @@ enum TmuxCommands {
     /// separator. For a value read back from tmux, such as a restored window's
     /// name or directory.
     ///
-    /// `#[` stays as it is: tmux copies a style marker through unexpanded and
-    /// does not collapse `##[`, so doubling it would add a `#` to the name.
+    ///
+    /// A run of `#` right before `[` stays as it is: tmux copies a style marker
+    /// through unexpanded, with every `#` in front of it, so doubling any of
+    /// them would change the text.
     static func literal(_ text: String) -> String {
         var escaped = ""
         var rest = Substring(text)
         while let ch = rest.first {
-            rest = rest.dropFirst()
-            escaped.append(ch)
-            if ch == "#", rest.first != "[" { escaped.append("#") }
+            guard ch == "#" else {
+                escaped.append(ch)
+                rest = rest.dropFirst()
+                continue
+            }
+            let run = rest.prefix { $0 == "#" }
+            rest = rest.dropFirst(run.count)
+            escaped += rest.first == "[" ? String(run) : String(run) + run
         }
         return escaped.hasSuffix(";") ? escaped.dropLast() + "\\;" : escaped
     }
