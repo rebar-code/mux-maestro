@@ -531,6 +531,9 @@ final class MobilePushCenter {
     private var focused: [String: (thread: String, at: Int)] = [:]
     private var tokens: [String: (token: String, madeAt: Int)] = [:]
     private var refusals: [String: Int] = [:]
+    /// The phones were forgotten and the Keychain did not take the empty
+    /// list. Nothing is sent to them, and the write is tried again.
+    private var forgetPending = false
 
     /// Called with the number of subscribed phones when it changes, on the
     /// center's queue.
@@ -574,6 +577,9 @@ final class MobilePushCenter {
     /// never treated as "none": a list written over one that was not read
     /// would drop every phone.
     private func subscriptions() -> [MobilePushSubscription]? {
+        // A forget the Keychain refused: try the write again. Until it is
+        // taken, the list in memory is the empty one.
+        if forgetPending { save([]) }
         if let loaded { return loaded }
         var stored: [MobilePushSubscription] = []
         switch store.read() {
@@ -602,6 +608,8 @@ final class MobilePushCenter {
         else { return false }
         let changed = loaded?.count != list.count
         loaded = list
+        // Any list that was stored replaces the one that had to be forgotten.
+        forgetPending = false
         focused = focused.filter { entry in list.contains { $0.endpoint == entry.key } }
         refusals = refusals.filter { entry in list.contains { $0.endpoint == entry.key } }
         if changed { onCount?(list.count) }
@@ -692,10 +700,20 @@ final class MobilePushCenter {
 
     /// Forget every phone: there is a new pairing code, so every phone was
     /// signed out. Written even over a list that could not be read.
+    ///
+    /// If the Keychain refuses the write, the phones are forgotten in memory
+    /// all the same: a signed-out phone gets nothing from this run of the
+    /// app, and the write is tried again on every later use.
     func forgetAll() {
         queue.async {
-            if self.subscriptions()?.isEmpty == true { return }
-            self.save([])
+            if !self.forgetPending, self.subscriptions()?.isEmpty == true { return }
+            guard !self.save([]) else { return }
+            let had = self.loaded?.count
+            self.loaded = []
+            self.focused.removeAll()
+            self.refusals.removeAll()
+            self.forgetPending = true
+            if had != 0 { self.onCount?(0) }
         }
     }
 

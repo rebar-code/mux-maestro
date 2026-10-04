@@ -219,6 +219,32 @@ test('the switch follows the Mac while the app is open, with no reload', async (
 	await expect.poll(async () => (await held(page)).focus[ENDPOINT]).toBe(THREAD);
 });
 
+test('when the Mac has dropped the phone, the switch stops saying on', async ({ page }) => {
+	await open(page, { standalone: true, answer: 'granted' });
+	await openDrawer(page);
+	await toggle(page).click();
+	await expect(toggle(page)).toHaveAttribute('aria-checked', 'true');
+
+	// The Mac drops its phones and has no room to take this one back.
+	await page.request.post('/__fixture/push-forget');
+	await page.request.post('/__fixture/push-limit?on=1');
+	// The next "this thread is on screen" call is answered 404.
+	await drawer(page).locator(`a[href="/t/${THREAD}"]`).click();
+	await page.getByRole('button', { name: 'Menu' }).click();
+	await expect(toggle(page)).toHaveAttribute('aria-checked', 'false');
+	expect((await held(page)).subscriptions).toEqual([]);
+
+	// With room again, a dropped phone hands its subscription back by itself.
+	await page.request.post('/__fixture/push-limit?on=0');
+	await toggle(page).click();
+	await expect(toggle(page)).toHaveAttribute('aria-checked', 'true');
+	await page.request.post('/__fixture/push-forget');
+	await drawer(page).getByText('Manager').click();
+	await expect.poll(async () => (await held(page)).subscriptions.length).toBe(1);
+	await page.getByRole('button', { name: 'Menu' }).click();
+	await expect(toggle(page)).toHaveAttribute('aria-checked', 'true');
+});
+
 test('a phone that gets its first config after the app started still shows the switch on', async ({
 	page
 }) => {
@@ -304,19 +330,44 @@ const shown = (worker: Worker): Promise<Shown[]> =>
 		}));
 	});
 
-const pushed = (worker: Worker, data: string): Promise<void> =>
-	worker.evaluate((data) => {
-		self.dispatchEvent(new PushEvent('push', { data }));
-	}, data);
+/**
+ * Deliver a push to the worker the way the browser does: through the
+ * debugging protocol, so the worker gets a real (trusted) `push` event, not
+ * one the test made itself.
+ */
+async function pushed(page: Page, data: string): Promise<void> {
+	const cdp = await page.context().newCDPSession(page);
+	const found = new Promise<string>((done) => {
+		cdp.on('ServiceWorker.workerRegistrationUpdated', (event) => {
+			const registration = event.registrations.find((r) => !r.isDeleted);
+			if (registration) done(registration.registrationId);
+		});
+	});
+	await cdp.send('ServiceWorker.enable');
+	await cdp.send('ServiceWorker.deliverPushMessage', {
+		origin: ORIGIN(page),
+		registrationId: await found,
+		data
+	});
+	await cdp.detach();
+}
+
+const ORIGIN = (page: Page): string =>
+	new URL(page.context().serviceWorkers()[0]?.url() ?? page.url()).origin;
 
 /**
  * Push `data` until the notifications are `expected`. The browser hands each
  * notification to the system's notification centre, which was seen to drop the
  * first one of a run. A message sent twice has one tag, so it still shows once.
  */
-async function pushUntil(worker: Worker, data: string, expected: Shown[]): Promise<void> {
+async function pushUntil(
+	page: Page,
+	worker: Worker,
+	data: string,
+	expected: Shown[]
+): Promise<void> {
 	await expect(async () => {
-		await pushed(worker, data);
+		await pushed(page, data);
 		await expect.poll(() => shown(worker), { timeout: 1500 }).toEqual(expected);
 	}).toPass({ timeout: 15_000 });
 }
@@ -349,11 +400,20 @@ test('a push shows a notification, and a tap on it opens that thread', async ({
 	expect(policy).toContain("script-src 'self'");
 	expect(policy).not.toContain("'unsafe-eval'");
 
-	await pushUntil(worker, WAITING, [
+	await worker.evaluate(() => {
+		const scope = self as unknown as { __trusted: boolean[] };
+		scope.__trusted = [];
+		self.addEventListener('push', (event) => scope.__trusted.push(event.isTrusted));
+	});
+	await pushUntil(page, worker, WAITING, [
 		{ title: 'MuxMaestro', body: 'A thread needs you', tag: 'demo-tag' }
 	]);
+	expect(
+		await worker.evaluate(() => (self as unknown as { __trusted: boolean[] }).__trusted)
+	).not.toContain(false);
 	// A second message for the thread replaces the first.
 	await pushUntil(
+		page,
 		worker,
 		JSON.stringify({
 			thread: THREAD,
@@ -364,7 +424,7 @@ test('a push shows a notification, and a tap on it opens that thread', async ({
 		[{ title: 'MuxMaestro', body: 'A thread finished', tag: 'demo-tag' }]
 	);
 	// A message that cannot be read still shows something.
-	await pushed(worker, 'not json');
+	await pushed(page, 'not json');
 	await expect.poll(async () => (await shown(worker)).length).toBe(2);
 
 	await tapped(worker, 'demo-tag');
@@ -382,7 +442,7 @@ test('with no window open, a tap on the notification opens the thread in a new o
 	context
 }) => {
 	const worker = await startWorker(page, context);
-	await pushUntil(worker, WAITING, [
+	await pushUntil(page, worker, WAITING, [
 		{ title: 'MuxMaestro', body: 'A thread needs you', tag: 'demo-tag' }
 	]);
 	// The app is closed; only the service worker is left.
@@ -401,26 +461,44 @@ test('with no window open, a tap on the notification opens the thread in a new o
 		)
 		.toBe(0);
 
-	// A browser opens a window only for a real tap, and a test cannot make
-	// one. So the call is recorded here, and the address is then opened as
-	// the browser would open it.
+	// The worker's own code runs to the browser's real `openWindow`, which is
+	// only watched here, not replaced. A browser opens a window only for a
+	// real tap on a notification, and no test can make one: the real call
+	// answers "not allowed". A wrong address would be a TypeError before that.
 	await worker.evaluate(() => {
-		const scope = self as unknown as ServiceWorkerGlobalScope & { __opened: string[] };
+		const scope = self as unknown as ServiceWorkerGlobalScope & {
+			__opened: { url: string; answer: string }[];
+		};
 		scope.__opened = [];
+		const real = scope.clients.openWindow.bind(scope.clients);
 		scope.clients.openWindow = async (url) => {
-			scope.__opened.push(String(url));
-			return null;
+			const call = { url: String(url), answer: 'pending' };
+			scope.__opened.push(call);
+			try {
+				const client = await real(url);
+				call.answer = 'opened';
+				return client;
+			} catch (error) {
+				call.answer = (error as Error).name;
+				throw error;
+			}
 		};
 	});
 	await tapped(worker, 'demo-tag');
-	const opened = (): Promise<string[]> =>
-		worker.evaluate(() => (self as unknown as { __opened: string[] }).__opened);
-	await expect.poll(opened).toEqual([threadPath(THREAD)]);
+	const opened = (): Promise<{ url: string; answer: string }[]> =>
+		worker.evaluate(
+			() => (self as unknown as { __opened: { url: string; answer: string }[] }).__opened
+		);
+	await expect
+		.poll(opened)
+		.toEqual([
+			{ url: threadPath(THREAD), answer: expect.stringMatching(/^(opened|InvalidAccessError)$/) }
+		]);
 	await expect.poll(async () => (await shown(worker)).length).toBe(0);
 
 	// The address is one the app shell answers from a cold start.
 	const cold = await context.newPage();
-	await cold.goto((await opened())[0]);
+	await cold.goto((await opened())[0].url);
 	await expect(cold).toHaveURL(threadAddress);
 	await expect(cold.locator('.tbar .title b')).toBeVisible();
 });
