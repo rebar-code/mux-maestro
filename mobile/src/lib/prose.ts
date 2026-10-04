@@ -54,11 +54,20 @@ export function proseTaps(links: () => ProseLinks | undefined) {
 		const onKey = (event: KeyboardEvent): void => {
 			if (event.key === 'Enter' && (event.target as Element).matches('[role="link"]')) act(event);
 		};
+		// A tap on Copy does not take the focus: a text box that is being typed
+		// in keeps its keyboard and its caret.
+		const keep = (event: Event): void => {
+			if ((event.target as Element).closest('[data-copy]')) event.preventDefault();
+		};
 		node.addEventListener('click', act);
 		node.addEventListener('keydown', onKey);
+		node.addEventListener('pointerdown', keep);
+		node.addEventListener('mousedown', keep);
 		return () => {
 			node.removeEventListener('click', act);
 			node.removeEventListener('keydown', onKey);
+			node.removeEventListener('pointerdown', keep);
+			node.removeEventListener('mousedown', keep);
 		};
 	};
 }

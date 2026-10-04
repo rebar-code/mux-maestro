@@ -2,7 +2,6 @@
 	import { killWarning, menuItems, menuTitle, NAME_MAX } from './actions';
 	import { menu } from './actions.svelte';
 	import { shortCwd } from './format';
-	import { overKeyboard } from './keyboard';
 	import { can } from './live.svelte';
 
 	const CLOSE_AT = 80;
@@ -82,7 +81,6 @@
 		{onpointerup}
 		onpointercancel={onpointerup}
 		{onclickcapture}
-		{@attach overKeyboard}
 	>
 		<div class="grab" aria-hidden="true"><i></i></div>
 
@@ -163,7 +161,8 @@
 		position: absolute;
 		left: max(8px, env(safe-area-inset-left));
 		right: max(8px, env(safe-area-inset-right));
-		bottom: calc(8px + var(--kb, 0px) + var(--safe-bottom, env(safe-area-inset-bottom)));
+		/* The app is already as tall as what the keyboard leaves: the sheet only clears the home indicator. */
+		bottom: calc(8px + var(--safe-bottom, env(safe-area-inset-bottom)));
 		z-index: 51;
 		display: flex;
 		flex-direction: column;

@@ -374,6 +374,62 @@ test('a link whose text names another host shows the host it goes to', async ({ 
 	await shot(page, 'markdown-host');
 });
 
+const box = (page: Page): Locator => page.getByRole('textbox', { name: 'Reply' });
+const DRAFT = ['first line', 'second line', 'third line', 'fourth line', 'fifth line'].join('\n');
+
+/** How far the bottom of `locator` is above the bar with the text box (negative: under it). */
+async function clearOfDock(page: Page, locator: Locator): Promise<number> {
+	const bottom = await locator.evaluate((el) => el.getBoundingClientRect().bottom);
+	const dock = await page.locator('[data-dock]').evaluate((el) => el.getBoundingClientRect().top);
+	return dock - bottom;
+}
+
+test('a tap on Copy leaves the focus, the caret and the draft in the text box', async ({
+	page,
+	context
+}) => {
+	await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+	await open(page, [EVERYTHING]);
+	await page.request.post('/__fixture/capability?name=replies&on=1');
+	await box(page).fill(DRAFT);
+	await box(page).focus();
+	await box(page).evaluate((el: HTMLTextAreaElement) => el.setSelectionRange(3, 3));
+	const button = last(page).getByRole('button', { name: 'Copy' });
+	// The code block is still in view above the box that grew.
+	await button.scrollIntoViewIfNeeded();
+	await button.tap();
+	await expect(button).toHaveAttribute('data-copied', '');
+	expect(await page.evaluate(() => navigator.clipboard.readText())).toContain(
+		'await tax.waitFor();'
+	);
+	await expect(box(page)).toBeFocused();
+	await expect(box(page)).toHaveValue(DRAFT);
+	expect(await box(page).evaluate((el: HTMLTextAreaElement) => el.selectionStart)).toBe(3);
+});
+
+test('with a tall draft in the text box, find still brings the match into view above it', async ({
+	page
+}) => {
+	await open(page, [EVERYTHING, ...Array.from({ length: 12 }, (_, n) => `Later line ${n + 1}.`)]);
+	await page.request.post('/__fixture/capability?name=replies&on=1');
+	await box(page).fill(DRAFT);
+	const short = await page.locator('[data-dock]').evaluate((el) => el.getBoundingClientRect().top);
+	expect(short).toBeLessThan(760);
+	await page.getByRole('button', { name: 'Find' }).click();
+	const current = page.locator('[data-find-current]');
+	await page.getByRole('searchbox', { name: 'Find in session' }).fill('before the tax row');
+	await expect(page.locator('[data-find-count]')).toHaveText('1/1');
+	await expect(current).toBeInViewport();
+	expect(await clearOfDock(page, current)).toBeGreaterThanOrEqual(0);
+	await page.getByRole('searchbox', { name: 'Find in session' }).fill('Later line 12');
+	await expect(current).toHaveText('Later line 12');
+	await expect(current).toBeInViewport();
+	expect(await clearOfDock(page, current)).toBeGreaterThanOrEqual(0);
+	await shot(page, 'markdown-find-draft');
+	await page.getByRole('button', { name: 'Close find' }).click();
+	await expect(box(page)).toHaveValue(DRAFT);
+});
+
 test('find looks in the rendered text and scrolls to it', async ({ page }) => {
 	await open(page, [EVERYTHING, ...Array.from({ length: 12 }, (_, n) => `Later line ${n + 1}.`)]);
 	await page.getByRole('button', { name: 'Find' }).click();
@@ -490,12 +546,21 @@ test('a reply that is still arriving renders as it grows, and only its last bloc
 	await expect(live.locator('ul li')).toHaveCount(2);
 	await expect(live).toContainText('Thread 5 is still');
 	await expect(live.locator('p[data-kept]')).toHaveText('Done: the audit.');
+	// A draft typed while the reply arrives makes the box taller: the end of
+	// the reply stays in view above it, and the reply keeps arriving.
+	await box(page).fill(DRAFT);
+	await expect(live).toContainText('Thread 12 is still');
+	await expect.poll(() => clearOfDock(page, live)).toBeGreaterThanOrEqual(0);
+	await expect(live.locator('p').last()).toBeInViewport();
+	await expect(live.locator('p[data-kept]')).toHaveText('Done: the audit.');
 	await expect(live).not.toContainText('Thread 30 is still running its tests.');
 	await page
 		.locator('.u')
 		.last()
 		.evaluate((el) => el.scrollIntoView({ block: 'start' }));
 	await shot(page, 'markdown-streaming');
+	// Back to the end, where a reader who follows the reply is.
+	await page.locator('[data-view="chat"]').evaluate((el) => (el.scrollTop = el.scrollHeight));
 
 	// When it has all arrived the chat's own row takes over, with the same markdown.
 	await expect(page.locator('[data-live]')).toHaveCount(0, { timeout: 20_000 });
@@ -505,6 +570,8 @@ test('a reply that is still arriving renders as it grows, and only its last bloc
 	await expect(done).toContainText('<script>window.__ran = 1</script>');
 	await expect(done.locator('a')).toHaveCount(0);
 	await expect(done.getByRole('button', { name: 'Copy' })).toHaveCount(1);
+	await expect(box(page)).toHaveValue(DRAFT);
+	expect(await clearOfDock(page, done)).toBeGreaterThanOrEqual(0);
 
 	expect(await page.evaluate(() => window.__ran)).toBeUndefined();
 	expect(seen.remote).toEqual([]);

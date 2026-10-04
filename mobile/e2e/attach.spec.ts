@@ -40,6 +40,9 @@ const txt = (name: string, text = 'notes'): { name: string; mimeType: string; bu
 
 const box = (page: Page): Locator => page.getByRole('textbox', { name: 'Reply' });
 const sendButton = (page: Page): Locator => page.getByRole('button', { name: '↑ Send' });
+/** Submit the composer's form, as Enter on real keys does. On a phone, Return is a new line. */
+const submit = (page: Page): Promise<void> =>
+	page.locator('form.compose').evaluate((form: HTMLFormElement) => form.requestSubmit());
 const note = (page: Page): Locator => page.locator('[data-note]');
 const attach = (page: Page): Locator => page.getByRole('button', { name: 'Attach' });
 const picker = (page: Page): Locator => page.locator('[data-attach-input]');
@@ -428,7 +431,7 @@ test('Send waits for the upload, posts the text with the paths, and clears the t
 	await expect(tile(page, 'shot.png')).toHaveAttribute('data-state', 'uploading');
 	// Not while a file is on its way: by the pill or by Enter.
 	await expect(sendButton(page)).toBeDisabled();
-	await box(page).press('Enter');
+	await submit(page);
 	await page.waitForTimeout(200);
 	expect(seen.texts).toEqual([]);
 

@@ -1,9 +1,12 @@
 import { untrack } from 'svelte';
 import { ApiError, dismissReview, fetchManager, MANAGER_PATH, sendManagerText } from './api';
+import { bytesOver, normalizeText } from './compose';
+import { drafts } from './drafts';
 import { live } from './live.svelte';
 import { pendingPrompt } from './manager';
 import type { ReplyTarget } from './reply.svelte';
 import { ThreadFeed } from './thread.svelte';
+import { holdReload } from './update';
 import type {
 	ChatMessage,
 	ManagerHome,
@@ -18,6 +21,8 @@ import type {
 import type { VoiceSink } from './voice.svelte';
 
 const KEY = 'mm.manager';
+/** The manager's text box in the draft store. */
+const DRAFT = 'manager';
 /** How often the home asks again: the pane's status has no event. */
 const POLL_MS = 10_000;
 
@@ -65,8 +70,18 @@ class Manager {
 	turnSince = $state(0);
 	/** What the last turn left to say: why it was refused, or that it waits. */
 	note = $state<string | null>(null);
-	/** The text box. A refused turn puts its text back here. */
-	draft = $state('');
+	#draft = $state(drafts.load(DRAFT));
+	/**
+	 * The text box. A refused turn puts its text back here. Kept across a
+	 * reload and the app closing, until it is sent or emptied.
+	 */
+	get draft(): string {
+		return this.#draft;
+	}
+	set draft(text: string) {
+		this.#draft = text;
+		drafts.save(DRAFT, text);
+	}
 	/** This phone has a turn in flight. */
 	sending = $state(false);
 
@@ -251,16 +266,20 @@ class Manager {
 	}
 
 	send = async (): Promise<void> => {
-		const text = this.draft.trim();
+		const text = normalizeText(this.draft).trim();
 		// A turn is running, here or on the Mac: Enter must not send a second one.
-		if (!text || this.sending || this.busy) return;
+		if (!text || this.sending || this.busy || bytesOver(text)) return;
 		this.draft = '';
 		this.begin(text);
+		// A reload now would cut the turn's stream, and the text would come back as not sent.
+		const release = holdReload();
 		try {
 			await this.ended(await sendManagerText(text, () => void this.feed.load('chat')));
 		} catch (error) {
 			live.fail(error);
 			await this.finish(refusalText(error), null);
+		} finally {
+			release();
 		}
 	};
 

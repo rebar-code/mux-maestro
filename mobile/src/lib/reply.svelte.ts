@@ -10,6 +10,8 @@ import {
 } from './api';
 import { isImage, insertPath, removePath } from './attach';
 import { Attachments } from './attach.svelte';
+import { bytesOver, normalizeText, remainingDraft } from './compose';
+import { drafts } from './drafts';
 import { live, OFF_LABEL } from './live.svelte';
 import {
 	CTRL_MS,
@@ -27,6 +29,7 @@ import {
 	type QueuedKey
 } from './reply';
 import type { Command, Prompt } from './types';
+import { holdReload } from './update';
 import type { VoiceSink } from './voice.svelte';
 
 /** How often a thread that waits, or shows a prompt, is asked for its prompt again. */
@@ -90,23 +93,23 @@ function refusal(error: unknown, what: 'text' | 'file' | 'key' | 'answer'): Note
 	return { text: refusalLabel(error instanceof ApiError ? error : null, what), bad: true };
 }
 
-/**
- * Attachment for a control beside the text box: a tap on it does not take the
- * focus, so the keyboard stays open.
- */
-export function keepFocus(node: HTMLElement): () => void {
-	const keep = (event: Event): void => event.preventDefault();
-	node.addEventListener('pointerdown', keep);
-	node.addEventListener('mousedown', keep);
-	return () => {
-		node.removeEventListener('pointerdown', keep);
-		node.removeEventListener('mousedown', keep);
-	};
-}
+export { keepFocus } from './focus';
 
 /** Everything one open thread can be told: text, keys, answers, files, voice. */
 export class Reply {
-	draft = $state('');
+	#draft = $state('');
+	/**
+	 * The text in the box. Kept per thread across a thread switch, a reload and
+	 * the app closing, until it is sent or emptied.
+	 */
+	get draft(): string {
+		return this.#draft;
+	}
+	set draft(text: string) {
+		this.#draft = text;
+		drafts.save(this.draftKey, text);
+	}
+	private readonly draftKey: string;
 	note = $state<Note | null>(null);
 	sending = $state(false);
 	/** Sticky Ctrl is on: the next key typed is its key. */
@@ -123,9 +126,9 @@ export class Reply {
 	/** A spoken turn in flight. */
 	turn = $state.raw<LiveTurn | null>(null);
 	/** The text box, for the keys that type into it. */
-	input: HTMLInputElement | null = null;
+	input: HTMLTextAreaElement | null = null;
 	/** Attachment for the text box. */
-	box = (node: HTMLInputElement): (() => void) => {
+	box = (node: HTMLTextAreaElement): (() => void) => {
 		this.input = node;
 		return () => {
 			if (this.input === node) this.input = null;
@@ -163,6 +166,8 @@ export class Reply {
 		/** Left out: the listed thread `id`. */
 		private readonly target: ReplyTarget = threadTarget(id)
 	) {
+		this.draftKey = `thread:${id}`;
+		this.#draft = drafts.load(this.draftKey);
 		this.files = new Attachments(id, {
 			insert: (text) => (this.draft = insertPath(this.draft, text)),
 			remove: (text) => (this.draft = removePath(this.draft, text)),
@@ -173,14 +178,17 @@ export class Reply {
 	// MARK: text
 
 	send = async (): Promise<void> => {
-		const text = this.draft.trim();
+		const text = normalizeText(this.draft).trim();
 		// One write to a thread at a time: a file on its way goes first.
 		if (!text || this.sending || this.blocked || this.files.pending) return;
+		if (bytesOver(text)) return;
 		this.sending = true;
+		const release = holdReload();
 		this.note = null;
 		try {
 			await sendText(this.id, text);
-			this.draft = '';
+			// What was sent goes; what was typed meanwhile stays.
+			this.draft = remainingDraft(this.draft, text);
 			// The paths went with the text.
 			this.files.clear();
 			void this.host.refresh();
@@ -190,9 +198,10 @@ export class Reply {
 			const { note, keepDraft } = textRefusal(refused);
 			this.note = { text: note, bad: true };
 			// What the pane still holds must not be sent a second time.
-			if (!keepDraft && this.draft.trim() === text) this.draft = '';
+			if (!keepDraft && normalizeText(this.draft).trim() === text) this.draft = '';
 			this.recheck(error);
 		} finally {
+			release();
 			this.sending = false;
 			// A file picked meanwhile waited for this.
 			void this.files.pump();

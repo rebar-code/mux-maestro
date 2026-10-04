@@ -11,6 +11,7 @@ import {
 	type AttachEvent
 } from './attach';
 import { live } from './live.svelte';
+import { holdReload } from './update';
 
 /** The wait before a file goes again to a thread that was taking another write. */
 const BUSY_WAIT_MS = 300;
@@ -92,6 +93,7 @@ export class Attachments {
 			return this.pump();
 		}
 		const flight = new AbortController();
+		const release = holdReload();
 		this.flights[key] = flight;
 		this.apply({ type: 'start', key });
 		try {
@@ -121,6 +123,7 @@ export class Attachments {
 				}
 			}
 		} finally {
+			release();
 			delete this.flights[key];
 		}
 		return this.pump();
