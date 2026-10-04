@@ -53,8 +53,8 @@ final class UserFacingTextTests: XCTestCase {
     func testTheOldNameIsFoundInAStringLiteral() {
         XCTAssertEqual(Self.oldNames(in: #"let title = "Toggle Manager""#), ["Toggle Manager"])
         XCTAssertEqual(
-            Self.oldNames(in: "let text = \"\"\"\n    Ask the Maestro\n    \"\"\""),
-            ["\n    Ask the Maestro\n    "])
+            Self.oldNames(in: "let text = \"\"\"\n    Ask the manager\n    \"\"\""),
+            ["\n    Ask the manager\n    "])
     }
 
     func testWireNamesIdentifiersAndCommentsPass() {
