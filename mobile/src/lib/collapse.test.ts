@@ -4,13 +4,22 @@ import {
 	expanded,
 	isCollapsed,
 	parseCollapsed,
+	pruned,
 	serializeCollapsed,
+	sessionDomId,
 	sessionKey,
+	SUMMARY_LABEL,
 	summaryStatus
 } from './collapse';
+import { dotClass } from './format';
 
-const t = (status: 'waiting' | 'busy' | 'idle' | 'unknown'): { status: typeof status } => ({
-	status
+type Row = {
+	status: 'waiting' | 'busy' | 'idle' | 'unknown';
+	idleStage: 'awake' | 'yawning' | 'dozing';
+};
+const t = (status: Row['status'], idleStage: Row['idleStage'] = 'awake'): Row => ({
+	status,
+	idleStage
 });
 
 describe('summaryStatus', () => {
@@ -25,8 +34,68 @@ describe('summaryStatus', () => {
 
 	it('idle, sleeping and unknown all read as idle', () => {
 		expect(summaryStatus([t('idle'), t('unknown')])).toBe('idle');
+		expect(summaryStatus([t('idle', 'dozing')])).toBe('idle');
 		expect(summaryStatus([t('unknown')])).toBe('idle');
 		expect(summaryStatus([])).toBe('idle');
+	});
+
+	it('matches the row dots: a sleeping thread is grey whatever its status says', () => {
+		const rows = [t('busy', 'dozing'), t('waiting', 'dozing'), t('idle')];
+		// Every row's dot is grey, so the summary is too.
+		expect(rows.map(dotClass)).toEqual(['idle', 'idle', 'idle']);
+		expect(summaryStatus(rows)).toBe('idle');
+		// One awake running row is green, and so is the summary.
+		expect(summaryStatus([...rows, t('busy', 'yawning')])).toBe('busy');
+	});
+
+	it('has a spoken label for each status', () => {
+		expect(SUMMARY_LABEL).toEqual({ waiting: 'needs you', busy: 'running', idle: 'idle' });
+	});
+});
+
+describe('sessionDomId', () => {
+	it('keeps plain names readable', () => {
+		expect(sessionDomId('localhost/acme-app')).toBe('s-localhost.2facme-app');
+	});
+
+	it('never holds a space or a quote, whatever the session is called', () => {
+		for (const key of [
+			'devbox/my app',
+			'devbox/a"b',
+			"devbox/it's",
+			'devbox/naïve ✦',
+			'a/b c\td'
+		]) {
+			expect(sessionDomId(key)).toMatch(/^s-[A-Za-z0-9_.-]+$/);
+		}
+	});
+
+	it('gives different sessions different ids', () => {
+		const keys = [
+			'devbox/my app',
+			'devbox/my-app',
+			'devbox/my_app',
+			'devbox/my.app',
+			'devbox/myapp'
+		];
+		expect(new Set(keys.map(sessionDomId)).size).toBe(keys.length);
+	});
+});
+
+describe('pruned', () => {
+	const threads = [
+		{ host: 'localhost', session: 'acme-app' },
+		{ host: 'devbox', session: 'billing' }
+	];
+
+	it('drops sessions that no longer exist', () => {
+		const keys = new Set(['localhost/acme-app', 'localhost/gone', 'buildbox/old']);
+		expect([...pruned(keys, threads)]).toEqual(['localhost/acme-app']);
+	});
+
+	it('returns the same set when every key is live', () => {
+		const keys = new Set(['localhost/acme-app', 'devbox/billing']);
+		expect(pruned(keys, threads)).toBe(keys);
 	});
 });
 

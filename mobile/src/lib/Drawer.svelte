@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
-	import { isCollapsed, summaryStatus } from './collapse';
+	import { isCollapsed, sessionDomId, SUMMARY_LABEL, summaryStatus } from './collapse';
 	import { collapse } from './collapse.svelte';
 	import { pullToRefresh, ui } from './gestures.svelte';
 	import { counts, GROUPINGS, sections } from './group';
@@ -80,8 +80,8 @@
 						<button
 							class="fold"
 							aria-expanded={!shut}
-							aria-controls="s-{session.key}"
-							onclick={() => collapse.toggle(session.key, shut)}
+							aria-controls={sessionDomId(session.key)}
+							onclick={() => collapse.toggle(session.key, shut, session.threads)}
 						>
 							<span class="chev" aria-hidden="true">›</span>
 							<b>{session.name}</b>
@@ -91,10 +91,10 @@
 								style:border-color="{session.hostColor}66">{session.host}</span
 							>
 							{#if shut}
-								<span
-									class="dot sum {summaryStatus(session.threads)}"
-									data-summary={summaryStatus(session.threads)}
-								></span>
+								{@const summary = summaryStatus(session.threads)}
+								<span class="dot sum {summary}" data-summary={summary}>
+									<span class="sr">{SUMMARY_LABEL[summary]}</span>
+								</span>
 							{/if}
 							<span class="cnt">{session.threads.length}</span>
 						</button>
@@ -105,7 +105,7 @@
 							aria-label="New window in {session.name}">＋</button
 						>
 					</div>
-					<div class="windows" class:shut id="s-{session.key}" inert={shut}>
+					<div class="windows" class:shut id={sessionDomId(session.key)} inert={shut}>
 						<div class="clip">
 							{#each session.threads as thread (thread.id)}
 								<ThreadRow {thread} selected={thread.id === openId} />
@@ -243,6 +243,16 @@
 
 	.sum {
 		margin-top: 0;
+	}
+
+	/* Read by a screen reader, not drawn. */
+	.sr {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		overflow: hidden;
+		clip-path: inset(50%);
+		white-space: nowrap;
 	}
 
 	/* Rows fold away by animating the grid track from 1fr to 0fr: the height
