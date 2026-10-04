@@ -93,6 +93,9 @@ enum MobileHTTP {
         if segments.count == 4, segments[0] == "api", segments[1] == "threads", segments[3] == "upload" {
             return MobileReply.maxUploadBytes
         }
+        if segments.count == 3, segments[0] == "api", segments[1] == "manager", segments[2] == "upload" {
+            return MobileReply.maxUploadBytes
+        }
         return maxBodyBytes
     }
 
@@ -201,6 +204,9 @@ enum MobileEndpoint: Equatable {
     case managerAnswer
     /// Press one whitelisted key in the manager's pane.
     case managerKey
+    /// Save a file in the manager's working directory. Its path is never
+    /// pasted: the phone puts it in its text box, and it goes with the turn.
+    case managerUpload(name: String)
     /// One voice take: audio in; transcript, reply and audio stream back.
     case voice
     /// Read the target's last reply again.
@@ -252,7 +258,7 @@ enum MobileEndpoint: Equatable {
         switch self {
         case .config, .threads, .hosts, .events, .chat, .screen: return .access
         case .manager, .managerText, .managerDismiss, .managerChat, .managerScreen, .managerPrompt,
-             .managerAnswer, .managerKey:
+             .managerAnswer, .managerKey, .managerUpload:
             return .manager
         case .voice, .voiceReplay, .voiceWarm: return .voice
         case .text, .prompt, .answer, .commands: return .replies
@@ -278,7 +284,7 @@ enum MobileEndpoint: Equatable {
             return "GET"
         case .managerText, .managerDismiss, .managerAnswer, .managerKey, .voice, .voiceReplay,
              .voiceWarm, .text, .key, .answer, .upload, .tmux, .serverOpen, .serverClose,
-             .pushSubscribe, .pushUnsubscribe, .pushFocus:
+             .pushSubscribe, .pushUnsubscribe, .pushFocus, .managerUpload:
             return "POST"
         }
     }
@@ -290,6 +296,7 @@ enum MobileEndpoint: Equatable {
         switch self {
         case .managerAnswer: return .replies
         case .managerKey: return .keyBar
+        case .managerUpload: return .upload
         default: return nil
         }
     }
@@ -446,6 +453,8 @@ enum MobileAPI {
         case 3 where segments[1] == "manager" && segments[2] == "prompt": endpoint = .managerPrompt
         case 3 where segments[1] == "manager" && segments[2] == "answer": endpoint = .managerAnswer
         case 3 where segments[1] == "manager" && segments[2] == "key": endpoint = .managerKey
+        case 3 where segments[1] == "manager" && segments[2] == "upload":
+            endpoint = .managerUpload(name: request.query["name"] ?? "")
         case 2 where segments[1] == "voice": endpoint = .voice
         case 3 where segments[1] == "voice" && segments[2] == "replay": endpoint = .voiceReplay
         case 3 where segments[1] == "voice" && segments[2] == "warm": endpoint = .voiceWarm

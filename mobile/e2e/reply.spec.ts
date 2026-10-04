@@ -1472,7 +1472,8 @@ test('the Maestro home is not a listed thread: it gets no dock and no reply rout
 	await expect(page.getByRole('button', { name: 'Hide keyboard' })).toHaveCount(1);
 	await expect(card(page)).toHaveCount(0);
 	await expect(nextBar(page)).toHaveCount(0);
-	await expect(page.getByRole('button', { name: 'Attach' })).toHaveCount(0);
+	// The attach button is the text box's own: it is there on every page.
+	await expect(page.getByRole('button', { name: 'Attach' })).toHaveCount(1);
 	await expect(page.locator('form.compose')).toHaveCount(1);
 	// Longer than one prompt poll.
 	await page.waitForTimeout(3500);

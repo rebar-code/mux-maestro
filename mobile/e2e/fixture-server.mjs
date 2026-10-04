@@ -1207,6 +1207,20 @@ function sameOriginWrite(req) {
 	);
 }
 
+/** The directory the Maestro's pane works in: a file for it is saved here. */
+const MANAGER_DIR = '/Users/me/Library/Application Support/MuxMaestro/manager';
+
+/** `POST /api/manager/upload`: saved like a thread's `paste=0` upload, and never typed. */
+function managerUpload(req, res, url, body) {
+	if (!capabilities.manager || !capabilities.upload) return send(res, 403, { error: 'disabled' });
+	if (req.method !== 'POST') return send(res, 405, { error: 'method_not_allowed' });
+	const name = url.searchParams.get('name');
+	if (!name || name.includes('/') || body.length === 0)
+		return send(res, 400, { error: 'bad_request' });
+	if (body.length > uploadMax) return send(res, 413, { error: 'too_large' });
+	return saveOnly(req, res, { id: 'manager', cwd: MANAGER_DIR }, name, body);
+}
+
 function managerApi(req, res, url, body) {
 	const path = url.pathname;
 	if (!capabilities.manager) return send(res, 403, { error: 'disabled' });
@@ -1715,6 +1729,7 @@ function api(req, res, url, body) {
 	if (path === '/api/threads') return send(res, 200, threadsBody());
 	if (path === '/api/hosts') return send(res, 200, hostsBody());
 	if (path === '/api/config') return send(res, 200, configBody());
+	if (path === '/api/manager/upload') return managerUpload(req, res, url, body);
 	if (path.startsWith('/api/manager')) return managerApi(req, res, url, String(body));
 	if (path.startsWith('/api/voice')) return voiceApi(req, res, url, body);
 	if (path.startsWith('/api/push/')) return pushApi(req, res, path, String(body));

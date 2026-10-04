@@ -340,8 +340,9 @@ function refusalOf(xhr: XMLHttpRequest): ApiError {
 }
 
 /**
- * Put `file` in the thread's directory under `name`. Nothing is typed into
- * the pane: the caller gets the path, to put it in the reply.
+ * Put `file` in the pane's directory under `name`. `base`: `threadPath(id)`
+ * or `MANAGER_PATH`. Nothing is typed into the pane: the caller gets the
+ * path, to put it in the reply.
  *
  * The one request that is not a `fetch`: `fetch` cannot say how much of a
  * body has gone out, and a photo over a phone link needs a progress bar. It
@@ -350,7 +351,7 @@ function refusalOf(xhr: XMLHttpRequest): ApiError {
  * of reach) rejects with a plain `Error`; `signal` aborts it.
  */
 export function uploadFile(
-	id: string,
+	base: string,
 	file: Blob,
 	name: string,
 	onProgress: (sent: number, total: number) => void,
@@ -359,7 +360,7 @@ export function uploadFile(
 	return new Promise((resolve, reject) => {
 		if (signal.aborted) return reject(new DOMException('Aborted', 'AbortError'));
 		const xhr = new XMLHttpRequest();
-		xhr.open('POST', `${threadPath(id)}/upload?name=${encodeURIComponent(name)}&paste=0`);
+		xhr.open('POST', `${base}/upload?name=${encodeURIComponent(name)}&paste=0`);
 		xhr.setRequestHeader('accept', 'application/json');
 		xhr.setRequestHeader('content-type', 'application/octet-stream');
 		xhr.setRequestHeader('x-muxmaestro', '1');

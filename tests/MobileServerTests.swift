@@ -61,7 +61,8 @@ final class MobileServerTests: XCTestCase {
                 },
                 dismiss: { [self] key in lock.lock(); _dismissed.append(key); lock.unlock() },
                 screen: { [self] _ in screen },
-                io: { [self] in ("mux-manager", pane.io) })
+                io: { [self] in ("mux-manager", pane.io) },
+                cwd: { "/Users/me/Library/Application Support/MuxMaestro/manager" })
         }
     }
     /// What the fake pane shows, and the line counts the server asked it for.
@@ -2581,6 +2582,42 @@ final class MobileServerTests: XCTestCase {
     }
 
     // MARK: uploads for the reply box
+
+    func testAnUploadForTheManagerIsSavedInItsDirectoryAndTypesNothing() {
+        let upload = "/api/manager/upload"
+        // The Manager switch alone is not enough: a file needs the Upload switch too.
+        managerOn()
+        XCTAssertEqual(post(upload + "?name=shot.png", json: "demo").status, 403)
+        server.configure(MobileConfig(capabilities: [.upload], uploadLimit: 64))
+        XCTAssertEqual(post(upload + "?name=shot.png", json: "demo").status, 403)
+
+        server.configure(MobileConfig(capabilities: [.manager, .upload], uploadLimit: 64))
+        // The manager at work can still be given a file: nothing goes to its pane.
+        for status in [MobileManagerStatus.idle, .busy, .waiting] {
+            manager.status = status
+            XCTAssertEqual(post(upload + "?name=shot.png", json: "demo").status, 200, "\(status)")
+        }
+        XCTAssertEqual(manager.pane.argv.count, 0)
+        let home = "/Users/me/Library/Application Support/MuxMaestro/manager"
+        XCTAssertEqual(manager.pane.saves.map(\.path), [
+            "\(home)/shot.png", "\(home)/shot-2.png", "\(home)/shot-3.png",
+        ])
+        // The path comes back as it should be typed: quoted, since it holds a space.
+        let named = post(upload + "?name=..%2Fa.png", json: "demo")
+        XCTAssertTrue(named.body.contains(#""pasted":false"#), named.body)
+        XCTAssertTrue(named.body.contains(#""text":"'\/Users\/me\/Library\/Application Support"#), named.body)
+        XCTAssertEqual(manager.pane.saves.last?.path, "\(home)/a.png")
+
+        // Every other rule of an upload holds: the size cap and the name.
+        XCTAssertEqual(post(upload + "?name=..", json: "demo").status, 400)
+        XCTAssertEqual(post(upload, json: "demo").status, 400)
+        XCTAssertEqual(
+            post(upload + "?name=big.bin", json: String(repeating: "a", count: 65)).status, 413)
+        // No manager: nowhere to save.
+        manager.status = .off
+        XCTAssertEqual(post(upload + "?name=late.png", json: "demo").status, 503)
+        XCTAssertEqual(manager.pane.saves.count, 4)
+    }
 
     func testAnUploadForTheReplyBoxIsSavedAndTypesNothing() {
         repliesOn()

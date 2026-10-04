@@ -150,7 +150,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     MobilePaneState(status: thread.status, since: thread.since)
                 }
                 return (ManagerHome.sessionName, io)
-            }),
+            },
+            cwd: { ManagerHome.defaultHome()?.path }),
         // The phone's takes use the Mac's own engine. Nothing plays here: the
         // phone gets the samples.
         voice: MobileServer.Voice(

@@ -68,6 +68,9 @@ final class MobileServer {
         /// The manager's pane, to answer a prompt it waits on: its tmux
         /// target and what may be done to it. nil where there is none.
         var io: () -> (target: String, io: MobilePaneIO)? = { nil }
+        /// The directory the manager's pane works in: where a file from the
+        /// phone is saved. nil where there is none.
+        var cwd: () -> String? = { nil }
     }
 
     /// Speech for the phone: the Mac's own engine. nil where there is none
@@ -572,7 +575,7 @@ final class MobileServer {
                 // A feature that is off holds no megabytes either.
                 refusal = "disabled"
                 return 403
-            case .api(.upload)
+            case .api(.upload), .api(.managerUpload)
             where (request.header("content-length").flatMap(Int.init) ?? 0) > config.uploadLimit:
                 // An upload past the limit in Settings is refused before it is read.
                 refusal = "too_large"
@@ -773,6 +776,18 @@ final class MobileServer {
                 MobileReply.press(
                     press.key, prompt: press.prompt, terminal: press.terminal, target: target, io: io,
                     state: state)
+            }
+        case .managerUpload(let name):
+            let limit = config.uploadLimit
+            guard let cwd = manager?.cwd() else {
+                return send(.error(503, "unavailable", message: MobileManager.offMessage),
+                            to: client, head: head)
+            }
+            // Saved, never pasted: the path goes with the next turn's text.
+            managerWrite(client) { target, io, state in
+                MobileReply.upload(
+                    request.body, name: name, cwd: cwd, target: target, io: io, limit: limit,
+                    paste: false, state: { state })
             }
         case .voice:
             startVoice(request, client: client)

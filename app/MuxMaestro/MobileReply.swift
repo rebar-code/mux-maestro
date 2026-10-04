@@ -831,11 +831,23 @@ enum MobileReply {
         _ data: Data, name raw: String, thread: MobileThread, io: MobilePaneIO, limit: Int,
         paste typed: Bool = true, state: () -> MobilePaneState?
     ) -> MobileResponse {
+        upload(
+            data, name: raw, cwd: thread.cwd, target: thread.pane, io: io, limit: limit, paste: typed,
+            state: state)
+    }
+
+    /// The same for any pane: `cwd` is its working directory and `target`
+    /// its tmux target. The manager's pane is not a thread of the tree, and
+    /// its files are saved this way, never pasted.
+    static func upload(
+        _ data: Data, name raw: String, cwd: String, target: String, io: MobilePaneIO, limit: Int,
+        paste typed: Bool = true, state: () -> MobilePaneState?
+    ) -> MobileResponse {
         guard data.count <= min(limit, maxUploadBytes) else { return .error(413, "too_large") }
         guard !data.isEmpty, let name = fileName(raw) else { return .error(400, "bad_request") }
-        // The directory comes from the live tree, never from the phone.
-        guard thread.cwd.hasPrefix("/"), thread.cwd.unicodeScalars.allSatisfy(MobileManager.isText),
-              !thread.cwd.contains("\n")
+        // The directory comes from the Mac, never from the phone.
+        guard cwd.hasPrefix("/"), cwd.unicodeScalars.allSatisfy(MobileManager.isText),
+              !cwd.contains("\n")
         else { return .error(503, "unavailable", message: unreachable) }
         if typed {
             if let refusal = refusal(state: state(), io: io) { return refusal }
@@ -845,7 +857,7 @@ enum MobileReply {
 
         // The create is exclusive, so a name that is taken (a file, or a link
         // to anywhere) is never written through: the next name is tried.
-        var path = FileTransfer.dropDestination(cwd: thread.cwd, fileName: name)
+        var path = FileTransfer.dropDestination(cwd: cwd, fileName: name)
         var n = 2
         save: while true {
             switch io.save(data, path) {
@@ -853,7 +865,7 @@ enum MobileReply {
             case .failed: return .error(503, "unavailable", message: unreachable)
             case .exists:
                 guard n <= 99 else { return .error(409, "exists") }
-                path = FileTransfer.dropDestination(cwd: thread.cwd, fileName: numbered(name, n))
+                path = FileTransfer.dropDestination(cwd: cwd, fileName: numbered(name, n))
                 n += 1
             }
         }
@@ -863,7 +875,7 @@ enum MobileReply {
         // The file is in place. Its path is pasted only into a pane that can
         // still take text.
         guard refusal(state: state(), io: io) == nil,
-              paste(pasted(path: path) + " ", target: thread.pane, io: io) == nil
+              paste(pasted(path: path) + " ", target: target, io: io) == nil
         else { return .json(["ok": true, "path": path, "pasted": false]) }
         return .json(["ok": true, "path": path, "pasted": true])
     }

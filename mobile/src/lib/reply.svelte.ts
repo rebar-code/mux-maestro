@@ -58,7 +58,7 @@ export interface ReplyHost {
 
 /**
  * The pane a `Reply` talks to: a listed thread, or the manager. Prompts,
- * answers and keys go to `base`; text, commands and files are a thread's only.
+ * answers, keys and files go to `base`; text and commands are a thread's only.
  */
 export interface ReplyTarget {
 	/** `threadPath(id)` or `MANAGER_PATH`. */
@@ -164,15 +164,19 @@ export class Reply {
 		readonly id: string,
 		private readonly host: ReplyHost,
 		/** Left out: the listed thread `id`. */
-		private readonly target: ReplyTarget = threadTarget(id)
+		private readonly target: ReplyTarget = threadTarget(id),
+		/** The files of a pane whose text box is not this draft (the manager). Left out: this reply's own. */
+		files?: Attachments
 	) {
 		this.draftKey = `thread:${id}`;
 		this.#draft = drafts.load(this.draftKey);
-		this.files = new Attachments(id, {
-			insert: (text) => (this.draft = insertPath(this.draft, text)),
-			remove: (text) => (this.draft = removePath(this.draft, text)),
-			sending: () => this.sending
-		});
+		this.files =
+			files ??
+			new Attachments(this.target.base, {
+				insert: (text) => (this.draft = insertPath(this.draft, text)),
+				remove: (text) => (this.draft = removePath(this.draft, text)),
+				sending: () => this.sending
+			});
 	}
 
 	// MARK: text

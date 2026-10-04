@@ -25,7 +25,7 @@ export interface AttachHost {
 	sending: () => boolean;
 }
 
-/** The files picked for one thread's reply: sent one by one, each with its tile. */
+/** The files picked for one pane's reply: sent one by one, each with its tile. */
 export class Attachments {
 	items = $state.raw<Attached[]>([]);
 	/** Thumbnails, by key. Object URLs: each is revoked when its tile goes. */
@@ -41,7 +41,8 @@ export class Attachments {
 	private pasted = 0;
 
 	constructor(
-		readonly id: string,
+		/** Where the pane takes a file: `threadPath(id)` or `MANAGER_PATH`. */
+		readonly base: string,
 		private readonly host: AttachHost
 	) {}
 
@@ -98,7 +99,7 @@ export class Attachments {
 		this.apply({ type: 'start', key });
 		try {
 			const saved = await uploadFile(
-				this.id,
+				this.base,
 				file,
 				next.name,
 				(sent, total) => this.apply({ type: 'progress', key, progress: total ? sent / total : 0 }),
