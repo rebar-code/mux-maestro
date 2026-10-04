@@ -12,23 +12,23 @@ final class CloseWindowPromptTests: XCTestCase {
             session: "dev", index: 17, name: "watch PR #393 #394 CI")
         XCTAssertEqual(
             CloseWindowPrompt.title(t, .window),
-            "Close window 17 “watch PR #393 #394 CI” in “dev”?")
+            "Archive window 17 “watch PR #393 #394 CI” in “dev”?")
     }
 
     func testTitleDropsQuotedNameWhenWindowIsUnnamed() {
         let t = CloseWindowPrompt.Target(session: "dev", index: 3, name: "")
-        XCTAssertEqual(CloseWindowPrompt.title(t, .window), "Close window 3 in “dev”?")
+        XCTAssertEqual(CloseWindowPrompt.title(t, .window), "Archive window 3 in “dev”?")
     }
 
     func testTitleTreatsWhitespaceOnlyNameAsUnnamed() {
         let t = CloseWindowPrompt.Target(session: "pulso", index: 0, name: "   ")
-        XCTAssertEqual(CloseWindowPrompt.title(t, .window), "Close window 0 in “pulso”?")
+        XCTAssertEqual(CloseWindowPrompt.title(t, .window), "Archive window 0 in “pulso”?")
     }
 
     func testTitleFallsBackToActiveWindowWhenIndexIsUnknown() {
         let t = CloseWindowPrompt.Target(session: "dev", index: nil, name: "")
         XCTAssertEqual(
-            CloseWindowPrompt.title(t, .window), "Close the active window in “dev”?")
+            CloseWindowPrompt.title(t, .window), "Archive the active window in “dev”?")
     }
 
     func testTitleKeepsSessionNamesWithSpaces() {
@@ -36,7 +36,7 @@ final class CloseWindowPromptTests: XCTestCase {
             session: "Front Range Windows", index: 2, name: "zsh")
         XCTAssertEqual(
             CloseWindowPrompt.title(t, .window),
-            "Close window 2 “zsh” in “Front Range Windows”?")
+            "Archive window 2 “zsh” in “Front Range Windows”?")
     }
 
     // MARK: info
@@ -46,7 +46,7 @@ final class CloseWindowPromptTests: XCTestCase {
             session: "dev", index: 1, name: "zsh", attention: .idle)
         XCTAssertEqual(
             CloseWindowPrompt.info(t, .window),
-            "This kills the tmux window and every process in it.")
+            "This ends the tmux window and every process in it.")
     }
 
     func testInfoForUnknownAttentionMatchesIdle() {
@@ -93,8 +93,8 @@ final class CloseWindowPromptTests: XCTestCase {
         let info = CloseWindowPrompt.info(t, .window)
         XCTAssertEqual(
             info,
-            "This kills the tmux window and every process in it. "
-                + "An agent is running here — closing the window stops that work. "
+            "This ends the tmux window and every process in it. "
+                + "An agent is running here — archiving the window stops that work. "
                 + "It is the last window, so the session “pulso” ends too.")
     }
 
@@ -119,7 +119,7 @@ final class CloseWindowPromptTests: XCTestCase {
     // MARK: button
 
     func testConfirmButtonTitleIsTheAction() {
-        XCTAssertEqual(CloseWindowPrompt.confirmTitle(.window), "Close Window")
+        XCTAssertEqual(CloseWindowPrompt.confirmTitle(.window), "Archive Window")
     }
 
     // MARK: action — ⌘W closes the pane, not the whole window

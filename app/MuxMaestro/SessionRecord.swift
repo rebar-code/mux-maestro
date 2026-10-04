@@ -10,9 +10,14 @@ enum RecoveryAgent: String, Codable {
     /// run) into the restored pane, so the user fires each one when they get to
     /// it rather than booting 28 agents at once.
     func resumeCommand(sessionId: String) -> String {
+        // The line is typed into a shell. A real id is a UUID and passes through
+        // as written; anything else is quoted so it stays one argument.
+        let plain = sessionId.range(
+            of: "^[A-Za-z0-9._-]+$", options: .regularExpression) != nil
+        let id = plain ? sessionId : Ssh.shellQuote(sessionId)
         switch self {
-        case .claude: return "claude --resume \(sessionId)"
-        case .codex: return "codex resume \(sessionId)"
+        case .claude: return "claude --resume \(id)"
+        case .codex: return "codex resume \(id)"
         }
     }
 }

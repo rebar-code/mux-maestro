@@ -34,7 +34,7 @@ async function openBoard(page: Page, stop: 1 | 2 = 2): Promise<void> {
 		})
 		.toBe(true);
 }
-const box = (page: Page) => page.getByRole('textbox', { name: 'Ask the manager' });
+const box = (page: Page) => page.getByRole('textbox', { name: 'Ask the Maestro' });
 /**
  * Submit the text box's form, as its Send button does. (On a phone, Return in
  * the box is a new line; `compose.spec.ts` covers the keys.)
@@ -45,7 +45,7 @@ const offBox = (page: Page) => page.getByRole('textbox', { name: 'Off in MuxMaes
 const homeRow = (page: Page) => drawer(page).locator('[data-home]');
 const review = (page: Page) => page.locator('[data-review]');
 
-test('the app opens on the manager home', async ({ page }) => {
+test('the app opens on the Maestro home', async ({ page }) => {
 	await fresh(page);
 	await expect(page.locator('.chip').first()).toHaveText('2 need you');
 	await expect(said(page).locator('.a')).toHaveText(
@@ -60,7 +60,7 @@ test('the app opens on the manager home', async ({ page }) => {
 	await expect(review(page)).toContainText('PR open 52m, CI green, no review yet');
 });
 
-test('a message to the manager streams its reply onto the home', async ({ page }) => {
+test('a message to the Maestro streams its reply onto the home', async ({ page }) => {
 	await fresh(page);
 	// With nothing typed there is nothing to send: the button is Talk.
 	await expect(page.getByRole('button', { name: '↑ Send' })).toHaveCount(0);
@@ -98,7 +98,7 @@ test('a refused turn says why and gives the text back', async ({ page }) => {
 	await page.request.post('/__fixture/manager-status?value=waiting');
 	await box(page).fill('what needs me?');
 	await page.getByRole('button', { name: '↑ Send' }).click();
-	await expect(page.getByRole('alert')).toHaveText('Manager is waiting on a prompt');
+	await expect(page.getByRole('alert')).toHaveText('Maestro is waiting on a prompt');
 	await expect(box(page)).toHaveValue('what needs me?');
 	await expect(said(page).locator('.u')).toHaveCount(0);
 
@@ -195,15 +195,15 @@ test('a right swipe on the home still opens the sidebar, over a review card too'
 	await expect(review(page)).toHaveCount(1);
 });
 
-test('Manager switch on: the text box is enabled and asks for a message', async ({ page }) => {
+test('Maestro switch on: the text box is enabled and asks for a message', async ({ page }) => {
 	await fresh(page);
 	await expect(box(page)).toBeEnabled();
-	await expect(box(page)).toHaveAttribute('placeholder', 'Ask the manager');
+	await expect(box(page)).toHaveAttribute('placeholder', 'Ask the Maestro');
 	await expect(offBox(page)).toHaveCount(0);
 	await expect(page.getByRole('button', { name: 'Talk', exact: true })).toBeVisible();
 });
 
-test('Manager switch off: the text box stays, disabled, and says where the switch is', async ({
+test('Maestro switch off: the text box stays, disabled, and says where the switch is', async ({
 	page
 }) => {
 	await fresh(page);
@@ -214,7 +214,7 @@ test('Manager switch off: the text box stays, disabled, and says where the switc
 	await expect(offBox(page)).toHaveAttribute('placeholder', 'Off in MuxMaestro Settings');
 	await expect(box(page)).toHaveCount(0);
 	// The talk button is still drawn, and nothing can be sent.
-	await expect(page.getByRole('button', { name: 'Talk to the manager' })).toBeDisabled();
+	await expect(page.getByRole('button', { name: 'Talk to the Maestro' })).toBeDisabled();
 	await expect(page.getByRole('button', { name: 'Talk', exact: true })).toBeDisabled();
 	await expect(page.getByRole('button', { name: '↑ Send' })).toHaveCount(0);
 	// Nothing of the manager itself is drawn.
@@ -248,7 +248,7 @@ test('Manager switch off: the text box stays, disabled, and says where the switc
 });
 
 for (const on of [true, false]) {
-	test(`the sidebar's Manager row goes back to the home, Manager switch ${on ? 'on' : 'off'}`, async ({
+	test(`the sidebar's Maestro row goes back to the home, Maestro switch ${on ? 'on' : 'off'}`, async ({
 		page
 	}) => {
 		await fresh(page, threadPath('localhost:1'));
@@ -351,7 +351,7 @@ test('a write from another origin, without the header, or without the token is r
 	await expect(said(page).locator('.u')).toHaveCount(0);
 });
 
-test('the app sends the pairing token with a manager turn', async ({ page }) => {
+test('the app sends the pairing token with a Maestro turn', async ({ page }) => {
 	await fresh(page);
 	await box(page).fill('what needs me?');
 	const sent = page.waitForRequest((request) => request.url().endsWith('/api/manager/text'));
@@ -371,29 +371,29 @@ test('the home fits a phone: no sideways scroll, the box above the home indicato
 	expect((input?.y ?? 0) + (input?.height ?? 0)).toBeLessThanOrEqual(844);
 });
 
-test('the manager status is drawn while a message cannot go to it', async ({ page }) => {
+test('the Maestro status is drawn while a message cannot go to it', async ({ page }) => {
 	await fresh(page);
 	await page.request.post('/__fixture/manager-status?value=waiting');
 	await page.reload();
 	const status = page.locator('[data-status]');
-	await expect(status).toHaveText('Manager is waiting on a prompt');
+	await expect(status).toHaveText('Maestro is waiting on a prompt');
 	await expect(status).toHaveAttribute('data-status', 'waiting');
 
 	await page.request.post('/__fixture/manager-status?value=busy');
 	await page.reload();
-	await expect(status).toHaveText('Manager is busy');
+	await expect(status).toHaveText('Maestro is busy');
 	await box(page).fill('what needs me?');
 	await submit(page);
-	await expect(page.getByRole('alert')).toHaveText('Manager is busy');
+	await expect(page.getByRole('alert')).toHaveText('Maestro is busy');
 	await expect(box(page)).toHaveValue('what needs me?');
 
 	// Running, but its pane's state is not known: not idle.
 	await page.request.post('/__fixture/manager-status?value=unknown');
 	await page.reload();
-	await expect(status).toHaveText('Manager is not ready');
+	await expect(status).toHaveText('Maestro is not ready');
 	await box(page).fill('what needs me?');
 	await submit(page);
-	await expect(page.getByRole('alert')).toHaveText('Manager is not ready');
+	await expect(page.getByRole('alert')).toHaveText('Maestro is not ready');
 
 	await page.request.post('/__fixture/manager-status?value=idle');
 	await page.reload();
@@ -458,7 +458,7 @@ test('dismissing a review item that does not exist is a 404', async ({ page }) =
 	await expect(review(page)).toHaveCount(1);
 });
 
-test('the manager page is its thread: left-aligned rows and the Chat/Terminal toggle', async ({
+test('the Maestro page is its thread: left-aligned rows and the Chat/Terminal toggle', async ({
 	page
 }) => {
 	await fresh(page);
@@ -487,7 +487,7 @@ test('the manager page is its thread: left-aligned rows and the Chat/Terminal to
 	await expect(reply).toBeVisible();
 });
 
-test('the manager thread shows tool lines and user turns like any chat', async ({ page }) => {
+test('the Maestro thread shows tool lines and user turns like any chat', async ({ page }) => {
 	await fresh(page);
 	await box(page).fill('what needs me?');
 	await submit(page);
@@ -897,13 +897,13 @@ test('the waiting state is shown once, with a way to the terminal', async ({ pag
 	await fresh(page);
 	await page.request.post('/__fixture/manager-status?value=waiting');
 	await page.reload();
-	await expect(page.locator('[data-status]')).toHaveText('Manager is waiting on a prompt');
-	await expect(page.getByText('Manager is waiting on a prompt')).toHaveCount(1);
+	await expect(page.locator('[data-status]')).toHaveText('Maestro is waiting on a prompt');
+	await expect(page.getByText('Maestro is waiting on a prompt')).toHaveCount(1);
 	// A refused send says it once too, not beside the status.
 	await box(page).fill('what needs me?');
 	await submit(page);
-	await expect(page.getByRole('alert')).toHaveText('Manager is waiting on a prompt');
-	await expect(page.getByText('Manager is waiting on a prompt')).toHaveCount(1);
+	await expect(page.getByRole('alert')).toHaveText('Maestro is waiting on a prompt');
+	await expect(page.getByText('Maestro is waiting on a prompt')).toHaveCount(1);
 
 	// The prompt is in the pane: one tap shows the terminal.
 	await page.getByRole('button', { name: 'Terminal', exact: true }).click();
@@ -915,16 +915,16 @@ test('a waiting state that ends on the Mac ends on the phone, with no reload', a
 	await fresh(page);
 	await page.request.post('/__fixture/manager-status?value=waiting');
 	await page.reload();
-	await expect(page.locator('[data-status]')).toHaveText('Manager is waiting on a prompt');
+	await expect(page.locator('[data-status]')).toHaveText('Maestro is waiting on a prompt');
 	// A send is refused, and the refusal is on screen.
 	await box(page).fill('what needs me?');
 	await submit(page);
-	await expect(page.getByRole('alert')).toHaveText('Manager is waiting on a prompt');
+	await expect(page.getByRole('alert')).toHaveText('Maestro is waiting on a prompt');
 
 	// The prompt ends on the Mac (answered, or cancelled). The next board
 	// brings the status with it: nothing on the phone still says waiting.
 	await page.request.post('/__fixture/manager-status?value=idle');
-	await expect(page.getByText('Manager is waiting on a prompt')).toHaveCount(0);
+	await expect(page.getByText('Maestro is waiting on a prompt')).toHaveCount(0);
 	await expect(page.getByRole('alert')).toHaveCount(0);
 	await expect(page.locator('[data-status]')).toHaveCount(0);
 	// The text that was given back goes through now.
@@ -933,7 +933,7 @@ test('a waiting state that ends on the Mac ends on the phone, with no reload', a
 	await expect(said(page).locator('.a').last()).toContainText('2 threads need you');
 });
 
-test('sidebar: the Manager bar stays at the bottom, and the list scrolls above it', async ({
+test('sidebar: the Maestro bar stays at the bottom, and the list scrolls above it', async ({
 	page
 }) => {
 	await fresh(page);
@@ -966,7 +966,7 @@ test('sidebar: the Manager bar stays at the bottom, and the list scrolls above i
 	await expect(homeRow(page)).toHaveAttribute('aria-current', 'page');
 });
 
-test('sidebar: the Manager bar clears the home indicator', async ({ page }) => {
+test('sidebar: the Maestro bar clears the home indicator', async ({ page }) => {
 	await fresh(page);
 	await page.getByRole('button', { name: 'Menu' }).click();
 	await expectDrawerOpen(page);

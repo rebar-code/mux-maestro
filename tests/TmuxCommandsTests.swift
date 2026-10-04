@@ -220,10 +220,10 @@ final class TmuxCommandsTests: XCTestCase {
     func testRenameWindowArgv() {
         XCTAssertEqual(
             TmuxCommands.renameWindow(target: "web:1", to: "editor"),
-            ["rename-window", "-t", "web:1", "editor"])
+            ["rename-window", "-t", "web:1", "--", "editor"])
         // Spaces in the new name stay a single argv element (no shell).
         XCTAssertEqual(
-            TmuxCommands.renameWindow(target: "web:1", to: "my window")[3], "my window")
+            TmuxCommands.renameWindow(target: "web:1", to: "my window")[4], "my window")
     }
 
     func testRestoreWindowLayoutAndSelectionArgv() {

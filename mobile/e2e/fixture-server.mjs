@@ -24,6 +24,7 @@
 // /__fixture/upload-fail?status=&error=&message=, /__fixture/build?tag=, /__fixture/text-slow?ms=,
 // /__fixture/append?count= (adds lines to pane buildbox:8),
 // /__fixture/screen?default=&max= (the screen endpoint's default and cap)
+// /__fixture/point?key=&thread=&title=&reason= (the Maestro points at a session; no thread: one that is gone),
 // /__fixture/terminal (what the live terminal's sockets were sent, and how they were opened),
 // /__fixture/terminal-drop (cut every live socket), /__fixture/terminal-say?text=,
 // /__fixture/terminal-refuse?code= (close the next sockets with that code; 0 to stop)
@@ -653,6 +654,8 @@ function reset() {
 				text: 'Two threads need you. Four are running. Nothing has failed in the last hour.'
 			}
 		],
+		// Sessions the Maestro points at, as `mux point` records them.
+		points: [],
 		updates: [
 			{
 				kind: 'done',
@@ -1025,7 +1028,7 @@ function managerAsk(req, res, path, body) {
 	if (route === 'key')
 		return pressKey(res, json, {
 			lock: 'manager',
-			name: 'Manager',
+			name: 'Maestro',
 			asked,
 			noInput: false,
 			record: (entry) => replies.manager.keys.push(entry)
@@ -1143,6 +1146,7 @@ const managerLive = () => ({
 			thread: t.id
 		})),
 	review: manager.review,
+	points: manager.points,
 	updates: manager.updates,
 	turn: manager.turn
 });
@@ -1229,9 +1233,10 @@ function managerApi(req, res, url, body) {
 	}
 	if (path === '/api/manager/dismiss') {
 		if (typeof json.key !== 'string') return send(res, 400, { error: 'bad_request' });
-		if (!manager.review.some((item) => item.key === json.key))
+		if (![...manager.review, ...manager.points].some((item) => item.key === json.key))
 			return send(res, 404, { error: 'not_found' });
 		manager.review = manager.review.filter((item) => item.key !== json.key);
+		manager.points = manager.points.filter((item) => item.key !== json.key);
 		push('manager', managerLive());
 		return send(res, 200, { ok: true });
 	}
@@ -1241,11 +1246,11 @@ function managerApi(req, res, url, body) {
 	if (Buffer.byteLength(text) > TEXT_MAX) return send(res, 413, { error: 'too_large' });
 	if (manager.turn) return send(res, 409, { error: 'busy', message: 'A turn is running' });
 	if (manager.status === 'waiting')
-		return send(res, 409, { error: 'waiting', message: 'Manager is waiting on a prompt' });
+		return send(res, 409, { error: 'waiting', message: 'Maestro is waiting on a prompt' });
 	if (manager.status === 'unknown')
-		return send(res, 503, { error: 'not_ready', message: 'Manager is not ready' });
+		return send(res, 503, { error: 'not_ready', message: 'Maestro is not ready' });
 	if (manager.status === 'busy')
-		return send(res, 409, { error: 'busy', message: 'Manager is busy' });
+		return send(res, 409, { error: 'busy', message: 'Maestro is busy' });
 	res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' });
 	const event = (name, data) => res.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
 	const reply = managerReply();
@@ -1340,7 +1345,7 @@ function voiceApi(req, res, url, body) {
 	if (!thread) {
 		if (manager.turn) return send(res, 409, { error: 'busy', message: 'A turn is running' });
 		if (manager.status === 'waiting')
-			return send(res, 409, { error: 'waiting', message: 'Manager is waiting on a prompt' });
+			return send(res, 409, { error: 'waiting', message: 'Maestro is waiting on a prompt' });
 	}
 	voice.takes.push(take);
 	stream();
@@ -1990,6 +1995,22 @@ function hook(res, url) {
 			};
 			if (url.searchParams.get('quiet') !== '1') manager.status = 'waiting';
 			return send(res, 200, { ok: true });
+		}
+		case '/__fixture/point': {
+			// As `mux point <session> --reason …` records it: the Mac resolves the thread.
+			const key = url.searchParams.get('key') ?? 'point:localhost:acme-app';
+			manager.points = [
+				...manager.points.filter((item) => item.key !== key),
+				{
+					key,
+					title: url.searchParams.get('title') ?? 'acme-app',
+					detail: url.searchParams.get('reason') ?? 'needs your approval',
+					severity: 'blocked',
+					at: now,
+					thread: url.searchParams.get('thread')
+				}
+			];
+			break;
 		}
 		case '/__fixture/manager-status':
 			manager.status = url.searchParams.get('value') ?? 'idle';

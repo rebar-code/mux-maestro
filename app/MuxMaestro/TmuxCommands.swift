@@ -231,9 +231,35 @@ enum TmuxCommands {
         ["kill-window", "-t", target]
     }
 
-    /// Rename a window.
+    /// Rename a window. `--` so a name that starts with `-` is not read as a flag.
     static func renameWindow(target: String, to new: String) -> [String] {
-        ["rename-window", "-t", target, new]
+        ["rename-window", "-t", target, "--", new]
+    }
+
+    /// `text` as tmux takes it literally where it would otherwise expand formats
+    /// (`rename-window`, the `-c` directory): `#` doubled, and a trailing `;`
+    /// escaped, because tmux reads an argument that ends in `;` as a command
+    /// separator. For a value read back from tmux, such as a restored window's
+    /// name or directory.
+    ///
+    ///
+    /// A run of `#` right before `[` stays as it is: tmux copies a style marker
+    /// through unexpanded, with every `#` in front of it, so doubling any of
+    /// them would change the text.
+    static func literal(_ text: String) -> String {
+        var escaped = ""
+        var rest = Substring(text)
+        while let ch = rest.first {
+            guard ch == "#" else {
+                escaped.append(ch)
+                rest = rest.dropFirst()
+                continue
+            }
+            let run = rest.prefix { $0 == "#" }
+            rest = rest.dropFirst(run.count)
+            escaped += rest.first == "[" ? String(run) : String(run) + run
+        }
+        return escaped.hasSuffix(";") ? escaped.dropLast() + "\\;" : escaped
     }
 
     /// Reapply the tmux layout string after every pane has been recreated.

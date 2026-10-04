@@ -30,6 +30,8 @@ usage: mux <command> …
                  [--severity info|warn|blocked]
   mux review done --key K
   mux review list
+  mux point SESSION[:WINDOW] --reason TEXT [--host H]  # point the human at a session
+  mux point SESSION[:WINDOW] --done [--host H]         # clear that pointer
   mux name --session S --window N NAME…      # name a local tmux window (sticks)
   mux name --pane %ID TITLE…                 # set a local tmux pane's title
   mux spin --repo PATH --branch B --session S [--base X] [--agent claude|codex]
@@ -84,6 +86,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   panes INTEGER NOT NULL DEFAULT 0,
   cwd TEXT NOT NULL DEFAULT '',
   updated_at INTEGER NOT NULL,
+  window_indexes TEXT,                   -- tmux window indexes, '1,2,5'; NULL when not known
   PRIMARY KEY (host, name)
 );
 CREATE TABLE IF NOT EXISTS agent_events (
@@ -127,8 +130,18 @@ CREATE TABLE IF NOT EXISTS work_log (
 CREATE UNIQUE INDEX IF NOT EXISTS work_log_session ON work_log(session_id) WHERE session_id <> '';
 CREATE INDEX IF NOT EXISTS work_log_last_seen ON work_log(last_seen);"
 
+# `CREATE TABLE IF NOT EXISTS` leaves a table an older build made as it is, so
+# a column added since is checked for in the same sqlite3 run and added here.
+# ManagerStore.swift does the same; the loser of that race fails on a duplicate
+# column, which is why the ALTER's result is not checked. Add columns only this
+# way, and only ones that are nullable or have a default.
 init_db() {
-    printf '.timeout 3000\n%s\n' "$SCHEMA" | "$SQLITE" "$DB" >/dev/null
+    have=$(printf '.timeout 3000\n%s\n%s\n' "$SCHEMA" \
+        "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='window_indexes';" \
+        | "$SQLITE" "$DB" | tail -n 1)
+    [ "$have" = 1 ] || printf '.timeout 3000\n%s\n' \
+        "ALTER TABLE sessions ADD COLUMN window_indexes TEXT;" \
+        | "$SQLITE" "$DB" >/dev/null 2>&1 || :
 }
 
 # Rows older than this are pruned whenever a session starts.
@@ -561,6 +574,9 @@ cmd_review_add() {
         esac
     done
     [ -n "$key" ] || die "review add: --key is required"
+    case "$key" in
+        point:*) die "review add: keys starting with point: are reserved for mux point";;
+    esac
     [ -n "$text" ] || die "review add: --text is required"
     case "$severity" in
         info|warn|blocked) ;;
@@ -612,6 +628,122 @@ cmd_review() {
         list) cmd_review_list;;
         *) usage;;
     esac
+}
+
+# The longest reason `mux point` takes, in characters.
+POINT_REASON_MAX=120
+# The most digits a window number may have, once its leading zeros are gone.
+POINT_WINDOW_DIGITS=5
+# The most pointers kept. One more drops the oldest. MobileManager.swift cuts
+# the list to the same number.
+POINT_MAX=20
+
+# Point the human at a session that needs them ("acme-app needs your approval").
+# A pointer is a review row with a key this verb owns, so it rides the same list
+# the app and the phone already read. It only writes that row: it never calls
+# tmux, never types into the session and never answers its prompt. Unlike
+# `review add` it checks the session, and the window when one is named, against
+# the app's snapshot, so a pointer always names a place the app can open.
+cmd_point() {
+    target=""
+    reason=""
+    have_reason=0
+    host="localhost"
+    done_flag=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --reason) [ $# -ge 2 ] || die "--reason requires a value"; reason=$2; have_reason=1; shift 2;;
+            --host) [ $# -ge 2 ] || die "--host requires a value"; host=$2; shift 2;;
+            --done) done_flag=1; shift;;
+            -*) die "point: unexpected argument: $1";;
+            *)
+                [ -z "$target" ] || die "point: unexpected argument: $1"
+                target=$1; shift;;
+        esac
+    done
+    [ -n "$target" ] || die "point: a session is required"
+    [ -n "$host" ] || die "point: --host must not be empty"
+
+    # A tmux session name holds no colon, so the last one starts the window.
+    case "$target" in
+        *:*) session=${target%:*}; window=${target##*:}
+            case "$window" in
+                ''|*[!0-9]*) die "point: window must be an integer: $target";;
+            esac
+            # One spelling per window, so `:007` and `:7` are one key, and a
+            # number SQLite keeps as an integer.
+            window=$(printf %s "$window" | sed 's/^0*//')
+            [ -n "$window" ] || window=0
+            [ "${#window}" -le "$POINT_WINDOW_DIGITS" ] \
+                || die "point: window must be at most $POINT_WINDOW_DIGITS digits"
+            window_sql=$window
+            key="point:$host:$session:$window";;
+        *) session=$target; window=""; window_sql=NULL
+            key="point:$host:$session";;
+    esac
+    [ -n "$session" ] || die "point: a session is required"
+
+    if [ "$done_flag" -eq 1 ]; then
+        [ "$have_reason" -eq 0 ] || die "point: --done takes no --reason"
+        sql "DELETE FROM review WHERE key='$(sq "$key")';"
+        return
+    fi
+
+    [ "$have_reason" -eq 1 ] || die "point: --reason is required"
+    # One line of text. The x keeps a trailing newline, which $(…) would drop.
+    clean=$(printf %s "$reason" | LC_ALL=C tr -d '\000-\037\177'; printf x)
+    [ "${clean%x}" = "$reason" ] \
+        || die "point: --reason must be one line with no control characters"
+    # Zero-width and text-direction characters (U+200B to U+200F, U+202A to
+    # U+202E, U+2066 to U+2069) can hide or reorder what the human reads.
+    # Matched as bytes: E2 80 8B-8F, E2 80 AA-AE and E2 81 A6-A9.
+    if printf %s "$reason" | LC_ALL=C grep -q \
+        -e "$(printf '\342\200[\213-\217]')" -e "$(printf '\342\200[\252-\256]')" \
+        -e "$(printf '\342\201[\246-\251]')"; then
+        die "point: --reason must not contain zero-width or text-direction characters"
+    fi
+    reason=$(printf %s "$reason" | sed 's/^ *//; s/ *$//')
+    [ -n "$reason" ] || die "point: --reason must not be empty"
+    # Characters, not bytes: every byte except a UTF-8 continuation byte.
+    length=$(printf %s "$reason" | LC_ALL=C tr -d '\200-\277' | wc -c | tr -d ' ')
+    [ "$length" -le "$POINT_REASON_MAX" ] \
+        || die "point: --reason is $length characters; shorten it to $POINT_REASON_MAX or fewer"
+
+    # The snapshot answers both checks in one read: is the session listed, and
+    # does its window list hold this window. A row an older app build wrote
+    # has no window list.
+    known=$(sql "SELECT CASE
+  WHEN '$window' = '' THEN 'yes'
+  WHEN window_indexes IS NULL THEN 'unlisted'
+  WHEN instr(',' || window_indexes || ',', ',$window,') > 0 THEN 'yes'
+  ELSE 'no' END
+FROM sessions WHERE host='$(sq "$host")' AND name='$(sq "$session")' LIMIT 1;")
+    case "$known" in
+        yes) ;;
+        no) die "point: no such window: $session:$window on $host";;
+        unlisted) die "point: the snapshot lists no windows for $session on $host; point at the session without a window";;
+        *) die "point: no such session: $session on $host";;
+    esac
+
+    # The write and the cap are one transaction. The row just written is never
+    # the one dropped, even when others share its second.
+    sql "BEGIN IMMEDIATE;
+INSERT INTO review(key, host, session, window, severity, text, created_at, updated_at)
+VALUES('$(sq "$key")', '$(sq "$host")', '$(sq "$session")', $window_sql, 'blocked', '$(sq "$reason")', $(now), $(now))
+ON CONFLICT(key) DO UPDATE SET
+  host=excluded.host,
+  session=excluded.session,
+  window=excluded.window,
+  severity=excluded.severity,
+  text=excluded.text,
+  updated_at=excluded.updated_at,
+  dismissed=0;
+DELETE FROM review
+WHERE substr(key, 1, 6) = 'point:' AND key NOT IN (
+  SELECT key FROM review WHERE substr(key, 1, 6) = 'point:'
+  ORDER BY key = '$(sq "$key")' DESC, updated_at DESC, rowid DESC
+  LIMIT $POINT_MAX);
+COMMIT;"
 }
 
 # Name a local tmux window (or set a pane title). This is a tmux write, not a DB
@@ -795,6 +927,7 @@ case "$cmd" in
     sessions) cmd_sessions "$@";;
     notify) cmd_notify "$@";;
     review) cmd_review "$@";;
+    point) cmd_point "$@";;
     name) cmd_name "$@";;
     spin) cmd_spin "$@";;
     link) cmd_link "$@";;
