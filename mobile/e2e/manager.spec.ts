@@ -14,7 +14,7 @@ const said = (page: Page) => page.locator('[data-said]');
 const box = (page: Page) => page.getByRole('textbox', { name: 'Ask the Maestro' });
 const review = (page: Page) => page.locator('[data-review]');
 
-test('the app opens on the manager home', async ({ page }) => {
+test('the app opens on the Maestro home', async ({ page }) => {
 	await fresh(page);
 	await expect(page.locator('.chip').first()).toHaveText('2 need you');
 	await expect(said(page).locator('.m')).toHaveText(
@@ -29,7 +29,7 @@ test('the app opens on the manager home', async ({ page }) => {
 	await expect(review(page)).toContainText('PR open 52m, CI green, no review yet');
 });
 
-test('a message to the manager streams its reply onto the home', async ({ page }) => {
+test('a message to the Maestro streams its reply onto the home', async ({ page }) => {
 	await fresh(page);
 	// With nothing typed there is nothing to send.
 	await expect(page.getByRole('button', { name: '↑ Send' })).toBeDisabled();
@@ -159,7 +159,7 @@ test('a right swipe on the home still opens the sidebar, over a review card too'
 	await expect(review(page)).toHaveCount(1);
 });
 
-test('the Manager row in the sidebar opens the home', async ({ page }) => {
+test('the Maestro row in the sidebar opens the home', async ({ page }) => {
 	await fresh(page, threadPath('localhost:1'));
 	await page.getByRole('button', { name: 'Menu' }).click();
 	await drawer(page).getByText('✦ Maestro').click();
@@ -168,7 +168,7 @@ test('the Manager row in the sidebar opens the home', async ({ page }) => {
 	await expect(box(page)).toBeVisible();
 });
 
-test('with the Manager switch off the home and its row are hidden', async ({ page }) => {
+test('with the Maestro switch off the home and its row are hidden', async ({ page }) => {
 	await fresh(page);
 	await expect(box(page)).toBeVisible();
 	await page.request.post('/__fixture/capability?name=manager&on=0');
@@ -229,7 +229,7 @@ test('a write from another origin, without the header, or without the token is r
 	await expect(said(page).locator('.u')).toHaveCount(0);
 });
 
-test('the app sends the pairing token with a manager turn', async ({ page }) => {
+test('the app sends the pairing token with a Maestro turn', async ({ page }) => {
 	await fresh(page);
 	await box(page).fill('what needs me?');
 	const sent = page.waitForRequest((request) => request.url().endsWith('/api/manager/text'));
@@ -249,7 +249,7 @@ test('the home fits a phone: no sideways scroll, the box above the home indicato
 	expect((input?.y ?? 0) + (input?.height ?? 0)).toBeLessThanOrEqual(844);
 });
 
-test('the manager status is drawn while a message cannot go to it', async ({ page }) => {
+test('the Maestro status is drawn while a message cannot go to it', async ({ page }) => {
 	await fresh(page);
 	await page.request.post('/__fixture/manager-status?value=waiting');
 	await page.reload();

@@ -31,7 +31,7 @@
 		class:paused={voice.paused}
 		type="button"
 		{disabled}
-		aria-label="{face.label} to the Maestro"
+		aria-label={kind === 'talk' || kind === 'submit' ? `${face.label} to the Maestro` : face.label}
 		data-orb
 		onclick={() => voice.primary(target, sink)}
 	>

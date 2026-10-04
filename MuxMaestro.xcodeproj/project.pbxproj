@@ -214,6 +214,7 @@
 		B0D00021 /* BundledTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0D00001 /* BundledTools.swift */; };
 		B0D00022 /* SetupTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0D00002 /* SetupTools.swift */; };
 		B0D00025 /* BundledToolsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0D00005 /* BundledToolsTests.swift */; };
+		B0E00002 /* UserFacingTextTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0E00001 /* UserFacingTextTests.swift */; };
 		B0D00026 /* SetupToolsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0D00006 /* SetupToolsTests.swift */; };
 		A0071E11 /* ThreadLinks.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0071E01 /* ThreadLinks.swift */; };
 		A0071E12 /* ThreadLinks.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0071E01 /* ThreadLinks.swift */; };
@@ -402,6 +403,7 @@
 		B0D00003 /* SetupWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupWindowController.swift; sourceTree = "<group>"; };
 		B0D00004 /* tools */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Resources/tools; sourceTree = "<group>"; };
 		B0D00005 /* BundledToolsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BundledToolsTests.swift; sourceTree = "<group>"; };
+		B0E00001 /* UserFacingTextTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserFacingTextTests.swift; sourceTree = "<group>"; };
 		B0D00006 /* SetupToolsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupToolsTests.swift; sourceTree = "<group>"; };
 		A0071E01 /* ThreadLinks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadLinks.swift; sourceTree = "<group>"; };
 		A0071E02 /* ThreadLinksTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadLinksTests.swift; sourceTree = "<group>"; };
@@ -623,6 +625,7 @@
 				A00C4002 /* SessionSwitcherTests.swift */,
 				A0000793 /* ManagerStoreTests.swift */,
 				B0D00005 /* BundledToolsTests.swift */,
+				B0E00001 /* UserFacingTextTests.swift */,
 				B0D00006 /* SetupToolsTests.swift */,
 				A0071E02 /* ThreadLinksTests.swift */,
 				A11C0002 /* LinkRouteTests.swift */,
@@ -967,6 +970,7 @@
 				B0D00021 /* BundledTools.swift in Sources */,
 				B0D00022 /* SetupTools.swift in Sources */,
 				B0D00025 /* BundledToolsTests.swift in Sources */,
+				B0E00002 /* UserFacingTextTests.swift in Sources */,
 				B0D00026 /* SetupToolsTests.swift in Sources */,
 				A0071E12 /* ThreadLinks.swift in Sources */,
 				A0071E13 /* ThreadLinksTests.swift in Sources */,

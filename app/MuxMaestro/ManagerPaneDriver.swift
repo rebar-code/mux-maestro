@@ -685,7 +685,7 @@ final class ManagerPaneDriver {
                 return
             }
             guard self.tmux(["display-message", "-pt", self.config.tmuxSession, "#{pane_id}"]) else {
-                self.report(.unreachable("No mux-manager session"), to: completion)
+                self.report(.unreachable("The Maestro session is not running"), to: completion)
                 return
             }
 

@@ -486,7 +486,7 @@ def main() -> None:
     ap.add_argument("--session", help="open the window in this tmux session, rather than "
                                       "next to the caller's own pane")
     ap.add_argument("--pane", help="the caller's tmux pane id (default: ask the naming script)")
-    ap.add_argument("--work-log", help="The Maestro's DB to record the new agent in")
+    ap.add_argument("--work-log", help="MuxMaestro manager DB to record the new agent in")
     ap.add_argument("--no-window", action="store_true", help="set up but do not open tmux")
     ap.add_argument("--into", default="window", choices=["window", "pane"],
                     help="new tmux window (default) or a split of the current pane")

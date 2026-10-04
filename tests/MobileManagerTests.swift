@@ -373,7 +373,7 @@ final class MobileManagerTests: XCTestCase {
             end(.refused("Maestro is waiting on a prompt")),
             ["outcome": "refused", "reply": "", "message": "Maestro is waiting on a prompt"])
         XCTAssertEqual(
-            end(.unreachable("No mux-manager session")),
-            ["outcome": "unreachable", "reply": "", "message": "No mux-manager session"])
+            end(.unreachable("The Maestro session is not running")),
+            ["outcome": "unreachable", "reply": "", "message": "The Maestro session is not running"])
     }
 }

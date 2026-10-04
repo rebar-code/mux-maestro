@@ -244,7 +244,7 @@ test('the large button is the same control', async ({ page }) => {
 	await orb(page).click({ force: true });
 	await expect(orb(page)).toHaveClass(/thinking/);
 	await expect(orb(page)).toHaveClass(/speaking/);
-	await expect(orb(page)).toHaveAccessibleName('Pause to the Maestro');
+	await expect(orb(page)).toHaveAccessibleName('Pause');
 	await expect(status(page)).toHaveText('Start talking', { timeout: 8000 });
 	expect(await takes(page)).toHaveLength(1);
 });

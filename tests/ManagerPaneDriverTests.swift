@@ -540,7 +540,7 @@ final class ManagerPaneDriverTests: XCTestCase {
 
         let done = expectation(description: "unreachable")
         driver.send("hello", onDelta: { _ in }) { outcome in
-            XCTAssertEqual(outcome, .unreachable("No mux-manager session"))
+            XCTAssertEqual(outcome, .unreachable("The Maestro session is not running"))
             done.fulfill()
         }
         wait(for: [done], timeout: 5)
