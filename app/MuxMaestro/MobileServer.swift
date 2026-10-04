@@ -96,8 +96,11 @@ final class MobileServer {
         var maxFinds = 2
         /// Live terminal sockets held at once, paired or not.
         var maxSockets = 8
-        /// Live terminal sockets one phone holds. One more closes its oldest.
-        var maxSocketsPerClient = 2
+        /// Paired live terminal sockets held at once. One more closes the
+        /// oldest. Every phone has the same token and comes through the same
+        /// proxy, and an address in a header is the sender's own word, so
+        /// the paired sockets are counted as one holder's.
+        var maxSocketsPerClient = 4
         /// How long a new socket has to send the pairing token.
         var socketAuthTimeout: TimeInterval = 5
         /// A socket gets a ping this often, and is closed when nothing came
@@ -151,7 +154,6 @@ final class MobileServer {
         /// The thread id the phone asked for. Looked up in the tree only
         /// after the token came.
         let thread: String
-        let device: String
         var reader = MobileSocketReader(maxMessage: MobileSocket.maxTokenBytes)
         var rate: MobileSocketRate
         var paired = false
@@ -165,9 +167,8 @@ final class MobileServer {
         var stalled: Date?
         var closing = false
 
-        init(thread: String, device: String, rate: MobileSocketRate) {
+        init(thread: String, rate: MobileSocketRate) {
             self.thread = thread
-            self.device = device
             self.rate = rate
         }
     }
@@ -311,7 +312,9 @@ final class MobileServer {
         boundPort = nil
         token = nil
         pushTracker = MobilePushTracker()
-        for client in clients.values { client.connection.cancel() }
+        // Each connection goes the way a dropped one does: a live terminal's
+        // tmux client ends with it.
+        for client in Array(clients.values) { drop(client) }
         clients.removeAll()
         setStreamCount(0)
     }
@@ -868,6 +871,14 @@ final class MobileServer {
 
     // MARK: Live terminal
 
+    /// What each live socket has queued and unsent, and what it may queue.
+    /// For tests.
+    var socketPending: [Int] { queue.sync { sockets.map(\.pending) } }
+    var socketAllowance: [Int] { queue.sync { sockets.map { $0.backlog ?? limits.streamBacklog } } }
+
+    /// Room past the flow limit for one read of the pane and its framing.
+    private static let socketSlack = 262_144
+
     private var sockets: [Client] { clients.values.filter { $0.socket != nil } }
 
     private func alive(_ client: Client?) -> Client? {
@@ -879,7 +890,7 @@ final class MobileServer {
     /// `socketAuthTimeout` to send the pairing token; until then nothing is
     /// read from the tree for it and no pane is touched.
     private func open(_ upgrade: MobileSocket.Upgrade, client: Client) {
-        guard case .accept(let thread, let key, let device) = upgrade else {
+        guard case .accept(let thread, let key) = upgrade else {
             if case .refuse(let response) = upgrade { send(response, to: client, head: false, close: true) }
             return
         }
@@ -887,7 +898,7 @@ final class MobileServer {
             return send(.error(503, "busy"), to: client, head: false, close: true)
         }
         let socket = Socket(
-            thread: thread, device: device,
+            thread: thread,
             rate: MobileSocketRate(perSecond: limits.socketRate, burst: limits.socketBurst))
         client.socket = socket
         client.streaming = true
@@ -943,11 +954,13 @@ final class MobileServer {
         case .messages(let whole): messages = whole
         case .failed(let whole, let code): (messages, failure) = (whole, code)
         }
+        // Every frame is paid for, whether or not it ends a message.
+        let now = Date().timeIntervalSinceReferenceDate
+        for _ in 0..<socket.reader.takeFrames() where !socket.rate.allow(now: now) {
+            return close(client, .policy)
+        }
         for message in messages {
             guard alive(client) != nil, !socket.closing else { return }
-            guard socket.rate.allow(now: Date().timeIntervalSinceReferenceDate) else {
-                return close(client, .policy)
-            }
             handle(message, socket: socket, client: client)
         }
         if let failure, alive(client) != nil { close(client, failure) }
@@ -987,35 +1000,37 @@ final class MobileServer {
               let target = MobileTerminal.target(thread)
         else { return close(client, .notFound) }
         socket.target = target
-        // One phone holds few sockets: its oldest gives way to the new one.
-        let mine = sockets.filter { $0 !== client && $0.socket?.paired == true && $0.socket?.device == socket.device }
+        // The token holds few sockets: the oldest gives way to the new one.
+        let mine = sockets.filter { $0 !== client && $0.socket?.paired == true && $0.socket?.closing == false }
             .sorted { ($0.socket?.opened ?? .distantPast) < ($1.socket?.opened ?? .distantPast) }
         for old in mine.prefix(max(0, mine.count - limits.maxSocketsPerClient + 1)) {
             close(old, .replaced)
         }
         work.async { [weak self, weak client, sources] in
-            guard let launch = sources.terminal(thread, target) else {
-                self?.queue.async { if let self, let client = self.alive(client) { self.close(client, .unavailable) } }
-                return
-            }
-            let bridge = MobileTerminalBridge(launch: launch, target: target) { event in
-                self?.queue.async {
-                    guard let self, let client = self.alive(client) else { return }
-                    self.bridged(event, client: client)
-                }
-            }
-            let started = bridge.start()
+            let launch = sources.terminal(thread, target)
             self?.queue.async {
                 guard let self, let client = self.alive(client), let socket = client.socket,
-                      !socket.closing, started
-                else {
-                    bridge.stop()
-                    if let self, let client = self.alive(client) { self.close(client, .unavailable) }
-                    return
+                      !socket.closing
+                else { return }
+                guard let launch else { return self.close(client, .unavailable) }
+                let bridge = MobileTerminalBridge(launch: launch, target: target) {
+                    [weak self, weak client] event in
+                    self?.queue.async {
+                        guard let self, let client = self.alive(client) else { return }
+                        self.bridged(event, client: client)
+                    }
                 }
+                // Held by the socket before it starts: its first event, and
+                // the room that event asks for, find it there.
                 socket.bridge = bridge
                 client.onSent = { [weak self, weak client] in
                     if let self, let client { self.flow(client) }
+                }
+                self.work.async { [weak self, weak client] in
+                    guard !bridge.start() else { return }
+                    self?.queue.async {
+                        if let self, let client = self.alive(client) { self.close(client, .unavailable) }
+                    }
                 }
             }
         }
@@ -1050,6 +1065,9 @@ final class MobileServer {
               client.pending <= limits.socketBacklog
         else { return }
         socket.stalled = nil
+        // The first capture has gone out: from here a socket holds the flow
+        // limit and one read of the pane, no more.
+        client.backlog = limits.socketBacklog + Self.socketSlack
         socket.bridge?.resume()
     }
 

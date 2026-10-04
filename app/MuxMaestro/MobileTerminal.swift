@@ -43,6 +43,9 @@ enum MobileTerminal {
     /// The target of `thread`, from the tree alone. nil when the tree's ids
     /// are not the plain ids tmux gives: such a thread has no live terminal.
     static func target(_ thread: MobileThread) -> Target? {
+        // The manager's own session is never in the tree the server is given.
+        // Said again here, so a tree that held it would still open nothing.
+        guard !(thread.host.isLocal && thread.session == ManagerHome.sessionName) else { return nil }
         guard isID(thread.pane, sigil: "%"), isID(thread.sessionId, sigil: "$") else { return nil }
         return Target(pane: thread.pane, session: thread.sessionId)
     }
@@ -301,6 +304,10 @@ struct MobileControlSession {
 /// is called. A phone that reads slowly so stops the reading, and what the
 /// pane writes meanwhile waits in tmux, which drops a client that falls too
 /// far behind. This process holds one read of output at a time.
+///
+/// The client never outlives the bridge. `stop()` ends it, letting go of the
+/// bridge without `stop()` ends it, and so does the death of this process,
+/// however it dies: see `supervised`.
 final class MobileTerminalBridge {
     /// The command that runs the control client, here or over ssh.
     struct Launch: Equatable {
@@ -316,163 +323,206 @@ final class MobileTerminalBridge {
         case exit
     }
 
-    private let launch: Launch
-    private let onEvent: (Event) -> Void
-    private let io = DispatchQueue(label: "is.rebar.muxmaestro.mobile.terminal")
-    private let process = Process()
-    private let input = Pipe()
-    private let output = Pipe()
-
-    // Confined to `io`.
-    private var session: MobileControlSession
-    private var source: DispatchSourceRead?
-    private var reading = false
-    private var pending = Data()
-    private var stopped = false
-
-    /// `onEvent` is called on the bridge's own queue.
-    init(launch: Launch, target: MobileTerminal.Target, onEvent: @escaping (Event) -> Void) {
-        self.launch = launch
-        self.onEvent = onEvent
-        session = MobileControlSession(target: target)
+    /// `launch` under a small shell that ends the client when this process
+    /// goes away. The shell's standard error is the read end of a pipe whose
+    /// only write end this process holds: when that closes, by `stop()` or
+    /// because the app quit, crashed or was killed, the shell signals the
+    /// client. A signal is needed: a tmux control client with output still to
+    /// write stays attached when its pipes merely close, and tmux then keeps
+    /// what the pane writes for it.
+    static func supervised(_ launch: Launch) -> Launch {
+        Launch(path: "/bin/sh", args: ["-c", supervisor, "sh", launch.path] + launch.args)
     }
 
-    /// Start the client. False when it could not be run.
-    func start() -> Bool {
-        process.executableURL = URL(fileURLWithPath: launch.path)
-        process.arguments = launch.args
-        var environment = ProcessCommandRunner.childEnvironment
-        if environment["TERM"] == nil { environment["TERM"] = "xterm-256color" }
-        process.environment = environment
-        process.standardInput = input
-        process.standardOutput = output
-        process.standardError = FileHandle.nullDevice
-        do { try process.run() } catch { return false }
-        // A write to a client that has gone is an error, not a signal.
-        _ = fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
-        let fd = output.fileHandleForReading.fileDescriptor
-        _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
-        io.async { [self] in
-            let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: io)
-            source.setEventHandler { [weak self] in self?.read(fd) }
-            self.source = source
-            reading = true
-            source.resume()
-            write(session.opening)
+    private static let supervisor = """
+        exec 3<&0
+        "$@" <&3 3<&- 2>/dev/null &
+        c=$!
+        ( exec 0<&- 1>&- 3<&-; read _ <&2; kill "$c" 2>/dev/null; sleep 2; kill -9 "$c" 2>/dev/null ) &
+        w=$!
+        exec 0<&- 1>&- 3<&-
+        wait "$c"
+        kill "$w" 2>/dev/null
+        """
+
+    /// The running half. The queue's blocks hold it, never the bridge, so the
+    /// bridge is free to go while a read is under way.
+    private final class Engine {
+        let launch: Launch
+        let onEvent: (Event) -> Void
+        let io = DispatchQueue(label: "is.rebar.muxmaestro.mobile.terminal")
+        let process = Process()
+        let input = Pipe()
+        let output = Pipe()
+        /// Its write end is held open for as long as the client may run.
+        let lifeline = Pipe()
+
+        // Confined to `io`.
+        var session: MobileControlSession
+        var source: DispatchSourceRead?
+        var reading = false
+        var pending = Data()
+        var stopped = false
+
+        init(launch: Launch, target: MobileTerminal.Target, onEvent: @escaping (Event) -> Void) {
+            self.launch = MobileTerminalBridge.supervised(launch)
+            self.onEvent = onEvent
+            session = MobileControlSession(target: target)
         }
-        return true
-    }
 
-    /// Bytes from the phone, for the pane.
-    func input(_ data: Data) {
-        io.async { [self] in write(session.keys(data)) }
-    }
+        func start() -> Bool {
+            process.executableURL = URL(fileURLWithPath: launch.path)
+            process.arguments = launch.args
+            var environment = ProcessCommandRunner.childEnvironment
+            if environment["TERM"] == nil { environment["TERM"] = "xterm-256color" }
+            process.environment = environment
+            process.standardInput = input
+            process.standardOutput = output
+            process.standardError = lifeline.fileHandleForReading
+            do { try process.run() } catch {
+                io.async { self.finish(report: false) }
+                return false
+            }
+            // This process keeps the write end alone.
+            try? lifeline.fileHandleForReading.close()
+            // A write to a client that has gone is an error, not a signal.
+            _ = fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
+            let fd = output.fileHandleForReading.fileDescriptor
+            _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
+            io.async { [self] in
+                guard !stopped else { return }
+                let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: io)
+                source.setEventHandler { [self] in read(fd) }
+                self.source = source
+                reading = true
+                source.resume()
+                write(session.opening)
+            }
+            return true
+        }
 
-    /// There is room for more output.
-    func resume() {
-        io.async { [self] in
+        func write(_ lines: [String]) {
+            guard !stopped, !lines.isEmpty else { return }
+            let data = Data((lines.joined(separator: "\n") + "\n").utf8)
+            let fd = input.fileHandleForWriting.fileDescriptor
+            let failed = data.withUnsafeBytes { raw -> Bool in
+                var offset = 0
+                while offset < raw.count {
+                    let wrote = Darwin.write(fd, raw.baseAddress! + offset, raw.count - offset)
+                    if wrote < 0 && errno == EINTR { continue }
+                    guard wrote > 0 else { return true }
+                    offset += wrote
+                }
+                return false
+            }
+            if failed { finish(report: true) }
+        }
+
+        func resume() {
             guard !stopped, !reading, let source else { return }
             reading = true
             source.resume()
         }
-    }
 
-    /// End the client: its input closes, which detaches it, and the process
-    /// is told to stop. Safe to call more than once and from any queue.
-    func stop() {
-        io.async { [self] in finish(report: false) }
-    }
+        func read(_ fd: Int32) {
+            guard !stopped else { return }
+            var chunk = [UInt8](repeating: 0, count: 65_536)
+            let count = Darwin.read(fd, &chunk, chunk.count)
+            if count < 0 && (errno == EAGAIN || errno == EINTR) { return }
+            guard count > 0 else { return finish(report: true) }
+            pending.append(contentsOf: chunk[0..<count])
 
-    private func write(_ lines: [String]) {
-        guard !stopped, !lines.isEmpty else { return }
-        let data = Data((lines.joined(separator: "\n") + "\n").utf8)
-        let fd = input.fileHandleForWriting.fileDescriptor
-        let failed = data.withUnsafeBytes { raw -> Bool in
-            var offset = 0
-            while offset < raw.count {
-                let wrote = Darwin.write(fd, raw.baseAddress! + offset, raw.count - offset)
-                if wrote < 0 && errno == EINTR { continue }
-                guard wrote > 0 else { return true }
-                offset += wrote
+            var out = Data()
+            var events: [Event] = []
+            func flush() {
+                if !out.isEmpty { events.append(.output(out)) }
+                out = Data()
             }
-            return false
-        }
-        if failed { finish(report: true) }
-    }
-
-    private func read(_ fd: Int32) {
-        guard !stopped else { return }
-        var chunk = [UInt8](repeating: 0, count: 65_536)
-        let count = Darwin.read(fd, &chunk, chunk.count)
-        if count < 0 && (errno == EAGAIN || errno == EINTR) { return }
-        guard count > 0 else { return finish(report: true) }
-        pending.append(contentsOf: chunk[0..<count])
-
-        var out = Data()
-        var events: [Event] = []
-        func flush() {
-            if !out.isEmpty { events.append(.output(out)) }
-            out = Data()
-        }
-        var ended = false
-        while !ended, let newline = pending.firstIndex(of: UInt8(ascii: "\n")) {
-            let line = Data(pending[pending.startIndex..<newline])
-            pending = Data(pending[pending.index(after: newline)...])
-            for event in session.line(line) {
-                switch event {
-                case .send(let text): write([text])
-                case .output(let data): out.append(data)
-                case .ready(let state, let snapshot):
-                    flush()
-                    events.append(.ready(cols: state.cols, rows: state.rows, snapshot: snapshot))
-                case .size(let cols, let rows):
-                    flush()
-                    events.append(.size(cols: cols, rows: rows))
-                case .exit:
-                    ended = true
+            var ended = false
+            while !ended, let newline = pending.firstIndex(of: UInt8(ascii: "\n")) {
+                let line = Data(pending[pending.startIndex..<newline])
+                pending = Data(pending[pending.index(after: newline)...])
+                for event in session.line(line) {
+                    switch event {
+                    case .send(let text): write([text])
+                    case .output(let data): out.append(data)
+                    case .ready(let state, let snapshot):
+                        flush()
+                        events.append(.ready(cols: state.cols, rows: state.rows, snapshot: snapshot))
+                    case .size(let cols, let rows):
+                        flush()
+                        events.append(.size(cols: cols, rows: rows))
+                    case .exit:
+                        ended = true
+                    }
                 }
             }
+            flush()
+            guard !stopped else { return }
+            // Wait for room after anything that takes room at the other end.
+            let heavy = events.contains {
+                if case .output = $0 { return true }
+                if case .ready = $0 { return true }
+                return false
+            }
+            if heavy, reading {
+                reading = false
+                source?.suspend()
+            }
+            events.forEach(onEvent)
+            if ended || pending.count > MobileTerminal.maxLineBytes { finish(report: true) }
         }
-        flush()
-        guard !stopped else { return }
-        // Wait for room after anything that takes room at the other end.
-        let heavy = events.contains {
-            if case .output = $0 { return true }
-            if case .ready = $0 { return true }
-            return false
-        }
-        if heavy, reading {
-            reading = false
-            source?.suspend()
-        }
-        events.forEach(onEvent)
-        if ended || pending.count > MobileTerminal.maxLineBytes { finish(report: true) }
-    }
 
-    private func finish(report: Bool) {
-        guard !stopped else { return }
-        stopped = true
-        // Both ends of the client's pipes are closed. A client with output
-        // still to write would wait for a reader for ever, and tmux waits
-        // for a control client to take all its output before it lets it go.
-        let reader = output.fileHandleForReading
-        if let source {
-            source.setCancelHandler { try? reader.close() }
-            // A suspended source must run again before it can be let go.
-            if !reading { source.resume() }
-            source.cancel()
-        } else {
-            try? reader.close()
-        }
-        source = nil
-        try? input.fileHandleForWriting.close()
-        if process.isRunning {
-            process.terminate()
-            // By its own process id, and only if it did not stop when asked.
-            io.asyncAfter(deadline: .now() + 2) { [process] in
+        func finish(report: Bool) {
+            guard !stopped else { return }
+            stopped = true
+            // Both ends of the client's pipes are closed, and the lifeline:
+            // the shell around the client then signals it. A client with
+            // output still to write would wait for a reader for ever.
+            let reader = output.fileHandleForReading
+            if let source {
+                source.setCancelHandler { try? reader.close() }
+                // A suspended source must run again before it can be let go.
+                if !reading { source.resume() }
+                source.cancel()
+            } else {
+                try? reader.close()
+            }
+            source = nil
+            try? input.fileHandleForWriting.close()
+            try? lifeline.fileHandleForWriting.close()
+            // By its own process id, and only if the shell did not end.
+            io.asyncAfter(deadline: .now() + 5) { [process] in
                 if process.isRunning { kill(process.processIdentifier, SIGKILL) }
             }
+            if report { onEvent(.exit) }
         }
-        if report { onEvent(.exit) }
+    }
+
+    private let engine: Engine
+
+    /// `onEvent` is called on the bridge's own queue.
+    init(launch: Launch, target: MobileTerminal.Target, onEvent: @escaping (Event) -> Void) {
+        engine = Engine(launch: launch, target: target, onEvent: onEvent)
+    }
+
+    deinit { stop() }
+
+    /// Start the client. False when it could not be run.
+    func start() -> Bool { engine.start() }
+
+    /// Bytes from the phone, for the pane.
+    func input(_ data: Data) {
+        engine.io.async { [engine] in engine.write(engine.session.keys(data)) }
+    }
+
+    /// There is room for more output.
+    func resume() {
+        engine.io.async { [engine] in engine.resume() }
+    }
+
+    /// End the client. Safe to call more than once and from any queue.
+    func stop() {
+        engine.io.async { [engine] in engine.finish(report: false) }
     }
 }

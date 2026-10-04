@@ -36,10 +36,10 @@ final class MobileSocketTests: XCTestCase {
 
     // MARK: upgrade
 
-    func testAGoodUpgradeIsAcceptedWithTheThreadAndTheDevice() {
+    func testAGoodUpgradeIsAcceptedWithTheThread() {
         XCTAssertEqual(
             MobileSocket.upgrade(request(), identity: identity, config: on),
-            .accept(thread: "devbox:12", key: "dGhlIHNhbXBsZSBub25jZQ==", client: "100.64.0.7"))
+            .accept(thread: "devbox:12", key: "dGhlIHNhbXBsZSBub25jZQ=="))
     }
 
     func testAcceptKeyIsTheOneOfRFC6455() {
@@ -122,11 +122,6 @@ final class MobileSocketTests: XCTestCase {
         XCTAssertEqual(MobileEndpoint.terminal(id: "devbox:12").capability, .liveTerminal)
         XCTAssertEqual(MobileAPI.route(request(), config: MobileConfig()), .disabled(.liveTerminal))
         XCTAssertEqual(MobileAPI.route(request(), config: on), .api(.terminal(id: "devbox:12")))
-    }
-
-    func testTheDeviceIsTheForwardedAddress() {
-        XCTAssertEqual(MobileSocket.client(request { $0["x-forwarded-for"] = "100.64.0.9, 127.0.0.1" }), "100.64.0.9")
-        XCTAssertEqual(MobileSocket.client(request { $0["x-forwarded-for"] = nil }), "-")
     }
 
     // MARK: token
@@ -284,6 +279,34 @@ final class MobileSocketTests: XCTestCase {
         var reader = reader()
         XCTAssertEqual(
             reader.feed(Self.frame(2, [1]) + Self.frame(3, [2])), .failed([.binary(Data([1]))], .protocolError))
+    }
+
+    func testACloseWithHalfACodeIsAProtocolError() {
+        var reader = reader()
+        XCTAssertEqual(reader.feed(Self.frame(8, [3])), .failed([], .protocolError))
+        var empty = self.reader()
+        XCTAssertEqual(empty.feed(Self.frame(8)), .messages([.close]))
+        var bad = self.reader()
+        XCTAssertEqual(bad.feed(Self.frame(8, [3, 232, 0xFF, 0xFE])), .failed([], .badData))
+    }
+
+    func testTextThatIsNotUTF8IsRefused() {
+        var reader = reader()
+        XCTAssertEqual(reader.feed(Self.frame(1, [0xC3, 0x28])), .failed([], .badData))
+        var split = self.reader()
+        // A character cut in two by a fragment is whole once joined.
+        XCTAssertEqual(
+            split.feed(Self.frame(1, [0xC3], fin: false) + Self.frame(0, [0xA9])),
+            .messages([.text(Data([0xC3, 0xA9]))]))
+        var binary = self.reader()
+        XCTAssertEqual(binary.feed(Self.frame(2, [0xC3, 0x28])), .messages([.binary(Data([0xC3, 0x28]))]))
+    }
+
+    func testEveryFrameIsCountedEvenAnEmptyFragment() {
+        var reader = reader()
+        _ = reader.feed(Self.frame(2, [], fin: false) + Self.frame(0, [], fin: false) + Self.frame(9))
+        XCTAssertEqual(reader.takeFrames(), 3)
+        XCTAssertEqual(reader.takeFrames(), 0)
     }
 
     func testCloseAndPong() {

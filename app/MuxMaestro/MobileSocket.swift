@@ -27,6 +27,7 @@ enum MobileSocket {
         case protocolError = 1002
         case unsupported = 1003
         case policy = 1008
+        case badData = 1007
         case tooBig = 1009
         /// The phone did not read fast enough.
         case overloaded = 1013
@@ -42,8 +43,8 @@ enum MobileSocket {
     }
 
     enum Upgrade: Equatable {
-        /// Answer 101 with `key`. `client` names the device behind the proxy.
-        case accept(thread: String, key: String, client: String)
+        /// Answer 101 with `key`.
+        case accept(thread: String, key: String)
         case refuse(MobileResponse)
     }
 
@@ -98,16 +99,7 @@ enum MobileSocket {
         guard MobileAPI.sameOrigin(request, identity: identity) else {
             return .refuse(.error(403, "origin"))
         }
-        return .accept(thread: thread, key: key, client: client(request))
-    }
-
-    /// The device a request came from: the address `tailscale serve` names.
-    /// Every phone comes in through the same proxy, so the connection's own
-    /// address is the same for all of them.
-    static func client(_ request: MobileRequest) -> String {
-        let first = (request.header("x-forwarded-for") ?? "").split(separator: ",").first
-        let name = first.map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
-        return name.isEmpty ? "-" : String(name.prefix(64))
+        return .accept(thread: thread, key: key)
     }
 
     static func acceptKey(_ key: String) -> String {
@@ -190,8 +182,16 @@ struct MobileSocketReader {
     private var buffer = Data()
     private var partial: (opcode: MobileSocket.Opcode, data: Data)?
     private var failed: MobileSocket.CloseCode?
+    private var frames = 0
 
     init(maxMessage: Int) { self.maxMessage = maxMessage }
+
+    /// Frames read since this was last asked. Every frame counts towards the
+    /// rate, a fragment with nothing in it too.
+    mutating func takeFrames() -> Int {
+        defer { frames = 0 }
+        return frames
+    }
 
     enum Fed: Equatable {
         case messages([MobileSocketMessage])
@@ -267,9 +267,16 @@ struct MobileSocketReader {
         var payload = [UInt8](buffer.dropFirst(header + 4).prefix(size))
         for index in payload.indices { payload[index] ^= mask[index % 4] }
         buffer = Data(buffer.dropFirst(header + 4 + size))
+        frames += 1
 
         switch opcode {
-        case .close: return .success(.close)
+        case .close:
+            // No payload, or a whole code and a reason that is text.
+            guard payload.count != 1 else { return .failure(Failure(code: .protocolError)) }
+            guard String(validatingUTF8Bytes: payload.dropFirst(2)) != nil else {
+                return .failure(Failure(code: .badData))
+            }
+            return .success(.close)
         case .ping: return .success(.ping(Data(payload)))
         case .pong: return .success(.pong)
         case .text, .binary, .continuation:
@@ -280,7 +287,11 @@ struct MobileSocketReader {
                 return .success(nil)
             }
             partial = nil
-            return .success(message.opcode == .text ? .text(message.data) : .binary(message.data))
+            guard message.opcode == .text else { return .success(.binary(message.data)) }
+            guard String(validatingUTF8Bytes: message.data) != nil else {
+                return .failure(Failure(code: .badData))
+            }
+            return .success(.text(message.data))
         }
     }
 }
@@ -305,5 +316,24 @@ struct MobileSocketRate {
         guard tokens >= 1 else { return false }
         tokens -= 1
         return true
+    }
+}
+
+private extension String {
+    /// `bytes` as text, or nil when they are not UTF-8.
+    init?<Bytes: Sequence>(validatingUTF8Bytes bytes: Bytes) where Bytes.Element == UInt8 {
+        // A decode that repairs nothing: bytes that are not UTF-8 give nil.
+        var decoder = UTF8()
+        var iterator = bytes.makeIterator()
+        var text = ""
+        while true {
+            switch decoder.decode(&iterator) {
+            case .scalarValue(let scalar): text.unicodeScalars.append(scalar)
+            case .emptyInput:
+                self = text
+                return
+            case .error: return nil
+            }
+        }
     }
 }

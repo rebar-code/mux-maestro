@@ -760,17 +760,17 @@ final class MobileTerminalSocketTests: XCTestCase {
 
     func testOnePhoneHoldsFewSocketsAndItsOldestGivesWay() {
         var limits = MobileServer.Limits()
-        limits.maxSocketsPerClient = 1
+        limits.maxSocketsPerClient = 2
         startServer(limits: limits)
-        let first = live(device: "100.64.0.7")
-        let other = live(device: "100.64.0.8")
-        let second = live(device: "100.64.0.7")
+        let first = live()
+        let second = live()
+        let third = live()
         XCTAssertEqual(first.closeCode(), 4409)
-        // The other phone and the new socket still work.
-        other.send(2, Data("other\r".utf8))
-        XCTAssertTrue(other.output(until: "other").contains("other"))
+        // The two newest still work.
         second.send(2, Data("second\r".utf8))
         XCTAssertTrue(second.output(until: "second").contains("second"))
+        third.send(2, Data("third\r".utf8))
+        XCTAssertTrue(third.output(until: "third").contains("third"))
         XCTAssertTrue(eventually { tmux.clientCount == 2 })
     }
 
@@ -839,5 +839,241 @@ final class MobileTerminalSocketTests: XCTestCase {
         XCTAssertTrue(eventually { tmux.clientCount == 1 })
         // The socket fills, the server stops reading the pane, then lets go.
         XCTAssertTrue(eventually(20) { tmux.clientCount == 0 })
+    }
+
+    // MARK: stopping
+
+    func testStoppingTheServerEndsEveryBridge() {
+        let phone = live()
+        XCTAssertTrue(eventually { tmux.clientCount == 1 })
+        server.stop()
+        XCTAssertTrue(eventually { tmux.clientCount == 0 })
+        XCTAssertTrue(phone.isClosed(within: 5))
+    }
+
+    func testStoppingTheServerWhileAPhoneDoesNotReadEndsTheBridge() {
+        var limits = MobileServer.Limits()
+        limits.socketBacklog = 4096
+        limits.socketStall = 60
+        startServer(limits: limits)
+        tmux.run(["new-window", "-d", "-t", "acme-app", Self.flood])
+        server.update(snapshot(windows: ["acme-app:0", "acme-app:1"]))
+        let fd = unreadSocket(threadID("acme-app:1"))
+        defer { close(fd) }
+        XCTAssertTrue(eventually { tmux.clientCount == 1 })
+        // Long enough for the socket to fill and the bridge to stop reading.
+        Thread.sleep(forTimeInterval: 1.5)
+        server.stop()
+        XCTAssertTrue(eventually { tmux.clientCount == 0 })
+        XCTAssertTrue(tmux.alive)
+    }
+
+    func testABridgeLetGoWithoutStopEndsItsClient() {
+        tmux.run(["new-window", "-d", "-t", "acme-app", Self.flood])
+        let ids = tmux.ids(window: "acme-app:1")
+        let target = MobileTerminal.Target(pane: ids.pane, session: ids.session)
+        let ready = expectation(description: "ready")
+        ready.assertForOverFulfill = false
+        var bridge: MobileTerminalBridge? = MobileTerminalBridge(
+            launch: .init(path: tmux.path, args: ["-L", tmux.name] + MobileTerminal.attachArgv(target)),
+            target: target
+        ) { event in
+            if case .ready = event { ready.fulfill() }
+        }
+        XCTAssertEqual(bridge?.start(), true)
+        wait(for: [ready], timeout: 5)
+        XCTAssertEqual(tmux.clientCount, 1)
+        // Nobody said there is room: it waits, its reading suspended. Let go of it.
+        bridge = nil
+        XCTAssertTrue(eventually { tmux.clientCount == 0 })
+    }
+
+    func testTheClientDiesWhenItsParentIsKilled() throws {
+        let python = "/usr/bin/python3"
+        guard FileManager.default.isExecutableFile(atPath: python) else { throw XCTSkip("no python3") }
+        tmux.run(["new-window", "-d", "-t", "acme-app", Self.flood])
+        let ids = tmux.ids(window: "acme-app:1")
+        let target = MobileTerminal.Target(pane: ids.pane, session: ids.session)
+        let launch = MobileTerminalBridge.supervised(
+            .init(path: tmux.path, args: ["-L", tmux.name] + MobileTerminal.attachArgv(target)))
+        // A parent that starts the client as the bridge does (the lifeline is
+        // the client's standard error), never reads its output, and is killed.
+        let script = """
+            import os, subprocess, sys, time
+            r, w = os.pipe()
+            p = subprocess.Popen(sys.argv[1:], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=r)
+            os.close(r)
+            time.sleep(600)
+            """
+        let parent = Process()
+        parent.executableURL = URL(fileURLWithPath: python)
+        parent.arguments = ["-c", script, launch.path] + launch.args
+        parent.standardOutput = FileHandle.nullDevice
+        parent.standardError = FileHandle.nullDevice
+        try parent.run()
+        XCTAssertTrue(eventually { tmux.clientCount == 1 })
+        // The pane floods a client nobody reads: the worst case to let go of.
+        Thread.sleep(forTimeInterval: 1)
+        kill(parent.processIdentifier, SIGKILL)
+        parent.waitUntilExit()
+        XCTAssertTrue(eventually(8) { tmux.clientCount == 0 })
+        XCTAssertTrue(tmux.alive)
+    }
+
+    // MARK: over ssh
+
+    func testTheBridgeRunsOverSshAndClosesCleanly() throws {
+        // A stand-in for ssh: it drops its options and the host, then hands
+        // the rest to a shell as one string, as sshd does on the far side.
+        // `tmux` there is the private server.
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("mm-ssh-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let shim = dir.appendingPathComponent("tmux")
+        try "#!/bin/sh\nexec \(tmux.path) -L \(tmux.name) \"$@\"\n".write(to: shim, atomically: true, encoding: .utf8)
+        let ssh = dir.appendingPathComponent("ssh")
+        try """
+            #!/bin/sh
+            while [ "$1" = "-o" ]; do shift 2; done
+            echo "$1" > "\(dir.path)/host"
+            shift
+            PATH="\(dir.path):$PATH" exec /bin/sh -c "$*"
+
+            """.write(to: ssh, atomically: true, encoding: .utf8)
+        for file in [shim, ssh] {
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: file.path)
+        }
+        let ids = tmux.ids()
+        let target = MobileTerminal.Target(pane: ids.pane, session: ids.session)
+        let command = try XCTUnwrap(SshTmuxTransport(host: "devbox", sshPath: ssh.path)
+            .command(forTmux: MobileTerminal.attachArgv(target)))
+        let ready = expectation(description: "ready")
+        let echoed = expectation(description: "echoed")
+        echoed.assertForOverFulfill = false
+        var seen = Data()
+        var bridge: MobileTerminalBridge?
+        bridge = MobileTerminalBridge(
+            launch: .init(path: command.path, args: command.args), target: target
+        ) { event in
+            switch event {
+            case .ready: ready.fulfill()
+            case .output(let bytes):
+                seen.append(bytes)
+                if String(decoding: seen, as: UTF8.self).contains("over ssh") { echoed.fulfill() }
+            default: break
+            }
+        }
+        XCTAssertEqual(bridge?.start(), true)
+        wait(for: [ready], timeout: 5)
+        bridge?.resume()
+        bridge?.input(Data("over ssh\r".utf8))
+        wait(for: [echoed], timeout: 5)
+        XCTAssertEqual(try String(contentsOf: dir.appendingPathComponent("host")), "devbox\n")
+        XCTAssertTrue(eventually { tmux.screen(ids.pane).contains("over ssh") })
+        XCTAssertEqual(tmux.clientCount, 1)
+        bridge?.stop()
+        XCTAssertTrue(eventually { tmux.clientCount == 0 })
+    }
+
+    // MARK: the manager
+
+    func testTheManagersOwnSessionHasNoLiveTerminalEvenIfATreeHoldsIt() {
+        tmux.run(["new-session", "-d", "-s", ManagerHome.sessionName, "cat"])
+        let parts = tmux.run(["display-message", "-p", "-t", ManagerHome.sessionName, "#{pane_id} #{session_id}"])
+            .split(separator: " ").map(String.init)
+        // A tree that should never be given to the server: it holds the manager.
+        let pane = TmuxPane(id: parts[0], index: 0, command: "claude", title: "", active: true)
+        server.update(MobileSnapshot.build([MobileHostInput(
+            host: .local, colorHex: "#3291ff", reachability: .reachable, stats: nil,
+            sessions: [TmuxSession(name: ManagerHome.sessionName, attached: false, id: parts[1], windows: [
+                TmuxWindow(index: 0, name: "manager", active: true, panes: [pane]),
+            ])])]))
+        let (phone, head) = connect(MobileSnapshot.threadID(host: .local, pane: parts[0]))
+        XCTAssertTrue(head.hasPrefix("HTTP/1.1 101"), head)
+        phone.send(1, Data("demo-token".utf8))
+        XCTAssertEqual(phone.closeCode(), 4404)
+        XCTAssertEqual(launches.value, 0)
+    }
+
+    // MARK: no lost start
+
+    func testEverySocketGetsOutputAfterItsFirstScreen() {
+        for round in 0..<25 {
+            let phone = live(device: "100.64.0.\(round)")
+            phone.send(2, Data("r\(round)\r".utf8))
+            XCTAssertTrue(phone.output(until: "r\(round)\r\nr\(round)", 3).contains("r\(round)"), "round \(round)")
+            phone.hangUp()
+        }
+    }
+
+    // MARK: one phone
+
+    func testTheCapPerPhoneDoesNotTrustAForwardedAddress() {
+        var limits = MobileServer.Limits()
+        limits.maxSocketsPerClient = 1
+        startServer(limits: limits)
+        // The same token from "another address" is the same holder.
+        let first = live(device: "100.64.0.7")
+        _ = live(device: "100.64.0.99")
+        XCTAssertEqual(first.closeCode(), 4409)
+    }
+
+    func testEmptyFragmentsCountTowardsTheRate() {
+        var limits = MobileServer.Limits()
+        limits.socketRate = 1
+        limits.socketBurst = 5
+        startServer(limits: limits)
+        let phone = live()
+        var flood = MobileSocketTests.frame(2, [], fin: false)
+        for _ in 0..<50 { flood.append(MobileSocketTests.frame(0, [], fin: false)) }
+        phone.send(flood)
+        XCTAssertEqual(phone.closeCode(), 1008)
+    }
+
+    func testTheLargeAllowanceEndsWithTheFirstScreen() {
+        var limits = MobileServer.Limits()
+        limits.socketBacklog = 4096
+        limits.socketStall = 60
+        startServer(limits: limits)
+        tmux.run(["new-window", "-d", "-t", "acme-app", Self.flood])
+        server.update(snapshot(windows: ["acme-app:0", "acme-app:1"]))
+        let fd = unreadSocket(threadID("acme-app:1"))
+        defer { close(fd) }
+        XCTAssertTrue(eventually { tmux.clientCount == 1 })
+        Thread.sleep(forTimeInterval: 1.5)
+        // Far less than the megabytes a first capture may take.
+        let held = server.socketPending
+        XCTAssertFalse(held.isEmpty)
+        for pending in held { XCTAssertLessThan(pending, 4096 + 2 * 262_144) }
+        XCTAssertLessThan(server.socketAllowance.max() ?? .max, 1_048_576)
+    }
+
+    private static let flood =
+        "while :; do echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; done"
+
+    /// A paired socket whose answers are never read: a plain descriptor, so
+    /// its buffers are the kernel's alone and they fill.
+    private func unreadSocket(_ thread: String) -> Int32 {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = in_port_t(port).bigEndian
+        address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        let connected = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        XCTAssertEqual(connected, 0)
+        let id = thread.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? ""
+        var hello = Data((
+            "GET /api/terminal/\(id) HTTP/1.1\r\nHost: devmac.example.ts.net:7433\r\n"
+                + "Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\n"
+                + "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nOrigin: https://devmac.example.ts.net:7433\r\n"
+                + "Tailscale-User-Login: me@example.com\r\n\r\n").utf8)
+        hello.append(MobileSocketTests.frame(1, Array("demo-token".utf8)))
+        XCTAssertEqual(hello.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }, hello.count)
+        return fd
     }
 }
