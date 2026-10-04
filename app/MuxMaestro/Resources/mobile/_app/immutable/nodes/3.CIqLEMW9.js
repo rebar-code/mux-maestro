@@ -1,5 +1,0 @@
-<<<<<<<< HEAD:app/MuxMaestro/Resources/mobile/_app/immutable/nodes/3.CIqLEMW9.js
-import{E as e,H as t,Q as n,T as r,Z as i,it as a,x as o}from"../chunks/CSsta-AI.js";import"../chunks/xihTtKlq.js";import{t as s}from"../chunks/DIxB_zsR.js";var c=a({load:()=>l}),l=({params:e})=>({id:e.id});function u(a,c){n(c,!0);var l=e(),u=t(l);o(u,()=>c.data.id,e=>{s(e,{get id(){return c.data.id}})}),r(a,l),i()}export{u as component,c as universal};
-========
-import{E as e,H as t,Q as n,T as r,Z as i,it as a,x as o}from"../chunks/CSsta-AI.js";import"../chunks/xihTtKlq.js";import{t as s}from"../chunks/BxIbdqpg.js";var c=a({load:()=>l}),l=({params:e})=>({id:e.id});function u(a,c){n(c,!0);var l=e(),u=t(l);o(u,()=>c.data.id,e=>{s(e,{get id(){return c.data.id}})}),r(a,l),i()}export{u as component,c as universal};
->>>>>>>> origin/feat/mobile-artifacts:app/MuxMaestro/Resources/mobile/_app/immutable/nodes/3.BMolYN4N.js
