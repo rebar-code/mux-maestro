@@ -355,8 +355,12 @@
 			<!-- With no composer below, the bar's own refusals are said here. -->
 			<div class="knote" class:bad={reply.note.bad} role="alert" data-note>{reply.note.text}</div>
 		{/if}
+		<!-- The voice status sits above the keys; its controls stay below them. -->
+		{#if voiceOn && keysOn}<VoiceBar target={id} sink={reply.voice} part="status" />{/if}
 		{#if keysOn}<KeyBar {reply} composer={repliesOn} />{/if}
-		{#if voiceOn}<VoiceBar target={id} sink={reply.voice} />{/if}
+		{#if voiceOn}
+			<VoiceBar target={id} sink={reply.voice} part={keysOn ? 'controls' : 'all'} />
+		{/if}
 		{#if repliesOn}
 			<Composer
 				bind:value={reply.draft}
