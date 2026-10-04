@@ -202,6 +202,46 @@ export function refusalLabel(
 	return 'No answer';
 }
 
+/** How often a reply that is arriving is drawn again, at most. */
+export const LIVE_MS = 100;
+
+/**
+ * Gathers the pieces of a reply and hands them on at most once every `ms`:
+ * the first at once, the ones that follow together. Each hand-over parses the
+ * whole reply again, so a reply of 500 pieces is not parsed 500 times.
+ */
+export function paced(
+	ms: number,
+	emit: (text: string) => void
+): { add: (piece: string) => void; flush: () => void; cancel: () => void } {
+	let held = '';
+	let last = -Infinity;
+	let timer: ReturnType<typeof setTimeout> | null = null;
+	const flush = (): void => {
+		if (timer) clearTimeout(timer);
+		timer = null;
+		if (!held) return;
+		const text = held;
+		held = '';
+		last = Date.now();
+		emit(text);
+	};
+	return {
+		add: (piece) => {
+			held += piece;
+			const wait = last + ms - Date.now();
+			if (wait <= 0) flush();
+			else timer ??= setTimeout(flush, wait);
+		},
+		flush,
+		cancel: () => {
+			if (timer) clearTimeout(timer);
+			timer = null;
+			held = '';
+		}
+	};
+}
+
 /** A turn this phone spoke into the thread, while it runs. */
 export interface LiveTurn {
 	prompt: string;

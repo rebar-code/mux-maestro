@@ -738,24 +738,10 @@ final class PhoneLinkTests: XCTestCase {
                 + "Tailscale-User-Login: me@example.com\r\nOrigin: https://devmac.example.ts.net:\(own)\r\n"
                 + "X-MuxMaestro: 1\r\nX-MuxMaestro-Token: \(tokens.token ?? "")\r\n"
                 + "Content-Length: \(json.utf8.count)\r\nConnection: close\r\n\r\n" + json
-            let connection = NWConnection(
-                host: "127.0.0.1", port: NWEndpoint.Port(rawValue: UInt16(own))!, using: .tcp)
-            let queue = DispatchQueue(label: "phone-link-tests")
-            let finished = DispatchSemaphore(value: 0)
-            var received = Data()
-            func read() {
-                connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { data, _, complete, error in
-                    if let data { received.append(data) }
-                    let text = String(decoding: received, as: UTF8.self)
-                    if complete || error != nil || text.hasSuffix("}") { finished.signal() } else { read() }
-                }
-            }
-            connection.start(queue: queue)
-            connection.send(content: Data(raw.utf8), completion: .contentProcessed { _ in })
-            read()
-            _ = finished.wait(timeout: .now() + 5)
-            connection.cancel()
-            return queue.sync { String(decoding: received, as: UTF8.self) }
+            let reply = LoopbackClient.exchange(
+                port: own, send: Data(raw.utf8), label: "phone-link-tests"
+            ) { String(decoding: $0, as: UTF8.self).hasSuffix("}") }
+            return String(decoding: reply, as: UTF8.self)
         }
 
         let opened = post("/api/servers/open", """
