@@ -4,6 +4,7 @@
 	import type { FormEventHandler } from 'svelte/elements';
 	import { limitLabel } from './compose';
 	import GrowingText from './GrowingText.svelte';
+	import Icon from './Icon.svelte';
 	import { keepFocus } from './reply.svelte';
 	import TalkButton from './TalkButton.svelte';
 	import type { VoiceSink, VoiceTarget } from './voice.svelte';
@@ -45,7 +46,7 @@
 		voiceOn: boolean;
 		/** Nothing can be sent now. The box still takes text. */
 		blocked?: boolean;
-		/** A send is on its way: the button says so, and takes no second tap. */
+		/** A send is on its way: the button shows it, and takes no second tap. */
 		sending?: boolean;
 		/**
 		 * The feature is switched off: the box holds its place and takes nothing.
@@ -113,18 +114,22 @@
 	/>
 	<!-- Typing is always there: with text in the box the button sends it. -->
 	{#if canSend && !off}
+		<!-- An icon alone: the row's width is the text box's. The name is for a screen reader. -->
 		<button
-			class="pill send grow"
+			class="send grow"
 			type="submit"
 			disabled={blocked || sending || tooLong !== null}
 			aria-busy={sending}
+			aria-label={sending ? 'Sending' : 'Send'}
 			data-send
 			{@attach keepFocus}
 		>
-			<!-- The arrow keeps its place and its name; while a send is out, the sign is drawn over it. -->
-			<span class="mark" class:out={sending}
-				>↑{#if sending}<i class="busy" data-send-busy aria-hidden="true"></i>{/if}</span
-			> Send
+			<!-- While a send is out, the sign takes the arrow's place. -->
+			{#if sending}
+				<i class="busy" data-send-busy aria-hidden="true"></i>
+			{:else}
+				<Icon name="send" size={20} />
+			{/if}
 		</button>
 	{:else}
 		<TalkButton {target} {sink} off={!voiceOn} />
@@ -180,53 +185,33 @@
 		margin-bottom: 2px;
 	}
 
-	.compose > .pill.send {
+	.compose > .send {
 		margin-bottom: 0;
 	}
 
-	.pill {
+	.send {
 		position: relative;
 		flex: none;
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
-		gap: 6px;
 		/* A full touch target, as tall as one line of the box beside it. */
+		width: var(--hit);
 		height: var(--hit);
-		margin-bottom: 0;
-		padding: 0 16px;
-		border-radius: 22px;
+		border-radius: 50%;
 		background: var(--accent);
 		color: #fff;
-		font-weight: 600;
-		font-size: 14px;
-		white-space: nowrap;
-		/* As wide as the voice button, so the text box beside it never moves. */
-		min-width: 104px;
 	}
 
 	/* A send on its way keeps its colour: dimmed like "off" it would read as broken. */
-	.pill[aria-busy='true']:disabled {
+	.send[aria-busy='true']:disabled {
 		opacity: 0.75;
-	}
-
-	.mark {
-		position: relative;
-		display: inline-block;
-	}
-
-	.mark.out {
-		color: transparent;
 	}
 
 	/* The sign that it is on its way. With reduced motion it is a still ring. */
 	.busy {
-		position: absolute;
-		left: 50%;
-		top: 50%;
-		margin: -6.5px 0 0 -6.5px;
-		width: 13px;
-		height: 13px;
+		width: 16px;
+		height: 16px;
 		border-radius: 50%;
 		border: 2px solid rgba(255, 255, 255, 0.4);
 		border-top-color: #fff;

@@ -221,7 +221,7 @@ test('the button is Send while the box has text, and Talk when it is empty', asy
 	await open(page);
 	await box(page).fill('status?');
 	await expect(primary(page)).toHaveCount(0);
-	const send = page.getByRole('button', { name: '↑ Send' });
+	const send = page.getByRole('button', { name: /^Send(ing)?$/ });
 	await expect(send).toBeEnabled();
 	await box(page).fill('');
 	await expect(send).toHaveCount(0);

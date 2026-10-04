@@ -63,10 +63,10 @@ test('the app opens on the Maestro home', async ({ page }) => {
 test('a message to the Maestro streams its reply onto the home', async ({ page }) => {
 	await fresh(page);
 	// With nothing typed there is nothing to send: the button is Talk.
-	await expect(page.getByRole('button', { name: '↑ Send' })).toHaveCount(0);
+	await expect(page.getByRole('button', { name: /^Send(ing)?$/ })).toHaveCount(0);
 	await box(page).fill('what needs me?');
 	const sent = page.waitForRequest((request) => request.url().endsWith('/api/manager/text'));
-	await page.getByRole('button', { name: '↑ Send' }).click();
+	await page.getByRole('button', { name: /^Send(ing)?$/ }).click();
 	const request = await sent;
 	expect(request.method()).toBe('POST');
 	expect(request.headers()['x-muxmaestro']).toBe('1');
@@ -97,14 +97,14 @@ test('a refused turn says why and gives the text back', async ({ page }) => {
 	await fresh(page);
 	await page.request.post('/__fixture/manager-status?value=waiting');
 	await box(page).fill('what needs me?');
-	await page.getByRole('button', { name: '↑ Send' }).click();
+	await page.getByRole('button', { name: /^Send(ing)?$/ }).click();
 	await expect(page.getByRole('alert')).toHaveText('Maestro is waiting on a prompt');
 	await expect(box(page)).toHaveValue('what needs me?');
 	await expect(said(page).locator('.u')).toHaveCount(0);
 
 	// The prompt is answered on the Mac: the same text goes through.
 	await page.request.post('/__fixture/manager-status?value=idle');
-	await page.getByRole('button', { name: '↑ Send' }).click();
+	await page.getByRole('button', { name: /^Send(ing)?$/ }).click();
 	await expect(said(page).locator('.a').last()).toContainText('2 threads need you');
 	await expect(page.getByRole('alert')).toHaveCount(0);
 });
@@ -120,9 +120,9 @@ test('a turn typed on the Mac shows on the phone, and holds Send until it ends',
 		`/__fixture/mac-turn?text=${encodeURIComponent('how are the builds?')}&reply=${encodeURIComponent(reply)}`
 	);
 	await expect(said(page).locator('.u')).toHaveText('how are the builds?');
-	await expect(page.getByRole('button', { name: '↑ Send' })).toBeDisabled();
+	await expect(page.getByRole('button', { name: /^Send(ing)?$/ })).toBeDisabled();
 	await expect(said(page).locator('.a').last()).toHaveText(reply);
-	await expect(page.getByRole('button', { name: '↑ Send' })).toBeEnabled();
+	await expect(page.getByRole('button', { name: /^Send(ing)?$/ })).toBeEnabled();
 	await expect(box(page)).toHaveValue('and after that?');
 });
 
@@ -216,7 +216,7 @@ test('Maestro switch off: the text box stays, disabled, and says where the switc
 	// The talk button is still drawn, and nothing can be sent.
 	await expect(page.getByRole('button', { name: 'Talk to the Maestro' })).toBeDisabled();
 	await expect(page.getByRole('button', { name: 'Talk', exact: true })).toBeDisabled();
-	await expect(page.getByRole('button', { name: '↑ Send' })).toHaveCount(0);
+	await expect(page.getByRole('button', { name: /^Send(ing)?$/ })).toHaveCount(0);
 	// Nothing of the manager itself is drawn.
 	await expect(said(page)).toHaveCount(0);
 	await expect(review(page)).toHaveCount(0);
@@ -310,7 +310,7 @@ test('with the Voice switch off the Talk button is drawn, off, and says where to
 	// Typing is untouched: with text the button is Send, and it sends.
 	await box(page).fill('what needs me?');
 	await expect(talk).toHaveCount(0);
-	await page.getByRole('button', { name: '↑ Send' }).click();
+	await page.getByRole('button', { name: /^Send(ing)?$/ }).click();
 	await expect(said(page).locator('.a').last()).toHaveText(
 		'2 threads need you: acme-app · checkout-fix, billing · proration.'
 	);
@@ -431,7 +431,7 @@ test('Enter does not send a second turn while one runs', async ({ page }) => {
 	await expect(box(page)).toHaveValue('and after that?');
 
 	// The turn is over: now it sends.
-	await expect(page.getByRole('button', { name: '↑ Send' })).toBeEnabled();
+	await expect(page.getByRole('button', { name: /^Send(ing)?$/ })).toBeEnabled();
 	await submit(page);
 	await expect(said(page).locator('.u').last()).toHaveText('and after that?');
 	expect(turns).toBe(1);
@@ -643,7 +643,7 @@ test('a drag on a footer control moves the drawer and does not press it; a tap p
 	});
 	await box(page).fill('what needs me?');
 	await page.locator('body').click({ position: { x: 195, y: 200 } });
-	const send = await page.getByRole('button', { name: '↑ Send' }).boundingBox();
+	const send = await page.getByRole('button', { name: /^Send(ing)?$/ }).boundingBox();
 	const sx = (send?.x ?? 0) + (send?.width ?? 0) / 2;
 	const sy = (send?.y ?? 0) + (send?.height ?? 0) / 2;
 	await drag(page, [sx, sy], [sx, sy + 120]);
@@ -651,7 +651,7 @@ test('a drag on a footer control moves the drawer and does not press it; a tap p
 	expect(turns).toBe(0);
 	await expect(box(page)).toHaveValue('what needs me?');
 	// A tap on it still sends.
-	await page.getByRole('button', { name: '↑ Send' }).click();
+	await page.getByRole('button', { name: /^Send(ing)?$/ }).click();
 	await expect(said(page).locator('.a').last()).toContainText('2 threads need you');
 	expect(turns).toBe(1);
 });

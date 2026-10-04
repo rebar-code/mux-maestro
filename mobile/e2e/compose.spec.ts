@@ -14,7 +14,7 @@ interface Received {
 
 const box = (page: Page): Locator => page.getByRole('textbox', { name: 'Reply' });
 const ask = (page: Page): Locator => page.getByRole('textbox', { name: 'Ask the Maestro' });
-const sendButton = (page: Page): Locator => page.getByRole('button', { name: '↑ Send' });
+const sendButton = (page: Page): Locator => page.getByRole('button', { name: /^Send(ing)?$/ });
 const note = (page: Page): Locator => page.locator('[data-note]');
 const keybar = (page: Page): Locator => page.locator('[data-keybar]');
 const dock = (page: Page): Locator => page.locator('[data-dock]');
@@ -388,11 +388,22 @@ test('Send shows a send on its way, and takes no second tap', async ({ page }) =
 
 	await box(page).fill('ship it');
 	// A full touch target.
-	expect((await sendButton(page).boundingBox())?.height).toBeGreaterThanOrEqual(44);
+	const face = (await sendButton(page).boundingBox())!;
+	expect(face.height).toBeGreaterThanOrEqual(44);
+	// An icon alone: no word on the button, which is as wide as it is tall and still has a name.
+	await expect(sendButton(page)).toHaveText('');
+	expect(face.width).toBe(face.height);
+	await expect(sendButton(page).locator('[data-icon="send"]')).toBeVisible();
+	await expect(sendButton(page)).toHaveAccessibleName('Send');
 	await expect(page.locator('[data-send-busy]')).toHaveCount(0);
+	await shot(page, 'send-icon');
 	await sendButton(page).tap();
 	await expect(sendButton(page)).toBeDisabled();
 	await expect(sendButton(page)).toHaveAttribute('aria-busy', 'true');
+	// The arrow gives way to the sign; the name says the same.
+	await expect(sendButton(page)).toHaveAccessibleName('Sending');
+	await expect(sendButton(page).locator('[data-icon]')).toHaveCount(0);
+	await expect(sendButton(page)).toHaveText('');
 	// Seen, not only announced: a sign on the button, which keeps its colour.
 	await expect(page.locator('[data-send-busy]')).toBeVisible();
 	expect(

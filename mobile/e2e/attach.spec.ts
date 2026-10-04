@@ -39,7 +39,7 @@ const txt = (name: string, text = 'notes'): { name: string; mimeType: string; bu
 });
 
 const box = (page: Page): Locator => page.getByRole('textbox', { name: 'Reply' });
-const sendButton = (page: Page): Locator => page.getByRole('button', { name: '↑ Send' });
+const sendButton = (page: Page): Locator => page.getByRole('button', { name: /^Send(ing)?$/ });
 /** Submit the composer's form, as Enter on real keys does. On a phone, Return is a new line. */
 const submit = (page: Page): Promise<void> =>
 	page.locator('form.compose').evaluate((form: HTMLFormElement) => form.requestSubmit());

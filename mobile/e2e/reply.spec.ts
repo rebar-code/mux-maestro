@@ -33,7 +33,7 @@ interface Replies {
 const WRITE = { ...TOKEN_HEADER, 'X-MuxMaestro': '1' };
 
 const box = (page: Page): Locator => page.getByRole('textbox', { name: 'Reply' });
-const sendButton = (page: Page): Locator => page.getByRole('button', { name: '↑ Send' });
+const sendButton = (page: Page): Locator => page.getByRole('button', { name: /^Send(ing)?$/ });
 /** Submit the composer's form, as Enter on real keys does. On a phone, Return is a new line. */
 const submit = (page: Page): Promise<void> =>
 	page.locator('form.compose').evaluate((form: HTMLFormElement) => form.requestSubmit());
@@ -621,7 +621,7 @@ test('with the features off, the thread shows none of this', async ({ page }) =>
 
 test('nothing moves when the live data lands', async ({ page }) => {
 	await open(page, IDLE, ['replies', 'keyBar', 'upload']);
-	const places = async (): Promise<unknown> => [
+	const places = async (): Promise<unknown[]> => [
 		await box(page).boundingBox(),
 		await keybar(page).boundingBox(),
 		await nextBar(page).boundingBox()
@@ -631,9 +631,13 @@ test('nothing moves when the live data lands', async ({ page }) => {
 	await page.request.post(`/__fixture/say?id=${IDLE}&text=One%20more%20line`);
 	await expect(page.locator('.a').last()).toHaveText('One more line');
 	expect(await places()).toEqual(before);
-	// Typing swaps nothing in the box's row.
+	// Typing moves nothing in the box's row. Send is an icon: the box takes the room Talk had.
+	const empty = (await box(page).boundingBox())!;
 	await box(page).fill('hello');
-	expect(await places()).toEqual(before);
+	const typed = (await box(page).boundingBox())!;
+	expect({ ...typed, width: empty.width }).toEqual(empty);
+	expect(typed.width).toBeGreaterThan(empty.width);
+	expect((await places()).slice(1)).toEqual(before.slice(1));
 });
 
 test('voice into a thread: the take shows as your line and the reply streams in', async ({
