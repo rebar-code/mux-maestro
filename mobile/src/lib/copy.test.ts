@@ -14,6 +14,7 @@ const WIRE = new Set([
 	'/api/manager',
 	'/api/manager/text',
 	'/api/manager/dismiss',
+	'/api/manager/act',
 	'$lib/manager',
 	'$lib/manager.svelte',
 	'./manager',

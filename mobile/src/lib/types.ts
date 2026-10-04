@@ -26,6 +26,8 @@ export interface Thread {
 	lastActivityAt: number | null;
 	sessionActivity: number;
 	chat: boolean;
+	/** The Claude or Codex conversation the pane runs: what a `muxmaestro://thread/` link names. */
+	agent?: string | null;
 }
 
 export interface HostStats {
@@ -153,6 +155,8 @@ export interface ManagerItem {
 	at: number;
 	/** The thread it opens, when the thread list has it. */
 	thread: string | null;
+	/** A pointer's buttons, as the Mac sent them. Not checked: `parseCard` reads it. */
+	card?: unknown;
 }
 
 export interface ManagerUpdate {
