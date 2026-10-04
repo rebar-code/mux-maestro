@@ -168,7 +168,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             close: { [weak self] port in self?.phoneLink.closeMapping(port: port) ?? false },
             list: { [weak self] in self?.phoneLink.mappings ?? [] }),
-        push: pushCenter)
+        push: pushCenter,
+        logDirectory: Settings.phoneLogDirectory())
     /// The phones that asked for notifications, and the sending.
     private lazy var pushCenter: MobilePushCenter = {
         let center = MobilePushCenter()

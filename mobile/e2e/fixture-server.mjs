@@ -32,6 +32,7 @@
 // /__fixture/requests-mode?value=ok|corrupt (the list file does not parse: reads and writes answer 500),
 // /__fixture/requests-fail?status=&error= (the next state write fails that way),
 // /__fixture/requests-set?id=&state= (the agent changed a row behind the phone's back)
+// /__fixture/logs (GET or POST: every batch of the phone log the phone sent to /api/log)
 //
 // Every /api/ request needs the header `X-MuxMaestro-Token: demo-token`.
 import { createHash } from 'node:crypto';
@@ -652,6 +653,8 @@ let requests, requestsCorrupt, requestsFail;
 let pushSubs, pushFocus, pushLimit;
 // How many finds the Mac refuses as busy before it answers one.
 let findBusy;
+// Every batch of the phone's own log, as it was sent to `/api/log`.
+let phoneLogs;
 // Uploads: the paths taken, the threads with one in flight, how slow they are, a refusal for the next.
 let saved, uploadLocks, uploadSlow, uploadFail;
 // Set: the server holds a newer build than the one a phone may have cached.
@@ -713,6 +716,7 @@ function reset() {
 	textSlow = 0;
 	promptSeq = 0;
 	findBusy = 0;
+	phoneLogs = [];
 	uploadMax = 10485760;
 	replies = {
 		texts: [],
@@ -1845,6 +1849,15 @@ function api(req, res, url, body) {
 		return requestsApi(req, res, path, String(body));
 	if (path.startsWith('/api/voice')) return voiceApi(req, res, url, body);
 	if (path.startsWith('/api/push/')) return pushApi(req, res, path, String(body));
+	if (path === '/api/log') {
+		if (req.method !== 'POST') return send(res, 405, { error: 'method' });
+		try {
+			phoneLogs.push(JSON.parse(String(body)));
+		} catch {
+			return send(res, 400, { error: 'bad_request' });
+		}
+		return send(res, 200, { ok: true });
+	}
 	if (path === '/api/events') {
 		res.writeHead(200, {
 			'content-type': 'text/event-stream',
@@ -2022,6 +2035,8 @@ function hook(res, url) {
 			return send(res, 200, { ok: true });
 		case '/__fixture/replies':
 			return send(res, 200, replies);
+		case '/__fixture/logs':
+			return send(res, 200, { batches: phoneLogs });
 		case '/__fixture/say':
 			if (!thread || !chats[thread.id]) return send(res, 404, { error: 'not_found' });
 			chats[thread.id].push({
@@ -2346,7 +2361,9 @@ const server = createServer((req, res) => {
 			'text/html'
 		);
 	if (url.pathname.startsWith('/__fixture/'))
-		return req.method === 'POST' || (req.method === 'GET' && url.pathname === '/__fixture/requests')
+		return req.method === 'POST' ||
+			(req.method === 'GET' &&
+				(url.pathname === '/__fixture/requests' || url.pathname === '/__fixture/logs'))
 			? hook(res, url)
 			: send(res, 405, { error: 'method' });
 	return asset(res, url);

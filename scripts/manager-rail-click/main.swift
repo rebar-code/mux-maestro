@@ -177,8 +177,8 @@ DispatchQueue.main.async {
                     link: nil, title: "rcc", detail: "Orphan commit 4405c890 needs a decision"),
             ],
             recentWork: [
-                WorkLogRow(id: 1, sessionId: "s1", agent: "claude", repo: "front-range-windows",
-                           branch: "feat/po-log", prs: [1214], host: "localhost", session: "frw",
+                WorkLogRow(id: 1, sessionId: "s1", agent: "claude", repo: "widget-shop",
+                           branch: "feat/po-log", prs: [1214], host: "localhost", session: "widget-shop",
                            window: 3, pane: "%1", cwd: "", lastState: "busy",
                            firstSeen: now - 900, lastSeen: now - 300),
             ],
@@ -186,7 +186,7 @@ DispatchQueue.main.async {
         rail.beginTurn("which PR needs me most?")
         rail.appendReply("Acme PR 623, the access model. It is the only item that cannot move without you.")
         rail.endTurn(.done(reply: "Acme PR 623, the access model. It is the only item that cannot move without you."))
-        rail.beginTurn("spin an agent to merge prod into the FRW branches")
+        rail.beginTurn("spin an agent to merge prod into the widget-shop branches")
         rail.endTurn(.unreachable(ManagerTurnWatcher.neverStarted))
         window.setContentSize(NSSize(width: 420, height: 820))
         rail.view.needsLayout = true

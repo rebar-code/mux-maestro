@@ -182,7 +182,7 @@ final class WindowPRSlugTests: XCTestCase {
     func testNoFallbackWhenTheSessionSpansTwoRepos() {
         XCTAssertNil(WindowPRs.slugForDeclared(
             windowSlug: nil,
-            sessionSlugs: ["rebar-code/acme-app", "rebar-code/front-range-windows"]))
+            sessionSlugs: ["rebar-code/acme-app", "rebar-code/widget-shop"]))
     }
 
     /// `@mm_repo` is the agent saying which repo it means — it beats the cwd.

@@ -665,8 +665,8 @@ final class AgentStateTests: XCTestCase {
         p.attention = .idle
         p.idleStage = .yawning
         XCTAssertEqual(IdleTag.paneLabel(p), "🥱 %7 2.1.273")
-        let w = TmuxWindow(index: 2, name: "infolk 💤 👀9 🥱", active: false, panes: [p])
-        XCTAssertEqual(IdleTag.windowLabel(w), "🥱 2: infolk 👀9")
+        let w = TmuxWindow(index: 2, name: "acme 💤 👀9 🥱", active: false, panes: [p])
+        XCTAssertEqual(IdleTag.windowLabel(w), "🥱 2: acme 👀9")
     }
 
     // MARK: 💤 tag
@@ -708,8 +708,8 @@ final class AgentStateTests: XCTestCase {
     }
 
     func testADozingWindowRowLeadsWithTheMarkerAndDropsTheTagFromItsName() {
-        let w = TmuxWindow(index: 0, name: "infolk-apps 💤", active: true, panes: [dozingPane()])
-        XCTAssertEqual(IdleTag.windowLabel(w), "💤 0: infolk-apps ●")
+        let w = TmuxWindow(index: 0, name: "acme-app 💤", active: true, panes: [dozingPane()])
+        XCTAssertEqual(IdleTag.windowLabel(w), "💤 0: acme-app ●")
     }
 
     func testAnAwakeWindowRowHidesAStaleTagAndKeepsTheAgentsTags() {

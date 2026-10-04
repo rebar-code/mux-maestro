@@ -17,8 +17,8 @@ final class ThreadLinksTests: XCTestCase {
 
     func testParseOpenSessionOnlyIsLocal() {
         XCTAssertEqual(
-            ThreadLinks.parse("muxmaestro://open?session=Front%20Range%20Windows"),
-            .open(session: "Front Range Windows", window: nil, pane: nil, host: "localhost"))
+            ThreadLinks.parse("muxmaestro://open?session=Acme%20App"),
+            .open(session: "Acme App", window: nil, pane: nil, host: "localhost"))
     }
 
     func testParseRejectsWhatCannotBeOpened() {
@@ -42,7 +42,7 @@ final class ThreadLinksTests: XCTestCase {
 
     func testBuildRoundTripsAwkwardValues() {
         let links: [ThreadLink] = [
-            .open(session: "Front Range & Co", window: 3, pane: "%12", host: "nas"),
+            .open(session: "Acme & Co", window: 3, pane: "%12", host: "nas"),
             .open(session: "a=b+c?d#e/f", window: nil, pane: nil, host: "localhost"),
             .open(session: "ünïcødé 🤖", window: 0, pane: nil, host: "user@box"),
             .thread(id: codexId),
@@ -226,7 +226,7 @@ final class ThreadLinksTests: XCTestCase {
             try? FileManager.default.removeItem(atPath: socketDir)
         }
 
-        let session = "Front Range & Co+1"
+        let session = "Acme & Co+1"
         XCTAssertEqual(run(tmux, ["-f", "/dev/null", "new-session", "-d", "-s", session, "sleep 60"],
                            env: env).status, 0)
         let created = run(tmux, ["new-window", "-t", session, "-P", "-F", "#{window_index} #{pane_id}",
