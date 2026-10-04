@@ -94,6 +94,9 @@ enum MobileHTTP {
         if segments.count == 4, segments[0] == "api", segments[1] == "threads", segments[3] == "upload" {
             return MobileReply.maxUploadBytes
         }
+        if segments.count == 3, segments[0] == "api", segments[1] == "manager", segments[2] == "upload" {
+            return MobileReply.maxUploadBytes
+        }
         return maxBodyBytes
     }
 
@@ -208,6 +211,9 @@ enum MobileEndpoint: Equatable {
     case managerAnswer
     /// Press one whitelisted key in the manager's pane.
     case managerKey
+    /// Save a file in the manager's working directory. Its path is never
+    /// pasted: the phone puts it in its text box, and it goes with the turn.
+    case managerUpload(name: String)
     /// What the human asked for: the manager's list, as its file holds it.
     case requests
     /// Set the state of one request of that list. The body names both.
@@ -216,6 +222,8 @@ enum MobileEndpoint: Equatable {
     case voice
     /// Read the target's last reply again.
     case voiceReplay
+    /// Read one agent message of the target's chat aloud, by its row `n`.
+    case voiceSay
     /// A take has started: load the models while the human talks.
     case voiceWarm
     /// Paste text into a thread's pane and submit it.
@@ -263,9 +271,9 @@ enum MobileEndpoint: Equatable {
         switch self {
         case .config, .threads, .hosts, .events, .log, .chat, .screen: return .access
         case .manager, .managerText, .managerDismiss, .managerAct, .managerChat, .managerScreen,
-             .managerPrompt, .managerAnswer, .managerKey, .requests, .requestState:
+             .managerPrompt, .managerAnswer, .managerKey, .managerUpload, .requests, .requestState:
             return .manager
-        case .voice, .voiceReplay, .voiceWarm: return .voice
+        case .voice, .voiceReplay, .voiceSay, .voiceWarm: return .voice
         case .text, .prompt, .answer, .commands: return .replies
         case .key: return .keyBar
         case .upload: return .upload
@@ -288,9 +296,9 @@ enum MobileEndpoint: Equatable {
              .dirs, .find, .artifacts, .file, .running, .servers, .pushKey, .terminal:
             return "GET"
         case .log, .managerText, .managerDismiss, .managerAct, .managerAnswer, .managerKey, .requestState,
-             .voice, .voiceReplay,
+             .voice, .voiceReplay, .voiceSay,
              .voiceWarm, .text, .key, .answer, .upload, .tmux, .serverOpen, .serverClose,
-             .pushSubscribe, .pushUnsubscribe, .pushFocus:
+             .pushSubscribe, .pushUnsubscribe, .pushFocus, .managerUpload:
             return "POST"
         }
     }
@@ -302,6 +310,7 @@ enum MobileEndpoint: Equatable {
         switch self {
         case .managerAnswer, .managerAct: return .replies
         case .managerKey: return .keyBar
+        case .managerUpload: return .upload
         default: return nil
         }
     }
@@ -460,10 +469,13 @@ enum MobileAPI {
         case 3 where segments[1] == "manager" && segments[2] == "prompt": endpoint = .managerPrompt
         case 3 where segments[1] == "manager" && segments[2] == "answer": endpoint = .managerAnswer
         case 3 where segments[1] == "manager" && segments[2] == "key": endpoint = .managerKey
+        case 3 where segments[1] == "manager" && segments[2] == "upload":
+            endpoint = .managerUpload(name: request.query["name"] ?? "")
         case 2 where segments[1] == "requests": endpoint = .requests
         case 3 where segments[1] == "requests" && segments[2] == "state": endpoint = .requestState
         case 2 where segments[1] == "voice": endpoint = .voice
         case 3 where segments[1] == "voice" && segments[2] == "replay": endpoint = .voiceReplay
+        case 3 where segments[1] == "voice" && segments[2] == "say": endpoint = .voiceSay
         case 3 where segments[1] == "voice" && segments[2] == "warm": endpoint = .voiceWarm
         case 4 where segments[1] == "threads" && segments[3] == "chat":
             endpoint = .chat(id: segments[2], after: request.query["after"].flatMap(UInt64.init))
@@ -966,6 +978,41 @@ enum MobileChat {
         page.messages = tail ? Array(parsed.messages.suffix(firstPageLimit)) : parsed.messages
         page.next = parsed.next
         return page
+    }
+
+    /// Row `n` of `path`, read from its own line wherever it is in the file:
+    /// `n` is its line's byte offset plus its place in that line. nil when
+    /// no row has that `n`.
+    static func message(path: String, codex: Bool, n: UInt64) -> MobileChatMessage? {
+        guard let handle = FileHandle(forReadingAtPath: path) else { return nil }
+        defer { try? handle.close() }
+        guard let size = try? handle.seekToEnd(), n < size else { return nil }
+        let step: UInt64 = 65_536
+        // Back to the start of the line that holds byte `n`.
+        var start = n
+        while start > 0 {
+            let from = start > step ? start - step : 0
+            guard (try? handle.seek(toOffset: from)) != nil,
+                  let chunk = try? handle.read(upToCount: Int(start - from))
+            else { return nil }
+            if let newline = chunk.lastIndex(of: UInt8(ascii: "\n")) {
+                start = from + UInt64(chunk.distance(from: chunk.startIndex, to: newline)) + 1
+                break
+            }
+            start = from
+        }
+        // Forward to its end. A line still being written has no row yet.
+        guard (try? handle.seek(toOffset: start)) != nil else { return nil }
+        var line = Data()
+        while true {
+            guard let chunk = try? handle.read(upToCount: Int(step)), !chunk.isEmpty else { return nil }
+            if let newline = chunk.firstIndex(of: UInt8(ascii: "\n")) {
+                line.append(chunk[chunk.startIndex...newline])
+                break
+            }
+            line.append(chunk)
+        }
+        return messages(in: line, offset: start, codex: codex).messages.first { $0.n == n }
     }
 
     /// The rows in `data`, which starts at byte `offset` of the transcript.

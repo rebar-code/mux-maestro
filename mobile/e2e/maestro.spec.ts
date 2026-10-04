@@ -52,6 +52,12 @@ async function openPanel(page: Page, stop: 1 | 2 | 3 = 1): Promise<void> {
 const onThread = (page: Page, id: string): Promise<void> =>
 	expect.poll(() => decodeURIComponent(new URL(page.url()).pathname)).toBe(`/t/${id}`);
 
+/** Show the home's Board tab. */
+async function showBoard(page: Page): Promise<void> {
+	await page.locator('[data-tab="board"]').click();
+	await expect(page.locator('[data-page="board"]')).not.toHaveAttribute('inert', '');
+}
+
 const center = async (target: Locator): Promise<[number, number]> => {
 	const box = await target.boundingBox();
 	if (!box) throw new Error('not on screen');
@@ -233,7 +239,7 @@ for (const viewport of [
 		test('the way back above the reply box opens the panel, or is dismissed', async ({ page }) => {
 			await fresh(page);
 			await hook(page, `/__fixture/point?thread=${WAITING}`);
-			await page.locator('[data-grab]').click();
+			await showBoard(page);
 			await point(page, page.locator('[data-board]')).locator('[data-go]').click();
 			await onThread(page, WAITING);
 			const back = page.locator('[data-dock] [data-maestro-back]');
@@ -244,7 +250,7 @@ for (const viewport of [
 			await expect(back).toHaveCount(0);
 
 			await page.goto('/');
-			await page.locator('[data-grab]').click();
+			await showBoard(page);
 			await point(page, page.locator('[data-board]')).locator('[data-go]').click();
 			await onThread(page, WAITING);
 			await back.getByRole('button', { name: 'Dismiss' }).click();
@@ -292,7 +298,7 @@ for (const viewport of [
 
 		test('a session that waits has Go on the board without a pointer', async ({ page }) => {
 			await fresh(page);
-			await page.locator('[data-grab]').click();
+			await showBoard(page);
 			const card = page.locator(`[data-board] a.item[data-thread="${WAITING}"]`);
 			await expect(card.locator('[data-go]')).toHaveText('Go');
 			await card.locator('[data-go]').click();

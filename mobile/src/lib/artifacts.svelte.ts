@@ -3,12 +3,12 @@ import { ApiError, fetchArtifacts, fetchFile } from './api';
 import { imageUrl, savedBlob } from './artifacts';
 import { ui } from './gestures.svelte';
 import { live } from './live.svelte';
+import { ARTIFACTS } from './tabs';
 import type { ArtifactFile, ArtifactList } from './types';
 
 const POLL_MS = 10_000;
 
-/** The page key of the Artifacts tab. */
-export const ARTIFACTS = 'artifacts';
+export { ARTIFACTS };
 
 /** One thread's artifacts: the list, the file that is open, and the bytes read so far. */
 export class Artifacts {

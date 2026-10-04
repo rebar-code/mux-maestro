@@ -39,7 +39,7 @@ const txt = (name: string, text = 'notes'): { name: string; mimeType: string; bu
 });
 
 const box = (page: Page): Locator => page.getByRole('textbox', { name: 'Reply' });
-const sendButton = (page: Page): Locator => page.getByRole('button', { name: '↑ Send' });
+const sendButton = (page: Page): Locator => page.getByRole('button', { name: /^Send(ing)?$/ });
 /** Submit the composer's form, as Enter on real keys does. On a phone, Return is a new line. */
 const submit = (page: Page): Promise<void> =>
 	page.locator('form.compose').evaluate((form: HTMLFormElement) => form.requestSubmit());
@@ -454,8 +454,8 @@ test('a busy pane still takes a file: nothing is typed into it', async ({ page }
 	await picker(page).setInputFiles(txt('a.txt'));
 	await expect(tile(page, 'a.txt')).toHaveAttribute('data-state', 'done');
 	await expect(box(page)).toHaveValue('/Users/me/code/docs-site/a.txt ');
-	// The reply itself waits for the pane.
-	await expect(sendButton(page)).toBeDisabled();
+	// The agent is mid-turn: the reply would go to it as a queued send.
+	await expect(page.locator('[data-send]')).toHaveAttribute('data-send', 'queue');
 });
 
 test('three tiles: done, failed, on its way; the box under them does not move', async ({
@@ -545,4 +545,66 @@ test('the fixture saves without typing, as the Mac does', async ({ page }) => {
 		{ error: 'busy', message: 'A reply is being sent' }
 	]);
 	expect((await slow).status()).toBe(200);
+});
+
+test('the Maestro text box attaches files like a thread does', async ({ page }) => {
+	const HOME = '/Users/me/Library/Application Support/MuxMaestro/manager';
+	const ask = page.getByRole('textbox', { name: 'Ask the Maestro' });
+	await reset(page);
+	await page.request.post('/__fixture/capability?name=manager&on=1');
+	await forget(page);
+	await page.goto(pairingLink('/'));
+	// The same button in the same place, also before uploads are switched on.
+	await expect(attach(page)).toHaveAttribute('aria-disabled', 'true');
+	await attach(page).tap({ force: true });
+	await expect(note(page)).toHaveText('Off in MuxMaestro Settings');
+	// Typing clears the note, as it does in a thread's box.
+	await ask.pressSequentially('a');
+	await expect(note(page)).toHaveCount(0);
+	await ask.fill('');
+	await page.request.post('/__fixture/capability?name=upload&on=1');
+	await expect(attach(page)).not.toHaveAttribute('aria-disabled');
+
+	const sent = page.waitForRequest((request) => request.url().includes('/upload?'));
+	await picker(page).setInputFiles(png('shot.png'));
+	const request = await sent;
+	expect(request.method()).toBe('POST');
+	expect(new URL(request.url()).pathname).toBe('/api/manager/upload');
+	expect(new URL(request.url()).search).toBe('?name=shot.png&paste=0');
+	expect(request.headers()['x-muxmaestro']).toBe('1');
+	await expect(tile(page, 'shot.png')).toHaveAttribute('data-state', 'done');
+	// The path is quoted: the Maestro's directory has a space in it.
+	await expect(ask).toHaveValue(`'${HOME}/shot.png' `);
+	await shot(page, 'maestro-attach');
+
+	// A pasted image becomes a tile here too.
+	await ask.evaluate(
+		(input, bytes) => {
+			const data = new DataTransfer();
+			data.items.add(new File([new Uint8Array(bytes)], 'image.png', { type: 'image/png' }));
+			input.dispatchEvent(
+				new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true })
+			);
+		},
+		[...PNG]
+	);
+	await expect(tile(page, 'pasted-1.png')).toHaveAttribute('data-state', 'done');
+	expect((await received(page)).uploads.map((upload) => [upload.thread, upload.path])).toEqual([
+		['manager', `${HOME}/shot.png`],
+		['manager', `${HOME}/pasted-1.png`]
+	]);
+
+	// The paths go with the turn's text, and the tiles have done their work.
+	const turn = page.waitForRequest((asked) => asked.url().endsWith('/api/manager/text'));
+	await ask.pressSequentially('what is in these?');
+	await sendButton(page).tap();
+	expect((await turn).postDataJSON()).toEqual({
+		text: `'${HOME}/shot.png' '${HOME}/pasted-1.png' what is in these?`
+	});
+	await expect(tiles(page)).toHaveCount(0);
+
+	// With the Manager switch off the button holds its place and does nothing.
+	await page.request.post('/__fixture/capability?name=manager&on=0');
+	await expect(page.getByRole('textbox', { name: 'Off in MuxMaestro Settings' })).toBeDisabled();
+	await expect(attach(page)).toBeDisabled();
 });

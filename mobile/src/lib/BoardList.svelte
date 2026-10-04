@@ -4,7 +4,7 @@
 	import { swipeAway } from './gestures.svelte';
 	import { live } from './live.svelte';
 	import { maestro } from './maestro.svelte';
-	import { needsYouCards } from './manager';
+	import { boardSummary, needsYouCards } from './manager';
 	import { manager } from './manager.svelte';
 	import { needCount, pointCards } from './panel';
 	import type { Thread } from './types';
@@ -15,8 +15,17 @@
 	 * at its full stop. A card that names a session opens it with Go.
 	 */
 
+	const {
+		blank = false
+	}: {
+		/** Say so when the board holds nothing. A place that says it already leaves this out. */
+		blank?: boolean;
+	} = $props();
+
 	/** How many of the Maestro's updates the board lists. */
 	const UPDATES = 5;
+	/** What an empty board says: the words its summary has for it. */
+	const NOTHING = boardSummary({ needsYou: 0, review: 0, updates: 0 });
 
 	const points = $derived(pointCards(manager.points, live.threads));
 	const pointed = $derived(new Set(points.map((card) => card.thread?.id)));
@@ -26,6 +35,9 @@
 	const needs = $derived(needCount(all, points));
 	const review = $derived(manager.review);
 	const updates = $derived(manager.updates.slice(0, UPDATES));
+	const none = $derived(
+		!points.length && !waiting.length && review?.length === 0 && !updates.length
+	);
 
 	const href = (thread: Thread): string => resolve('/t/[id]', { id: thread.id });
 
@@ -138,6 +150,7 @@
 			</svelte:element>
 		{/each}
 	{/if}
+	{#if blank && none}<div class="blank" data-board-blank>{NOTHING}</div>{/if}
 	<div class="end"></div>
 </div>
 
@@ -294,6 +307,12 @@
 	.when {
 		flex: none;
 		font-size: 12px;
+	}
+
+	.blank {
+		padding: 28px 14px;
+		text-align: center;
+		color: var(--muted);
 	}
 
 	/* The board is the last thing on screen when it shows: it clears the home indicator. */

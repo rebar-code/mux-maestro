@@ -14,6 +14,7 @@ import { bytesOver, normalizeText, remainingDraft } from './compose';
 import { drafts } from './drafts';
 import { live, OFF_LABEL } from './live.svelte';
 import {
+	ARMED_MS,
 	CTRL_MS,
 	ctrlReduce,
 	filterCommands,
@@ -22,11 +23,14 @@ import {
 	paced,
 	queueKey,
 	refusalLabel,
+	sendReduce,
 	slashQuery,
 	textRefusal,
 	type BarKey,
 	type LiveTurn,
-	type QueuedKey
+	type QueuedKey,
+	type QueuedText,
+	type SendStage
 } from './reply';
 import type { Command, Prompt } from './types';
 import { holdReload } from './update';
@@ -54,11 +58,13 @@ export interface ReplyHost {
 	stick: (change: () => void, appeared: boolean) => Promise<void>;
 	/** The pane's Terminal view is the one on screen. */
 	terminal: () => boolean;
+	/** The newest chat row's `n`. Left out where no text is queued (the manager). */
+	last?: () => number;
 }
 
 /**
  * The pane a `Reply` talks to: a listed thread, or the manager. Prompts,
- * answers and keys go to `base`; text, commands and files are a thread's only.
+ * answers, keys and files go to `base`; text and commands are a thread's only.
  */
 export interface ReplyTarget {
 	/** `threadPath(id)` or `MANAGER_PATH`. */
@@ -143,11 +149,32 @@ export class Reply {
 		return query === null || !this.commands ? [] : filterCommands(this.commands, query);
 	});
 
-	/** The pane takes no free text now. Keys and answers still go. */
-	readonly blocked: boolean = $derived.by(() => {
-		const status = this.target.state();
-		return status === 'busy' || status === 'waiting' || this.promptId !== null;
-	});
+	/**
+	 * The pane takes no free text now: it is on a prompt. Keys and answers
+	 * still go. A busy agent is not blocked: it takes text and holds it.
+	 */
+	readonly blocked: boolean = $derived.by(
+		() => this.target.state() === 'waiting' || this.promptId !== null
+	);
+
+	/** The agent is mid-turn: a tap on Send is a soft submit, not a plain send. */
+	readonly busy: boolean = $derived.by(() => this.target.state() === 'busy');
+	/** Texts the busy agent holds until its turn ends, oldest first. */
+	queued = $state.raw<QueuedText[]>([]);
+	/** The next tap on Send presses Escape. It does not stay so for long. */
+	private armed = $state(false);
+	private armTimer: ReturnType<typeof setTimeout> | undefined;
+	/** What the Send button shows and does next. */
+	readonly stage: SendStage = $derived(
+		!this.busy ? 'idle' : this.armed ? 'armed' : this.queued.length ? 'queued' : 'idle'
+	);
+
+	private arm(on: boolean): void {
+		clearTimeout(this.armTimer);
+		this.armed = on;
+		// An interrupt that fires from a stale button is the one thing this must not do.
+		if (on) this.armTimer = setTimeout(() => (this.armed = false), ARMED_MS);
+	}
 
 	/** The thread's status and its time, as last seen. */
 	private seen: string | undefined;
@@ -164,35 +191,57 @@ export class Reply {
 		readonly id: string,
 		private readonly host: ReplyHost,
 		/** Left out: the listed thread `id`. */
-		private readonly target: ReplyTarget = threadTarget(id)
+		private readonly target: ReplyTarget = threadTarget(id),
+		/** The files of a pane whose text box is not this draft (the manager). Left out: this reply's own. */
+		files?: Attachments
 	) {
 		this.draftKey = `thread:${id}`;
 		this.#draft = drafts.load(this.draftKey);
-		this.files = new Attachments(id, {
-			insert: (text) => (this.draft = insertPath(this.draft, text)),
-			remove: (text) => (this.draft = removePath(this.draft, text)),
-			sending: () => this.sending
-		});
+		this.files =
+			files ??
+			new Attachments(this.target.base, {
+				insert: (text) => (this.draft = insertPath(this.draft, text)),
+				remove: (text) => (this.draft = removePath(this.draft, text)),
+				sending: () => this.sending
+			});
 	}
 
 	// MARK: text
 
+	/**
+	 * A tap on Send. An idle agent gets the text. A busy one gets it as a soft
+	 * submit, and the button arms; a tap on the armed button presses Escape.
+	 */
 	send = async (): Promise<void> => {
 		const text = normalizeText(this.draft).trim();
 		// One write to a thread at a time: a file on its way goes first.
-		if (!text || this.sending || this.blocked || this.files.pending) return;
+		if (this.sending || this.blocked || this.files.pending) return;
 		if (bytesOver(text)) return;
+		const step = sendReduce(this.stage, { type: 'tap', busy: this.busy, text: text !== '' });
+		if (step.action === null) return this.arm(step.stage === 'armed');
 		this.sending = true;
 		const release = holdReload();
 		this.note = null;
 		try {
-			await sendText(this.id, text);
+			if (step.action === 'interrupt') {
+				this.arm(false);
+				// Escape, by itself. The queued text is named, never typed again.
+				await sendText(this.id, this.queued.map((one) => one.text).join('\n'), 'interrupt');
+			} else if (step.action === 'queue') {
+				const after = this.host.last?.() ?? -1;
+				await sendText(this.id, text, 'queue');
+				this.queued = [...this.queued, { text, after }];
+				this.arm(true);
+			} else {
+				await sendText(this.id, text);
+			}
 			// What was sent goes; what was typed meanwhile stays.
-			this.draft = remainingDraft(this.draft, text);
+			if (text) this.draft = remainingDraft(this.draft, text);
 			// The paths went with the text.
 			this.files.clear();
 			void this.host.refresh();
 		} catch (error) {
+			this.arm(false);
 			live.fail(error);
 			const refused = error instanceof ApiError ? error : null;
 			const { note, keepDraft } = textRefusal(refused);
@@ -211,6 +260,8 @@ export class Reply {
 	/** The box changed: a slash needs the thread's commands. */
 	typed = (): void => {
 		this.note = null;
+		// Text in the box is the next thing to send: the interrupt is no longer armed.
+		this.arm(false);
 		if (this.draft.startsWith('/')) void this.loadCommands();
 	};
 
@@ -344,6 +395,9 @@ export class Reply {
 		// What was answered before is not what the pane asks now.
 		if (this.seen !== undefined) this.answered = null;
 		this.seen = seen;
+		// Another turn, or none: the one that held the queued text is over. Nothing is armed.
+		this.queued = [];
+		this.arm(false);
 		void this.loadPrompt();
 	}
 

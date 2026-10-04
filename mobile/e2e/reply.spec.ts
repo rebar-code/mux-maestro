@@ -33,7 +33,7 @@ interface Replies {
 const WRITE = { ...TOKEN_HEADER, 'X-MuxMaestro': '1' };
 
 const box = (page: Page): Locator => page.getByRole('textbox', { name: 'Reply' });
-const sendButton = (page: Page): Locator => page.getByRole('button', { name: '↑ Send' });
+const sendButton = (page: Page): Locator => page.getByRole('button', { name: /^Send(ing)?$/ });
 /** Submit the composer's form, as Enter on real keys does. On a phone, Return is a new line. */
 const submit = (page: Page): Promise<void> =>
 	page.locator('form.compose').evaluate((form: HTMLFormElement) => form.requestSubmit());
@@ -108,19 +108,94 @@ test('a reply is sent, shows in the chat, and the box clears', async ({ page }) 
 	await expect(box(page)).toHaveValue('');
 });
 
-test('a busy thread takes typing but not Send', async ({ page }) => {
+/** The Send button in whatever state it shows. */
+const stagedSend = (page: Page): Locator => page.locator('[data-send]');
+const queuedRows = (page: Page): Locator => page.locator('[data-queued]');
+const interrupts = async (page: Page): Promise<unknown[]> =>
+	((await received(page)) as unknown as { interrupts: unknown[] }).interrupts;
+
+test('a busy thread: the first tap queues the text, the second interrupts', async ({ page }) => {
 	await open(page, BUSY, ['replies']);
 	await box(page).fill('one more thing');
-	await expect(box(page)).toHaveValue('one more thing');
-	await expect(sendButton(page)).toBeDisabled();
-	await submit(page);
-	await page.waitForTimeout(300);
-	expect((await received(page)).texts).toEqual([]);
-	await expect(box(page)).toHaveValue('one more thing');
+	// The agent is mid-turn: the button shows that the text will wait in line.
+	await expect(stagedSend(page)).toHaveAttribute('data-send', 'queue');
+	await expect(stagedSend(page)).toHaveAccessibleName('Send, queued');
+	await expect(stagedSend(page).locator('[data-icon="sendQueued"]')).toBeVisible();
+	await expect(stagedSend(page)).toBeEnabled();
+	await shot(page, 'send-busy-thread');
 
-	// It goes idle: Send works, with the text still there.
+	// The first tap delivers it, and the turn is not cut short.
+	await stagedSend(page).tap();
+	await expect
+		.poll(async () => (await received(page)).texts)
+		.toEqual([{ thread: BUSY, text: 'one more thing', mode: 'queue' }]);
+	expect(await interrupts(page)).toEqual([]);
+	await expect(box(page)).toHaveValue('');
+	await expect(page.locator('.tbar .title')).toContainText('running');
+	// Queued, not sent: the chat draws it so.
+	await expect(queuedRows(page)).toHaveText('one more thing');
+	await expect(queuedRows(page)).toHaveAccessibleName('Queued: one more thing');
+
+	// The button is armed: another glyph, another name, and it is said aloud.
+	await expect(stagedSend(page)).toHaveAttribute('data-send', 'interrupt');
+	await expect(stagedSend(page)).toHaveAccessibleName('Interrupt and send');
+	await expect(stagedSend(page).locator('[data-icon="interrupt"]')).toBeVisible();
+	await expect(page.locator('form.compose [role="status"]')).toHaveText('Interrupt armed');
+	await shot(page, 'send-armed');
+
+	// It disarms by itself, back to queued. Nothing was interrupted.
+	await expect(stagedSend(page)).toHaveAttribute('data-send', 'queue', { timeout: 6000 });
+	await expect(stagedSend(page)).toHaveAccessibleName('Queued');
+	await expect(page.locator('form.compose [role="status"]')).toHaveText('');
+	expect(await interrupts(page)).toEqual([]);
+	await shot(page, 'send-queued');
+
+	// From queued it takes two taps again: one arms, one interrupts.
+	await stagedSend(page).tap();
+	await expect(stagedSend(page)).toHaveAttribute('data-send', 'interrupt');
+	expect(await interrupts(page)).toEqual([]);
+	await stagedSend(page).tap();
+	await expect.poll(() => interrupts(page)).toEqual([{ thread: BUSY, text: 'one more thing' }]);
+	// Escape alone: the text was not typed a second time.
+	expect((await received(page)).texts).toHaveLength(1);
+	// The agent took it up: the chat has it as sent, once.
+	await expect(queuedRows(page)).toHaveCount(0);
+	await expect(page.locator('.u', { hasText: 'one more thing' })).toHaveCount(1);
+	await expect(page.locator('.a').last()).toContainText('Done: one more thing');
+	await expect(stagedSend(page)).toHaveCount(0);
+});
+
+test('the armed button disarms when the turn ends', async ({ page }) => {
+	await open(page, BUSY, ['replies']);
+	await box(page).fill('one more thing');
+	await stagedSend(page).tap();
+	await expect(stagedSend(page)).toHaveAttribute('data-send', 'interrupt');
+	// The turn ends by itself: the agent takes the queued text, and nothing is armed.
 	await page.request.post(`/__fixture/status?id=${BUSY}&value=idle`);
-	await expect(sendButton(page)).toBeEnabled();
+	await expect(page.locator('.a').last()).toContainText('Done: one more thing');
+	await expect(stagedSend(page)).toHaveCount(0);
+	await expect(queuedRows(page)).toHaveCount(0);
+	expect(await interrupts(page)).toEqual([]);
+	// Idle again: one tap sends, as it always did.
+	await box(page).fill('and push');
+	await expect(sendButton(page)).toHaveAttribute('data-send', 'send');
+	await sendButton(page).tap();
+	await expect.poll(async () => (await received(page)).texts).toHaveLength(2);
+	expect((await received(page)).texts[1]).toEqual({ thread: BUSY, text: 'and push' });
+});
+
+test('text typed while the button is armed is queued, never an interrupt', async ({ page }) => {
+	await open(page, BUSY, ['replies']);
+	await box(page).fill('first');
+	await stagedSend(page).tap();
+	await expect(stagedSend(page)).toHaveAttribute('data-send', 'interrupt');
+	// The next thought, typed and sent at once: the button is a queued send again.
+	await box(page).pressSequentially('second');
+	await expect(stagedSend(page)).toHaveAttribute('data-send', 'queue');
+	await stagedSend(page).tap();
+	await expect.poll(async () => (await received(page)).texts).toHaveLength(2);
+	expect(await interrupts(page)).toEqual([]);
+	await expect(queuedRows(page)).toHaveText(['first', 'second']);
 });
 
 test('a refused reply keeps its text and says why', async ({ page }) => {
@@ -621,7 +696,7 @@ test('with the features off, the thread shows none of this', async ({ page }) =>
 
 test('nothing moves when the live data lands', async ({ page }) => {
 	await open(page, IDLE, ['replies', 'keyBar', 'upload']);
-	const places = async (): Promise<unknown> => [
+	const places = async (): Promise<unknown[]> => [
 		await box(page).boundingBox(),
 		await keybar(page).boundingBox(),
 		await nextBar(page).boundingBox()
@@ -631,9 +706,13 @@ test('nothing moves when the live data lands', async ({ page }) => {
 	await page.request.post(`/__fixture/say?id=${IDLE}&text=One%20more%20line`);
 	await expect(page.locator('.a').last()).toHaveText('One more line');
 	expect(await places()).toEqual(before);
-	// Typing swaps nothing in the box's row.
+	// Typing moves nothing in the box's row. Send is an icon: the box takes the room Talk had.
+	const empty = (await box(page).boundingBox())!;
 	await box(page).fill('hello');
-	expect(await places()).toEqual(before);
+	const typed = (await box(page).boundingBox())!;
+	expect({ ...typed, width: empty.width }).toEqual(empty);
+	expect(typed.width).toBeGreaterThan(empty.width);
+	expect((await places()).slice(1)).toEqual(before.slice(1));
 });
 
 test('voice into a thread: the take shows as your line and the reply streams in', async ({
@@ -649,7 +728,7 @@ test('voice into a thread: the take shows as your line and the reply streams in'
 	const primary = page.locator('[data-primary]');
 	const status = page.locator('[data-voice-status]');
 	await expect(primary).toHaveText('Talk');
-	await expect(status).toHaveText('Start talking');
+	await expect(status).toHaveCount(0);
 	const boxBefore = await box(page).boundingBox();
 
 	await primary.click();
@@ -673,7 +752,7 @@ test('voice into a thread: the take shows as your line and the reply streams in'
 	await expect(page.locator('.a').last()).toHaveText(
 		'Done: run the contrast audit. 2 files changed, tests pass.'
 	);
-	await expect(status).toHaveText('Start talking', { timeout: 8000 });
+	await expect(status).toHaveCount(0, { timeout: 8000 });
 	// Drawn once: the live lines gave way to the chat's own.
 	await expect(page.locator('.u', { hasText: 'run the contrast audit' })).toHaveCount(1);
 	await expect(page.locator('.a', { hasText: 'Done: run the contrast audit' })).toHaveCount(1);
@@ -1468,7 +1547,8 @@ test('the Maestro home is not a listed thread: it gets no dock and no reply rout
 	await expect(page.getByRole('button', { name: 'Hide keyboard' })).toHaveCount(1);
 	await expect(card(page)).toHaveCount(0);
 	await expect(nextBar(page)).toHaveCount(0);
-	await expect(page.getByRole('button', { name: 'Attach' })).toHaveCount(0);
+	// The attach button is the text box's own: it is there on every page.
+	await expect(page.getByRole('button', { name: 'Attach' })).toHaveCount(1);
 	await expect(page.locator('form.compose')).toHaveCount(1);
 	// Longer than one prompt poll.
 	await page.waitForTimeout(3500);
@@ -1485,9 +1565,8 @@ test('the voice status sits above the key strip, and its controls below it', asy
 	await open(page, IDLE, ['replies', 'keyBar', 'voice']);
 	const line = page.locator('[data-voice-line]');
 	const controls = page.locator('[data-voicebar]');
-	await expect(line.locator('[data-voice-status]')).toHaveText('Start talking');
-	// One status line, not one in each part.
-	await expect(page.locator('[data-voice-status]')).toHaveCount(1);
+	// Idle, the voice says nothing: no status line is drawn in either part.
+	await expect(page.locator('[data-voice-status]')).toHaveCount(0);
 	const top = async (target: Locator): Promise<number> => (await target.boundingBox())?.y ?? 0;
 	expect(await top(line)).toBeLessThan(await top(keybar(page)));
 	expect(await top(keybar(page))).toBeLessThan(await top(controls));

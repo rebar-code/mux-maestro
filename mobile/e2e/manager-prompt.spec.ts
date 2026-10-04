@@ -86,34 +86,16 @@ test('the Maestro waits on a question: the home shows the card, and an option an
 	await expect(card(page).locator('[aria-current="true"]')).toHaveAttribute('data-option', '1');
 	for (const option of await options(page).all())
 		expect((await option.boundingBox())?.height).toBeGreaterThanOrEqual(44);
-	// On screen without scrolling, above the footer; the board is below the footer.
+	// On screen without scrolling, above the footer.
 	await expect(card(page)).toBeInViewport({ ratio: 1 });
 	const at = await card(page).boundingBox();
 	const foot = await page.locator('[data-foot]').boundingBox();
 	expect((at?.y ?? 0) + (at?.height ?? 0)).toBeLessThanOrEqual(foot?.y ?? 0);
-	// The keys are in the footer, under its grabber and above the text box.
+	// The keys are in the footer, above the text box.
 	const keys = await keybar(page).boundingBox();
-	const grab = await page.locator('[data-grab]').boundingBox();
 	const form = await page.locator('form.compose').boundingBox();
-	expect(keys?.y).toBeGreaterThanOrEqual((grab?.y ?? 0) + (grab?.height ?? 0));
+	expect(keys?.y).toBeGreaterThanOrEqual(foot?.y ?? 0);
 	expect((keys?.y ?? 0) + (keys?.height ?? 0)).toBeLessThanOrEqual(form?.y ?? 0);
-
-	// With the board raised the footer rises with it: the keys and the card stay clear.
-	await page.locator('[data-grab]').click();
-	await expect(page.locator('[data-board]')).toHaveAttribute('data-stop', '1');
-	await page.waitForTimeout(400);
-	const raised = await keybar(page).boundingBox();
-	const board = await page.locator('[data-board]').boundingBox();
-	expect((raised?.y ?? 0) + (raised?.height ?? 0)).toBeLessThanOrEqual(board?.y ?? 0);
-	await expect(card(page)).toBeInViewport({ ratio: 1 });
-	const lifted = await card(page).boundingBox();
-	const footUp = await page.locator('[data-foot]').boundingBox();
-	expect((lifted?.y ?? 0) + (lifted?.height ?? 0)).toBeLessThanOrEqual(footUp?.y ?? 0);
-	// Back down for the rest.
-	await page.locator('[data-grab]').click();
-	await page.locator('[data-grab]').click();
-	await expect(page.locator('[data-board]')).toHaveAttribute('data-stop', '0');
-	await page.waitForTimeout(400);
 	// The line the home had before is still there.
 	await expect(page.locator('[data-status="waiting"]')).toHaveText(
 		'Maestro is waiting on a prompt'
@@ -223,7 +205,7 @@ test('with the key bar alone the Maestro card is read-only, and Escape goes to t
 	const bar = await keybar(page).boundingBox();
 	const form = await page.locator('form.compose').boundingBox();
 	expect((bar?.y ?? 0) + (bar?.height ?? 0)).toBeLessThanOrEqual(form?.y ?? 0);
-	// Under the stage, so the board sheet never covers it.
+	// Under the stage, so nothing on the thread's pages covers it.
 	const stage = await page.locator('.stage').boundingBox();
 	expect((stage?.y ?? 0) + (stage?.height ?? 0)).toBeLessThanOrEqual((bar?.y ?? 0) + 1);
 

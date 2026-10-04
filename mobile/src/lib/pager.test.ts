@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+	KEYBOARD_PULL,
 	keyboardInset,
 	pageOffset,
+	pullsKeyboardDown,
 	resolveDrag,
 	resolveSheetDrag,
 	settleBack,
@@ -257,5 +259,22 @@ describe('board drawer', () => {
 		expect(keyboardInset(844, 508)).toBe(336);
 		expect(keyboardInset(844, 507.6)).toBe(336);
 		expect(keyboardInset(500, 844)).toBe(0);
+	});
+});
+
+describe('pullsKeyboardDown', () => {
+	it('puts the keyboard away on a pull down past the threshold', () => {
+		expect(pullsKeyboardDown(0, KEYBOARD_PULL)).toBe(true);
+		expect(pullsKeyboardDown(6, 80)).toBe(true);
+		expect(pullsKeyboardDown(-6, 80)).toBe(true);
+	});
+
+	it('leaves the keyboard up on a short pull, a pull up, and a sideways drag', () => {
+		expect(pullsKeyboardDown(0, KEYBOARD_PULL - 1)).toBe(false);
+		expect(pullsKeyboardDown(0, -80)).toBe(false);
+		// More sideways than down: that drag turns the page or opens the sidebar.
+		expect(pullsKeyboardDown(60, 40)).toBe(false);
+		expect(pullsKeyboardDown(-60, 40)).toBe(false);
+		expect(pullsKeyboardDown(40, 40)).toBe(false);
 	});
 });

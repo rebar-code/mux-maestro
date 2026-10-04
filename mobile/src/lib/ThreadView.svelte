@@ -5,10 +5,13 @@
 	import ArtifactsPage from './ArtifactsPage.svelte';
 	import AttachButton from './AttachButton.svelte';
 	import AttachTiles from './AttachTiles.svelte';
+	import BoardList from './BoardList.svelte';
 	import Composer from './Composer.svelte';
 	import { Find } from './find.svelte';
 	import FindBar from './FindBar.svelte';
+	import Icon from './Icon.svelte';
 	import type { Snippet } from 'svelte';
+	import { messageMenu } from './doubletap';
 	import { dotClass, statusLabel } from './format';
 	import { pages, pullToRefresh, ui } from './gestures.svelte';
 	import KeyBar from './KeyBar.svelte';
@@ -16,22 +19,24 @@
 	import LiveTerminal from './LiveTerminal.svelte';
 	import { LiveTerm } from './liveterm.svelte';
 	import { maestro } from './maestro.svelte';
+	import { manager } from './manager.svelte';
 	import MaestroBack from './MaestroBack.svelte';
 	import Marked from './Marked.svelte';
 	import NextBar from './NextBar.svelte';
 	import NoteLine from './NoteLine.svelte';
 	import PromptCard from './PromptCard.svelte';
 	import Prose from './Prose.svelte';
-	import type { ProseLinks } from './prose';
+	import { copyText, type ProseLinks } from './prose';
 	import { renderer } from './renderer.svelte';
 	import PullIndicator from './PullIndicator.svelte';
 	import { push } from './push.svelte';
-	import { liveLines, nextWaiting } from './reply';
+	import { liveLines, nextWaiting, queuedLines } from './reply';
 	import { Reply } from './reply.svelte';
 	import ServeConfirm from './ServeConfirm.svelte';
 	import { SERVERS, Servers } from './servers.svelte';
 	import ServersPage from './ServersPage.svelte';
 	import SlashList from './SlashList.svelte';
+	import { BOARD, MAIN, viewTabs } from './tabs';
 	import { text } from './textsize.svelte';
 	import { ThreadFeed, type Mode } from './thread.svelte';
 	import type { ArtifactFile, ChatMessage } from './types';
@@ -87,20 +92,28 @@
 	const turn = (index: number): void => {
 		if (!embedded) ui.goTo(index);
 	};
-	const MAIN = 'main';
 	// svelte-ignore state_referenced_locally
 	const listed = given === undefined;
-	// Files and servers belong to a listed thread. The manager pane is not one.
-	const artifactsOn = $derived(listed && can('artifacts'));
-	const serversOn = $derived(listed && can('localServers'));
-	// The pages of this view, left to right. A tab whose feature is off on the
-	// Mac is not there at all. Joined, so the same tabs are the same value and
-	// a config that says nothing new does not send the pager back to Chat.
+	// The pages of this view, left to right: `viewTabs` has the rule. Files and
+	// servers belong to a listed thread; the Maestro's page has the board
+	// instead. Joined, so the same tabs are the same value and a config that
+	// says nothing new does not send the pager back to Chat.
 	const tabNames = $derived(
-		[MAIN, ...(artifactsOn ? [ARTIFACTS] : []), ...(serversOn ? [SERVERS] : [])].join(' ')
+		viewTabs({
+			listed,
+			embedded,
+			artifacts: can('artifacts'),
+			servers: can('localServers')
+		}).join(' ')
 	);
 	const tabs = $derived(tabNames.split(' '));
-	const LABELS: Record<string, string> = { [ARTIFACTS]: 'Artifacts', [SERVERS]: 'Servers' };
+	const artifactsOn = $derived(tabs.includes(ARTIFACTS));
+	const serversOn = $derived(tabs.includes(SERVERS));
+	const LABELS: Record<string, string> = {
+		[ARTIFACTS]: 'Artifacts',
+		[SERVERS]: 'Servers',
+		[BOARD]: 'Board'
+	};
 
 	// svelte-ignore state_referenced_locally
 	const feed = given ?? new ThreadFeed(id);
@@ -167,7 +180,8 @@
 		new Reply(id, {
 			refresh: () => feed.load(mode),
 			stick: (change) => feed.keepEnd(mode, false, change),
-			terminal: () => mode === 'terminal'
+			terminal: () => mode === 'terminal',
+			last: () => feed.messages?.at(-1)?.n ?? -1
 		});
 	/** The pane's prompts are shown and answered here: a listed thread, or a pane given its own `reply`. */
 	// svelte-ignore state_referenced_locally
@@ -198,6 +212,11 @@
 	const keysOn = $derived(can('keyBar'));
 	// A take goes to the thread as a reply, so voice needs that switch too.
 	const voiceOn = $derived(repliesOn && can('voice'));
+	// Reading a message aloud types nothing: the Voice switch alone.
+	const sayOn = $derived(can('voice'));
+	const SAY = { idle: 'Play', loading: 'Stop, loading', playing: 'Stop' } as const;
+	/** The agent message whose menu a double tap opened: its row. One at a time. */
+	let menu = $state<number | null>(null);
 	// A listed thread's reply box is always there: switched off on the Mac, it says so and
 	// takes nothing. The manager pane is not a listed thread: it has no reply routes, and
 	// its page brings its own box, so it gets no dock, no card and no Next bar.
@@ -216,6 +235,8 @@
 		turn(0);
 	}
 	const spoken = $derived(liveLines(feed.messages ?? [], reply.turn));
+	/** Text the busy agent holds: drawn as queued until the chat has it. */
+	const queued = $derived(queuedLines(feed.messages ?? [], reply.queued));
 
 	function send(): void {
 		// A typed reply takes over: a reply that is still being read stops.
@@ -326,6 +347,7 @@
 	class="pager"
 	class:docked
 	data-thread-pages={embedded ? undefined : ''}
+	data-messages
 	style:--term-size="{text.size}px"
 	style:--chat-size="{text.chat}px"
 	{@attach !embedded && pages(tabs, landed)}
@@ -348,6 +370,16 @@
 					<ArtifactsPage {artifacts} />
 				{:else if tab === SERVERS}
 					<ServersPage {servers} />
+				{:else if tab === BOARD}
+					<div
+						class="scroll board"
+						data-pull={BOARD}
+						data-board
+						{@attach pullToRefresh(BOARD, manager.load)}
+					>
+						<PullIndicator key={BOARD} />
+						<BoardList blank />
+					</div>
 				{:else if mode === 'chat'}
 					<div
 						class="scroll"
@@ -357,6 +389,10 @@
 						data-rise={embedded ? undefined : ''}
 						{@attach feed.scroller('chat')}
 						{@attach pullToRefresh(PULL, () => feed.load('chat'))}
+						{@attach messageMenu(
+							() => menu,
+							(row) => (menu = row)
+						)}
 					>
 						<PullIndicator key={PULL} />
 						<div class="chat">
@@ -377,8 +413,37 @@
 									{#if message.role === 'user'}
 										<div class="u">{@render body()}</div>
 									{:else if message.role === 'assistant'}
-										<div class="a">
+										{@const saying = sayOn ? voice.sayingOf(id, message.n) : 'idle'}
+										<div class="a" data-row={message.n}>
 											<Prose text={message.text} {hits} current={find.current} {links} />
+											<!-- A message that is read keeps its menu: its Stop stays in reach. -->
+											{#if menu === message.n || saying !== 'idle'}
+												<div class="menu" data-menu>
+													{#if sayOn}
+														<!-- Three shapes: a triangle, a turning ring, a square. -->
+														<button
+															class="act grow"
+															aria-label={SAY[saying]}
+															aria-busy={saying === 'loading'}
+															data-say={saying}
+															onclick={() => voice.say(id, message.n)}
+														>
+															{#if saying === 'loading'}
+																<i class="ring" aria-hidden="true"></i>
+															{:else}
+																<Icon name={saying === 'playing' ? 'stop' : 'play'} size={15} />
+															{/if}
+														</button>
+													{/if}
+													<button
+														class="act grow"
+														aria-label="Copy"
+														onclick={(event) => copyText(event.currentTarget, message.text)}
+													>
+														<Icon name="copy" size={15} /><Icon name="check" size={15} />
+													</button>
+												</div>
+											{/if}
 										</div>
 									{:else}
 										<div class="tool"><b>{message.tool}</b> {@render body()}</div>
@@ -396,6 +461,11 @@
 								{#if pending}
 									<div class="u" data-pending>{pending}</div>
 								{/if}
+								{#each queued as text, index (index)}
+									<div class="u queued" aria-label="Queued: {text}" data-queued>
+										<Icon name="sendQueued" size={14} />{text}
+									</div>
+								{/each}
 								{@render tail?.()}
 							{/if}
 							{#if cardId !== null}
@@ -533,6 +603,8 @@
 					{voiceOn}
 					blocked={reply.blocked || reply.files.pending}
 					sending={reply.sending}
+					busy={reply.busy}
+					stage={reply.stage}
 					note={reply.note}
 					onsend={send}
 					oninput={reply.typed}
@@ -641,6 +713,10 @@
 		position: relative;
 	}
 
+	.board {
+		background: var(--mgr);
+	}
+
 	.chat {
 		display: flex;
 		flex-direction: column;
@@ -677,6 +753,71 @@
 		padding: 8px 12px;
 		white-space: pre-wrap;
 		overflow-wrap: anywhere;
+	}
+
+	/* What a double tap on a message opens: a row of small buttons under its text. */
+	.menu {
+		display: flex;
+		gap: 18px;
+		margin-top: 4px;
+	}
+
+	/* Small; its touch area is a full 44pt. */
+	.act {
+		position: relative;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 30px;
+		height: 26px;
+		border-radius: 13px;
+		background: var(--surface);
+		border: 1px solid var(--border);
+		color: var(--muted);
+	}
+
+	.act[data-say='playing'] {
+		color: var(--text);
+	}
+
+	/* Copied: a tick for a moment. */
+	.act:global([data-copied]) {
+		color: var(--green);
+	}
+
+	.act:global([data-copied]) :global([data-icon='copy']),
+	.act:not(:global([data-copied])) :global([data-icon='check']) {
+		display: none;
+	}
+
+	/* The Mac is making the audio. With reduced motion it is a still ring. */
+	.ring {
+		width: 12px;
+		height: 12px;
+		border-radius: 50%;
+		border: 2px solid var(--border);
+		border-top-color: var(--text);
+		animation: turning 0.8s linear infinite;
+	}
+
+	@keyframes turning {
+		to {
+			transform: rotate(360deg);
+		}
+	}
+
+	/* Not sent yet: the agent holds it until its turn ends. A broken edge, and the queue's mark. */
+	.u.queued {
+		display: flex;
+		align-items: baseline;
+		gap: 7px;
+		background: none;
+		border: 1px dashed #3a5273;
+		color: var(--muted);
+	}
+
+	.u.queued :global(svg) {
+		align-self: center;
 	}
 
 	.a {

@@ -24,7 +24,7 @@ struct MobileVoiceDefaults: Equatable {
 }
 
 /// Where a take goes once it is text.
-enum MobileVoiceTarget: Equatable {
+enum MobileVoiceTarget: Hashable {
     case manager
     /// One thread's pane, by its phone id.
     case thread(String)
@@ -248,6 +248,13 @@ enum MobileVoice {
         (chat?.messages.last { $0.role == .assistant }?.text).map { String($0.prefix(maxReplayCharacters)) }
     }
 
+    /// The text of one chat row for the play button: an agent's row only,
+    /// cut to Replay's limit.
+    static func sayText(of row: MobileChatMessage?) -> String? {
+        guard let row, row.role == .assistant else { return nil }
+        return String(row.text.prefix(maxReplayCharacters))
+    }
+
     static let modelsMissing = MobileResponse.error(503, "models", message: modelsNotReady)
 
     /// The sentence of a refusal response, for a turn that is refused after
@@ -255,6 +262,85 @@ enum MobileVoice {
     static func message(of refusal: MobileResponse) -> String {
         let body = (try? JSONSerialization.jsonObject(with: refusal.body)) as? [String: Any]
         return body?["message"] as? String ?? unavailable
+    }
+}
+
+/// One clip of a read-aloud, as its `audio` event carries it.
+struct MobileVoiceClip: Equatable {
+    let text: String
+    /// The WAV file, base64.
+    let wav: String
+
+    init(text: String, wav: String) {
+        self.text = text
+        self.wav = wav
+    }
+
+    init?(event: [String: Any]) {
+        guard let text = event["text"] as? String, let wav = event["wav"] as? String else { return nil }
+        self.init(text: text, wav: wav)
+    }
+
+    func event(seq: Int) -> [String: Any] {
+        ["seq": seq, "text": text, "wav": wav]
+    }
+}
+
+/// A message read aloud to its end: its text and every clip, in order.
+struct MobileSpokenReply: Equatable {
+    let text: String
+    let clips: [MobileVoiceClip]
+
+    var bytes: Int { clips.reduce(text.utf8.count) { $0 + $1.text.utf8.count + $1.wav.utf8.count } }
+}
+
+/// Read-alouds already synthesized, so a second play of a message starts at
+/// once. The least recently used goes first once there are more than
+/// `entryLimit` or they hold more than `byteLimit` bytes.
+struct MobileSpeechCache {
+    /// One message in one voice: a change of voice or speed is a miss.
+    struct Key: Hashable {
+        let target: MobileVoiceTarget
+        let n: UInt64
+        let voice: String
+        let speed: Float
+    }
+
+    let entryLimit: Int
+    let byteLimit: Int
+    /// Least recently used first.
+    private(set) var keys: [Key] = []
+    private(set) var bytes = 0
+    private var replies: [Key: MobileSpokenReply] = [:]
+
+    init(entryLimit: Int = 16, byteLimit: Int = 32 << 20) {
+        self.entryLimit = entryLimit
+        self.byteLimit = byteLimit
+    }
+
+    /// The reply for `key`, which becomes the most recently used.
+    mutating func reply(for key: Key) -> MobileSpokenReply? {
+        guard let reply = replies[key] else { return nil }
+        keys.removeAll { $0 == key }
+        keys.append(key)
+        return reply
+    }
+
+    /// Keep `reply`, then let the oldest go until both limits hold. A reply
+    /// larger than the whole cache is not kept.
+    mutating func store(_ reply: MobileSpokenReply, for key: Key) {
+        remove(key)
+        guard !reply.clips.isEmpty, reply.bytes <= byteLimit else { return }
+        replies[key] = reply
+        keys.append(key)
+        bytes += reply.bytes
+        while keys.count > entryLimit || bytes > byteLimit { remove(keys[0]) }
+    }
+
+    private mutating func remove(_ key: Key) {
+        guard let old = replies.removeValue(forKey: key) else { return }
+        keys.removeAll { $0 == key }
+        bytes -= old.bytes
     }
 }
 
@@ -284,6 +370,8 @@ final class MobileVoiceTurn {
     private var cancelled = false
     private var seq = 0
     private var streamed = false
+    /// The clips sent so far, kept only for a read-aloud.
+    private var kept: [MobileVoiceClip]?
 
     init(speech: VoiceSpeech, speaker: Bool, emit: @escaping Emit) {
         self.speech = speech
@@ -308,6 +396,35 @@ final class MobileVoiceTurn {
         }
     }
 
+    /// Read one message aloud for the play button, like `replay`. `done`
+    /// gets the clips once the whole text is synthesized; a read that was
+    /// cancelled or failed gives it nothing.
+    func say(_ text: String, done: @escaping (MobileSpokenReply) -> Void) {
+        lock.lock()
+        kept = []
+        lock.unlock()
+        run {
+            let (stream, continuation) = AsyncStream.makeStream(of: String.self)
+            continuation.yield(text)
+            continuation.finish()
+            var end = MobileManager.end(.done(reply: text))
+            if await self.synthesize(stream) {
+                if let clips = self.keptClips { done(MobileSpokenReply(text: text, clips: clips)) }
+            } else {
+                end["message"] = MobileVoice.speechFailed
+            }
+            self.finish(end)
+        }
+    }
+
+    /// Send a read-aloud's clips again, then `end`. The engine is not asked.
+    func play(_ reply: MobileSpokenReply) {
+        for (index, clip) in reply.clips.enumerated() where !isCancelled {
+            emit("audio", clip.event(seq: index), false)
+        }
+        finish(MobileManager.end(.done(reply: reply.text)))
+    }
+
     /// The phone hung up or pressed Stop. Transcription and read-back stop;
     /// the target's own turn carries on, and its text lands where it always does.
     func cancel() {
@@ -316,6 +433,13 @@ final class MobileVoiceTurn {
         let running = cancels
         lock.unlock()
         running.forEach { $0() }
+    }
+
+    /// The clips a read-aloud sent, unless it was cancelled.
+    private var keptClips: [MobileVoiceClip]? {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled ? nil : kept
     }
 
     private var isCancelled: Bool {
@@ -409,6 +533,7 @@ final class MobileVoiceTurn {
                 let first = self.seq
                 let events = MobileVoice.audioEvents(audio, text: sentence, firstSeq: first)
                 self.seq += events.count
+                self.kept?.append(contentsOf: events.compactMap(MobileVoiceClip.init(event:)))
                 self.lock.unlock()
                 for event in events { self.emit("audio", event, false) }
             }

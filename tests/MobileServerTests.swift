@@ -85,7 +85,8 @@ final class MobileServerTests: XCTestCase {
                     lock.lock(); _answered.append("\(key)=\(label)"); lock.unlock()
                 },
                 screen: { [self] _ in screen },
-                io: { [self] in ("mux-manager", pane.io) })
+                io: { [self] in ("mux-manager", pane.io) },
+                cwd: { "/Users/me/Library/Application Support/MuxMaestro/manager" })
         }
     }
     /// What the fake pane shows, and the line counts the server asked it for.
@@ -1438,6 +1439,28 @@ final class MobileServerTests: XCTestCase {
             refused.body,
             #"{"cleared":true,"error":"not_sent","message":"Thread is busy","reason":"busy"}"#)
         XCTAssertEqual(pane.argv.last, ["send-keys", "-t", "%12", "C-u"])
+    }
+
+    func testTextWithTheQueueModeGoesIntoABusyPane() {
+        repliesOn()
+        pane.status = .busy
+        // Without the mode a busy pane refuses, as it always did.
+        XCTAssertEqual(post(Self.thread + "/text", json: #"{"text":"go on"}"#).status, 409)
+        XCTAssertEqual(pane.argv.count, 0)
+        let queued = post(Self.thread + "/text", json: #"{"text":"go on","mode":"queue"}"#)
+        XCTAssertEqual(queued.status, 200)
+        XCTAssertTrue(FakePane.sendArgv(pane.argv, target: "%12"), "\(pane.argv)")
+        // A mode that is not known is refused before anything is typed.
+        XCTAssertEqual(post(Self.thread + "/text", json: #"{"text":"go on","mode":"now"}"#).status, 400)
+        XCTAssertEqual(pane.argv.count, 4)
+    }
+
+    func testTextWithTheInterruptModePressesEscapeAndPastesNothing() {
+        repliesOn()
+        pane.status = .busy
+        let cut = post(Self.thread + "/text", json: #"{"text":"go on","mode":"interrupt"}"#)
+        XCTAssertEqual(cut.body, #"{"interrupted":true,"ok":true}"#)
+        XCTAssertEqual(pane.argv, [["send-keys", "-t", "%12", "Escape"]])
     }
 
     func testAPromptOnTheScreenRefusesTextWhateverTheStatusSays() {
@@ -2878,6 +2901,42 @@ final class MobileServerTests: XCTestCase {
     }
 
     // MARK: uploads for the reply box
+
+    func testAnUploadForTheManagerIsSavedInItsDirectoryAndTypesNothing() {
+        let upload = "/api/manager/upload"
+        // The Manager switch alone is not enough: a file needs the Upload switch too.
+        managerOn()
+        XCTAssertEqual(post(upload + "?name=shot.png", json: "demo").status, 403)
+        server.configure(MobileConfig(capabilities: [.upload], uploadLimit: 64))
+        XCTAssertEqual(post(upload + "?name=shot.png", json: "demo").status, 403)
+
+        server.configure(MobileConfig(capabilities: [.manager, .upload], uploadLimit: 64))
+        // The manager at work can still be given a file: nothing goes to its pane.
+        for status in [MobileManagerStatus.idle, .busy, .waiting] {
+            manager.status = status
+            XCTAssertEqual(post(upload + "?name=shot.png", json: "demo").status, 200, "\(status)")
+        }
+        XCTAssertEqual(manager.pane.argv.count, 0)
+        let home = "/Users/me/Library/Application Support/MuxMaestro/manager"
+        XCTAssertEqual(manager.pane.saves.map(\.path), [
+            "\(home)/shot.png", "\(home)/shot-2.png", "\(home)/shot-3.png",
+        ])
+        // The path comes back as it should be typed: quoted, since it holds a space.
+        let named = post(upload + "?name=..%2Fa.png", json: "demo")
+        XCTAssertTrue(named.body.contains(#""pasted":false"#), named.body)
+        XCTAssertTrue(named.body.contains(#""text":"'\/Users\/me\/Library\/Application Support"#), named.body)
+        XCTAssertEqual(manager.pane.saves.last?.path, "\(home)/a.png")
+
+        // Every other rule of an upload holds: the size cap and the name.
+        XCTAssertEqual(post(upload + "?name=..", json: "demo").status, 400)
+        XCTAssertEqual(post(upload, json: "demo").status, 400)
+        XCTAssertEqual(
+            post(upload + "?name=big.bin", json: String(repeating: "a", count: 65)).status, 413)
+        // No manager: nowhere to save.
+        manager.status = .off
+        XCTAssertEqual(post(upload + "?name=late.png", json: "demo").status, 503)
+        XCTAssertEqual(manager.pane.saves.count, 4)
+    }
 
     func testAnUploadForTheReplyBoxIsSavedAndTypesNothing() {
         repliesOn()

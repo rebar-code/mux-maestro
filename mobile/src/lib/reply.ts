@@ -131,6 +131,75 @@ export function nextWaiting(threads: Thread[], open: string): Thread | null {
 	);
 }
 
+/**
+ * What the Send button does next on a pane whose agent may be mid-turn.
+ * `idle`: one tap sends. `queued`: text went to a busy agent, which holds it
+ * until its turn ends. `armed`: the next tap presses Escape, which ends the
+ * turn so the agent takes the queued text up now.
+ */
+export type SendStage = 'idle' | 'queued' | 'armed';
+
+/** How long the interrupt stays armed before it drops back by itself. */
+export const ARMED_MS = 4000;
+
+export type SendEvent =
+	/** The button was tapped. `busy`: the agent is mid-turn. `text`: the box holds text. */
+	| { type: 'tap'; busy: boolean; text: boolean }
+	/** The armed interrupt was not used in time. */
+	| { type: 'timeout' }
+	/** The turn that held the queued text is over. */
+	| { type: 'turn-end' };
+
+/** What a tap does: a plain send, a soft submit to a busy agent, or Escape. */
+export type SendAction = 'send' | 'queue' | 'interrupt';
+
+export interface SendStep {
+	stage: SendStage;
+	action: SendAction | null;
+}
+
+/**
+ * The two-stage send. An idle agent takes one tap. A busy agent takes the
+ * first tap as a soft submit, which also arms the interrupt; only a second
+ * tap, on the armed button with an empty box, presses Escape. The interrupt
+ * throws away what the agent was doing, so it is never one tap away: it
+ * disarms by itself, a button that dropped back to `queued` has to be armed
+ * again first, and text in the box is always queued, never an interrupt. So
+ * two messages sent one after the other cannot cut the turn short.
+ */
+export function sendReduce(stage: SendStage, event: SendEvent): SendStep {
+	if (event.type === 'turn-end') return { stage: 'idle', action: null };
+	if (event.type === 'timeout')
+		return { stage: stage === 'armed' ? 'queued' : stage, action: null };
+	// The turn is over, whatever the button last showed: this is a plain send.
+	if (!event.busy) return { stage: 'idle', action: event.text ? 'send' : null };
+	if (event.text) return { stage: 'armed', action: 'queue' };
+	if (stage === 'armed') return { stage: 'idle', action: 'interrupt' };
+	// Nothing new to queue: a tap on `queued` arms the interrupt again.
+	return { stage: stage === 'queued' ? 'armed' : 'idle', action: null };
+}
+
+/** Text a busy agent holds, and the newest chat row there was when it went. */
+export interface QueuedText {
+	text: string;
+	after: number;
+}
+
+/**
+ * The queued texts the chat still has to draw itself, marked as queued. One
+ * the transcript holds by now is drawn there, and not twice.
+ */
+export function queuedLines(messages: ChatMessage[], queued: readonly QueuedText[]): string[] {
+	return queued
+		.filter(
+			({ text, after }) =>
+				!messages.some(
+					(message) => message.role === 'user' && message.n > after && message.text === text
+				)
+		)
+		.map(({ text }) => text);
+}
+
 const LABELS: Record<string, string> = {
 	busy: 'Busy',
 	waiting: 'Waiting on a prompt',

@@ -159,7 +159,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     MobilePaneState(status: thread.status, since: thread.since)
                 }
                 return (pane, io)
-            }),
+            },
+            cwd: { ManagerHome.defaultHome()?.path }),
         requests: ManagerHome.defaultHome().map {
             RequestTracker(url: $0.appendingPathComponent(RequestTracker.fileName))
         },

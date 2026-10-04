@@ -2,11 +2,12 @@ import { untrack } from 'svelte';
 import { ApiError, closeServer, fetchMappings, fetchRunning, openServer } from './api';
 import { ui } from './gestures.svelte';
 import { live } from './live.svelte';
+import { SERVERS } from './tabs';
 import type { Mapping, RunningList } from './types';
 
 const POLL_MS = 5000;
-/** The page key of the Servers tab. */
-export const SERVERS = 'servers';
+
+export { SERVERS };
 
 /** One thread's running servers, and the ports the Mac publishes on the tailnet. */
 export class Servers {

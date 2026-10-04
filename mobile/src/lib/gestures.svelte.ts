@@ -2,6 +2,7 @@ import { flushSync, untrack } from 'svelte';
 import {
 	clamp,
 	pageOffset,
+	pullsKeyboardDown,
 	resolveDrag,
 	settleBack,
 	resolveSheetDrag,
@@ -216,7 +217,11 @@ export function gestures(node: HTMLElement): () => void {
 		lastX = event.clientX;
 		lastT = event.timeStamp;
 		downT = event.timeStamp;
-		downZoom = (event.target as Element).closest('[data-zoom]') !== null;
+		// Two taps in a text box pick a word, and two on an agent's message open its
+		// menu: they are not the size's.
+		downZoom =
+			(event.target as Element).closest('[data-zoom]:not([data-zoom="box"])') !== null &&
+			(event.target as Element).closest('[data-row]') === null;
 		hscroll = (event.target as Element).closest<HTMLElement>('[data-hscroll]');
 		swiped = (event.target as Element).closest<HTMLElement>('[data-swipe]');
 		origin = event.target as Element;
@@ -407,6 +412,8 @@ export function gestures(node: HTMLElement): () => void {
 	}
 
 	let pull: { key: string; x: number; y: number; active: boolean } | null = null;
+	/** A touch on the messages while a text box has the keyboard: a pull down puts it away. */
+	let typing: { x: number; y: number; box: HTMLElement } | null = null;
 	/** A touch that began on a thread at its end: a swipe up there raises the board. */
 	let rise: { x: number; y: number } | null = null;
 
@@ -518,6 +525,7 @@ export function gestures(node: HTMLElement): () => void {
 
 	function onTouchStart(event: TouchEvent): void {
 		multi = event.touches.length > 1;
+		typing = null;
 		if (pull?.active) {
 			ui.pulling = false;
 			ui.pull = 0;
@@ -536,6 +544,17 @@ export function gestures(node: HTMLElement): () => void {
 			if (thread && thread.scrollHeight - thread.scrollTop - thread.clientHeight < 2) {
 				rise = { x: event.touches[0].clientX, y: event.touches[0].clientY };
 			}
+		}
+		const focused = document.activeElement;
+		if (
+			event.touches.length === 1 &&
+			focused instanceof HTMLElement &&
+			focused.matches('textarea, input') &&
+			(event.target as Element).closest('[data-messages]') !== null
+		) {
+			// This drag is the keyboard's: it does not also pull to refresh.
+			typing = { x: event.touches[0].clientX, y: event.touches[0].clientY, box: focused };
+			return;
 		}
 		if (event.touches.length !== 1 || ui.refreshing) return;
 		const scroller = (event.target as Element).closest<HTMLElement>('[data-pull]');
@@ -559,6 +578,14 @@ export function gestures(node: HTMLElement): () => void {
 				ui.riseSheet();
 			}
 		}
+		if (typing) {
+			// Not taken from the browser: the messages scroll as the keyboard goes.
+			const { clientX, clientY } = event.touches[0];
+			if (pullsKeyboardDown(clientX - typing.x, clientY - typing.y)) {
+				typing.box.blur();
+				typing = null;
+			}
+		}
 		if (!pull) return;
 		const touch = event.touches[0];
 		const dx = touch.clientX - pull.x;
@@ -577,6 +604,7 @@ export function gestures(node: HTMLElement): () => void {
 	}
 
 	function onTouchEnd(): void {
+		typing = null;
 		// A pinch ends when either finger lifts; the one left does not start a drag.
 		if (pinch) {
 			pinch = null;

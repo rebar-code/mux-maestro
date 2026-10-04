@@ -1,5 +1,7 @@
 import { untrack } from 'svelte';
 import { ApiError, dismissReview, fetchManager, MANAGER_PATH, sendManagerText } from './api';
+import { insertPath, removePath } from './attach';
+import { Attachments } from './attach.svelte';
 import { bytesOver, normalizeText } from './compose';
 import { drafts } from './drafts';
 import { live } from './live.svelte';
@@ -86,6 +88,13 @@ class Manager {
 	}
 	/** This phone has a turn in flight. */
 	sending = $state(false);
+	/** The files picked for the next message. Their paths go into the text box. */
+	readonly files = new Attachments(MANAGER_PATH, {
+		insert: (text) => (this.draft = insertPath(this.draft, text)),
+		remove: (text) => (this.draft = removePath(this.draft, text)),
+		// A file is saved, not typed: it does not wait for the turn in flight.
+		sending: () => false
+	});
 
 	/** The manager pane's chat and terminal, read like any thread's. */
 	readonly feed = new ThreadFeed('manager', MANAGER_PATH, () => this.save());
@@ -273,8 +282,11 @@ class Manager {
 	send = async (): Promise<void> => {
 		const text = normalizeText(this.draft).trim();
 		// A turn is running, here or on the Mac: Enter must not send a second one.
-		if (!text || this.sending || this.busy || bytesOver(text)) return;
+		// A file on its way goes first: its path is part of the text.
+		if (!text || this.sending || this.busy || this.files.pending || bytesOver(text)) return;
 		this.draft = '';
+		// The paths went with the text.
+		this.files.clear();
 		this.begin(text);
 		// A reload now would cut the turn's stream, and the text would come back as not sent.
 		const release = holdReload();
