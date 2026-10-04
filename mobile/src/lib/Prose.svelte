@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { hasThumb, resolveArtifact } from './artifacts';
 	import type { Hit } from './find';
-	import { chatBlocks, markedBlocks } from './markdown';
 	import { proseTaps, type ProseLinks } from './prose';
+	import { renderer } from './renderer.svelte';
 
 	const {
 		text,
@@ -12,8 +12,13 @@
 	}: { text: string; hits?: Hit[]; current?: number; links?: ProseLinks } = $props();
 
 	// One string for each top-level block. A message that grows changes its
-	// last block only: the blocks before it keep their elements.
-	const blocks = $derived(hits ? markedBlocks(text, hits, current) : chatBlocks(text));
+	// last block only: the blocks before it keep their elements. Null until the
+	// renderer has loaded.
+	const blocks = $derived.by(() => {
+		const api = renderer.api;
+		if (!api) return null;
+		return hits ? api.markedBlocks(text, hits, current) : api.chatBlocks(text);
+	});
 
 	/**
 	 * After the blocks are drawn: say which paths are files of the thread, and
@@ -21,7 +26,7 @@
 	 * thread's own file read, never from the address in the message.
 	 */
 	function known(node: HTMLElement): void {
-		if (!blocks.length) return;
+		if (!blocks?.length) return;
 		const files = links?.files ?? [];
 		for (const el of node.querySelectorAll<HTMLElement>('[data-local]')) {
 			el.toggleAttribute('data-known', Boolean(links?.local));
@@ -49,8 +54,12 @@
 </script>
 
 <div class="prose" {@attach proseTaps(() => links)} {@attach known}>
-	{#each blocks as html, index (index)}
-		<!-- eslint-disable-next-line svelte/no-at-html-tags -- markdown.ts renders with raw HTML off and escapes the text -->
-		{@html html}
-	{/each}
+	{#if blocks}
+		{#each blocks as html, index (index)}
+			<!-- eslint-disable-next-line svelte/no-at-html-tags -- markdown.ts renders with raw HTML off and escapes the text -->
+			{@html html}
+		{/each}
+	{:else}
+		<p class="plain">{text}</p>
+	{/if}
 </div>

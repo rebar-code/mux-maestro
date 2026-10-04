@@ -356,6 +356,11 @@ button:disabled {
  * Rendered markdown (the HTML of markdown.ts). Sizes are in `em`: the text
  * size of the view it is in applies to all of it.
  */
+/* A reply with a list or code in it reads from the left, also where one line is centred. */
+.prose:has(> :not(p)) {
+	text-align: start;
+}
+
 .prose > :first-child {
 	margin-top: 0;
 }
@@ -469,7 +474,6 @@ button:disabled {
 .prose mark {
 	background: #6b5310;
 	color: inherit;
-	border-radius: 2px;
 }
 
 .prose mark.cur {
@@ -493,6 +497,7 @@ button:disabled {
 	padding: 0.3em 0.6em;
 	border: 1px solid var(--border);
 	white-space: nowrap;
+	text-align: start;
 }
 
 .prose th {
@@ -515,6 +520,11 @@ button:disabled {
 
 .mdimg::before {
 	content: '🖼 ';
+}
+
+/* With its picture, the chip is the picture and its caption. */
+.mdimg:has(img)::before {
+	content: none;
 }
 
 .mdimg[data-known] {
@@ -540,7 +550,9 @@ button:disabled {
 	margin: 0;
 	/* Never shorter than the button. */
 	min-height: var(--hit);
-	padding: 0.75em 0.85em;
+	align-content: center;
+	/* The end of a long line scrolls out from under the button. */
+	padding: 0.75em var(--hit) 0.75em 0.85em;
 	border-radius: 10px;
 	background: var(--surface);
 	font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -569,13 +581,13 @@ button:disabled {
 	justify-content: center;
 	color: var(--muted);
 	font-size: 15px;
+	border-radius: 0 10px 0 10px;
+	/* Solid, so the code that scrolls under it does not show through. */
+	background: var(--surface);
 }
 
 .codeblock .copy::before {
 	content: '⧉';
-	padding: 3px 7px;
-	border-radius: 7px;
-	background: color-mix(in srgb, var(--surface) 80%, transparent);
 }
 
 .codeblock .copy[data-copied]::before {

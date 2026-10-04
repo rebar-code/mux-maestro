@@ -15,11 +15,11 @@
 	import LiveTerminal from './LiveTerminal.svelte';
 	import { LiveTerm } from './liveterm.svelte';
 	import Marked from './Marked.svelte';
-	import { imagePaths } from './markdown';
 	import NextBar from './NextBar.svelte';
 	import PromptCard from './PromptCard.svelte';
 	import Prose from './Prose.svelte';
 	import type { ProseLinks } from './prose';
+	import { renderer } from './renderer.svelte';
 	import PullIndicator from './PullIndicator.svelte';
 	import { push } from './push.svelte';
 	import { liveLines, nextWaiting } from './reply';
@@ -104,7 +104,9 @@
 		const files = inline?.get(message.n) ?? [];
 		if (!files.length || message.role !== 'assistant') return files;
 		const drawn = new Set(
-			imagePaths(message.text).map((path) => resolveArtifact(path, links.files)?.id)
+			(renderer.api?.imagePaths(message.text) ?? []).map(
+				(path) => resolveArtifact(path, links.files)?.id
+			)
 		);
 		return files.filter((file) => !(hasThumb(file) && drawn.has(file.id)));
 	}
@@ -580,7 +582,6 @@
 	}
 
 	.a {
-		max-width: 94%;
 		padding-bottom: 6px;
 		color: #e2e2e2;
 		overflow-wrap: anywhere;

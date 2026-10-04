@@ -171,7 +171,10 @@ test('an assistant message renders markdown; a user message and a tool row stay 
 
 	await prose.locator('h1').scrollIntoViewIfNeeded();
 	await shot(page, 'markdown-chat-top');
-	await prose.locator('pre').scrollIntoViewIfNeeded();
+	await pre.evaluate((el) => {
+		el.scrollLeft = 0;
+		el.scrollIntoView({ block: 'end' });
+	});
 	await shot(page, 'markdown-chat-code');
 
 	expect(seen.remote).toEqual([]);
@@ -275,7 +278,7 @@ test('links: the web in a new tab, a file in Artifacts, a local address through 
 	const remote = prose.locator('.mdimg', { hasText: 'a remote pixel' });
 	await expect(remote.locator('img')).toHaveCount(0);
 	await expect(remote).not.toHaveAttribute('data-known');
-	await image.scrollIntoViewIfNeeded();
+	await remote.evaluate((el) => el.scrollIntoView({ block: 'end' }));
 	await shot(page, 'markdown-chat-links');
 
 	// A file of the thread opens in the Artifacts tab, as its chip does.
