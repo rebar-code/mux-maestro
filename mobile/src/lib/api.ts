@@ -268,9 +268,18 @@ export function fetchConfig(as?: string): Promise<Config> {
 	return get<Config>('/api/config', as);
 }
 
-/** Type `text` into the thread's pane and submit it. */
-export async function sendText(id: string, text: string): Promise<void> {
-	await post(`${threadPath(id)}/text`, { text });
+/**
+ * Type `text` into the thread's pane and submit it. With no `mode` only an
+ * idle agent takes it. `queue`: a busy agent takes it too, and holds it until
+ * its turn ends. `interrupt`: Escape ends the turn so the agent takes up
+ * `text`, which a `queue` send put there before; nothing is typed again.
+ */
+export async function sendText(
+	id: string,
+	text: string,
+	mode?: 'queue' | 'interrupt'
+): Promise<void> {
+	await post(`${threadPath(id)}/text`, mode ? { text, mode } : { text });
 }
 
 /**

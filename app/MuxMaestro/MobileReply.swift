@@ -11,6 +11,12 @@ import Foundation
 //   status and the pane's screen are both read before the paste and again
 //   immediately before the Enter. A pane whose status is not known first-hand
 //   (no hooks, or another host) must show an input box.
+// - The human can ask for a busy pane to take the text all the same
+//   (`Delivery.queue`): the agent holds it until its turn ends. Only the
+//   status check is dropped. The screen is still read both times, so a prompt
+//   that is in front, or comes up, still refuses the text.
+// - `Delivery.interrupt` presses Escape in a busy pane with its input box in
+//   front, to end the turn so the queued text is taken up. It pastes nothing.
 // - Text that was pasted and then refused is taken out of the input box.
 // - A pane on a prompt takes an answer the human tapped, or a whitelisted
 //   key; both name the prompt the phone showed, and a prompt that changed
@@ -121,6 +127,8 @@ struct MobileScreen: Equatable {
     /// terminal cursor is in it, and there is no prompt: it is verified as
     /// idle and ready for text.
     let inputBox: Bool
+    /// The rows of that box, cursor mark and all. Empty with no box.
+    let boxRows: [String]
     /// Where that box is, to hold a later reading of the pane against.
     let anchor: Anchor?
 
@@ -258,6 +266,16 @@ struct MobileScreen: Equatable {
         prompt = found?.prompt
         inputBox = box != nil && found == nil
         anchor = inputBox ? box : nil
+        boxRows = anchor.map { Array(lines[($0.top + 1)..<$0.bottom]) } ?? []
+    }
+
+    /// Whether the input box holds `text` and nothing else, however the box
+    /// wraps it: the two are compared without their white space.
+    func holds(_ text: String) -> Bool {
+        guard inputBox, let first = boxRows.first, Self.hasCursor(first) else { return false }
+        let squash = { (s: String) in String(s.unicodeScalars.filter { !CharacterSet.whitespacesAndNewlines.contains($0) }) }
+        let box = squash(String(first.trimmingCharacters(in: .whitespaces).dropFirst()) + boxRows.dropFirst().joined())
+        return !box.isEmpty && box == squash(text)
     }
 
     /// An agent's input box by its shape, with under it nothing but a
@@ -594,12 +612,14 @@ enum MobileReply {
 
     /// The same check, and where the input box is when it passes. `pasted` is
     /// text of ours already in that box, and `after` where the box was before
-    /// it went in.
+    /// it went in. With `queue` a busy status is no refusal: the human asked
+    /// for the agent to hold the text until its turn ends.
     static func verify(
-        state: MobilePaneState?, io: MobilePaneIO, pasted: String = "", after: MobileScreen.Anchor? = nil
+        state: MobilePaneState?, io: MobilePaneIO, pasted: String = "", after: MobileScreen.Anchor? = nil,
+        queue: Bool = false
     ) -> (refusal: MobileResponse?, anchor: MobileScreen.Anchor?) {
         guard let state else { return (.error(404, "not_found"), nil) }
-        if state.status == .busy { return (.error(409, "busy", message: busyMessage), nil) }
+        if state.status == .busy, !queue { return (.error(409, "busy", message: busyMessage), nil) }
         if state.status == .waiting { return (.error(409, "waiting", message: waitingMessage), nil) }
         guard let text = io.screen() else {
             return (.error(503, "unavailable", message: unreachable), nil)
@@ -612,27 +632,91 @@ enum MobileReply {
 
     // MARK: Text
 
+    /// How a reply reaches an agent that may be in the middle of a turn.
+    enum Delivery: String {
+        /// Into an idle pane only: a busy one refuses the text.
+        case idle
+        /// Into a busy pane too. The agent holds the text and takes it up
+        /// when its turn ends; the turn is not cut short.
+        case queue
+        /// Escape first: the turn ends now, and what was queued is taken up.
+        case interrupt
+    }
+
+    /// The `mode` of a text request: `idle` when it names none, nil when it
+    /// names one that is not a `Delivery`.
+    static func delivery(in body: Data) -> Delivery? {
+        guard let object = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any],
+              let mode = object["mode"]
+        else { return .idle }
+        return (mode as? String).flatMap(Delivery.init(rawValue:))
+    }
+
+    /// The pause between the Escape and the look at what it left in the box.
+    static let interruptDelay: TimeInterval = 0.5
+
     /// Paste `text` into the pane and submit it. `state` is the pane's state
     /// now, nil once its thread has gone; it and the screen are read before
     /// the paste and again immediately before the Enter. `text` must have
-    /// passed `MobileManager.text`.
+    /// passed `MobileManager.text`. With `queue` a busy pane takes it too.
     static func send(
-        _ text: String, target: String, io: MobilePaneIO, state: () -> MobilePaneState?,
+        _ text: String, queue: Bool = false, target: String, io: MobilePaneIO,
+        state: () -> MobilePaneState?,
         pause: (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }
     ) -> MobileResponse {
-        let before = verify(state: state(), io: io)
+        let before = verify(state: state(), io: io, queue: queue)
         if let refusal = before.refusal { return refusal }
         if let failure = paste(text, target: target, io: io) { return failure }
         pause(enterDelay)
         // A prompt that came up since the paste would take the Enter as its
         // answer.
-        if let refusal = verify(state: state(), io: io, pasted: text, after: before.anchor).refusal {
+        if let refusal = verify(
+            state: state(), io: io, pasted: text, after: before.anchor, queue: queue
+        ).refusal {
             return notSent(refusal, text: text, target: target, io: io, after: before.anchor)
         }
         guard io.tmux(TmuxCommands.submitPastedText(target: target), nil) != nil else {
             return .error(503, "unavailable", message: unreachable)
         }
         return .json(["ok": true])
+    }
+
+    /// End the agent's turn so it takes up `queued`, text that a `queue`
+    /// delivery put in the pane before. Escape is the whole interrupt: it is
+    /// one key press of its own, and nothing is pasted, so the text cannot go
+    /// in twice.
+    ///
+    /// Escape goes only to a busy pane with its input box in front. A turn
+    /// that has ended needs none, and the answer says so (`interrupted`
+    /// false). A prompt would take the Escape as its own cancel, so a pane on
+    /// one refuses.
+    ///
+    /// An agent may hand what it held back to its input box when its turn is
+    /// cut short, in place of running it. The box is read again after the
+    /// Escape: if it holds exactly `queued` and nothing came up in front, one
+    /// Enter sends it.
+    static func interrupt(
+        queued: String, target: String, io: MobilePaneIO, state: () -> MobilePaneState?,
+        pause: (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }
+    ) -> MobileResponse {
+        guard let now = state() else { return .error(404, "not_found") }
+        if now.status == .waiting { return .error(409, "waiting", message: waitingMessage) }
+        guard now.status == .busy else { return .json(["ok": true, "interrupted": false]) }
+        guard let text = io.screen() else { return .error(503, "unavailable", message: unreachable) }
+        let seen = MobileScreen(text, cursorRow: io.cursorRow())
+        if seen.prompt != nil { return .error(409, "waiting", message: waitingMessage) }
+        if !seen.inputBox { return .error(409, "no_input", message: noInputMessage) }
+        guard io.tmux(keyArgv(target: target, key: "Escape"), nil) != nil else {
+            return .error(503, "unavailable", message: unreachable)
+        }
+        pause(interruptDelay)
+        let after = io.screen().map { MobileScreen($0, cursorRow: io.cursorRow(), pasted: queued, after: seen.anchor) }
+        if let after, after.holds(queued), state()?.status != .waiting {
+            guard io.tmux(TmuxCommands.submitPastedText(target: target), nil) != nil else {
+                return .error(503, "unavailable", message: unreachable)
+            }
+        }
+        return .json(["ok": true, "interrupted": true])
     }
 
     /// The answer for text that was pasted and then refused. The text is

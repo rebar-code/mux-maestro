@@ -1144,6 +1144,28 @@ final class MobileServerTests: XCTestCase {
         XCTAssertEqual(pane.argv.last, ["send-keys", "-t", "%12", "C-u"])
     }
 
+    func testTextWithTheQueueModeGoesIntoABusyPane() {
+        repliesOn()
+        pane.status = .busy
+        // Without the mode a busy pane refuses, as it always did.
+        XCTAssertEqual(post(Self.thread + "/text", json: #"{"text":"go on"}"#).status, 409)
+        XCTAssertEqual(pane.argv.count, 0)
+        let queued = post(Self.thread + "/text", json: #"{"text":"go on","mode":"queue"}"#)
+        XCTAssertEqual(queued.status, 200)
+        XCTAssertTrue(FakePane.sendArgv(pane.argv, target: "%12"), "\(pane.argv)")
+        // A mode that is not known is refused before anything is typed.
+        XCTAssertEqual(post(Self.thread + "/text", json: #"{"text":"go on","mode":"now"}"#).status, 400)
+        XCTAssertEqual(pane.argv.count, 4)
+    }
+
+    func testTextWithTheInterruptModePressesEscapeAndPastesNothing() {
+        repliesOn()
+        pane.status = .busy
+        let cut = post(Self.thread + "/text", json: #"{"text":"go on","mode":"interrupt"}"#)
+        XCTAssertEqual(cut.body, #"{"interrupted":true,"ok":true}"#)
+        XCTAssertEqual(pane.argv, [["send-keys", "-t", "%12", "Escape"]])
+    }
+
     func testAPromptOnTheScreenRefusesTextWhateverTheStatusSays() {
         repliesOn()
         // The status stays idle throughout; only the screen shows the prompt.

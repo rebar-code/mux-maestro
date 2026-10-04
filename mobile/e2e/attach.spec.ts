@@ -454,8 +454,8 @@ test('a busy pane still takes a file: nothing is typed into it', async ({ page }
 	await picker(page).setInputFiles(txt('a.txt'));
 	await expect(tile(page, 'a.txt')).toHaveAttribute('data-state', 'done');
 	await expect(box(page)).toHaveValue('/Users/me/code/docs-site/a.txt ');
-	// The reply itself waits for the pane.
-	await expect(sendButton(page)).toBeDisabled();
+	// The agent is mid-turn: the reply would go to it as a queued send.
+	await expect(page.locator('[data-send]')).toHaveAttribute('data-send', 'queue');
 });
 
 test('three tiles: done, failed, on its way; the box under them does not move', async ({

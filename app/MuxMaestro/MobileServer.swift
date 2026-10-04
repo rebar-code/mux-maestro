@@ -806,8 +806,17 @@ final class MobileServer {
             guard case .value(let text) = field else {
                 return send(field.refusal ?? .error(400, "bad_request"), to: client, head: head)
             }
+            guard let delivery = MobileReply.delivery(in: request.body) else {
+                return send(.error(400, "bad_request"), to: client, head: head)
+            }
             write(to: id, client: client) { thread, io, state in
-                MobileReply.send(text, target: thread.pane, io: io, state: state)
+                switch delivery {
+                case .idle, .queue:
+                    return MobileReply.send(
+                        text, queue: delivery == .queue, target: thread.pane, io: io, state: state)
+                case .interrupt:
+                    return MobileReply.interrupt(queued: text, target: thread.pane, io: io, state: state)
+                }
             }
         case .key(let id):
             guard let press = MobileReply.key(in: request.body) else {

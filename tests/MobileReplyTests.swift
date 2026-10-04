@@ -28,6 +28,7 @@ final class FakePane {
     private var _failing = false
     private var _since: Int?
     private var _onPaste: (() -> Void)?
+    private var _onKeys: (([String]) -> Void)?
 
     private func locked<T>(_ body: () -> T) -> T {
         lock.lock()
@@ -100,6 +101,11 @@ final class FakePane {
         get { locked { _onPaste } }
         set { locked { _onPaste = newValue } }
     }
+    /// Runs once keys are pressed, with the call's argv, before the call returns.
+    var onKeys: (([String]) -> Void)? {
+        get { locked { _onKeys } }
+        set { locked { _onKeys = newValue } }
+    }
     /// tmux and saves fail.
     var failing: Bool {
         get { locked { _failing } }
@@ -120,6 +126,7 @@ final class FakePane {
                     return ""
                 }
                 if args.first == "paste-buffer" { onPaste?() }
+                if args.first == "send-keys" { onKeys?(args) }
                 return result
             },
             screen: { [self] in screen },
@@ -648,6 +655,167 @@ final class MobileReplyTests: XCTestCase {
         XCTAssertEqual(
             MobileReply.send("go on", target: "%12", io: pane.io, state: { nil }, pause: { _ in }).status, 404)
         XCTAssertEqual(pane.argv.count, 0)
+    }
+
+    // MARK: text into a busy pane
+
+    func testTheModeOfATextRequestNamesItsDelivery() {
+        func mode(_ json: String) -> MobileReply.Delivery? { MobileReply.delivery(in: Data(json.utf8)) }
+        // A request that names none is the old one: an idle pane only.
+        XCTAssertEqual(mode(#"{"text":"go on"}"#), .idle)
+        XCTAssertEqual(mode(#"{"text":"go on","mode":"idle"}"#), .idle)
+        XCTAssertEqual(mode(#"{"text":"go on","mode":"queue"}"#), .queue)
+        XCTAssertEqual(mode(#"{"text":"go on","mode":"interrupt"}"#), .interrupt)
+        // A mode that is not one of the three is refused, not guessed at.
+        XCTAssertNil(mode(#"{"text":"go on","mode":"now"}"#))
+        XCTAssertNil(mode(#"{"text":"go on","mode":1}"#))
+    }
+
+    func testQueuedTextGoesIntoABusyPaneAsTheSamePasteAndEnter() {
+        let pane = FakePane()
+        let text = "one more thing\nuse the new name"
+        let response = MobileReply.send(
+            text, queue: true, target: "%12", io: pane.io, state: { self.state(.busy) }, pause: { _ in })
+        XCTAssertEqual(response.status, 200)
+        // No Escape and no other key: the turn is not cut short.
+        XCTAssertTrue(FakePane.sendArgv(pane.argv, target: "%12"), "\(pane.argv)")
+        XCTAssertEqual(pane.calls[1].stdin, text)
+        // An idle pane takes it the same way.
+        let idle = FakePane()
+        XCTAssertEqual(
+            MobileReply.send(
+                text, queue: true, target: "%12", io: idle.io, state: { self.state(.idle) }, pause: { _ in }
+            ).status, 200)
+        XCTAssertTrue(FakePane.sendArgv(idle.argv, target: "%12"))
+    }
+
+    func testQueuedTextStillStopsAtAPrompt() {
+        // The status says waiting: nothing is typed.
+        let waiting = FakePane()
+        let refused = MobileReply.send(
+            "go on", queue: true, target: "%12", io: waiting.io, state: { self.state(.waiting) },
+            pause: { _ in })
+        XCTAssertTrue(body(refused).contains(#""error":"waiting""#))
+        XCTAssertEqual(waiting.argv.count, 0)
+        // Busy by its status, with a prompt on the screen: nothing is typed.
+        let asking = FakePane()
+        asking.screen = DemoPrompt.permission
+        asking.cursor = .lastLine
+        XCTAssertEqual(
+            MobileReply.send(
+                "go on", queue: true, target: "%12", io: asking.io, state: { self.state(.busy) },
+                pause: { _ in }
+            ).status, 409)
+        XCTAssertEqual(asking.argv.count, 0)
+        // Busy, and no input box in front: nothing is typed.
+        let pager = FakePane()
+        pager.screen = DemoPrompt.idle + "\n:"
+        pager.cursor = .lastLine
+        let noBox = MobileReply.send(
+            "go on", queue: true, target: "%12", io: pager.io, state: { self.state(.busy) }, pause: { _ in })
+        XCTAssertTrue(body(noBox).contains(#""error":"no_input""#))
+        XCTAssertEqual(pager.argv.count, 0)
+        // A prompt that comes up between the paste and the Enter gets no Enter.
+        let late = FakePane()
+        late.screenAfterPaste = DemoPrompt.permission
+        late.cursorAfterPaste = .lastLine
+        let notSent = MobileReply.send(
+            "go on", queue: true, target: "%12", io: late.io, state: { self.state(.busy) }, pause: { _ in })
+        XCTAssertTrue(body(notSent).contains(#""error":"not_sent""#), body(notSent))
+        XCTAssertFalse(late.argv.contains { $0.contains("Enter") })
+    }
+
+    func testInterruptPressesEscapeAloneInABusyPane() {
+        let pane = FakePane()
+        var pauses: [TimeInterval] = []
+        let response = MobileReply.interrupt(
+            queued: "go on", target: "%12", io: pane.io, state: { self.state(.busy) },
+            pause: { pauses.append($0) })
+        XCTAssertEqual(response.status, 200)
+        XCTAssertTrue(body(response).contains(#""interrupted":true"#))
+        // One key press of its own. Nothing is pasted, so the text cannot go in twice.
+        XCTAssertEqual(pane.argv, [["send-keys", "-t", "%12", "Escape"]])
+        XCTAssertEqual(pauses, [MobileReply.interruptDelay])
+    }
+
+    func testInterruptSendsWhatTheAgentHandedBackToItsBox() {
+        let queued = "one more thing\nuse the new name"
+        func interrupt(leaving box: String) -> [[String]] {
+            let pane = FakePane()
+            pane.onKeys = { argv in if argv.last == "Escape" { pane.screen = DemoPrompt.input(box) } }
+            let response = MobileReply.interrupt(
+                queued: queued, target: "%12", io: pane.io, state: { self.state(.busy) }, pause: { _ in })
+            XCTAssertEqual(response.status, 200)
+            return pane.argv
+        }
+        let escape = ["send-keys", "-t", "%12", "Escape"]
+        let enter = ["send-keys", "-t", "%12", "Enter"]
+        // The agent put the queued text back in its box: one Enter sends it.
+        XCTAssertEqual(interrupt(leaving: queued), [escape, enter])
+        // The box wraps a long line: still the same text.
+        XCTAssertEqual(interrupt(leaving: "one more\nthing\nuse the new name"), [escape, enter])
+        // An empty box: the agent took the text itself. No Enter.
+        XCTAssertEqual(interrupt(leaving: ""), [escape])
+        // Other words in the box (typed at the Mac): they are not ours to send.
+        XCTAssertEqual(interrupt(leaving: "rm -rf build"), [escape])
+        XCTAssertEqual(interrupt(leaving: queued + "\nand more"), [escape])
+    }
+
+    func testInterruptGivesNoEnterToAPromptThatCameUp() {
+        let pane = FakePane()
+        pane.onKeys = { _ in
+            pane.screen = DemoPrompt.permission
+            pane.cursor = .lastLine
+        }
+        let response = MobileReply.interrupt(
+            queued: "go on", target: "%12", io: pane.io, state: { self.state(.busy) }, pause: { _ in })
+        XCTAssertEqual(response.status, 200)
+        XCTAssertEqual(pane.argv, [["send-keys", "-t", "%12", "Escape"]])
+        // The box holds the text, and the status says the pane now waits: no Enter.
+        let waits = FakePane()
+        var asked = 0
+        waits.onKeys = { _ in waits.screen = DemoPrompt.input("go on") }
+        _ = MobileReply.interrupt(
+            queued: "go on", target: "%12", io: waits.io,
+            state: { asked += 1; return self.state(asked == 1 ? .busy : .waiting) }, pause: { _ in })
+        XCTAssertEqual(waits.argv, [["send-keys", "-t", "%12", "Escape"]])
+    }
+
+    func testInterruptPressesNothingUnlessTheTurnRunsWithItsBoxInFront() {
+        // The turn has ended: there is nothing to cut short, and the answer says so.
+        for status in [AttentionStatus.idle, .unknown] {
+            let pane = FakePane()
+            let done = MobileReply.interrupt(
+                queued: "go on", target: "%12", io: pane.io, state: { self.state(status) }, pause: { _ in })
+            XCTAssertEqual(done.status, 200)
+            XCTAssertTrue(body(done).contains(#""interrupted":false"#))
+            XCTAssertEqual(pane.argv.count, 0)
+        }
+        // A prompt would take the Escape as its own cancel.
+        let waiting = FakePane()
+        let refused = MobileReply.interrupt(
+            queued: "go on", target: "%12", io: waiting.io, state: { self.state(.waiting) }, pause: { _ in })
+        XCTAssertTrue(body(refused).contains(#""error":"waiting""#))
+        let asking = FakePane()
+        asking.screen = DemoPrompt.permission
+        asking.cursor = .lastLine
+        XCTAssertEqual(
+            MobileReply.interrupt(
+                queued: "go on", target: "%12", io: asking.io, state: { self.state(.busy) }, pause: { _ in }
+            ).status, 409)
+        // Something that is not the agent's box is in front.
+        let pager = FakePane()
+        pager.screen = DemoPrompt.idle + "\n:"
+        pager.cursor = .lastLine
+        let noBox = MobileReply.interrupt(
+            queued: "go on", target: "%12", io: pager.io, state: { self.state(.busy) }, pause: { _ in })
+        XCTAssertTrue(body(noBox).contains(#""error":"no_input""#))
+        // The thread has gone.
+        let gone = FakePane()
+        XCTAssertEqual(
+            MobileReply.interrupt(queued: "go on", target: "%12", io: gone.io, state: { nil }, pause: { _ in })
+                .status, 404)
+        for pane in [waiting, asking, pager, gone] { XCTAssertEqual(pane.argv.count, 0) }
     }
 
     func testTextRefusedAfterThePasteIsTakenOutOnlyWhenTheInputBoxIsInFront() {

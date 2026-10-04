@@ -569,6 +569,8 @@ let pushSubs, pushFocus, pushLimit;
 let findBusy;
 // Uploads: the paths taken, the threads with one in flight, how slow they are, a refusal for the next.
 let saved, uploadLocks, uploadSlow, uploadFail;
+// The texts each busy thread's agent holds until its turn ends.
+let held;
 // Set: the server holds a newer build than the one a phone may have cached.
 let buildTag = null;
 // How long a reply's answer takes to come back.
@@ -626,8 +628,10 @@ function reset() {
 	promptSeq = 0;
 	findBusy = 0;
 	uploadMax = 10485760;
+	held = {};
 	replies = {
 		texts: [],
+		interrupts: [],
 		keys: [],
 		answers: [],
 		cancels: [],
@@ -830,6 +834,16 @@ function setStatus(thread, status) {
 	if (status !== 'waiting') delete prompts[thread.id];
 	push('threads', threadsBody());
 	if (capabilities.manager) push('manager', managerLive());
+	if (status === 'idle') takeUpHeld(thread);
+}
+
+/** The turn is over: the agent takes up what it held, each text a row of its own. */
+function takeUpHeld(thread) {
+	const texts = held[thread.id];
+	if (!texts?.length) return;
+	delete held[thread.id];
+	for (const text of texts.slice(0, -1)) chatRow(thread, 'user', text);
+	runThreadTurn(thread, texts.at(-1));
 }
 
 const chatRow = (thread, role, text) => {
@@ -838,8 +852,9 @@ const chatRow = (thread, role, text) => {
 };
 
 /** The pane's 409 while it cannot take free text, or `null`. */
-function refusedBy(thread) {
-	if (thread.status === 'busy')
+/** `queue`: the text may go to a busy agent, which holds it until its turn ends. */
+function refusedBy(thread, queue = false) {
+	if (thread.status === 'busy' && !queue)
 		return { error: 'busy', message: `${thread.name} is running a turn` };
 	if (thread.status === 'waiting' || promptOf(thread))
 		return { error: 'waiting', message: `${thread.name} is waiting on a prompt` };
@@ -1098,10 +1113,28 @@ function replyApi(req, res, url, thread, route, body) {
 		});
 	// text
 	const text = typeof json.text === 'string' ? json.text.trim() : '';
+	const mode = json.mode ?? 'idle';
+	if (!['idle', 'queue', 'interrupt'].includes(mode))
+		return send(res, 400, { error: 'bad_request' });
 	if (!text || CONTROL.test(text)) return send(res, 400, { error: 'bad_request' });
 	if (Buffer.byteLength(text) > TEXT_MAX) return send(res, 413, { error: 'too_large' });
-	const refused = refusedBy(thread);
+	if (mode === 'interrupt') {
+		// Escape, and nothing typed: `text` names what the agent holds.
+		if (thread.status === 'waiting' || promptOf(thread))
+			return send(res, 409, refusedBy({ ...thread, status: 'waiting' }));
+		if (thread.status !== 'busy') return send(res, 200, { ok: true, interrupted: false });
+		replies.interrupts.push({ thread: thread.id, text });
+		setStatus(thread, 'idle');
+		return send(res, 200, { ok: true, interrupted: true });
+	}
+	const refused = refusedBy(thread, mode === 'queue');
 	if (refused) return send(res, 409, refused);
+	if (mode === 'queue' && thread.status === 'busy') {
+		// A soft submit: the turn runs on, and the agent holds the text.
+		replies.texts.push({ thread: thread.id, text, mode });
+		(held[thread.id] ??= []).push(text);
+		return void setTimeout(() => send(res, 200, { ok: true }), textSlow);
+	}
 	if (notSent) {
 		// Pasted, not submitted. The Mac tried to take it out of the input box again.
 		const { reason } = notSent;
@@ -1832,6 +1865,7 @@ function hook(res, url) {
 				idleStage: 'awake'
 			});
 			if (thread.status !== 'waiting') delete prompts[thread.id];
+			if (thread.status === 'idle') takeUpHeld(thread);
 			break;
 		case '/__fixture/find-busy':
 			findBusy = Number(url.searchParams.get('value') ?? 1);

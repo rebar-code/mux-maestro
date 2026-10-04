@@ -9,6 +9,7 @@
 	import Composer from './Composer.svelte';
 	import { Find } from './find.svelte';
 	import FindBar from './FindBar.svelte';
+	import Icon from './Icon.svelte';
 	import type { Snippet } from 'svelte';
 	import { dotClass, statusLabel } from './format';
 	import { pages, pullToRefresh, ui } from './gestures.svelte';
@@ -28,7 +29,7 @@
 	import { renderer } from './renderer.svelte';
 	import PullIndicator from './PullIndicator.svelte';
 	import { push } from './push.svelte';
-	import { liveLines, nextWaiting } from './reply';
+	import { liveLines, nextWaiting, queuedLines } from './reply';
 	import { Reply } from './reply.svelte';
 	import ServeConfirm from './ServeConfirm.svelte';
 	import { SERVERS, Servers } from './servers.svelte';
@@ -178,7 +179,8 @@
 		new Reply(id, {
 			refresh: () => feed.load(mode),
 			stick: (change) => feed.keepEnd(mode, false, change),
-			terminal: () => mode === 'terminal'
+			terminal: () => mode === 'terminal',
+			last: () => feed.messages?.at(-1)?.n ?? -1
 		});
 	/** The pane's prompts are shown and answered here: a listed thread, or a pane given its own `reply`. */
 	// svelte-ignore state_referenced_locally
@@ -227,6 +229,8 @@
 		turn(0);
 	}
 	const spoken = $derived(liveLines(feed.messages ?? [], reply.turn));
+	/** Text the busy agent holds: drawn as queued until the chat has it. */
+	const queued = $derived(queuedLines(feed.messages ?? [], reply.queued));
 
 	function send(): void {
 		// A typed reply takes over: a reply that is still being read stops.
@@ -417,6 +421,11 @@
 								{#if pending}
 									<div class="u" data-pending>{pending}</div>
 								{/if}
+								{#each queued as text, index (index)}
+									<div class="u queued" aria-label="Queued: {text}" data-queued>
+										<Icon name="sendQueued" size={14} />{text}
+									</div>
+								{/each}
 								{@render tail?.()}
 							{/if}
 							{#if cardId !== null}
@@ -554,6 +563,8 @@
 					{voiceOn}
 					blocked={reply.blocked || reply.files.pending}
 					sending={reply.sending}
+					busy={reply.busy}
+					stage={reply.stage}
 					note={reply.note}
 					onsend={send}
 					oninput={reply.typed}
@@ -702,6 +713,20 @@
 		padding: 8px 12px;
 		white-space: pre-wrap;
 		overflow-wrap: anywhere;
+	}
+
+	/* Not sent yet: the agent holds it until its turn ends. A broken edge, and the queue's mark. */
+	.u.queued {
+		display: flex;
+		align-items: baseline;
+		gap: 7px;
+		background: none;
+		border: 1px dashed #3a5273;
+		color: var(--muted);
+	}
+
+	.u.queued :global(svg) {
+		align-self: center;
 	}
 
 	.a {
