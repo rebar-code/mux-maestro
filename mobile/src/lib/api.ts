@@ -206,7 +206,10 @@ export async function readEvents(
 	}
 }
 
-const threadPath = (id: string): string => `/api/threads/${encodeURIComponent(id)}`;
+/** Where a thread's chat and screen are read from. */
+export const threadPath = (id: string): string => `/api/threads/${encodeURIComponent(id)}`;
+/** The manager pane is read the same way, from its own routes. */
+export const MANAGER_PATH = '/api/manager';
 
 export async function fetchThreads(): Promise<Thread[]> {
 	return (await get<{ threads: Thread[] }>('/api/threads')).threads;
@@ -216,8 +219,9 @@ export async function fetchHosts(): Promise<Host[]> {
 	return (await get<{ hosts: Host[] }>('/api/hosts')).hosts;
 }
 
-export function fetchChat(id: string, after?: number): Promise<ChatPage> {
-	return get<ChatPage>(`${threadPath(id)}/chat${after === undefined ? '' : `?after=${after}`}`);
+/** `base`: `threadPath(id)` or `MANAGER_PATH`. */
+export function fetchChat(base: string, after?: number): Promise<ChatPage> {
+	return get<ChatPage>(`${base}/chat${after === undefined ? '' : `?after=${after}`}`);
 }
 
 export interface ScreenPage {
@@ -235,12 +239,12 @@ export interface ScreenPage {
  * `etag`: the tag of the text already held; null comes back when it has not changed.
  */
 export async function fetchScreen(
-	id: string,
+	base: string,
 	lines?: number,
 	etag?: string | null
 ): Promise<ScreenPage | null> {
 	const response = await request(
-		`${threadPath(id)}/screen${lines === undefined ? '' : `?lines=${lines}`}`,
+		`${base}/screen${lines === undefined ? '' : `?lines=${lines}`}`,
 		'application/json',
 		undefined,
 		undefined,
@@ -267,44 +271,123 @@ export async function sendText(id: string, text: string): Promise<void> {
 }
 
 /**
- * Press one key in the thread's pane. `key` is a name from `reply.ts`.
- * `prompt` names the prompt the phone shows: a pane that waits on another one
- * answers 409 `stale` and takes no key.
+ * Press one key in a pane. `base`: `threadPath(id)` or `MANAGER_PATH`. `key`
+ * is a name from `reply.ts`. `prompt` names the prompt the phone shows: a
+ * pane that waits on another one answers 409 `stale` and takes no key.
+ * `terminal`: the pane's own text was on screen at the tap, so the human could
+ * read a prompt the card cannot hold.
  */
-export async function sendKey(id: string, key: string, prompt: string | null): Promise<void> {
-	await post(`${threadPath(id)}/key`, { key, ...(prompt ? { prompt } : {}) });
+export async function sendKey(
+	base: string,
+	key: string,
+	prompt: string | null,
+	terminal: boolean
+): Promise<void> {
+	await post(`${base}/key`, {
+		key,
+		...(prompt ? { prompt } : {}),
+		...(terminal ? { terminal } : {})
+	});
 }
 
-/** What the thread's pane asks now. */
-export async function fetchPrompt(id: string): Promise<PromptState> {
-	const body = await get<Partial<PromptState>>(`${threadPath(id)}/prompt`);
+/** What a pane asks now. `base`: `threadPath(id)` or `MANAGER_PATH`. */
+export async function fetchPrompt(base: string): Promise<PromptState> {
+	const body = await get<Partial<PromptState>>(`${base}/prompt`);
 	const prompt = body.prompt ?? null;
 	return { prompt, id: body.id ?? prompt?.id ?? null };
 }
 
-/** Pick option `option` of the prompt `prompt`. A prompt that changed answers 409 `stale`. */
-export async function answerPrompt(id: string, prompt: string, option: number): Promise<void> {
-	await post(`${threadPath(id)}/answer`, { prompt, option });
+/**
+ * Answer the prompt `prompt` with one of its options, or cancel it. A prompt
+ * that changed answers 409 `stale`. `base`: `threadPath(id)` or `MANAGER_PATH`.
+ */
+export async function answerPrompt(
+	base: string,
+	prompt: string,
+	choice: { option: number } | { cancel: true }
+): Promise<void> {
+	await post(`${base}/answer`, { prompt, ...choice });
 }
 
 export async function fetchCommands(id: string): Promise<Command[]> {
 	return (await get<{ commands: Command[] }>(`${threadPath(id)}/commands`)).commands;
 }
 
+/** What the Mac says of a file it saved. */
+export interface Uploaded {
+	/** Where the file is on the Mac. A name that was taken got a number. */
+	path: string;
+	/** The path as it is typed into a pane: quoted when it has to be. */
+	text: string;
+}
+
+function refusalOf(xhr: XMLHttpRequest): ApiError {
+	try {
+		const body = JSON.parse(xhr.responseText) as Record<string, unknown>;
+		return new ApiError(
+			xhr.status,
+			typeof body.error === 'string' ? body.error : null,
+			typeof body.message === 'string' ? body.message : null,
+			typeof body.reason === 'string' ? body.reason : null,
+			typeof body.cleared === 'boolean' ? body.cleared : null
+		);
+	} catch {
+		return new ApiError(xhr.status, null);
+	}
+}
+
 /**
- * Put `file` in the thread's directory. `pasted` is false when the file was
- * saved but the pane could not take its path.
+ * Put `file` in the thread's directory under `name`. Nothing is typed into
+ * the pane: the caller gets the path, to put it in the reply.
+ *
+ * The one request that is not a `fetch`: `fetch` cannot say how much of a
+ * body has gone out, and a photo over a phone link needs a progress bar. It
+ * carries the token and the write header like every other write, and a
+ * refusal is the same `ApiError`. No answer at all (offline, or the Mac out
+ * of reach) rejects with a plain `Error`; `signal` aborts it.
  */
-export async function uploadFile(id: string, file: File): Promise<{ pasted: boolean }> {
-	const response = await request(
-		`${threadPath(id)}/upload?name=${encodeURIComponent(file.name)}`,
-		'application/json',
-		undefined,
-		undefined,
-		{},
-		{ bytes: file, type: 'application/octet-stream' }
-	);
-	return { pasted: ((await response.json()) as { pasted?: boolean }).pasted !== false };
+export function uploadFile(
+	id: string,
+	file: Blob,
+	name: string,
+	onProgress: (sent: number, total: number) => void,
+	signal: AbortSignal
+): Promise<Uploaded> {
+	return new Promise((resolve, reject) => {
+		if (signal.aborted) return reject(new DOMException('Aborted', 'AbortError'));
+		const xhr = new XMLHttpRequest();
+		xhr.open('POST', `${threadPath(id)}/upload?name=${encodeURIComponent(name)}&paste=0`);
+		xhr.setRequestHeader('accept', 'application/json');
+		xhr.setRequestHeader('content-type', 'application/octet-stream');
+		xhr.setRequestHeader('x-muxmaestro', '1');
+		if (token) xhr.setRequestHeader(TOKEN_HEADER, token);
+		const abort = (): void => xhr.abort();
+		signal.addEventListener('abort', abort, { once: true });
+		const settle = (): void => signal.removeEventListener('abort', abort);
+		xhr.upload.onprogress = (event) => {
+			if (event.lengthComputable) onProgress(event.loaded, event.total);
+		};
+		xhr.onload = () => {
+			settle();
+			if (xhr.status < 200 || xhr.status >= 300) return reject(refusalOf(xhr));
+			try {
+				const body = JSON.parse(xhr.responseText) as Partial<Uploaded>;
+				const path = body.path ?? '';
+				resolve({ path, text: body.text ?? path });
+			} catch {
+				reject(new ApiError(xhr.status, null));
+			}
+		};
+		xhr.onerror = () => {
+			settle();
+			reject(new Error('No answer'));
+		};
+		xhr.onabort = () => {
+			settle();
+			reject(new DOMException('Aborted', 'AbortError'));
+		};
+		xhr.send(file);
+	});
 }
 
 /** What a session action answers: the new window's thread, or the new session's name. */

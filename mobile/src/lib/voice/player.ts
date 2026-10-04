@@ -21,6 +21,8 @@ export class Player {
 	private epoch = 0;
 	/** Called when the last queued clip has finished playing. */
 	onDrained: (() => void) | null = null;
+	/** Called when a clip could not be decoded. The rest still plays. */
+	onFailed: (() => void) | null = null;
 	/** Called when a clip starts to play and nothing was playing before it. */
 	onStarted: (() => void) | null = null;
 
@@ -40,6 +42,7 @@ export class Player {
 				clip = await this.context.decodeAudioData(wav);
 			} catch {
 				// A clip that does not decode is skipped; the rest still plays.
+				if (epoch === this.epoch) this.onFailed?.();
 			}
 			if (epoch !== this.epoch) return;
 			this.pending -= 1;

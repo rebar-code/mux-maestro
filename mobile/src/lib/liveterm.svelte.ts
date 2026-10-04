@@ -70,11 +70,6 @@ export class LiveTerm implements KeySink {
 		}
 	};
 
-	/** What the key bar's hide-keyboard button blurs. */
-	get input(): { blur(): void } | null {
-		return this.term;
-	}
-
 	focus = (): void => this.term?.focus();
 
 	jump = (): void => {

@@ -7,7 +7,8 @@ import {
 	reset,
 	threadPath,
 	TOKEN_HEADER,
-	touchDrag
+	touchDrag,
+	twoFingers
 } from './helpers';
 
 /** Idle, local, with a chat. */
@@ -26,7 +27,6 @@ interface Replies {
 	/** Texts the pane was left holding, unsent. */
 	left: { thread: string; text: string }[];
 	answers: { thread: string; prompt: string; option: number }[];
-	uploads: { thread: string; name: string; bytes: number; type: string | null; text: string }[];
 	commandFetches: number;
 }
 
@@ -41,6 +41,14 @@ const key = (page: Page, name: string): Locator =>
 const slash = (page: Page): Locator => page.locator('[data-slash]');
 const card = (page: Page): Locator => page.locator('[data-prompt]');
 const nextBar = (page: Page): Locator => page.locator('[data-next]');
+/** The pill beside an empty box: the voice button, switched off while Voice is off on the Mac. */
+const idlePill = (page: Page): Locator => page.locator('[data-compose] [data-primary="talk"]');
+/** The voice bar with its controls. Switched off, the bar is one line with none. */
+const voiceControls = (page: Page): Locator =>
+	page.locator('[data-voicebar]:not([data-voice="off"])');
+/** The reply box while replies are switched off on the Mac. */
+const offBox = (page: Page): Locator =>
+	page.getByRole('textbox', { name: 'Off in MuxMaestro Settings' });
 
 async function received(page: Page): Promise<Replies> {
 	return (await (await page.request.post('/__fixture/replies')).json()) as Replies;
@@ -70,7 +78,7 @@ test('a reply is sent, shows in the chat, and the box clears', async ({ page }) 
 	await open(page, IDLE, ['replies', 'keyBar']);
 	await expect(box(page)).toHaveAttribute('enterkeyhint', 'send');
 	await expect(box(page)).toHaveAttribute('placeholder', 'Reply');
-	await expect(sendButton(page)).toBeDisabled();
+	await expect(idlePill(page)).toBeDisabled();
 	await shot(page, 'composer');
 
 	await box(page).fill('ship it');
@@ -211,7 +219,8 @@ test('key bar: keys go to the pane, text keys go to the box', async ({ page }) =
 		'-'
 	]);
 
-	// Every key has a name, a 44pt touch area, and 8pt to the next one.
+	// Every key has a name. The strip is slim by design: about 60% of a full
+	// touch row, with the keys still clear of each other.
 	const sizes = await keybar(page)
 		.locator('.keys')
 		.evaluate((keys) => {
@@ -225,25 +234,25 @@ test('key bar: keys go to the pane, text keys go to the box', async ({ page }) =
 				return {
 					label: button.getAttribute('aria-label'),
 					width: rect.width,
-					top: document.elementFromPoint(x, y - 21) === button,
-					bottom: document.elementFromPoint(x, y + 21) === button,
-					gap: next ? next.left - rect.right : 8
+					top: document.elementFromPoint(x, y - 11) === button,
+					bottom: document.elementFromPoint(x, y + 11) === button,
+					gap: next ? next.left - rect.right : 5
 				};
 			});
 		});
 	for (const size of sizes) {
 		expect(size.label, JSON.stringify(size)).toBeTruthy();
-		expect(size.width, JSON.stringify(size)).toBeGreaterThanOrEqual(44);
+		expect(size.width, JSON.stringify(size)).toBeGreaterThanOrEqual(28);
 		expect(size.top && size.bottom, JSON.stringify(size)).toBe(true);
-		expect(size.gap, JSON.stringify(size)).toBeGreaterThanOrEqual(8);
+		expect(size.gap, JSON.stringify(size)).toBeGreaterThanOrEqual(5);
 	}
+	const strip = await keybar(page).boundingBox();
+	expect(strip?.height).toBeLessThanOrEqual(32);
 	await keybar(page)
 		.locator('.keys')
 		.evaluate((keys) => (keys.scrollLeft = 0));
-	const hide = page.getByRole('button', { name: 'Hide keyboard' });
-	const hideBox = await hide.boundingBox();
-	expect(hideBox?.width).toBeGreaterThanOrEqual(44);
-	expect(hideBox?.height).toBeGreaterThanOrEqual(44);
+	// The bar has no keyboard button.
+	await expect(page.getByRole('button', { name: 'Hide keyboard' })).toHaveCount(0);
 
 	// A tap on a key leaves the focus in the box, so the keyboard stays up.
 	await box(page).tap();
@@ -290,9 +299,6 @@ test('key bar: keys go to the pane, text keys go to the box', async ({ page }) =
 	await expect(box(page)).toHaveValue('/');
 	await expect(slash(page)).toBeVisible();
 	expect((await received(page)).keys).toHaveLength(9);
-
-	await hide.tap();
-	await expect(box(page)).not.toBeFocused();
 });
 
 test('Ctrl is sticky: the next letter is a control key', async ({ page }) => {
@@ -417,7 +423,7 @@ test('a permission card is answered with its first option', async ({ page }) => 
 		'pnpm exec playwright test tests/checkout.spec.ts'
 	);
 	await expect(card(page).locator('.q')).toHaveText('Do you want to proceed?');
-	const options = card(page).getByRole('button');
+	const options = card(page).locator('button[data-option]');
 	await expect(options).toHaveCount(3);
 	await expect(options.nth(0)).toHaveText(/Yes\s*1/);
 	await expect(options.nth(2)).toHaveText(/No, and tell Claude what to do differently\s*3/);
@@ -456,7 +462,7 @@ test('a question card shows in the terminal view and is answered', async ({ page
 	await expect(card(page).locator('pre')).toHaveCount(0);
 	// The Mac sent no heading for it.
 	await expect(card(page).locator('h3')).toHaveText('Question');
-	const options = card(page).getByRole('button');
+	const options = card(page).locator('button[data-option]');
 	await expect(options).toHaveText([
 		/Credit the unused days\s*1/,
 		/No credit until renewal\s*2/,
@@ -480,7 +486,7 @@ test('buttons are off while an answer is in flight', async ({ page }) => {
 		await held;
 		await route.continue();
 	});
-	const options = card(page).getByRole('button');
+	const options = card(page).locator('button[data-option]');
 	await options.nth(1).tap();
 	for (const option of await options.all()) await expect(option).toBeDisabled();
 	await expect(options.nth(1)).toHaveAttribute('aria-busy', 'true');
@@ -530,86 +536,6 @@ test('a thread that starts to wait gets its card, and loses it after', async ({ 
 	await expect(card(page)).toHaveCount(0);
 });
 
-test('a file is attached; one that is too big is not sent', async ({ page }) => {
-	await open(page, IDLE, ['replies', 'keyBar', 'upload']);
-	const attach = page.getByRole('button', { name: 'Attach' });
-	const size = await attach.evaluate((button) => {
-		const rect = button.getBoundingClientRect();
-		const x = rect.left + rect.width / 2;
-		const y = rect.top + rect.height / 2;
-		return (
-			document.elementFromPoint(x, y - 21) === button &&
-			document.elementFromPoint(x - 21, y) === button
-		);
-	});
-	expect(size).toBe(true);
-	const picker = page.locator('[data-attach-input]');
-	// No `capture`: the phone offers the library, the camera and files.
-	expect(await picker.getAttribute('capture')).toBeNull();
-	expect(await picker.getAttribute('accept')).toBeNull();
-
-	const sent = page.waitForRequest((request) => request.url().includes('/upload?'));
-	await picker.setInputFiles({
-		name: 'release notes.txt',
-		mimeType: 'text/plain',
-		buffer: Buffer.from('ship the fix')
-	});
-	const request = await sent;
-	expect(new URL(request.url()).search).toBe('?name=release%20notes.txt');
-	expect(request.headers()['content-type']).toBe('application/octet-stream');
-	expect(request.headers()['x-muxmaestro']).toBe('1');
-	expect(request.headers()['x-muxmaestro-token']).toBe('demo-token');
-	await expect(note(page)).toHaveText('Attached');
-	await expect(attach).toBeEnabled();
-	expect((await received(page)).uploads).toEqual([
-		{
-			thread: IDLE,
-			name: 'release notes.txt',
-			bytes: 12,
-			type: 'application/octet-stream',
-			text: 'ship the fix'
-		}
-	]);
-	await shot(page, 'upload');
-
-	// Over the Mac's limit: refused on the phone, nothing is posted.
-	await page.request.post('/__fixture/upload-max?value=8');
-	await page.waitForTimeout(200);
-	await picker.setInputFiles({
-		name: 'big.txt',
-		mimeType: 'text/plain',
-		buffer: Buffer.from('more than eight bytes')
-	});
-	await expect(note(page)).toHaveText('Too big');
-	expect((await received(page)).uploads).toHaveLength(1);
-});
-
-test('the attach button shows an upload in flight, and is off while the pane is busy', async ({
-	page
-}) => {
-	await open(page, IDLE, ['replies', 'upload']);
-	const attach = page.getByRole('button', { name: 'Attach' });
-	let release: () => void = () => {};
-	const held = new Promise<void>((done) => (release = done));
-	await page.route('**/api/threads/*/upload?*', async (route) => {
-		await held;
-		await route.continue();
-	});
-	await page.locator('[data-attach-input]').setInputFiles({
-		name: 'photo.png',
-		mimeType: 'image/png',
-		buffer: Buffer.from([137, 80, 78, 71])
-	});
-	await expect(attach).toBeDisabled();
-	await expect(attach).toHaveAttribute('aria-busy', 'true');
-	release();
-	await expect(note(page)).toHaveText('Attached');
-	await expect(attach).toBeEnabled();
-
-	await page.request.post(`/__fixture/status?id=${IDLE}&value=busy`);
-	await expect(attach).toBeDisabled();
-});
-
 test('Next opens the thread that has waited longest', async ({ page }) => {
 	await open(page, IDLE, ['replies', 'keyBar']);
 	await expect(nextBar(page)).toHaveText(/Next\s+billing · proration\s*›/);
@@ -635,13 +561,14 @@ test('with the features off, the thread shows none of this', async ({ page }) =>
 	await open(page, PERMISSION, []);
 	await expect(page.locator('.u').first()).toBeVisible();
 	await page.waitForTimeout(400);
-	await expect(page.locator('[data-dock]')).toHaveCount(0);
+	// The reply box holds its place, switched off; nothing else of the bar shows.
+	await expect(offBox(page)).toBeDisabled();
 	await expect(box(page)).toHaveCount(0);
 	await expect(keybar(page)).toHaveCount(0);
 	await expect(card(page)).toHaveCount(0);
 	await expect(nextBar(page)).toHaveCount(0);
-	await expect(page.getByRole('button', { name: 'Attach' })).toHaveCount(0);
-	await expect(page.locator('[data-voicebar]')).toHaveCount(0);
+	await expect(page.getByRole('button', { name: 'Attach' })).toBeDisabled();
+	await expect(voiceControls(page)).toHaveCount(0);
 
 	// Each switch shows only its own controls, as soon as the Mac flips it.
 	await page.request.post('/__fixture/capability?name=keyBar&on=1');
@@ -657,26 +584,30 @@ test('with the features off, the thread shows none of this', async ({ page }) =>
 	await page.request.post('/__fixture/capability?name=upload&on=1');
 	await page.request.post('/__fixture/capability?name=voice&on=1');
 	await page.waitForTimeout(300);
-	await expect(page.getByRole('button', { name: 'Attach' })).toHaveCount(0);
-	await expect(page.locator('[data-voicebar]')).toHaveCount(0);
+	await expect(page.getByRole('button', { name: 'Attach' })).toBeDisabled();
+	await expect(voiceControls(page)).toHaveCount(0);
 
 	await page.request.post('/__fixture/capability?name=replies&on=1');
 	await expect(box(page)).toBeVisible();
 	await expect(card(page)).not.toHaveAttribute('data-readonly', '');
-	await expect(card(page).getByRole('button')).toHaveCount(3);
-	await expect(page.getByRole('button', { name: 'Attach' })).toBeVisible();
-	await expect(page.locator('[data-voicebar]')).toBeVisible();
+	await expect(card(page).locator('button[data-option]')).toHaveCount(3);
+	await expect(page.getByRole('button', { name: 'Attach' })).not.toHaveAttribute('aria-disabled');
+	await expect(voiceControls(page)).toBeVisible();
 	await expect(keybar(page).locator('.keys button')).toHaveCount(14);
 
 	await page.request.post('/__fixture/capability?name=upload&on=0');
-	await expect(page.getByRole('button', { name: 'Attach' })).toHaveCount(0);
+	await expect(page.getByRole('button', { name: 'Attach' })).toHaveAttribute(
+		'aria-disabled',
+		'true'
+	);
 	await page.request.post('/__fixture/capability?name=voice&on=0');
-	await expect(page.locator('[data-voicebar]')).toHaveCount(0);
+	await expect(voiceControls(page)).toHaveCount(0);
 	await page.request.post('/__fixture/capability?name=keyBar&on=0');
 	await expect(keybar(page)).toHaveCount(0);
 	await expect(box(page)).toBeVisible();
 	await page.request.post('/__fixture/capability?name=replies&on=0');
-	await expect(page.locator('[data-dock]')).toHaveCount(0);
+	await expect(offBox(page)).toBeDisabled();
+	await expect(box(page)).toHaveCount(0);
 	await expect(card(page)).toHaveCount(0);
 });
 
@@ -709,7 +640,7 @@ test('voice into a thread: the take shows as your line and the reply streams in'
 	);
 	const primary = page.locator('[data-primary]');
 	const status = page.locator('[data-voice-status]');
-	await expect(primary).toHaveText('🎙 Talk');
+	await expect(primary).toHaveText('Talk');
 	await expect(status).toHaveText('Start talking');
 	const boxBefore = await box(page).boundingBox();
 
@@ -758,7 +689,7 @@ test('a take into a busy thread is refused before it starts', async ({ page }) =
 	await page.evaluate(() => window.__mic.speak(false));
 	await primary.click();
 	await expect(page.locator('[data-voice-status]')).toHaveText('search is running a turn');
-	await expect(primary).toHaveText('🎙 Talk');
+	await expect(primary).toHaveText('Talk');
 	expect((await received(page)).texts).toEqual([]);
 });
 
@@ -865,7 +796,7 @@ test('a reply left in the pane empties the box, and is not sent twice', async ({
 	expect((await received(page)).left).toEqual([{ thread: IDLE, text: 'ship it' }]);
 
 	// Send has nothing to send: neither the button nor Enter posts the old text.
-	await expect(sendButton(page)).toBeDisabled();
+	await expect(idlePill(page)).toBeDisabled();
 	await box(page).press('Enter');
 	await page.waitForTimeout(300);
 	expect(posts).toBe(1);
@@ -878,36 +809,14 @@ test('a reply left in the pane empties the box, and is not sent twice', async ({
 	expect(posts).toBe(2);
 });
 
-test('a pane with no input box refuses text and files, and the draft stays', async ({ page }) => {
-	await open(page, IDLE, ['replies', 'upload'], [`/__fixture/no-input?id=${IDLE}`]);
+test('a pane with no input box refuses text, and the draft stays', async ({ page }) => {
+	await open(page, IDLE, ['replies'], [`/__fixture/no-input?id=${IDLE}`]);
 	await box(page).fill('ship it');
 	await sendButton(page).click();
 	await expect(note(page)).toHaveText('Thread shows no input box');
 	await expect(box(page)).toHaveValue('ship it');
-
-	await box(page).fill('');
-	await page.locator('[data-attach-input]').setInputFiles({
-		name: 'notes.txt',
-		mimeType: 'text/plain',
-		buffer: Buffer.from('x')
-	});
-	await expect(note(page)).toHaveText('Thread shows no input box');
-	const got = await received(page);
-	expect(got.texts).toEqual([]);
-	expect(got.uploads).toEqual([]);
+	expect((await received(page)).texts).toEqual([]);
 });
-
-test('a file that was saved but not pasted says so', async ({ page }) => {
-	await open(page, IDLE, ['replies', 'upload'], ['/__fixture/pasted?on=0']);
-	await page.locator('[data-attach-input]').setInputFiles({
-		name: 'notes.txt',
-		mimeType: 'text/plain',
-		buffer: Buffer.from('x')
-	});
-	await expect(note(page)).toHaveText('Saved, not pasted');
-	expect((await received(page)).uploads).toHaveLength(1);
-});
-
 test('a key on a waiting thread names the prompt the phone shows', async ({ page }) => {
 	await open(page, PERMISSION, ['replies', 'keyBar']);
 	const shown = await card(page).getAttribute('data-prompt');
@@ -962,8 +871,10 @@ test('a wait with no readable choices: a small card, and Enter is refused once',
 	await expect(card(page).locator('h3')).toHaveText('Waiting on a prompt');
 	// The heading and the way to the terminal, nothing else.
 	await expect(card(page).locator('pre, .q, [data-option]')).toHaveCount(0);
-	const show = card(page).getByRole('button');
+	const show = card(page).getByRole('button', { name: 'Show terminal' });
 	await expect(show).toHaveText(['Show terminal']);
+	// The way to the terminal, and the way out of the prompt. Nothing else.
+	await expect(card(page).getByRole('button')).toHaveText(['Show terminal', 'Cancel']);
 	expect((await show.boundingBox())?.height).toBeGreaterThanOrEqual(44);
 	await expect(card(page)).toBeInViewport({ ratio: 1 });
 	await shot(page, 'bare-card');
@@ -995,7 +906,7 @@ test('a wait with no readable choices: a small card, and Enter is refused once',
 
 	await show.tap();
 	await expect(page.locator('[data-tab="main"]')).toHaveText(/Terminal\s*⇄/);
-	await expect(card(page).getByRole('button')).toHaveCount(0);
+	await expect(card(page).getByRole('button', { name: 'Show terminal' })).toHaveCount(0);
 });
 
 test('a prompt the status does not tell of shows after the refusal', async ({ page }) => {
@@ -1029,7 +940,7 @@ test('a truncated card says so and opens the terminal', async ({ page }) => {
 	const show = card(page).getByRole('button', { name: 'Show terminal' });
 	expect((await show.boundingBox())?.height).toBeGreaterThanOrEqual(44);
 	// The answers are still there.
-	await expect(card(page).getByRole('button')).toHaveCount(4);
+	await expect(card(page).getByRole('button')).toHaveCount(5);
 	await show.scrollIntoViewIfNeeded();
 	await shot(page, 'truncated-card');
 
@@ -1113,7 +1024,7 @@ test('a prompt that came up after the paste: the box empties and the card shows'
 	await expect(box(page)).toHaveValue('');
 	await expect(card(page)).toHaveAttribute('data-kind', 'permission');
 	// Nothing to send, by the pill or by Enter.
-	await expect(sendButton(page)).toBeDisabled();
+	await expect(idlePill(page)).toBeDisabled();
 	await box(page).press('Enter');
 	await page.waitForTimeout(300);
 	expect(posts).toBe(1);
@@ -1147,13 +1058,26 @@ test('the text size and the terminal view work with the bar and the card in plac
 			.evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
 	// The card is chat text: it grows with it, heading and command too.
 	const before = { q: await px('[data-prompt] .q'), h3: await px('[data-prompt] h3') };
-	await page.getByRole('button', { name: 'Larger text' }).tap();
+	// The size is set by a pinch on the terminal text; the chat follows it.
+	await page.locator('[data-tab="main"]').tap();
+	await expect(page.locator('.screen')).toBeVisible();
+	await twoFingers(
+		page,
+		[
+			[150, 300],
+			[250, 300]
+		],
+		[
+			[120, 300],
+			[280, 300]
+		]
+	);
+	await page.locator('[data-tab="main"]').tap();
 	await expect.poll(() => px('[data-prompt] .q')).toBeGreaterThan(before.q);
 	expect(await px('[data-prompt] h3')).toBeGreaterThan(before.h3);
 	expect(await px('[data-prompt] .q')).toBe(await px('.a'));
 	// The bar below keeps its own size.
-	expect(await px('[data-keybar] .keys button')).toBe(14);
-	await page.getByRole('button', { name: 'Smaller text' }).tap();
+	expect(await px('[data-keybar] .keys button')).toBe(11.5);
 
 	// In the terminal the coloured text, the card and the bar stack: none covers another.
 	await page.locator('[data-tab="main"]').tap();
@@ -1299,4 +1223,278 @@ test('Enter on a pane with no input box in sight is refused, and says why', asyn
 	await expect
 		.poll(async () => (await received(page)).keys)
 		.toEqual([{ thread: IDLE, key: 'Escape' }]);
+});
+
+test('a scrolled menu lists its rows, says there are more, and opens the terminal', async ({
+	page
+}) => {
+	await open(page, IDLE, ['replies', 'keyBar']);
+	await page.request.post(`/__fixture/prompt?id=${IDLE}&pid=menu-1&scrolled=9`);
+	await expect(card(page)).toHaveAttribute('data-prompt', 'menu-1');
+	const rows = card(page).locator('[data-option]');
+	await expect(rows).toHaveText([
+		/eu-central\s*4$/,
+		/eu-north\s*5$/,
+		/ap-south\s*6$/,
+		/ap-southeast\s*7$/,
+		/ap-northeast\s*8$/,
+		/sa-east\s*9$/
+	]);
+	// The pane's cursor is on the first row it shows, which is not option 1.
+	await expect(current(page)).toHaveAttribute('data-option', '4');
+	await expect(card(page).locator('[data-rest]')).toHaveText('More choices in the terminal');
+	const show = card(page).getByRole('button', { name: 'Show terminal' });
+	expect((await show.boundingBox())?.height).toBeGreaterThanOrEqual(44);
+	await show.scrollIntoViewIfNeeded();
+	await shot(page, 'scrolled-card');
+
+	// A row is answered by its own number, not by its place on the card.
+	await rows.nth(2).tap();
+	await expect(card(page)).toHaveCount(0);
+	expect((await received(page)).answers).toEqual([{ thread: IDLE, prompt: 'menu-1', option: 6 }]);
+
+	// Past 9 the pane has no key: those rows are read, not pressed.
+	await page.request.post(`/__fixture/prompt?id=${IDLE}&pid=menu-2&scrolled=12`);
+	await expect(card(page)).toHaveAttribute('data-prompt', 'menu-2');
+	await expect(rows).toHaveCount(9);
+	await expect(card(page).locator('button[data-option]')).toHaveCount(6);
+	await expect(card(page).locator('div[data-option]')).toHaveText([
+		/ca-central\s*10$/,
+		/me-south\s*11$/,
+		/af-south\s*12$/
+	]);
+	let answers = 0;
+	page.on('request', (request) => {
+		if (request.url().endsWith('/answer')) answers += 1;
+	});
+	await card(page).locator('div[data-option]').first().tap();
+	await page.waitForTimeout(200);
+	expect(answers).toBe(0);
+
+	await card(page).getByRole('button', { name: 'Show terminal' }).tap();
+	await expect(page.locator('[data-tab="main"]')).toHaveText(/Terminal\s*⇄/);
+	await expect(page.locator('.screen')).toContainText('12. af-south');
+});
+
+test('Ctrl and m at a prompt nobody can read is refused like Enter, once', async ({ page }) => {
+	await open(page, PERMISSION, ['replies', 'keyBar']);
+	await page.request.post(`/__fixture/prompt?id=${PERMISSION}&pid=bare-2&bare=1`);
+	await expect(card(page)).toHaveAttribute('data-kind', 'bare');
+	const posted: unknown[] = [];
+	page.on('request', (request) => {
+		if (request.url().endsWith('/key')) posted.push(request.postDataJSON());
+	});
+	const refused = page.waitForResponse((response) => response.url().endsWith('/key'));
+	await key(page, 'Control').tap();
+	await page.keyboard.type('m');
+	const response = await refused;
+	expect(response.status()).toBe(409);
+	expect(((await response.json()) as { error: string }).error).toBe('unseen');
+	await expect(note(page)).toHaveText('Open the terminal to answer');
+	await expect(box(page)).toHaveValue('');
+	await page.waitForTimeout(400);
+	expect(posted).toEqual([{ key: 'C-m', prompt: 'bare-2' }]);
+	expect((await received(page)).keys).toEqual([]);
+	// The card is still the one the pane shows.
+	await expect(card(page)).toHaveAttribute('data-prompt', 'bare-2');
+});
+
+test('Sh+Tab on a pane with no input box in sight says why', async ({ page }) => {
+	await open(page, IDLE, ['replies', 'keyBar'], [`/__fixture/no-input?id=${IDLE}`]);
+	let posts = 0;
+	page.on('request', (request) => {
+		if (request.url().endsWith('/key')) posts += 1;
+	});
+	await keybar(page).evaluate((bar) => {
+		for (const label of ['Shift Tab', 'Down'])
+			bar.querySelector<HTMLElement>(`[aria-label="${label}"]`)?.click();
+	});
+	await expect(note(page)).toHaveText('Thread shows no input box');
+	await page.waitForTimeout(400);
+	expect(posts).toBe(1);
+	expect((await received(page)).keys).toEqual([]);
+	// Tab alone submits nothing: it goes.
+	await key(page, 'Tab').tap();
+	await expect
+		.poll(async () => (await received(page)).keys)
+		.toEqual([{ thread: IDLE, key: 'Tab' }]);
+});
+
+test('the fixture refuses a digit that is not on the card, and an answer past 9', async ({
+	page
+}) => {
+	await reset(page);
+	for (const name of ['replies', 'keyBar'])
+		await page.request.post(`/__fixture/capability?name=${name}&on=1`);
+	await page.request.post(`/__fixture/prompt?id=${IDLE}&pid=menu-3&scrolled=12`);
+	const origin = new URL(test.info().project.use.baseURL ?? '').origin;
+	const post = (path: string, data: unknown): Promise<APIResponse> =>
+		page.request.post(`/api/threads/${encodeURIComponent(IDLE)}/${path}`, {
+			data,
+			headers: { ...WRITE, origin }
+		});
+	const digit = await post('key', { key: '2', prompt: 'menu-3' });
+	expect([digit.status(), await digit.json()]).toEqual([
+		409,
+		{ error: 'no_option', message: 'Not a choice on the card' }
+	]);
+	expect((await post('key', { key: '5', prompt: 'menu-3' })).status()).toBe(200);
+	expect((await post('answer', { prompt: 'menu-3', option: 11 })).status()).toBe(400);
+	expect((await post('answer', { prompt: 'menu-3', option: 2 })).status()).toBe(400);
+	expect((await post('answer', { prompt: 'menu-3', option: 9 })).status()).toBe(200);
+});
+
+test('with replies off the reply box is there, switched off, and posts nothing', async ({
+	page
+}) => {
+	await open(page, IDLE, []);
+	const writes: string[] = [];
+	page.on('request', (request) => {
+		if (request.method() === 'POST' && request.url().includes('/api/')) writes.push(request.url());
+	});
+	const refusals: string[] = [];
+	page.on('response', (response) => {
+		if (response.status() === 403) refusals.push(response.url());
+	});
+	await expect(offBox(page)).toBeVisible();
+	await expect(offBox(page)).toBeDisabled();
+	await expect(offBox(page)).toHaveAttribute('placeholder', 'Off in MuxMaestro Settings');
+	await expect(offBox(page)).toHaveValue('');
+	const pill = idlePill(page);
+	await expect(pill).toHaveText(['Talk']);
+	await expect(pill).toBeDisabled();
+	// The label, the dimmed attach button and the pill: no slash list, no voice bar, no key bar, no card.
+	await expect(page.locator('[data-compose] > :not([hidden])')).toHaveCount(3);
+	await expect(page.getByRole('button', { name: 'Attach' })).toBeDisabled();
+	await expect(keybar(page)).toHaveCount(0);
+	await expect(slash(page)).toHaveCount(0);
+	await expect(nextBar(page)).toHaveCount(0);
+	await expect(voiceControls(page)).toHaveCount(0);
+	await expect(page.locator('[data-note]')).toHaveCount(0);
+	// Readable, not a faded-out box.
+	await expect(offBox(page)).toHaveCSS('opacity', '1');
+	// It sits on the bottom edge, inside the screen.
+	const off = await page.locator('[data-compose]').boundingBox();
+	expect((off?.y ?? 0) + (off?.height ?? 0)).toBeLessThanOrEqual(844);
+	expect((off?.y ?? 0) + (off?.height ?? 0)).toBeGreaterThan(830);
+	await shot(page, 'composer-off');
+
+	// Taps do nothing: no focus, no keyboard, no request.
+	await offBox(page).tap({ force: true });
+	await pill.tap({ force: true });
+	await page.keyboard.type('hello');
+	await page.keyboard.press('Enter');
+	await page.waitForTimeout(300);
+	await expect(offBox(page)).not.toBeFocused();
+	await expect(offBox(page)).toHaveValue('');
+	expect(writes).toEqual([]);
+	// And the phone asked for nothing it is not allowed to have.
+	expect(refusals).toEqual([]);
+	expect((await received(page)).texts).toEqual([]);
+
+	// The Mac switches replies on: the same box, live, in the same place, with no reload.
+	const boxBefore = await offBox(page).boundingBox();
+	await page.evaluate(() => ((window as unknown as { __kept: boolean }).__kept = true));
+	await page.request.post('/__fixture/capability?name=replies&on=1');
+	await expect(box(page)).toBeEnabled();
+	await expect(offBox(page)).toHaveCount(0);
+	expect(await page.evaluate(() => (window as unknown as { __kept?: boolean }).__kept)).toBe(true);
+	const on = await page.locator('[data-compose]').boundingBox();
+	const boxAfter = await box(page).boundingBox();
+	expect(Math.abs((on?.y ?? 0) - (off?.y ?? 0))).toBeLessThanOrEqual(1);
+	expect(Math.abs((on?.height ?? 0) - (off?.height ?? 0))).toBeLessThanOrEqual(1);
+	expect(Math.abs((boxAfter?.y ?? 0) - (boxBefore?.y ?? 0))).toBeLessThanOrEqual(1);
+	expect(Math.abs((boxAfter?.width ?? 0) - (boxBefore?.width ?? 0))).toBeLessThanOrEqual(1);
+
+	await box(page).fill('ship it');
+	await sendButton(page).click();
+	await expect(page.locator('.u').last()).toHaveText('ship it');
+
+	// And off again, live.
+	await page.request.post('/__fixture/capability?name=replies&on=0');
+	await expect(offBox(page)).toBeDisabled();
+	await expect(offBox(page)).toHaveValue('');
+});
+
+test('the key bar sits above the switched-off reply box', async ({ page }) => {
+	await open(page, PERMISSION, ['keyBar']);
+	await expect(offBox(page)).toBeDisabled();
+	await expect(keybar(page)).toBeVisible();
+	const bar = await keybar(page).boundingBox();
+	const compose = await page.locator('[data-compose]').boundingBox();
+	expect((bar?.y ?? 0) + (bar?.height ?? 0)).toBeLessThanOrEqual(compose?.y ?? 0);
+	// The read-only card and the keys work as before.
+	await expect(card(page)).toHaveAttribute('data-readonly', '');
+	const shown = await card(page).getAttribute('data-prompt');
+	await key(page, 'Escape').tap();
+	await expect
+		.poll(async () => (await received(page)).keys)
+		.toEqual([{ thread: PERMISSION, key: 'Escape', prompt: shown }]);
+	// The key bar's own refusals are still said, once.
+	await page.request.post(`/__fixture/prompt?id=${PERMISSION}&pid=moved-1&quiet=1`);
+	await key(page, 'Enter').tap();
+	await expect(page.locator('[data-note]')).toHaveText(['Prompt changed']);
+});
+
+test('the manager home is not a listed thread: it gets no dock and no reply routes', async ({
+	page
+}) => {
+	await reset(page);
+	for (const name of ['replies', 'keyBar', 'upload'])
+		await page.request.post(`/__fixture/capability?name=${name}&on=1`);
+	await forget(page);
+	const asked: string[] = [];
+	page.on('request', (request) => {
+		const path = new URL(request.url()).pathname;
+		if (path.startsWith('/api/threads/manager')) asked.push(path);
+	});
+	await page.goto(pairingLink());
+	const ask = page.getByRole('textbox', { name: 'Ask the manager' });
+	await expect(ask).toBeVisible();
+	await expect(page.locator('.a').first()).toBeVisible();
+	// Its own text box, and nothing of a thread's reply bar.
+	await expect(page.locator('[data-dock]')).toHaveCount(0);
+	// The pane's keys only: its text box belongs to the manager's own turns.
+	await expect(keybar(page).locator('.keys button')).toHaveCount(9);
+	await expect(page.getByRole('button', { name: 'Hide keyboard' })).toHaveCount(0);
+	await expect(card(page)).toHaveCount(0);
+	await expect(nextBar(page)).toHaveCount(0);
+	await expect(page.getByRole('button', { name: 'Attach' })).toHaveCount(0);
+	await expect(page.locator('form.compose')).toHaveCount(1);
+	// Longer than one prompt poll.
+	await page.waitForTimeout(3500);
+	expect(asked).toEqual([]);
+	await shot(page, 'manager-home');
+
+	// A slash is text here: the manager has no command list on the phone.
+	await ask.fill('/co');
+	await expect(slash(page)).toHaveCount(0);
+	expect(asked).toEqual([]);
+});
+
+test('the voice status sits above the key strip, and its controls below it', async ({ page }) => {
+	await open(page, IDLE, ['replies', 'keyBar', 'voice']);
+	const line = page.locator('[data-voice-line]');
+	const controls = page.locator('[data-voicebar]');
+	await expect(line.locator('[data-voice-status]')).toHaveText('Start talking');
+	// One status line, not one in each part.
+	await expect(page.locator('[data-voice-status]')).toHaveCount(1);
+	const top = async (target: Locator): Promise<number> => (await target.boundingBox())?.y ?? 0;
+	expect(await top(line)).toBeLessThan(await top(keybar(page)));
+	expect(await top(keybar(page))).toBeLessThan(await top(controls));
+	expect(await top(controls)).toBeLessThan(await top(box(page)));
+
+	// Replay and Skip act on the same reply: they share one pill.
+	const playback = controls.getByRole('group', { name: 'Playback' });
+	await expect(playback.getByRole('button')).toHaveCount(2);
+	await expect(playback.getByRole('button', { name: 'Replay' })).toBeVisible();
+	await expect(playback.getByRole('button', { name: 'Skip' })).toBeVisible();
+
+	// Icons are drawn, not typed: speaker, replay, skip and the mic on Talk.
+	await expect(controls.locator('[data-icon]')).toHaveCount(3);
+	await expect(page.locator('[data-primary="talk"] [data-icon="mic"]')).toBeVisible();
+	expect(await page.locator('[data-dock]').innerText()).not.toMatch(/[⌨🔊🔇🎙⏭↻]/u);
+	// Manual has no mute control; Auto has one.
+	await expect(controls.getByRole('button', { name: 'Microphone' })).toHaveCount(0);
+	await shot(page, 'controls-thread');
 });

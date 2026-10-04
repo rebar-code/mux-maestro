@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import { fresh, threadPath, touchDrag } from './helpers';
+import { fakeMic, forget, fresh, pairingLink, reset, threadPath, touchDrag } from './helpers';
 
 const MAKER = 'localhost:6';
 
@@ -169,6 +169,7 @@ test('an assistant message renders markdown; a user message and a tool row stay 
 	await expect(chat(page).locator('.tool .prose')).toHaveCount(0);
 	await expect(chat(page).locator('.tool').first()).toHaveText('Write PLAN.md');
 
+	await pre.evaluate((el) => (el.scrollLeft = 0));
 	await prose.locator('h1').scrollIntoViewIfNeeded();
 	await shot(page, 'markdown-chat-top');
 	await pre.evaluate((el) => {
@@ -360,47 +361,67 @@ test('the stored text size applies to rendered markdown', async ({ page }) => {
 			)
 		);
 	const before = await sizes();
-	await page.getByRole('button', { name: 'Larger text' }).click();
-	await page.getByRole('button', { name: 'Larger text' }).click();
-	const after = await sizes();
-	for (const [index, size] of after.entries()) expect(size).toBeGreaterThan(before[index]);
+	// A pinch stores the size on the phone; the chat is drawn from the stored one.
+	await page.evaluate(() => localStorage.setItem('mm.textSize', '18'));
 	await page.reload();
 	await expect(prose.locator('h1')).toBeVisible();
-	expect(await sizes()).toEqual(after);
+	const after = await sizes();
+	for (const [index, size] of after.entries()) expect(size).toBeGreaterThan(before[index]);
 });
 
-test('the manager home renders the same markdown, and a reply that is arriving does not flicker', async ({
+const VIOLATIONS = (): void => {
+	window.__violations = [];
+	document.addEventListener('securitypolicyviolation', (event) => {
+		window.__violations.push(`${event.violatedDirective} ${event.blockedURI}`);
+	});
+};
+
+const REPLY = [
+	'the audit.',
+	'',
+	'Two threads **need you**.',
+	'',
+	'- `checkout-fix` waits on a permission',
+	'- `proration` asks a question',
+	'',
+	'```sh',
+	'make test && make app',
+	'```',
+	'',
+	'<script>window.__ran = 1</script> and [x](javascript:window.__ran=2)',
+	'',
+	...Array.from({ length: 30 }, (_, n) => `Thread ${n + 1} is still running its tests.`)
+].join('\n');
+
+test('a reply that is still arriving renders as it grows, and only its last block is redrawn', async ({
 	page
 }) => {
+	const IDLE = 'localhost:7';
 	const seen = watch(page);
-	await page.addInitScript(() => {
-		window.__violations = [];
-		document.addEventListener('securitypolicyviolation', (event) => {
-			window.__violations.push(`${event.violatedDirective} ${event.blockedURI}`);
-		});
-	});
-	await fresh(page, '/');
-	const reply = [
-		'Two threads **need you**.',
-		'',
-		'- `checkout-fix` waits on a permission',
-		'- `proration` asks a question',
-		'',
-		'```sh',
-		'make test && make app',
-		'```',
-		'',
-		'<script>window.__ran = 1</script> and [x](javascript:window.__ran=2)',
-		'',
-		...Array.from({ length: 30 }, (_, n) => `Thread ${n + 1} is still running its tests.`)
-	].join('\n');
-	const said = page.locator('[data-said]');
-	await page.request.post(
-		`/__fixture/mac-turn?text=${encodeURIComponent('what needs me?')}&reply=${encodeURIComponent(reply)}`
-	);
-	const live = said.locator('.m .prose').last();
+	await fakeMic(page);
+	await page.addInitScript(VIOLATIONS);
+	await reset(page);
+	for (const name of ['replies', 'voice'])
+		await page.request.post(`/__fixture/capability?name=${name}&on=1`);
+	// The spoken turn is answered with "Done: <what was heard>. ...", a word at a time.
+	await page.request.post(`/__fixture/voice?heard=${encodeURIComponent(REPLY)}&delay=100`);
+	await forget(page);
+	await page.goto(pairingLink(threadPath(IDLE)));
+	const primary = page.locator('[data-primary]');
+	await expect(primary).toHaveText('Talk');
+	await primary.click();
+	await expect(primary).toHaveText('↑ Submit');
+	await page.evaluate(() => window.__mic.speak(true));
+	await page.waitForTimeout(600);
+	await page.evaluate(() => window.__mic.speak(false));
+	await primary.click();
 
-	// While it arrives: the first block is drawn once and then left alone.
+	// What was said is the user's line: plain text, with its symbols.
+	await expect(page.locator('.u').last()).toContainText('Two threads **need you**.');
+	await expect(page.locator('.u').last().locator('strong, pre, li')).toHaveCount(0);
+
+	const live = page.locator('.a[data-live] .prose');
+	// While it arrives: a block that is complete is drawn once and then left alone.
 	await expect(live.locator('strong')).toHaveText('need you');
 	await live
 		.locator('p')
@@ -411,19 +432,43 @@ test('the manager home renders the same markdown, and a reply that is arriving d
 	expect(await live.locator('pre').innerText()).not.toContain('```');
 	await expect(live.locator('ul li')).toHaveCount(2);
 	await expect(live).toContainText('Thread 5 is still');
-	await expect(live.locator('p[data-kept]')).toHaveText('Two threads need you.');
+	await expect(live.locator('p[data-kept]')).toHaveText('Done: the audit.');
 	await expect(live).not.toContainText('Thread 30 is still running its tests.');
+	await shot(page, 'markdown-streaming');
 
-	// When it has all arrived it is the same markdown, from the chat.
-	await expect(said.locator('.m .prose').last()).toContainText(
-		'Thread 30 is still running its tests.',
-		{ timeout: 20_000 }
-	);
-	const done = said.locator('.m .prose').last();
+	// When it has all arrived the chat's own row takes over, with the same markdown.
+	await expect(page.locator('[data-live]')).toHaveCount(0, { timeout: 20_000 });
+	const done = page.locator('.a .prose').last();
+	await expect(done).toContainText('Thread 30 is still running its tests.');
 	await expect(done.locator('pre code')).toHaveText('make test && make app\n');
 	await expect(done).toContainText('<script>window.__ran = 1</script>');
 	await expect(done.locator('a')).toHaveCount(0);
 	await expect(done.getByRole('button', { name: 'Copy' })).toHaveCount(1);
+
+	expect(await page.evaluate(() => window.__ran)).toBeUndefined();
+	expect(seen.remote).toEqual([]);
+	expect(seen.problems).toEqual([]);
+	expect(await page.evaluate(() => window.__violations)).toEqual([]);
+});
+
+test('the manager home renders the same markdown', async ({ page }) => {
+	const seen = watch(page);
+	await page.addInitScript(VIOLATIONS);
+	await fresh(page, '/');
+	const said = page.locator('[data-view="chat"]');
+	await expect(said.locator('.a').first()).toBeVisible();
+	await page.request.post(
+		`/__fixture/mac-turn?text=${encodeURIComponent('what needs me?')}&reply=${encodeURIComponent(REPLY)}`
+	);
+	const done = said.locator('.a .prose').last();
+	await expect(done).toContainText('Thread 30 is still running its tests.', { timeout: 20_000 });
+	await expect(done.locator('strong')).toHaveText('need you');
+	await expect(done.locator('ul li code')).toHaveText(['checkout-fix', 'proration']);
+	await expect(done.locator('pre code')).toHaveText('make test && make app\n');
+	await expect(done.getByRole('button', { name: 'Copy' })).toHaveCount(1);
+	await expect(done).toContainText('<script>window.__ran = 1</script>');
+	await expect(done.locator('a')).toHaveCount(0);
+	await done.locator('strong').evaluate((el) => el.scrollIntoView({ block: 'start' }));
 	await shot(page, 'markdown-manager');
 
 	expect(await page.evaluate(() => window.__ran)).toBeUndefined();

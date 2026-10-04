@@ -95,7 +95,7 @@ export interface UploadLimits {
 }
 
 export interface PromptOption {
-	/** The number the pane takes for this answer. */
+	/** The number the pane takes for this answer. Past 9 it has no key: read-only. */
 	n: number;
 	label: string;
 }
@@ -110,6 +110,9 @@ export interface Prompt {
 	options: PromptOption[];
 	/** The option the pane's cursor is on: what Enter takes. */
 	selected?: number;
+	/** The menu is scrolled: it has rows above, or below, the ones listed. */
+	moreAbove?: boolean;
+	moreBelow?: boolean;
 	/** The pane shows more of the detail than the Mac sent. */
 	truncated?: boolean;
 }
@@ -165,6 +168,8 @@ export interface ManagerUpdate {
 export interface ManagerTurn {
 	prompt: string;
 	reply: string;
+	/** The pane's own spinner line ("Incubating… 4m 48s"), when it could be read. */
+	spinner?: string | null;
 }
 
 /** The `manager` event: what changes without a request. */
@@ -177,7 +182,6 @@ export interface ManagerLive {
 
 export interface ManagerHome extends ManagerLive {
 	status: ManagerStatus;
-	chat: ChatPage;
 }
 
 /** The last event of a turn's stream. */

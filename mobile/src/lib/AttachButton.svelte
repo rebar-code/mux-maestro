@@ -2,44 +2,48 @@
 	import { keepFocus } from './reply.svelte';
 
 	const {
-		busy,
-		disabled,
-		onpick
+		off = false,
+		disabled = false,
+		onpick,
+		onoff
 	}: {
-		/** An upload is in flight. */
-		busy: boolean;
-		disabled: boolean;
-		onpick: (file: File) => void;
+		/** Uploads are switched off on the Mac: the button is dimmed and a tap says so. */
+		off?: boolean;
+		/** The whole reply box is off: the button does nothing. */
+		disabled?: boolean;
+		/** The files picked, in pick order. */
+		onpick?: (files: File[]) => void;
+		/** A tap while `off`. */
+		onoff?: () => void;
 	} = $props();
 
 	function picked(event: Event & { currentTarget: HTMLInputElement }): void {
 		const picker = event.currentTarget;
-		const file = picker.files?.[0];
+		const files = [...(picker.files ?? [])];
 		// Emptied, so the same file can be picked again.
 		picker.value = '';
-		if (file) onpick(file);
+		if (files.length) onpick?.(files);
 	}
 
 	/** The file picker sits right before the button. */
 	function open(event: MouseEvent & { currentTarget: HTMLButtonElement }): void {
+		if (off) return onoff?.();
 		(event.currentTarget.previousElementSibling as HTMLInputElement).click();
 	}
 </script>
 
-<!-- No `capture`: iOS then offers the photo library, the camera and files. -->
-<input type="file" hidden tabindex="-1" onchange={picked} data-attach-input />
+<!-- No `accept`, no `capture`: iOS then offers the photo library, the camera and files. -->
+<input type="file" multiple hidden tabindex="-1" onchange={picked} data-attach-input />
 <button
 	class="rnd"
-	class:busy
+	class:off={off || disabled}
 	type="button"
 	aria-label="Attach"
-	aria-busy={busy}
-	disabled={disabled || busy}
+	aria-disabled={off || disabled ? 'true' : undefined}
+	{disabled}
 	{@attach keepFocus}
-	onclick={open}
+	onclick={open}>＋</button
 >
-	{#if busy}<i class="spin"></i>{:else}＋{/if}
-</button>
 
 <style>
 	/* The look is a 40pt circle; the touch area is 44pt. */
@@ -64,23 +68,8 @@
 		inset: -3px;
 	}
 
-	/* Still readable as "working", not as "off". */
-	.rnd.busy:disabled {
-		opacity: 1;
-	}
-
-	.spin {
-		width: 16px;
-		height: 16px;
-		border-radius: 50%;
-		border: 2px solid #555;
-		border-top-color: var(--text);
-		animation: spin 0.8s linear infinite;
-	}
-
-	@keyframes spin {
-		to {
-			transform: rotate(360deg);
-		}
+	/* Switched off: dimmed, and still there to say why. */
+	.rnd.off {
+		opacity: 0.35;
 	}
 </style>

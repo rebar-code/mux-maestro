@@ -3,7 +3,12 @@
 # Milestone 1: build the embedded terminal engine (GhosttyKit.xcframework).
 # Milestone 2: build/run the native AppKit app (MuxMaestro.app).
 
-.PHONY: libghostty clean-libghostty app run install signing-identity test clean-app diff-bundle mobile vendor-beam beam-selftest vendor-tools tools-selftest
+# Per-developer settings, never committed (see .gitignore). Read before the
+# defaults below, so a `SIGN_IDENTITY = ...` line here wins over them. The file
+# is optional: the build works without it.
+-include local.mk
+
+.PHONY: libghostty clean-libghostty app run install signing-identity signing-selftest test clean-app diff-bundle mobile vendor-beam beam-selftest vendor-tools tools-selftest
 
 # Xcode to build with. Overridable so CI can point at its Xcode_16.2.app; the
 # Swift packages need tools version 6.0, which the runner's default Xcode lacks.
@@ -21,21 +26,35 @@ APP := $(BUILD_DIR)/Release/MuxMaestro.app
 # every rebuild as a NEW app and asks again for every permission already granted
 # (App Data, Automation, Documents…), leaving one more MuxMaestro row in System
 # Settings each time. The identity keeps the requirement stable across rebuilds.
+#
+# SIGN_IDENTITY is a name or the identity's SHA-1 hash, as `security
+# find-identity -v -p codesigning` lists them. An Apple identity's name has
+# spaces, a colon and parentheses ("Apple Development: Your Name (TEAMID)"), so
+# every use below goes through `shq`: one single-quoted shell word, with any
+# quote inside it escaped. `grep -F` matches it as text, not as a pattern.
+# `make signing-selftest` checks this.
 SIGN_IDENTITY ?= MuxMaestro-Local
-HAVE_IDENTITY = security find-identity -v -p codesigning 2>/dev/null | grep -q '$(SIGN_IDENTITY)'
+shq = '$(subst ','\'',$(1))'
+HAVE_IDENTITY = security find-identity -v -p codesigning 2>/dev/null | grep -qF -- $(call shq,$(SIGN_IDENTITY))
 #
 # The identity reaches only the app target, through MM_CODE_SIGN_IDENTITY (the
 # target's CODE_SIGN_IDENTITY is "$(MM_CODE_SIGN_IDENTITY)"). A CODE_SIGN_IDENTITY
 # on the command line would apply to every project in the build, and xcodebuild
 # then tries to sign the Swift packages' object files, which codesign refuses.
-SIGN_FLAGS = $(shell $(HAVE_IDENTITY) \
-	&& echo 'MM_CODE_SIGN_IDENTITY=$(SIGN_IDENTITY) OTHER_CODE_SIGN_FLAGS=--timestamp=none' \
-	|| echo 'MM_CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO')
+SIGN_FLAGS = $(if $(shell $(HAVE_IDENTITY) && echo yes),\
+	MM_CODE_SIGN_IDENTITY=$(call shq,$(SIGN_IDENTITY)) OTHER_CODE_SIGN_FLAGS=--timestamp=none,\
+	MM_CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO)
 
 # Create the stable local signing identity. Run once per Mac; see the script
 # header for what it makes and why.
 signing-identity:
-	scripts/create-signing-identity.sh $(SIGN_IDENTITY)
+	scripts/create-signing-identity.sh $(call shq,$(SIGN_IDENTITY))
+
+# Check that a signing identity with spaces, parentheses or quotes in its name
+# reaches xcodebuild as one argument. Uses stub tools: builds nothing and never
+# reads the keychain.
+signing-selftest:
+	bash scripts/signing-selftest.sh
 
 # Build GhosttyKit.xcframework from pinned Ghostty source with a pinned,
 # project-local Zig toolchain. Output is symlinked to ./GhosttyKit.xcframework.
@@ -55,7 +74,7 @@ clean-libghostty:
 # them, and FluidAudio uses Float16, which x86_64 macOS lacks.
 app:
 	@test -e GhosttyKit.xcframework || { echo "GhosttyKit.xcframework missing — run 'make libghostty'"; exit 1; }
-	@$(HAVE_IDENTITY) || echo "warning: no '$(SIGN_IDENTITY)' identity — ad-hoc signing, so macOS re-asks for every permission after this build. Fix once with 'make signing-identity'."
+	@$(HAVE_IDENTITY) || echo "warning: no signing identity named" $(call shq,$(SIGN_IDENTITY)) "— ad-hoc signing, so macOS re-asks for every permission after this build. Fix once with 'make signing-identity'."
 	DEVELOPER_DIR=$(DEVELOPER_DIR) \
 	xcodebuild \
 		-project MuxMaestro.xcodeproj \
