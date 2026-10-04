@@ -277,7 +277,7 @@ test('a muted mic takes nothing, and a refused take says why', async ({ page }) 
 	await primary(page).click();
 	await say(page, 600);
 	await primary(page).click();
-	await expect(status(page)).toHaveText('Manager is waiting on a prompt');
+	await expect(status(page)).toHaveText('Maestro is waiting on a prompt');
 	await expect(primary(page)).toHaveText('Talk');
 
 	// A take with no words in it.

@@ -27,10 +27,10 @@ const DRAFT = 'manager';
 const POLL_MS = 10_000;
 
 const STATUS_NOTES: Partial<Record<ManagerStatus, string>> = {
-	off: 'Manager is not running',
-	unknown: 'Manager is not ready',
-	waiting: 'Manager is waiting on a prompt',
-	busy: 'Manager is busy'
+	off: 'Maestro is not running',
+	unknown: 'Maestro is not ready',
+	waiting: 'Maestro is waiting on a prompt',
+	busy: 'Maestro is busy'
 };
 
 /** How many chat rows are kept for the next visit's first paint. */
@@ -266,7 +266,7 @@ class Manager {
 	/** How the Mac ended a turn, as `finish` takes it. */
 	private ended(end: TurnEnd | VoiceEnd): Promise<void> {
 		return end.outcome === 'refused' || end.outcome === 'unreachable'
-			? this.finish(end.message ?? 'The manager did not take the message', null)
+			? this.finish(end.message ?? 'The Maestro did not take the message', null)
 			: this.finish(null, end.message);
 	}
 

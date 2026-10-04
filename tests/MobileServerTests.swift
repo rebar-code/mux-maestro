@@ -770,13 +770,13 @@ final class MobileServerTests: XCTestCase {
         manager.status = .waiting
         let waiting = post("/api/manager/text", json: #"{"text":"what needs me?"}"#)
         XCTAssertEqual(waiting.status, 409)
-        XCTAssertEqual(waiting.body, #"{"error":"waiting","message":"Manager is waiting on a prompt"}"#)
+        XCTAssertEqual(waiting.body, #"{"error":"waiting","message":"Maestro is waiting on a prompt"}"#)
 
         // Busy with a turn the app does not track: it may reach a prompt.
         manager.status = .busy
         let paneBusy = post("/api/manager/text", json: #"{"text":"what needs me?"}"#)
         XCTAssertEqual(paneBusy.status, 409)
-        XCTAssertEqual(paneBusy.body, #"{"error":"busy","message":"Manager is busy"}"#)
+        XCTAssertEqual(paneBusy.body, #"{"error":"busy","message":"Maestro is busy"}"#)
 
         // A turn the Mac rail started is still running.
         manager.status = .idle
@@ -791,7 +791,7 @@ final class MobileServerTests: XCTestCase {
         server.managerTurnEnded()
         let unknown = post("/api/manager/text", json: #"{"text":"what needs me?"}"#)
         XCTAssertEqual(unknown.status, 503)
-        XCTAssertEqual(unknown.body, #"{"error":"not_ready","message":"Manager is not ready"}"#)
+        XCTAssertEqual(unknown.body, #"{"error":"not_ready","message":"Maestro is not ready"}"#)
         XCTAssertTrue(get("/api/manager").body.contains(#""status":"unknown""#))
 
         manager.status = .off
@@ -802,13 +802,13 @@ final class MobileServerTests: XCTestCase {
 
     func testTheDriversLateRefusalEndsTheStreamWithItsReason() {
         managerOn()
-        manager.script = ([], .refused("Manager is waiting on a prompt"))
+        manager.script = ([], .refused("Maestro is waiting on a prompt"))
         let turn = post("/api/manager/text", json: #"{"text":"what needs me?"}"#) {
             $0.contains("event: end") && $0.hasSuffix("\n\n")
         }
         XCTAssertEqual(turn.status, 200)
         XCTAssertTrue(turn.body.contains(
-            #"{"message":"Manager is waiting on a prompt","outcome":"refused","reply":""}"#))
+            #"{"message":"Maestro is waiting on a prompt","outcome":"refused","reply":""}"#))
     }
 
     private func reviewBoard() -> MobileManagerBoard {

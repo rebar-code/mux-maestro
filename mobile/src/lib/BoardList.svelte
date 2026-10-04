@@ -15,7 +15,7 @@
 	 * at its full stop. A card that names a session opens it with Go.
 	 */
 
-	/** How many of the manager's updates the board lists. */
+	/** How many of the Maestro's updates the board lists. */
 	const UPDATES = 5;
 
 	const points = $derived(pointCards(manager.points, live.threads));

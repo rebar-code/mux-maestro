@@ -25,7 +25,7 @@ test('the drawer opens a thread, closes itself and marks the row', async ({ page
 		'aria-current',
 		'page'
 	);
-	await drawer(page).getByText('Manager').click();
+	await drawer(page).getByText('✦ Maestro').click();
 	await expect(page).toHaveURL(/\/$/);
 });
 

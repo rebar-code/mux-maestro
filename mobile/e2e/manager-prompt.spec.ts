@@ -67,7 +67,7 @@ function threadRoutes(page: Page): string[] {
 	return seen;
 }
 
-test('the manager waits on a question: the home shows the card, and an option answers it', async ({
+test('the Maestro waits on a question: the home shows the card, and an option answers it', async ({
 	page
 }) => {
 	const wrong = threadRoutes(page);
@@ -116,7 +116,7 @@ test('the manager waits on a question: the home shows the card, and an option an
 	await page.waitForTimeout(400);
 	// The line the home had before is still there.
 	await expect(page.locator('[data-status="waiting"]')).toHaveText(
-		'Manager is waiting on a prompt'
+		'Maestro is waiting on a prompt'
 	);
 	await shot(page, 'manager-card');
 
@@ -138,7 +138,7 @@ test('the manager waits on a question: the home shows the card, and an option an
 	expect(wrong).toEqual([]);
 });
 
-test('Cancel on the manager card dismisses the prompt', async ({ page }) => {
+test('Cancel on the Maestro card dismisses the prompt', async ({ page }) => {
 	await open(page, ['replies'], ['/__fixture/manager-prompt?pid=mq-1']);
 	await expect(card(page)).toHaveAttribute('data-prompt', 'mq-1');
 	// After the options, and as large as a finger.
@@ -166,7 +166,7 @@ test('Cancel on the manager card dismisses the prompt', async ({ page }) => {
 	expect(got.manager.answers).toEqual([]);
 });
 
-test('a stale manager card is replaced, and nothing is sent again', async ({ page }) => {
+test('a stale Maestro card is replaced, and nothing is sent again', async ({ page }) => {
 	await open(page, ['replies'], ['/__fixture/manager-prompt?pid=mq-1']);
 	await expect(card(page)).toHaveAttribute('data-prompt', 'mq-1');
 	// The pane moved on, and the phone has not been told.
@@ -195,7 +195,7 @@ test('a stale manager card is replaced, and nothing is sent again', async ({ pag
 	expect((await received(page)).manager.cancels).toEqual([]);
 });
 
-test('with the key bar alone the manager card is read-only, and Escape goes to the manager', async ({
+test('with the key bar alone the Maestro card is read-only, and Escape goes to the Maestro', async ({
 	page
 }) => {
 	const wrong = threadRoutes(page);
@@ -244,7 +244,7 @@ test('with the key bar alone the manager card is read-only, and Escape goes to t
 	expect(wrong).toEqual([]);
 });
 
-test('a manager prompt with no readable choices: the terminal, and Enter from there', async ({
+test('a Maestro prompt with no readable choices: the terminal, and Enter from there', async ({
 	page
 }) => {
 	await open(page, ['replies', 'keyBar'], ['/__fixture/manager-prompt?pid=mb-1&bare=1']);
@@ -285,7 +285,7 @@ test('a manager prompt with no readable choices: the terminal, and Enter from th
 	expect((await again).postDataJSON()).toEqual({ key: 'Escape', prompt: 'mb-1' });
 });
 
-test('a manager that does not wait shows no card, and is asked once', async ({ page }) => {
+test('a Maestro that does not wait shows no card, and is asked once', async ({ page }) => {
 	await open(page, ['replies', 'keyBar']);
 	await expect(ask(page)).toBeVisible();
 	await expect(page.locator('.a').first()).toBeVisible();
@@ -295,7 +295,7 @@ test('a manager that does not wait shows no card, and is asked once', async ({ p
 	expect((await received(page)).manager.promptFetches).toBeLessThanOrEqual(1);
 });
 
-test('with both switches off the manager prompt is never asked for', async ({ page }) => {
+test('with both switches off the Maestro prompt is never asked for', async ({ page }) => {
 	const asked: string[] = [];
 	page.on('request', (request) => {
 		if (request.url().endsWith('/api/manager/prompt')) asked.push(request.url());

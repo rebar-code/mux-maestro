@@ -444,7 +444,7 @@ test('a keyboard that was put away stays away after Send', async ({ page }) => {
 	await expect(box(page)).toHaveValue('');
 	await expect(box(page)).not.toBeFocused();
 });
-test('the manager home has the same box: it grows, keeps its draft, and sends the lines', async ({
+test('the Maestro home has the same box: it grows, keeps its draft, and sends the lines', async ({
 	page
 }) => {
 	await open(page, '/', []);

@@ -16,7 +16,7 @@
 	const { onfocus, onblur }: { onfocus?: () => void; onblur?: () => void } = $props();
 
 	const managerOn = $derived(can('manager'));
-	// A take goes to the manager, so voice needs the manager's switch too.
+	// A take goes to the Maestro, so voice needs the Maestro's switch too.
 	const voiceOn = $derived(managerOn && can('voice'));
 	const keysOn = $derived(managerOn && can('keyBar'));
 	const boxLabel = $derived(isOff('manager') ? OFF_LABEL : 'Ask the Maestro');
@@ -31,7 +31,7 @@
 
 {#if managerOn}
 	<!--
-		The manager pane's keys, and what the last one came to. Above the voice
+		The Maestro pane's keys, and what the last one came to. Above the voice
 		bar and the text box, so nothing that rises under them covers the keys.
 	-->
 	{#if reply.note}<NoteLine note={reply.note} />{/if}

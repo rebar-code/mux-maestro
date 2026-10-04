@@ -68,7 +68,7 @@
 		class:paused={voice.paused}
 		type="button"
 		{disabled}
-		aria-label="{face.label} to the manager"
+		aria-label={kind === 'talk' || kind === 'submit' ? `${face.label} to the Maestro` : face.label}
 		data-orb
 		onpointerdown={press}
 		onpointermove={move}

@@ -579,7 +579,7 @@ test('a reply that is still arriving renders as it grows, and only its last bloc
 	expect(await page.evaluate(() => window.__violations)).toEqual([]);
 });
 
-test('the manager home renders the same markdown', async ({ page }) => {
+test('the Maestro home renders the same markdown', async ({ page }) => {
 	const seen = watch(page);
 	await page.addInitScript(VIOLATIONS);
 	await fresh(page, '/');

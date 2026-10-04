@@ -1444,7 +1444,7 @@ test('the key bar sits above the switched-off reply box', async ({ page }) => {
 	await expect(page.locator('[data-note]')).toHaveText(['Prompt changed']);
 });
 
-test('the manager home is not a listed thread: it gets no dock and no reply routes', async ({
+test('the Maestro home is not a listed thread: it gets no dock and no reply routes', async ({
 	page
 }) => {
 	await reset(page);
