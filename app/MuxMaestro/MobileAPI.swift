@@ -89,6 +89,7 @@ enum MobileHTTP {
     static func bodyLimit(method: String, path: String) -> Int {
         guard method == "POST" else { return maxBodyBytes }
         if path == "/api/voice" { return MobileVoice.maxBodyBytes }
+        if path == "/api/log" { return MobileLog.maxBodyBytes }
         let segments = path.split(separator: "/", omittingEmptySubsequences: true)
         if segments.count == 4, segments[0] == "api", segments[1] == "threads", segments[3] == "upload" {
             return MobileReply.maxUploadBytes
@@ -182,6 +183,9 @@ enum MobileEndpoint: Equatable {
     case threads
     case hosts
     case events
+    /// A batch of the phone's own log lines: errors and metadata, kept in a
+    /// file on this Mac. See `MobileLog`.
+    case log
     /// `after` is the cursor a previous chat response returned as `next`.
     case chat(id: String, after: UInt64?)
     /// `lines` is how much scrollback to capture, already clamped.
@@ -250,7 +254,7 @@ enum MobileEndpoint: Equatable {
 
     var capability: MobileCapability {
         switch self {
-        case .config, .threads, .hosts, .events, .chat, .screen: return .access
+        case .config, .threads, .hosts, .events, .log, .chat, .screen: return .access
         case .manager, .managerText, .managerDismiss, .managerChat, .managerScreen, .managerPrompt,
              .managerAnswer, .managerKey:
             return .manager
@@ -276,7 +280,7 @@ enum MobileEndpoint: Equatable {
              .managerScreen, .managerPrompt, .prompt, .commands,
              .dirs, .find, .artifacts, .file, .running, .servers, .pushKey, .terminal:
             return "GET"
-        case .managerText, .managerDismiss, .managerAnswer, .managerKey, .voice, .voiceReplay,
+        case .log, .managerText, .managerDismiss, .managerAnswer, .managerKey, .voice, .voiceReplay,
              .voiceWarm, .text, .key, .answer, .upload, .tmux, .serverOpen, .serverClose,
              .pushSubscribe, .pushUnsubscribe, .pushFocus:
             return "POST"
@@ -436,6 +440,7 @@ enum MobileAPI {
         case 2 where segments[1] == "threads": endpoint = .threads
         case 2 where segments[1] == "hosts": endpoint = .hosts
         case 2 where segments[1] == "events": endpoint = .events
+        case 2 where segments[1] == "log": endpoint = .log
         case 2 where segments[1] == "manager": endpoint = .manager
         case 3 where segments[1] == "manager" && segments[2] == "text": endpoint = .managerText
         case 3 where segments[1] == "manager" && segments[2] == "dismiss": endpoint = .managerDismiss

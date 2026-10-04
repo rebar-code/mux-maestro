@@ -198,6 +198,9 @@ final class MobileServer {
     /// The phones that asked for notifications. nil where nothing is sent
     /// (the dev server): the push routes then answer 503.
     private let push: MobilePushCenter?
+    /// The phone's own log, in a file. nil where none is kept (the tests):
+    /// the log route then answers 503.
+    private let log: MobileLogSink?
     private let queue = DispatchQueue(label: "is.rebar.muxmaestro.mobile")
     private let work = DispatchQueue(label: "is.rebar.muxmaestro.mobile.work", attributes: .concurrent)
 
@@ -245,7 +248,8 @@ final class MobileServer {
 
     init(
         staticRoot: URL?, sources: Sources, limits: Limits = Limits(), manager: Manager? = nil,
-        voice: Voice? = nil, serving: Serving? = nil, push: MobilePushCenter? = nil
+        voice: Voice? = nil, serving: Serving? = nil, push: MobilePushCenter? = nil,
+        logDirectory: URL? = nil
     ) {
         self.staticRoot = staticRoot
         self.sources = sources
@@ -254,6 +258,9 @@ final class MobileServer {
         self.voice = voice
         self.serving = serving
         self.push = push
+        log = logDirectory.map {
+            MobileLogSink(directory: $0, served: MobileLog.servedBuild(staticRoot: staticRoot))
+        }
     }
 
     /// Whether a phone asked for something lately or holds an event stream.
@@ -294,6 +301,7 @@ final class MobileServer {
                     reported = true
                     let bound = Int(listener?.port?.rawValue ?? nwPort.rawValue)
                     if self?.listener === listener { self?.boundPort = bound }
+                    self?.log?.started(port: bound)
                     completion(.success(bound))
                 case .failed(let error):
                     listener?.cancel()
@@ -682,6 +690,11 @@ final class MobileServer {
             send(.json(data: threadsBody), to: client, head: head)
         case .hosts:
             send(.json(data: hostsBody), to: client, head: head)
+        case .log:
+            guard let log else { return send(.error(503, "unavailable"), to: client, head: head) }
+            // Answered before the file is touched: the log writes on its own queue.
+            log.receive(request.body)
+            send(.json(["ok": true]), to: client, head: head)
         case .events:
             startStream(client)
         case .chat(let id, let after):

@@ -34,7 +34,7 @@ guard let socket = value("--socket"), let port = value("--port").flatMap(Int.ini
 else {
     print("usage: mobile-dev-server --socket <tmux -L name> --port <n> [--remote-socket <name>]"
         + " [--static <dir>] [--chat <pane>=<transcript.jsonl>] [--login <login>] [--host <name>]"
-        + " [--token <pairing token>] [--live]")
+        + " [--token <pairing token>] [--live] [--log-dir <dir>]")
     exit(2)
 }
 let identity = MobileIdentity(
@@ -65,7 +65,9 @@ let server = MobileServer(
         },
         terminal: { thread, target in
             (thread.host.isLocal ? local : remote)?.phoneTerminal(target)
-        }))
+        }),
+    // `--log-dir` keeps the phone's own log there, as the app does.
+    logDirectory: value("--log-dir").map { URL(fileURLWithPath: $0, isDirectory: true) })
 
 func snapshot(stats: HostStats?) -> MobileSnapshot {
     var sessions = local.loadTree() ?? []

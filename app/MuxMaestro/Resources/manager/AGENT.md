@@ -42,6 +42,21 @@ If the app isn't running the snapshot goes stale. `mux sessions` says so on
 stderr (`--json` carries `stale` and `age_seconds`); fall back to
 `tmux list-sessions` rather than trust old rows.
 
+When the human says something is wrong on their **phone**, read the phone's own
+log before you ask them anything. The phone app posts its errors, failed
+requests and service-worker state to the Mac; every line carries the build the
+phone runs and the project (tmux session) it was in:
+
+```sh
+mux phone-log                      # last 20 warnings and errors: time|severity|project|build|kind|message
+mux phone-log --project <session> --since 2h
+mux phone-log --severity info --json --last 50    # whole lines, with stacks and device details
+mux phone-log --projects           # project|errors|warnings|last line
+```
+
+A build shown as `(stale: Mac serves …)` means the phone still runs an old
+bundle: the feature is not broken, the phone has not updated.
+
 Only **then** look closer, and only where the survey says it's warranted:
 
 ```sh
