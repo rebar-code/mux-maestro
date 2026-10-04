@@ -320,7 +320,7 @@ final class ManagerPaneDriverTests: XCTestCase {
         wait(for: [done], timeout: 5)
         XCTAssertEqual(typed(runner), [], "nothing may be typed into a waiting pane")
         // The pane was read, to see whether the stored status still holds.
-        XCTAssertEqual(runner.recorded().first, ["capture-pane", "-p", "-t", "mux-manager"])
+        XCTAssertEqual(runner.recorded().first, ["capture-pane", "-p", "-t", "%5"])
     }
 
     func testSendPastesThenReadsTheReplyBack() throws {
@@ -353,16 +353,15 @@ final class ManagerPaneDriverTests: XCTestCase {
 
         XCTAssertEqual(deltas, ["Second part."])
         XCTAssertEqual(runner.recorded(), [
-            ["display-message", "-pt", "mux-manager", "#{pane_id}"],
             // A pane in copy mode takes the Enter as a copy-mode key, so the
             // prompt would sit unsent in the input box.
-            ["copy-mode", "-q", "-t", "mux-manager"],
+            ["copy-mode", "-q", "-t", "%5"],
             ["load-buffer", "-b", "sidekick", "-"],
-            ["paste-buffer", "-p", "-r", "-d", "-b", "sidekick", "-t", "mux-manager"],
-            ["send-keys", "-t", "mux-manager", "Enter"],
+            ["paste-buffer", "-p", "-r", "-d", "-b", "sidekick", "-t", "%5"],
+            ["send-keys", "-t", "%5", "Enter"],
         ])
         XCTAssertEqual(runner.stdinText(), "what is up", "the prompt goes in over stdin, not argv")
-        XCTAssertEqual(runner.paths(), Array(repeating: "/usr/bin/tmux", count: 5))
+        XCTAssertEqual(runner.paths(), Array(repeating: "/usr/bin/tmux", count: 4))
     }
 
     /// A permission prompt that comes up between the paste and the Enter would
@@ -387,12 +386,12 @@ final class ManagerPaneDriverTests: XCTestCase {
         }
         wait(for: [done], timeout: 5)
         XCTAssertFalse(
-            runner.recorded().contains(["send-keys", "-t", "mux-manager", "Enter"]),
+            runner.recorded().contains(["send-keys", "-t", "%5", "Enter"]),
             "Enter must not reach a pane that is now on a prompt")
         // The pasted text is taken out again, so a later Enter cannot send it.
         XCTAssertEqual(Array(typed(runner).suffix(2)), [
-            ["paste-buffer", "-p", "-r", "-d", "-b", "sidekick", "-t", "mux-manager"],
-            ["send-keys", "-t", "mux-manager", "C-u"],
+            ["paste-buffer", "-p", "-r", "-d", "-b", "sidekick", "-t", "%5"],
+            ["send-keys", "-t", "%5", "C-u"],
         ])
 
         // The driver is free again: the refused turn is not left running.
@@ -462,9 +461,9 @@ final class ManagerPaneDriverTests: XCTestCase {
             done.fulfill()
         }
         wait(for: [done], timeout: 5)
-        XCTAssertFalse(runner.recorded().contains(["send-keys", "-t", "mux-manager", "Enter"]))
+        XCTAssertFalse(runner.recorded().contains(["send-keys", "-t", "%5", "Enter"]))
         // Two lines were pasted: both are deleted.
-        XCTAssertEqual(runner.recorded().last, ["send-keys", "-t", "mux-manager", "C-u", "C-u"])
+        XCTAssertEqual(runner.recorded().last, ["send-keys", "-t", "%5", "C-u", "C-u"])
     }
 
     func testAPhoneTurnRunsFromAnIdlePane() throws {
@@ -489,7 +488,7 @@ final class ManagerPaneDriverTests: XCTestCase {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.append(self.textTwo, to: transcript) }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { status.value = .idle }
         wait(for: [done], timeout: 10)
-        XCTAssertEqual(runner.recorded().last, ["send-keys", "-t", "mux-manager", "Enter"])
+        XCTAssertEqual(runner.recorded().last, ["send-keys", "-t", "%5", "Enter"])
         XCTAssertFalse(runner.recorded().contains { $0.contains("C-u") })
     }
 
@@ -583,8 +582,8 @@ final class ManagerPaneDriverTests: XCTestCase {
         wait(for: [done], timeout: 10)
         XCTAssertEqual(typed(runner), [
             ["load-buffer", "-b", "sidekick", "-"],
-            ["paste-buffer", "-p", "-r", "-d", "-b", "sidekick", "-t", "mux-manager"],
-            ["send-keys", "-t", "mux-manager", "Enter"],
+            ["paste-buffer", "-p", "-r", "-d", "-b", "sidekick", "-t", "%5"],
+            ["send-keys", "-t", "%5", "Enter"],
         ])
     }
 
@@ -628,7 +627,7 @@ final class ManagerPaneDriverTests: XCTestCase {
         XCTAssertNil(shell.paneStatus())
         // A pane that cannot be read settles nothing.
         let dead = FakeRunner()
-        dead.failing = true
+        dead.unreadable = true
         let unread = ManagerPaneDriver(
             config: config(claudeDir: dir), runner: dead,
             statusOverride: { _ in .waiting }, queue: DispatchQueue(label: "test.pane"))
@@ -758,6 +757,215 @@ final class ManagerPaneDriverTests: XCTestCase {
         XCTAssertEqual(driver.lastReply(), "First part.\nSecond part.")
     }
 
+    // MARK: The Maestro's own pane
+
+    /// The reported bug: the session had a second window, a plain shell, and
+    /// it was the active one. Every command named the session, tmux took that
+    /// to mean its active pane, and the chat was run by the shell as commands.
+    func testEveryCommandNamesTheMaestroPaneNotTheSession() throws {
+        let dir = try makeClaudeDir()
+        try seedSession(in: dir, sessionId: "wanted")
+        let runner = runner(showing: Self.idleScreen, cursorRow: Self.idleCursorRow)
+        runner.panes = "%5\t1\tclaude\t/Users/me/manager\t\n%9\t\tzsh\t/Users/me/code/acme-app\t\n"
+        let status = StatusBox(.waiting)
+        let driver = ManagerPaneDriver(
+            config: config(claudeDir: dir), runner: runner,
+            statusOverride: { _ in status.value }, queue: DispatchQueue(label: "test.pane"))
+
+        // The screen and the cursor row are read to settle a stored "waiting".
+        XCTAssertEqual(driver.paneStatus(), .idle)
+        XCTAssertEqual(runner.recorded(), [
+            ["capture-pane", "-p", "-t", "%5"],
+            ["display-message", "-p", "-t", "%5", "#{cursor_y}"],
+        ])
+
+        status.value = .idle
+        let sent = expectation(description: "sent")
+        runner.onRun = { if $0 == ["send-keys", "-t", "%5", "Enter"] { sent.fulfill() } }
+        driver.send("Still there?", onDelta: { _ in }) { _ in }
+        wait(for: [sent], timeout: 5)
+        driver.cancel()
+        XCTAssertTrue(runner.recorded().contains(
+            ["paste-buffer", "-p", "-r", "-d", "-b", "sidekick", "-t", "%5"]))
+        XCTAssertEqual(
+            runner.recorded().filter { $0.contains("mux-manager") }, [],
+            "a session name is the session's active pane, whichever that is")
+    }
+
+    /// No agent pane, or the Maestro's pane is at a shell: the turn fails and
+    /// no key goes anywhere.
+    func testNothingIsTypedWhenTheMaestroPaneIsMissingOrIsAShell() throws {
+        let dir = try makeClaudeDir()
+        try seedSession(in: dir, sessionId: "wanted")
+        let onlyAShell = "%9\t\tzsh\t/Users/me/code/acme-app\t\n"
+        let maestroAtAShell = "%5\t1\tzsh\t/Users/me/manager\t\n%9\t\tclaude\t/Users/me/code/acme-app\t\n"
+        for panes in [onlyAShell, maestroAtAShell, ""] {
+            let runner = FakeRunner()
+            runner.panes = panes
+            let driver = ManagerPaneDriver(
+                config: config(claudeDir: dir), runner: runner,
+                statusOverride: { _ in .idle }, queue: DispatchQueue(label: "test.pane"))
+            let done = expectation(description: "unreachable")
+            driver.send("hello", onDelta: { _ in XCTFail("no reply expected") }) { outcome in
+                XCTAssertEqual(outcome, .unreachable("The Maestro session is not running"))
+                done.fulfill()
+            }
+            wait(for: [done], timeout: 5)
+            XCTAssertEqual(runner.recorded(), [], "nothing may be done to any pane")
+            XCTAssertNil(driver.paneStatus())
+            XCTAssertNil(driver.currentSessionId())
+        }
+    }
+
+    /// Two agents in the session: the transcript read is the one of the pane
+    /// that gets the text, not the one that wrote last.
+    func testTheTranscriptIsTheOneOfTheMaestroPane() throws {
+        let dir = try makeClaudeDir()
+        try write(["sessionId": "maestro", "tmux": "mux-manager:@1.%5", "status": "idle", "updatedAt": 1_000],
+                  to: dir.appendingPathComponent("sessions/1.json"))
+        try write(["sessionId": "other", "tmux": "mux-manager:@2.%8", "status": "busy", "updatedAt": 2_000],
+                  to: dir.appendingPathComponent("sessions/2.json"))
+        try write(["sessionId": "longer-id", "tmux": "mux-manager:@3.%55", "updatedAt": 3_000],
+                  to: dir.appendingPathComponent("sessions/3.json"))
+        let runner = FakeRunner()
+        runner.panes = "%5\t1\tclaude\t/Users/me/manager\t\n%8\t\tclaude\t/Users/me/manager\t\n"
+        let driver = ManagerPaneDriver(
+            config: config(claudeDir: dir), runner: runner, queue: DispatchQueue(label: "test.pane"))
+        XCTAssertEqual(driver.currentSessionId(), "maestro")
+        XCTAssertEqual(driver.fileStatus(), .idle)
+    }
+
+    // MARK: The Maestro's own pane, against a real tmux
+
+    /// The bug end to end: window 0 holds the Maestro, a second window with a
+    /// shell is the active one, and a turn is sent.
+    func testATurnIsTypedIntoTheMaestroPaneWhenAShellWindowIsActive() throws {
+        guard let tmux = PrivateTmux() else { throw XCTSkip("no tmux on this machine") }
+        addTeardownBlock { tmux.tmux(["kill-server"]) }
+        tmux.tmux(["-f", "/dev/null", "new-session", "-d", "-s", "mux-manager", "-x", "100", "-y", "30", "cat"]
+                  + ManagerPane.createMarkArgv(session: "mux-manager"))
+        let maestro = tmux.tmux(["display-message", "-p", "-t", "mux-manager", "#{pane_id}"])
+        tmux.tmux(["new-window", "-t", "mux-manager", "/bin/sh"])
+        let shell = tmux.tmux(["display-message", "-p", "-t", "mux-manager", "#{pane_id}"])
+        XCTAssertTrue(maestro.hasPrefix("%") && shell.hasPrefix("%") && maestro != shell)
+
+        let dir = try makeClaudeDir()
+        try write(["sessionId": "wanted", "tmux": "mux-manager:@0.\(maestro)", "status": "idle"],
+                  to: dir.appendingPathComponent("sessions/4242.json"))
+        let driver = ManagerPaneDriver(
+            config: .init(tmuxPath: tmux.path, claudeDir: dir, pollInterval: 0.02), runner: tmux,
+            statusOverride: { _ in .idle }, queue: DispatchQueue(label: "test.pane"))
+        driver.send("hello maestro", onDelta: { _ in }) { _ in }
+        // `cat` shows the paste once and gives it back once after the Enter.
+        XCTAssertTrue(eventually { tmux.screen(maestro).components(separatedBy: "hello maestro").count == 3 })
+        driver.cancel()
+        XCTAssertFalse(tmux.screen(shell).contains("hello"), "the chat must not reach the shell")
+        XCTAssertFalse(tmux.screen(shell).contains("not found"))
+
+        // The rail terminal attaches to the Maestro's window, not the shell's.
+        XCTAssertEqual(tmux.tmux(["display-message", "-p", "-t", "mux-manager", "#{pane_id}"]), shell)
+        tmux.tmux(ManagerPane.showArgv(pane: maestro))
+        XCTAssertEqual(tmux.tmux(["display-message", "-p", "-t", "mux-manager", "#{pane_id}"]), maestro)
+    }
+
+    /// A session from before panes were marked: the first pane in the manager
+    /// home is the Maestro's, and it is marked so it stays that.
+    func testASessionWithoutTheMarkPinsTheFirstPaneInTheManagerHome() throws {
+        guard let tmux = PrivateTmux() else { throw XCTSkip("no tmux on this machine") }
+        addTeardownBlock { tmux.tmux(["kill-server"]) }
+        let home = try makeClaudeDir()
+        let size = ["-x", "100", "-y", "30"]
+        tmux.tmux(["-f", "/dev/null", "new-session", "-d", "-s", "mux-manager", "-c", home.path] + size + ["cat"])
+        let maestro = tmux.tmux(["display-message", "-p", "-t", "mux-manager", "#{pane_id}"])
+        // A second agent in the same home, then a shell elsewhere, left active.
+        tmux.tmux(["new-window", "-t", "mux-manager", "-c", home.path, "cat"])
+        tmux.tmux(["new-window", "-t", "mux-manager", "-c", "/", "/bin/sh"])
+        let shell = tmux.tmux(["display-message", "-p", "-t", "mux-manager", "#{pane_id}"])
+
+        let dir = try makeClaudeDir()
+        let driver = ManagerPaneDriver(
+            config: .init(tmuxPath: tmux.path, homePath: home.path, claudeDir: dir, pollInterval: 0.02),
+            runner: tmux, statusOverride: { _ in .idle }, queue: DispatchQueue(label: "test.pane"))
+        driver.send("hello maestro", onDelta: { _ in }) { _ in }
+        XCTAssertTrue(eventually { tmux.screen(maestro).components(separatedBy: "hello maestro").count == 3 })
+        driver.cancel()
+        XCTAssertFalse(tmux.screen(shell).contains("hello"))
+        let marks = tmux.tmux(["list-panes", "-s", "-t", "mux-manager", "-F", "#{pane_id}=#{@mux_maestro}"])
+        XCTAssertEqual(marks.split(separator: "\n").filter { $0.hasSuffix("=1") }, ["\(maestro)=1"])
+    }
+
+    func testThePinnedPaneIsTheMarkedOneElseTheFirstTheAppLaunched() {
+        let launch = #""exec \"\$SHELL\" -lc 'PATH='\\''/Users/me/manager/bin'\\'':\"\$PATH\" exec claude'""#
+        let rows = ManagerPane.parse(
+            "%12\t\tzsh\t/Users/me/code/acme-app\t\n"
+                + "%9\t\t2.1.0\t/Users/me/manager\t\n"
+                + "%3\t\tclaude\t/Users/me/elsewhere\t\(launch)\n"
+                + "%4\t1\tclaude\t/Users/me/manager\t\n"
+                + "not a pane\n")
+        XCTAssertEqual(rows.map(\.id), ["%12", "%9", "%3", "%4"])
+        XCTAssertEqual(rows[2].start, launch)
+        // The mark wins over everything.
+        XCTAssertEqual(ManagerPane.pinned(rows, homePath: "/Users/me/manager")?.id, "%4")
+        // No mark: the lowest id among the app's launch and the panes in the home.
+        let unmarked = Array(rows.dropLast())
+        XCTAssertEqual(ManagerPane.pinned(unmarked, homePath: "/Users/me/manager")?.id, "%3")
+        XCTAssertEqual(ManagerPane.pinned(Array(unmarked.prefix(2)), homePath: "/Users/me/manager")?.id, "%9")
+        // A shell elsewhere is never it.
+        XCTAssertNil(ManagerPane.pinned(Array(unmarked.prefix(1)), homePath: "/Users/me/manager"))
+        XCTAssertNil(ManagerPane.pinned(Array(unmarked.prefix(2)), homePath: nil))
+
+        XCTAssertTrue(ManagerPane.isAgent(rows[1]))
+        XCTAssertFalse(ManagerPane.isAgent(rows[0]))
+        XCTAssertFalse(ManagerPane.isAgent(.init(id: "%1", marked: true, command: "-zsh", path: "/", start: "")))
+
+        // A pane found by the rule is marked; one at a shell is neither marked
+        // nor returned.
+        var ran: [[String]] = []
+        let found = ManagerPane.resolve(session: "mux-manager", homePath: "/Users/me/manager") {
+            ran.append($0)
+            return $0.first == "list-panes" ? "%9\t\tclaude\t/Users/me/manager\t\n" : ""
+        }
+        XCTAssertEqual(found, "%9")
+        XCTAssertEqual(ran.first?.prefix(4), ["list-panes", "-s", "-t", "=mux-manager"])
+        XCTAssertEqual(ran.last, ["set-option", "-p", "-t", "%9", "@mux_maestro", "1"])
+        ran = []
+        XCTAssertNil(ManagerPane.resolve(session: "mux-manager", homePath: "/Users/me/manager") {
+            ran.append($0)
+            return "%9\t\tzsh\t/Users/me/manager\t\n"
+        })
+        XCTAssertEqual(ran.count, 1)
+    }
+
+    /// A session with shells only: the turn fails and no shell gets the text.
+    func testNoShellGetsTheTurnWhenTheSessionHasNoMaestroPane() throws {
+        guard let tmux = PrivateTmux() else { throw XCTSkip("no tmux on this machine") }
+        addTeardownBlock { tmux.tmux(["kill-server"]) }
+        tmux.tmux(["-f", "/dev/null", "new-session", "-d", "-s", "mux-manager", "-x", "100", "-y", "30",
+                   "-c", "/", "/bin/sh"])
+        let shell = tmux.tmux(["display-message", "-p", "-t", "mux-manager", "#{pane_id}"])
+        let dir = try makeClaudeDir()
+        let driver = ManagerPaneDriver(
+            config: .init(tmuxPath: tmux.path, claudeDir: dir, pollInterval: 0.02), runner: tmux,
+            statusOverride: { _ in .idle }, queue: DispatchQueue(label: "test.pane"))
+        let done = expectation(description: "unreachable")
+        driver.send("hello maestro", onDelta: { _ in }) { outcome in
+            XCTAssertEqual(outcome, .unreachable("The Maestro session is not running"))
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 5)
+        Thread.sleep(forTimeInterval: 0.5)
+        XCTAssertFalse(tmux.screen(shell).contains("hello"))
+    }
+
+    private func eventually(_ timeout: TimeInterval = 5, _ check: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if check() { return true }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        return check()
+    }
+
     // MARK: Helpers
 
     /// One poll, collecting the delta so a test can assert the whole stream.
@@ -883,13 +1091,32 @@ private final class FakeRunner: CommandRunner {
     private let lock = NSLock()
     private var calls: [(path: String, args: [String], stdin: Data?)] = []
 
+    /// What `list-panes` prints for the session: one marked agent pane unless a
+    /// test says otherwise. The lookups are counted apart from `recorded()`,
+    /// which holds what was done to a pane.
+    var panes = "%5\t1\tclaude\t/Users/me/manager\t\n"
+    /// The pane cannot be captured, though tmux answers.
+    var unreadable = false
+    private var lookupCount = 0
+
     func run(_ path: String, _ args: [String], stdin: Data?) -> String? {
         lock.lock()
-        calls.append((path, args, stdin))
         let failing = self.failing
+        if args.first == "list-panes" {
+            lookupCount += 1
+            lock.unlock()
+            return failing ? nil : panes
+        }
+        calls.append((path, args, stdin))
         lock.unlock()
         onRun?(args)
+        if unreadable, args.first == "capture-pane" { return nil }
         return failing ? nil : (output?(args) ?? "")
+    }
+
+    func lookups() -> Int {
+        lock.lock(); defer { lock.unlock() }
+        return lookupCount
     }
 
     func recorded() -> [[String]] {
@@ -907,4 +1134,50 @@ private final class FakeRunner: CommandRunner {
         lock.lock(); defer { lock.unlock() }
         return calls.compactMap(\.stdin).map { String(decoding: $0, as: UTF8.self) }.joined()
     }
+}
+
+/// Runs real tmux on a server of the test's own (`tmux -L <name>`), never the
+/// default one.
+private final class PrivateTmux: CommandRunner {
+    let path: String
+    let name = "mm-maestro-\(UUID().uuidString.prefix(8))"
+
+    init?() {
+        guard let path = ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"]
+            .first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else { return nil }
+        self.path = path
+    }
+
+    func run(_ path: String, _ args: [String], stdin: Data?) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: path)
+        process.arguments = ["-L", name] + args
+        // No $TMUX: it names the live server. A UTF-8 locale, as the app has:
+        // without one tmux prints the tabs between fields as "_".
+        var environment = ProcessInfo.processInfo.environment
+        environment["TMUX"] = nil
+        environment["LANG"] = "en_US.UTF-8"
+        process.environment = environment
+        let out = Pipe()
+        process.standardOutput = out
+        process.standardError = FileHandle.nullDevice
+        let input = stdin.map { _ in Pipe() }
+        process.standardInput = input ?? FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return nil }
+        if let input, let stdin {
+            input.fileHandleForWriting.write(stdin)
+            input.fileHandleForWriting.closeFile()
+        }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { return nil }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    @discardableResult
+    func tmux(_ args: [String]) -> String {
+        (run(path, args, stdin: nil) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func screen(_ pane: String) -> String { tmux(["capture-pane", "-p", "-t", pane]) }
 }
