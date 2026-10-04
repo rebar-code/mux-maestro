@@ -3087,7 +3087,8 @@ final class SidebarViewController: NSViewController {
                     state: ManagerSessionRow.State(s.attention),
                     windows: s.windows.count,
                     panes: s.windows.reduce(0) { $0 + $1.panes.count },
-                    cwd: s.cwd))
+                    cwd: s.cwd,
+                    windowIndexes: s.windows.map(\.index)))
             }
         }
         return rows

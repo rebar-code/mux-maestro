@@ -201,11 +201,11 @@ final class MobileManagerTests: XCTestCase {
     // MARK: pointers
 
     private func pointer(
-        _ key: String, title: String, detail: String, link: ThreadLink?
+        _ key: String, title: String, detail: String, link: ThreadLink?, at: Int = 1_759_499_800
     ) -> MobileManagerItem {
         MobileManagerItem(
             kind: .review, key: key, title: title, detail: detail, severity: .blocked,
-            at: 1_759_499_800, link: link, pointer: true)
+            at: at, link: link, pointer: true)
     }
 
     private func pointerBoard() -> MobileManagerBoard {
@@ -248,6 +248,103 @@ final class MobileManagerTests: XCTestCase {
         let empty = MobileManager.live(board: pointerBoard(), snapshot: MobileSnapshot(), turn: nil)
         let stale = try XCTUnwrap(empty["points"] as? [[String: Any]])
         XCTAssertTrue(stale.allSatisfy { $0["thread"] is NSNull })
+    }
+
+    /// The DB is a file, so the list is capped again here: the newest twenty,
+    /// in the order the board had them.
+    func testLiveReturnsAtMostTwentyPointsTheNewest() throws {
+        // Every third pointer is an old one.
+        let items = (0..<30).map { n in
+            pointer(
+                "point:localhost:s\(n)", title: "s\(n)", detail: "needs your approval", link: nil,
+                at: n % 3 == 0 ? n : 1_000 + n)
+        }
+        var board = board()
+        board.items += items
+        let live = MobileManager.live(board: board, snapshot: snapshot(), turn: nil)
+        let points = try XCTUnwrap(live["points"] as? [[String: Any]])
+        XCTAssertEqual(MobileManager.maxPointers, 20)
+        XCTAssertEqual(points.count, 20)
+        XCTAssertEqual(
+            points.compactMap { $0["key"] as? String },
+            (0..<30).filter { $0 % 3 != 0 }.map { "point:localhost:s\($0)" })
+        // The other lists are not cut by it.
+        XCTAssertEqual((live["review"] as? [Any])?.count, 2)
+        XCTAssertEqual((live["needsYou"] as? [Any])?.count, 1)
+
+        board.items = Array(items.prefix(20))
+        let full = MobileManager.live(board: board, snapshot: snapshot(), turn: nil)
+        XCTAssertEqual((full["points"] as? [Any])?.count, 20)
+    }
+
+    func testAPointersTextLosesDirectionAndZeroWidthCharacters() throws {
+        let ranges: [ClosedRange<UInt32>] = [0x200B...0x200F, 0x202A...0x202E, 0x2066...0x2069]
+        for value in ranges.joined() {
+            let scalar = try XCTUnwrap(Unicode.Scalar(value))
+            XCTAssertEqual(
+                MobileManager.pointerLine("acme\(scalar)-app\(scalar)"), "acme-app",
+                String(value, radix: 16))
+        }
+        // Their neighbours are text.
+        XCTAssertEqual(MobileManager.pointerLine("waits… on you — now"), "waits… on you — now")
+
+        let board = MobileManagerBoard(items: [
+            pointer(
+                "point:localhost:acme-app", title: "\u{202E}ppa-emca\u{202C}",
+                detail: "needs\u{200B} your \u{2067}approval\u{2069}", link: nil),
+        ])
+        let live = MobileManager.live(board: board, snapshot: snapshot(), turn: nil)
+        let point = try XCTUnwrap((live["points"] as? [[String: Any]])?.first)
+        XCTAssertEqual(point["title"] as? String, "ppa-emca")
+        XCTAssertEqual(point["detail"] as? String, "needs your approval")
+    }
+
+    /// A session of two windows; `statuses` are those of window 1 and window 2.
+    private func twoWindows(_ first: AttentionStatus, _ second: AttentionStatus) -> MobileSnapshot {
+        var one = TmuxPane(id: "%21", index: 0, command: "claude", title: "", active: true)
+        one.claudeSessionId = "w1"
+        one.attention = first
+        var two = TmuxPane(id: "%22", index: 0, command: "claude", title: "", active: true)
+        two.claudeSessionId = "w2"
+        two.attention = second
+        return MobileSnapshot.build([
+            MobileHostInput(
+                host: .local, colorHex: "#3291ff", reachability: .reachable, stats: nil,
+                sessions: [TmuxSession(name: "acme-app", attached: true, windows: [
+                    TmuxWindow(index: 1, name: "checkout-fix", active: true, panes: [one]),
+                    TmuxWindow(index: 2, name: "invoices-pdf", active: false, panes: [two]),
+                ])]),
+        ])
+    }
+
+    func testAWindowlessPointerResolvesToTheWindowThatWaits() throws {
+        func thread(_ first: AttentionStatus, _ second: AttentionStatus, window: Int? = nil,
+                    pane: String? = nil) -> String? {
+            MobileManager.threadID(
+                for: .open(session: "acme-app", window: window, pane: pane, host: "localhost"),
+                in: twoWindows(first, second))
+        }
+        XCTAssertEqual(thread(.idle, .waiting), "localhost:22")
+        XCTAssertEqual(thread(.busy, .waiting), "localhost:22")
+        XCTAssertEqual(thread(.waiting, .waiting), "localhost:21")
+        // Nothing waits: the one that works, then the first.
+        XCTAssertEqual(thread(.idle, .busy), "localhost:22")
+        XCTAssertEqual(thread(.idle, .idle), "localhost:21")
+        XCTAssertEqual(thread(.unknown, .idle), "localhost:21")
+        // A named window or pane wins over the status.
+        XCTAssertEqual(thread(.idle, .waiting, window: 1), "localhost:21")
+        XCTAssertEqual(thread(.waiting, .idle, window: 2), "localhost:22")
+        XCTAssertEqual(thread(.idle, .waiting, pane: "%21"), "localhost:21")
+
+        // The card of a window-less pointer names the thread that waits.
+        let board = MobileManagerBoard(items: [
+            pointer(
+                "point:localhost:acme-app", title: "acme-app", detail: "needs your approval",
+                link: .open(session: "acme-app", window: nil, pane: nil, host: "localhost")),
+        ])
+        let live = MobileManager.live(board: board, snapshot: twoWindows(.idle, .waiting), turn: nil)
+        let point = try XCTUnwrap((live["points"] as? [[String: Any]])?.first)
+        XCTAssertEqual(point["thread"] as? String, "localhost:22")
     }
 
     func testAPointersTextIsCutToOneShortCleanLine() throws {

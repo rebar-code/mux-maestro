@@ -129,8 +129,11 @@ mux point <session>[:<window>] --done [--host <host>]
 - **The reason reads after the session name**: "needs your approval", "asks
   which database to use". One line, 120 characters at most.
 - The session must be in `mux sessions` for that host; `mux point` refuses a
-  name it does not list. Keys starting with `point:` belong to `mux point`:
-  `mux review add` refuses them.
+  name it does not list. A `:<window>` must be a window index that session has
+  now; leave it out when you are not sure. Keys starting with `point:` belong
+  to `mux point`: `mux review add` refuses them.
+- **At most 20 pointers.** One more drops the oldest, so clear a pointer with
+  `--done` when its session moves on.
 - **Pointing only records a pointer.** Never type into that session and never
   answer its prompt. The human answers it.
 
