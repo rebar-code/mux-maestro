@@ -12,8 +12,7 @@
 
 	/**
 	 * The Maestro's text box with its voice bar and its pane's keys: the home
-	 * page's footer and the panel's. Both write the same draft, so text typed
-	 * in one shows in the other, and both send through the Maestro's one turn.
+	 * page's footer. It sends through the Maestro's one turn.
 	 * The attach button and its tiles are a thread's: the box is one thing.
 	 */
 	const { onfocus, onblur }: { onfocus?: () => void; onblur?: () => void } = $props();
@@ -21,7 +20,8 @@
 	const managerOn = $derived(can('manager'));
 	// A take goes to the Maestro, so voice needs the Maestro's switch too.
 	const voiceOn = $derived(managerOn && can('voice'));
-	const keysOn = $derived(managerOn && can('keyBar'));
+	// The keys are the pane's: they show with its terminal, not with the chat.
+	const keysOn = $derived(managerOn && can('keyBar') && maestro.terminal);
 	const boxLabel = $derived(isOff('manager') ? OFF_LABEL : 'Ask the Maestro');
 	const reply = maestro.reply;
 
@@ -49,8 +49,8 @@
 	sink={manager.voice}
 	{voiceOn}
 	off={!managerOn}
-	blocked={manager.busy || manager.files.pending}
-	sending={manager.sending}
+	blocked={manager.files.pending}
+	busy={manager.busy}
 	onsend={send}
 	oninput={() => (reply.note = null)}
 	onpaste={managerOn ? reply.pasted : undefined}

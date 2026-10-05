@@ -89,7 +89,7 @@
 		onpointerdown={press}
 		onpointermove={move}
 		onclick={tap}
-		{@attach target !== 'manager' && longPress(maestro.peek)}
+		{@attach target !== 'manager' && longPress(maestro.show)}
 		><span class="icon {kind}"
 			>{#if kind === 'talk'}<Icon name="mic" size={17} />{:else}{face.icon}{/if}</span
 		>

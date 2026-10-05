@@ -25,6 +25,8 @@ import type { VoiceSink } from './voice.svelte';
 const KEY = 'mm.manager';
 /** The manager's text box in the draft store. */
 const DRAFT = 'manager';
+/** The texts that wait for the turn in flight, in the draft store. */
+const QUEUED = 'maestro:queued';
 /** How often the home asks again: the pane's status has no event. */
 const POLL_MS = 10_000;
 
@@ -42,6 +44,16 @@ interface Cached {
 	review: ManagerItem[];
 	needsYou: ManagerItem[];
 	chat?: ChatMessage[];
+}
+
+/** The texts a turn in flight held back when the app was last open. */
+function held(): string[] {
+	try {
+		const list: unknown = JSON.parse(drafts.load(QUEUED) || '[]');
+		return Array.isArray(list) ? list.filter((text) => typeof text === 'string') : [];
+	} catch {
+		return [];
+	}
 }
 
 function cached(): Cached | null {
@@ -88,6 +100,12 @@ class Manager {
 	}
 	/** This phone has a turn in flight. */
 	sending = $state(false);
+	/**
+	 * Texts sent while a turn ran, oldest first. The Mac takes one turn at a
+	 * time, so the phone holds them: each goes as its own turn when the one
+	 * before it ends. Kept across a reload, like the draft.
+	 */
+	queued = $state.raw<string[]>(held());
 	/** The files picked for the next message. Their paths go into the text box. */
 	readonly files = new Attachments(MANAGER_PATH, {
 		insert: (text) => (this.draft = insertPath(this.draft, text)),
@@ -201,6 +219,7 @@ class Manager {
 		// This phone's own turn is followed on its own stream.
 		if (!this.sending) this.setTurn(body.turn);
 		this.save();
+		this.next();
 		// The board has no status of its own: ask for it with each board, so a
 		// state such as "waiting" does not outlive the pane's.
 		if (!this.sending && body.turn === null) void this.load();
@@ -233,6 +252,8 @@ class Manager {
 			}
 			if (current && !this.sending) this.setTurn(home.turn);
 			this.save();
+			// Idle is read first-hand here: a text that waited can go.
+			if (current && home.status === 'idle') this.next();
 		} catch (error) {
 			live.fail(error);
 			if (this.review === null) this.review = [];
@@ -268,7 +289,13 @@ class Manager {
 		this.sending = false;
 		this.setTurn(null);
 		this.note = refused ?? note;
-		if (refused !== null && !this.draft) this.draft = text;
+		if (refused === null) this.next();
+		else {
+			// What waited behind a refused turn would be refused too: it all goes back in the box.
+			const back = [text, ...this.queued].join('\n');
+			this.hold([]);
+			if (!this.draft) this.draft = back;
+		}
 		void this.load();
 	}
 
@@ -281,12 +308,30 @@ class Manager {
 
 	send = async (): Promise<void> => {
 		const text = normalizeText(this.draft).trim();
-		// A turn is running, here or on the Mac: Enter must not send a second one.
 		// A file on its way goes first: its path is part of the text.
-		if (!text || this.sending || this.busy || this.files.pending || bytesOver(text)) return;
+		if (!text || this.files.pending || bytesOver(text)) return;
 		this.draft = '';
 		// The paths went with the text.
 		this.files.clear();
+		// A turn is running, here or on the Mac: the text waits for its end.
+		if (this.sending || this.busy) return this.hold([...this.queued, text]);
+		await this.run(text);
+	};
+
+	private hold(texts: string[]): void {
+		this.queued = texts;
+		drafts.save(QUEUED, texts.length ? JSON.stringify(texts) : '');
+	}
+
+	/** No turn runs: the text that waited longest goes. */
+	private next(): void {
+		if (this.sending || this.busy || !this.queued.length) return;
+		const [text, ...rest] = this.queued;
+		this.hold(rest);
+		void this.run(text);
+	}
+
+	private async run(text: string): Promise<void> {
 		this.begin(text);
 		// A reload now would cut the turn's stream, and the text would come back as not sent.
 		const release = holdReload();
@@ -298,7 +343,7 @@ class Manager {
 		} finally {
 			release();
 		}
-	};
+	}
 
 	/** A turn this phone spoke: drawn and kept like one it typed. */
 	readonly voice: VoiceSink = {

@@ -4,10 +4,9 @@
 	import ActionSheet from '$lib/ActionSheet.svelte';
 	import Drawer from '$lib/Drawer.svelte';
 	import { gestures, ui } from '$lib/gestures.svelte';
-	import { can, connect, live } from '$lib/live.svelte';
+	import { connect, live } from '$lib/live.svelte';
 	import { maestro } from '$lib/maestro.svelte';
 	import MaestroButton from '$lib/MaestroButton.svelte';
-	import MaestroPanel from '$lib/MaestroPanel.svelte';
 	import { keyboardInset } from '$lib/pager';
 	import Pair from '$lib/Pair.svelte';
 	import { notifications } from '$lib/push.svelte';
@@ -16,8 +15,8 @@
 
 	const { children } = $props();
 
-	// Back to the page a jump left from opens the Maestro panel there again.
-	afterNavigate((navigation) => maestro.arrived(navigation.type, location.pathname));
+	// The Maestro button knows the page its screen was opened from.
+	afterNavigate(maestro.arrived);
 
 	/**
 	 * Attachment for the app root: while the on-screen keyboard is open the page
@@ -54,7 +53,6 @@
 	class="app"
 	data-app
 	{@attach gestures}
-	{@attach maestro.drag}
 	{@attach connect}
 	{@attach keyboard}
 	{@attach notifications}
@@ -66,10 +64,9 @@
 	{:else if live.forbidden}
 		<div class="denied" role="alert">Not allowed</div>
 	{:else}
-		<div class="view" inert={ui.drawerOpen || maestro.stop >= 2}>
+		<div class="view" inert={ui.drawerOpen}>
 			{@render children()}
 		</div>
-		{#if can('manager')}<MaestroPanel />{/if}
 		<MaestroButton />
 		<button
 			class="scrim"
@@ -104,12 +101,6 @@
 	.app,
 	.app :global(*) {
 		touch-action: pan-y;
-	}
-
-	/* The drags that move the Maestro panel begin on these: none of them scrolls. */
-	.app :global([data-maestro-grab]),
-	.app :global([data-maestro-grab] *) {
-		touch-action: none;
 	}
 
 	.view {

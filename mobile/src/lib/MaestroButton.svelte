@@ -7,8 +7,9 @@
 
 	/**
 	 * The Maestro button: drawn once by the layout, over the header of every
-	 * page and at the same place on each. It opens and closes the panel, and
-	 * shows at a glance what the Maestro does and how many sessions need the user.
+	 * page and at the same place on each. It opens the Maestro's screen, and on
+	 * that screen it is the X that goes back. It shows at a glance what the
+	 * Maestro does and how many sessions need the user.
 	 */
 	const on = $derived(can('manager'));
 	const state = $derived(maestroState({ on, busy: manager.busy, status: manager.status }));
@@ -22,7 +23,9 @@
 	);
 	const LABELS = { off: OFF_LABEL, asks: 'asks you', working: 'working', idle: 'idle' };
 	const label = $derived(
-		`Maestro, ${LABELS[state]}${needs ? `, ${needs} need you` : ''}${maestro.open ? ', close' : ''}`
+		maestro.open
+			? 'Close the Maestro'
+			: `Maestro, ${LABELS[state]}${needs ? `, ${needs} need you` : ''}`
 	);
 </script>
 
@@ -32,16 +35,15 @@
 	class:pulse={maestro.jumped}
 	aria-label={label}
 	aria-disabled={!on}
-	aria-expanded={on ? maestro.open : undefined}
 	title={on ? undefined : OFF_LABEL}
 	data-maestro
-	data-maestro-grab
+	data-open={maestro.open ? '' : undefined}
 	data-state={state}
 	onclick={maestro.toggle}
 	{@attach on && manager.watch}
 >
 	<span class="ring" aria-hidden="true"></span>
-	<span class="mark" aria-hidden="true">✦</span>
+	<span class="mark" aria-hidden="true">{maestro.open ? '✕' : '✦'}</span>
 	{#if state === 'asks'}<i class="ask" aria-hidden="true"></i>{/if}
 	{#if needs}<span class="count" data-count>{needs}</span>{/if}
 </button>
@@ -51,7 +53,7 @@
 		position: absolute;
 		top: env(safe-area-inset-top);
 		right: max(3px, env(safe-area-inset-right));
-		/* Over the panel, under the sidebar and its scrim. */
+		/* Over the page's header, under the sidebar and its scrim. */
 		z-index: 35;
 		width: var(--hit);
 		height: var(--hit);
@@ -71,7 +73,7 @@
 		color: #5c5c6b;
 	}
 
-	.mb[aria-expanded='true'] .ring {
+	.mb[data-open] .ring {
 		background: #2a2440;
 	}
 
