@@ -127,6 +127,8 @@ class Voice {
 	private abort: AbortController | null = null;
 	/** The bar Auto listens for: the last one that opened the mic. */
 	private bound = $state.raw<{ target: VoiceTarget; sink: VoiceSink } | null>(null);
+	/** The bar that is in talk mode: the last one a take was started on. */
+	private talking = $state<VoiceTarget | null>(null);
 	/** The turn in flight has begun at its target. */
 	private sink: VoiceSink | null = null;
 	/** Skip was pressed: the rest of this reply is not played. */
@@ -142,6 +144,24 @@ class Voice {
 	statusOf(target: VoiceTarget): VoiceStatus {
 		return this.target === target ? this.status : 'idle';
 	}
+
+	/**
+	 * Talk mode is on at `target`: a take was started there and nothing typed
+	 * has been sent since, or Auto listens for it. Only then does its bar show
+	 * the voice controls. A muted mic holds Talk off, so the controls stay to
+	 * switch it back on.
+	 */
+	activeOn(target: VoiceTarget): boolean {
+		if (this.micMuted || this.talking === target) return true;
+		if (this.statusOf(target) !== 'idle') return true;
+		return this.mode === 'auto' && this.bound?.target === target;
+	}
+
+	/** A typed turn takes over: a reply that is still being read stops, and talk mode ends. */
+	typed = (): void => {
+		this.skip();
+		this.talking = null;
+	};
 
 	/** The status line of `target`'s bar. Empty while the voice does nothing. */
 	label(target: VoiceTarget): string {
@@ -352,6 +372,7 @@ class Voice {
 	/** The page is going away or into the background: give everything back. */
 	release = (): void => {
 		this.bound = null;
+		this.talking = null;
 		this.halt();
 		this.closeMic();
 		this.rest();
@@ -541,6 +562,7 @@ class Voice {
 		this.halt();
 		this.bound = { target, sink };
 		this.target = target;
+		this.talking = target;
 		this.note = null;
 		if (!(await this.openMic()) || this.status !== 'idle') return;
 		this.capture?.begin(performance.now());

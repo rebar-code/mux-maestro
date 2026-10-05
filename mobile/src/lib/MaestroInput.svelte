@@ -27,10 +27,23 @@
 
 	function send(): void {
 		// A typed turn takes over: a reply that is still being read stops.
-		if (voiceOn) voice.skip();
+		if (voiceOn) voice.typed();
 		void manager.send();
 	}
 </script>
+
+{#snippet attach()}
+	{#if managerOn}
+		<AttachButton
+			slim={keysOn}
+			off={!can('upload')}
+			onpick={manager.files.add}
+			onoff={reply.uploadOff}
+		/>
+	{:else}
+		<AttachButton disabled />
+	{/if}
+{/snippet}
 
 {#if managerOn}
 	<!--
@@ -39,7 +52,8 @@
 	-->
 	<!-- Typing clears it, as it does in a thread's box. -->
 	{#if reply.note}<NoteLine note={reply.note} />{/if}
-	{#if keysOn}<KeyBar {reply} composer={false} hides />{/if}
+	<!-- With a key bar the attach button is at its start; without one it is beside the text box. -->
+	{#if keysOn}<KeyBar {reply} composer={false} hides leading={attach} />{/if}
 	<VoiceBar target="manager" sink={manager.voice} off={!voiceOn} />
 {/if}
 <Composer
@@ -61,10 +75,6 @@
 		{#if manager.files.items.length}<AttachTiles files={manager.files} />{/if}
 	{/snippet}
 	{#snippet leading()}
-		{#if managerOn}
-			<AttachButton off={!can('upload')} onpick={manager.files.add} onoff={reply.uploadOff} />
-		{:else}
-			<AttachButton disabled />
-		{/if}
+		{#if !keysOn}{@render attach()}{/if}
 	{/snippet}
 </Composer>
