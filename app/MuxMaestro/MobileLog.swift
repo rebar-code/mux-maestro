@@ -459,6 +459,19 @@ final class MobileLogSink {
         }
     }
 
+    /// The Phone switch came to `state` on the Mac. A start that failed, or
+    /// one the Keychain holds, is then a line in the log with its reason.
+    func link(_ state: String, failed: Bool) {
+        enqueue { [self] in
+            let now = now()
+            if let line = MobileLog.line(
+                at: now, sev: failed ? "warn" : "info", kind: "mac", build: served ?? "", served: served,
+                msg: "phone link: \(state)") {
+                file.append([line], now: now)
+            }
+        }
+    }
+
     /// Wait for what was handed in to be written. For tests.
     func drain() { queue.sync {} }
 
