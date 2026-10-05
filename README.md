@@ -68,6 +68,8 @@ prompt, this is for you.
 - **[tmux](https://github.com/tmux/tmux)** on every host you want to drive.
 - **Xcode 16 or later** (Swift tools 6.0), to build. `make app` uses
   `/Applications/Xcode.app`; set `DEVELOPER_DIR` to use another copy.
+- **[Node.js](https://nodejs.org) 24 and [pnpm](https://pnpm.io)**, to build.
+  `make app` builds the phone web app from `mobile/`.
 - Optional: [Claude Code](https://www.anthropic.com/claude-code) or Codex for
   agent status; an SSH agent (e.g. 1Password's) for remote hosts; **herdr** as a
   second session source.

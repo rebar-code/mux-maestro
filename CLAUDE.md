@@ -22,6 +22,10 @@ messages, branch names, PR text and screenshots.
   `make libghostty` builds it from pinned source and takes many minutes; run it
   once per machine. In a new worktree, symlink the framework from a checkout
   that already has it instead of rebuilding.
+- The phone web app's bundle (`app/MuxMaestro/Resources/mobile/`) is gitignored.
+  `make app` and `make test` build it from `mobile/` when a source changed
+  (`make mobile` does only that); it needs node and pnpm. Never commit it. A
+  build from the Xcode GUI needs `make mobile` first.
 - New source files go into `MuxMaestro.xcodeproj/project.pbxproj` by hand. Give
   them unique IDs and grep for duplicates: a duplicate ID silently drops a file
   from the build ("cannot find X in scope").
