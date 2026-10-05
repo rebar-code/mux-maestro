@@ -398,10 +398,6 @@ test('the Maestro status is drawn while a message cannot go to it', async ({ pag
 	await page.request.post('/__fixture/manager-status?value=busy');
 	await page.reload();
 	await expect(status).toHaveText('Maestro is busy');
-	await box(page).fill('what needs me?');
-	await submit(page);
-	await expect(page.getByRole('alert')).toHaveText('Maestro is busy');
-	await expect(box(page)).toHaveValue('what needs me?');
 
 	// Running, but its pane's state is not known: not idle.
 	await page.request.post('/__fixture/manager-status?value=unknown');
@@ -415,6 +411,23 @@ test('the Maestro status is drawn while a message cannot go to it', async ({ pag
 	await page.reload();
 	await expect(box(page)).toBeVisible();
 	await expect(status).toHaveCount(0);
+});
+
+test('a message to a busy Maestro goes queued, as one to a busy session does', async ({ page }) => {
+	await fresh(page);
+	await page.request.post('/__fixture/manager-status?value=busy');
+	await page.reload();
+	await expect(page.locator('[data-status]')).toHaveText('Maestro is busy');
+	await box(page).fill('what needs me?');
+	await expect(foot(page).locator('[data-send]')).toHaveAttribute('data-send', 'queue');
+	const sent = page.waitForRequest((request) => request.url().endsWith('/api/manager/text'));
+	await foot(page).locator('[data-send]').click();
+	expect((await sent).postDataJSON()).toEqual({ text: 'what needs me?', mode: 'queue' });
+	expect((await (await sent).response())?.status()).toBe(200);
+	// Taken, not refused: the box is empty and the text is in the chat.
+	await expect(box(page)).toHaveValue('');
+	await expect(page.getByRole('alert')).toHaveCount(0);
+	await expect(said(page).locator('.u').last()).toHaveText('what needs me?');
 });
 
 test('the updates are listed, and one with a thread opens it', async ({ page }) => {

@@ -308,12 +308,17 @@ enum MobileManager {
     /// Why a turn cannot start now, as the response the phone shows; nil when
     /// it can. The phone sends only into an idle pane. A busy pane may reach a
     /// permission prompt between the paste and the Enter, and the Enter would
-    /// answer it; a waiting pane is already on one.
-    static func refusal(status: MobileManagerStatus, turnRunning: Bool) -> MobileResponse? {
+    /// answer it; a waiting pane is already on one. With `queue` a busy pane
+    /// is no refusal, as in `MobileReply.verify`: the human asked for the
+    /// agent to hold the text. A turn the app follows still refuses: it
+    /// follows one turn at a time.
+    static func refusal(
+        status: MobileManagerStatus, turnRunning: Bool, queue: Bool = false
+    ) -> MobileResponse? {
         if status == .off { return .error(503, "unavailable", message: offMessage) }
         if turnRunning { return .error(409, "busy", message: busyMessage) }
         if status == .waiting { return .error(409, "waiting", message: waitingMessage) }
-        if status == .busy { return .error(409, "busy", message: paneBusyMessage) }
+        if status == .busy, !queue { return .error(409, "busy", message: paneBusyMessage) }
         if status == .unknown { return .error(503, "not_ready", message: notReadyMessage) }
         return nil
     }

@@ -332,11 +332,13 @@ class Manager {
 	}
 
 	private async run(text: string): Promise<void> {
+		// The pane works on a turn that is not followed here: it holds the text, as a thread's does.
+		const mode = this.status === 'busy' ? 'queue' : undefined;
 		this.begin(text);
 		// A reload now would cut the turn's stream, and the text would come back as not sent.
 		const release = holdReload();
 		try {
-			await this.ended(await sendManagerText(text, () => void this.feed.load('chat')));
+			await this.ended(await sendManagerText(text, () => void this.feed.load('chat'), mode));
 		} catch (error) {
 			live.fail(error);
 			await this.finish(refusalText(error), null);

@@ -1478,7 +1478,10 @@ function managerApi(req, res, url, body) {
 		return send(res, 409, { error: 'waiting', message: 'Maestro is waiting on a prompt' });
 	if (manager.status === 'unknown')
 		return send(res, 503, { error: 'not_ready', message: 'Maestro is not ready' });
-	if (manager.status === 'busy')
+	if (json.mode !== undefined && json.mode !== 'idle' && json.mode !== 'queue')
+		return send(res, 400, { error: 'bad_request' });
+	// A busy pane holds text that asks for it, as a thread's does.
+	if (manager.status === 'busy' && json.mode !== 'queue')
 		return send(res, 409, { error: 'busy', message: 'Maestro is busy' });
 	res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' });
 	const event = (name, data) => res.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);

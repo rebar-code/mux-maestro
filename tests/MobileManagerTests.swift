@@ -580,6 +580,11 @@ final class MobileManagerTests: XCTestCase {
         let paneBusy = MobileManager.refusal(status: .busy, turnRunning: false)
         XCTAssertEqual(paneBusy?.status, 409)
         XCTAssertEqual(error(paneBusy), ["error": "busy", "message": "Maestro is busy"])
+        // The human asked for the agent to hold the text: only that check is dropped.
+        XCTAssertNil(MobileManager.refusal(status: .busy, turnRunning: false, queue: true))
+        XCTAssertEqual(MobileManager.refusal(status: .busy, turnRunning: true, queue: true)?.status, 409)
+        XCTAssertEqual(MobileManager.refusal(status: .waiting, turnRunning: false, queue: true)?.status, 409)
+        XCTAssertEqual(MobileManager.refusal(status: .unknown, turnRunning: false, queue: true)?.status, 503)
 
         let busy = MobileManager.refusal(status: .busy, turnRunning: true)
         XCTAssertEqual(busy?.status, 409)

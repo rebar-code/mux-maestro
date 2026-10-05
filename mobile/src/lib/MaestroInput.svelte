@@ -74,7 +74,7 @@
 	{voiceOn}
 	off={!managerOn}
 	blocked={manager.files.pending}
-	busy={manager.busy}
+	busy={manager.busy || manager.status === 'busy'}
 	onsend={send}
 	oninput={() => (reply.note = null)}
 	onbeforeinput={managerOn ? reply.beforeInput : undefined}

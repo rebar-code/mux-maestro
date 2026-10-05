@@ -131,10 +131,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }) else { return (.off, nil) }
                 return (MobileManagerStatus(reader.status()), reader.transcript()?.path)
             },
-            send: { [weak self] text, onDelta, completion in
+            send: { [weak self] text, queue, onDelta, completion in
                 DispatchQueue.main.async {
                     guard let self else { return completion(.unreachable(MobileManager.offMessage)) }
-                    self.runPhoneManagerTurn(text, onDelta: onDelta, completion: completion)
+                    self.runPhoneManagerTurn(text, queue: queue, onDelta: onDelta, completion: completion)
                 }
             },
             dismiss: { [weak self] key in
@@ -2817,12 +2817,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// has no such hold, so a second turn is refused here, before it is drawn.
     private func runPhoneManagerTurn(
         _ text: String,
+        queue: Bool,
         onDelta: @escaping (String) -> Void,
         completion: @escaping (ManagerTurnOutcome) -> Void
     ) {
         guard !managerTurnRunning else { return completion(.refused(MobileManager.busyMessage)) }
-        // The phone cannot see the pane: its turn starts only from idle.
-        runManagerTurn(text, requireIdle: true, onDelta: onDelta, completion: completion)
+        // The phone cannot see the pane: its turn starts only from idle,
+        // unless the human asked for a busy agent to hold the text.
+        runManagerTurn(text, requireIdle: !queue, onDelta: onDelta, completion: completion)
     }
 
     /// The phone's manager home needs the manager running, rail shown or not.
