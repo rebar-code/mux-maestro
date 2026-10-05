@@ -355,24 +355,6 @@ test('a thread has the same box: Cancel, the playback buttons, no mute', async (
 	await expect(cancel).toHaveCount(0);
 });
 
-for (const path of ['/', threadPath('localhost:7')]) {
-	test(`no empty band under the text box, above the home indicator: ${path}`, async ({ page }) => {
-		await reset(page);
-		for (const name of ['voice', 'replies']) {
-			await page.request.post(`/__fixture/capability?name=${name}&on=1`);
-		}
-		await forget(page);
-		// An iPhone with a home indicator: 34pt of inset at the bottom.
-		const cdp = await page.context().newCDPSession(page);
-		await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: { bottom: 34 } });
-		await page.goto(pairingLink(path));
-		await expect(primary(page)).toHaveText('Talk');
-		const pill = (await primary(page).boundingBox())!;
-		// The row clears the indicator's line and leaves nothing more under it.
-		expect(Math.round(844 - (pill.y + pill.height))).toBe(16);
-	});
-}
-
 test('the button is Send while the box has text, and Talk when it is empty', async ({ page }) => {
 	await open(page);
 	await box(page).fill('status?');

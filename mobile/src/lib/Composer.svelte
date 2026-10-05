@@ -190,12 +190,12 @@
 		gap: 8px;
 		margin: 0;
 		/*
-		 * The row sits low: it clears the home indicator's line (the lowest 14px
-		 * of the inset) and leaves no empty band under itself. With the keyboard
-		 * up there is no home indicator under the box (`--safe-bottom`).
+		 * The bottom inset is counted once. With the keyboard up there is no home
+		 * indicator under the box (`--safe-bottom`); on the manager home the board
+		 * takes the inset over once it shows under the footer (`--board`).
 		 */
 		padding: 6px max(10px, env(safe-area-inset-right))
-			max(10px, var(--safe-bottom, env(safe-area-inset-bottom)) - 20px)
+			calc(10px + var(--safe-bottom, max(0px, env(safe-area-inset-bottom) - var(--board, 0px))))
 			max(10px, env(safe-area-inset-left));
 		background: var(--bar);
 	}
