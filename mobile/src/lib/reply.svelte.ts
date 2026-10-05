@@ -25,6 +25,7 @@ import {
 	refusalLabel,
 	sendReduce,
 	slashQuery,
+	slashToken,
 	textRefusal,
 	type BarKey,
 	type LiveTurn,
@@ -145,7 +146,7 @@ export class Reply {
 	private commands = $state.raw<Command[] | null>(null);
 	/** The slash list: empty when it does not show. */
 	readonly matches: Command[] = $derived.by(() => {
-		const query = slashQuery(this.draft);
+		const query = slashQuery(this.draft, this.caret());
 		return query === null || !this.commands ? [] : filterCommands(this.commands, query);
 	});
 
@@ -262,8 +263,14 @@ export class Reply {
 		this.note = null;
 		// Text in the box is the next thing to send: the interrupt is no longer armed.
 		this.arm(false);
-		if (this.draft.startsWith('/')) void this.loadCommands();
+		if (slashToken(this.draft, this.caret())) void this.loadCommands();
 	};
+
+	/** Where the caret is in the draft: its end, when the box does not show it. */
+	private caret(): number {
+		const input = this.input;
+		return input?.value === this.draft ? input.selectionStart : this.draft.length;
+	}
 
 	private async loadCommands(): Promise<void> {
 		if (this.commands) return;
@@ -282,8 +289,18 @@ export class Reply {
 
 	/** A row of the slash list was tapped. */
 	pick = (name: string): void => {
-		this.draft = `/${name} `;
-		this.input?.focus();
+		const token = slashToken(this.draft, this.caret());
+		if (!token) return;
+		const input = this.input;
+		const text = `/${name} `;
+		if (input?.value === this.draft) {
+			input.focus();
+			input.setRangeText(text, token.start, token.end, 'end');
+			this.draft = input.value;
+		} else {
+			this.draft = this.draft.slice(0, token.start) + text + this.draft.slice(token.end);
+			input?.focus();
+		}
 	};
 
 	// MARK: keys

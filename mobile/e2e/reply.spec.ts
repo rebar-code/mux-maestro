@@ -490,6 +490,24 @@ test('slash: the list filters as you type and a tap fills the box', async ({ pag
 	await expect(box(page)).toBeFocused();
 	await expect(slash(page)).toHaveCount(0);
 
+	// A command after other text: a tap changes the command and nothing else.
+	await box(page).fill('fix the test then /com');
+	await slash(page).getByRole('option', { name: '/commit' }).tap();
+	await expect(box(page)).toHaveValue('fix the test then /commit ');
+	await expect(slash(page)).toHaveCount(0);
+
+	// The caret says which command, with text after it too.
+	await box(page).fill('run /co now');
+	await box(page).evaluate((el: HTMLTextAreaElement) => el.setSelectionRange(7, 7));
+	await page.keyboard.type('m');
+	await slash(page).getByRole('option', { name: '/commit' }).tap();
+	await expect(box(page)).toHaveValue('run /commit now');
+	expect(await box(page).evaluate((el: HTMLTextAreaElement) => el.selectionStart)).toBe(12);
+
+	// A path is not a command.
+	await box(page).fill('open /Users/me');
+	await expect(slash(page)).toHaveCount(0);
+
 	// Asked for once per thread, however often the list opens.
 	await box(page).fill('/');
 	await expect(slash(page)).toBeVisible();
