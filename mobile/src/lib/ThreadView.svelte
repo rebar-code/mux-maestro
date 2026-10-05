@@ -29,6 +29,7 @@
 	import { copyText, type ProseLinks } from './prose';
 	import { renderer } from './renderer.svelte';
 	import PullIndicator from './PullIndicator.svelte';
+	import RequestList from './RequestList.svelte';
 	import { push } from './push.svelte';
 	import { liveLines, nextWaiting, queuedLines } from './reply';
 	import { Reply } from './reply.svelte';
@@ -36,7 +37,7 @@
 	import { SERVERS, Servers } from './servers.svelte';
 	import ServersPage from './ServersPage.svelte';
 	import SlashList from './SlashList.svelte';
-	import { BOARD, MAIN, viewTabs } from './tabs';
+	import { BOARD, MAIN, REQUESTS, viewTabs } from './tabs';
 	import { text } from './textsize.svelte';
 	import { ThreadFeed, type Mode } from './thread.svelte';
 	import type { ArtifactFile, ChatMessage } from './types';
@@ -112,7 +113,8 @@
 	const LABELS: Record<string, string> = {
 		[ARTIFACTS]: 'Artifacts',
 		[SERVERS]: 'Servers',
-		[BOARD]: 'Board'
+		[BOARD]: 'Board',
+		[REQUESTS]: 'Requests'
 	};
 
 	// svelte-ignore state_referenced_locally
@@ -380,6 +382,8 @@
 						<PullIndicator key={BOARD} />
 						<BoardList blank />
 					</div>
+				{:else if tab === REQUESTS}
+					<RequestList shown={at === index} />
 				{:else if mode === 'chat'}
 					<div
 						class="scroll"
