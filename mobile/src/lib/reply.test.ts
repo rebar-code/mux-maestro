@@ -16,6 +16,7 @@ import {
 	refusalLabel,
 	sendReduce,
 	slashQuery,
+	slashToken,
 	textRefusal,
 	type QueuedKey,
 	type Refusal,
@@ -219,14 +220,23 @@ describe('refused replies', () => {
 });
 
 describe('slash', () => {
-	it('gives the typed name while the box holds only a command', () => {
+	it('gives the name of the command the caret is in', () => {
 		expect(slashQuery('/')).toBe('');
 		expect(slashQuery('/com')).toBe('com');
 		expect(slashQuery('/commit ')).toBeNull();
 		expect(slashQuery('/commit now')).toBeNull();
 		expect(slashQuery('')).toBeNull();
 		expect(slashQuery('a/b')).toBeNull();
-		expect(slashQuery(' /c')).toBeNull();
+		expect(slashQuery(' /c')).toBe('c');
+		expect(slashQuery('fix it then /com')).toBe('com');
+		expect(slashQuery('line one\n/')).toBe('');
+		expect(slashQuery('open /Users/me')).toBeNull();
+		// The caret, not the end of the text, says which command.
+		expect(slashQuery('run /commit now', 7)).toBe('co');
+		expect(slashQuery('run /commit now', 3)).toBeNull();
+		expect(slashQuery('/Users/me', 3)).toBeNull();
+		expect(slashToken('run /commit now', 7)).toEqual({ start: 4, end: 12 });
+		expect(slashToken('run /com')).toEqual({ start: 4, end: 8 });
 	});
 
 	it('puts prefix matches before substring matches', () => {
