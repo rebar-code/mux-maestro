@@ -228,9 +228,13 @@ final class ManagerController {
     /// user's profile so `claude` (and its own subprocesses) resolve. `bin/` is
     /// prepended *inside* the login shell so the agent's `mux` CLI still wins over
     /// the profile PATH.
+    ///
+    /// The agent and its model are the ones Settings holds when the session is
+    /// made; a running session keeps what it started with until it is restarted.
     static func launchShell(homePath: String) -> String {
-        let inner = "PATH=\(Ssh.shellQuote(homePath + "/bin")):\"$PATH\" exec claude"
-        return "exec \"$SHELL\" -lc \(Ssh.shellQuote(inner))"
+        let agent = Settings.maestroAgent()
+        return ManagerPane.launchShell(
+            homePath: homePath, agent: agent, model: Settings.maestroModel(agent))
     }
 
     /// Kill the manager session and hand back a fresh attach-or-create command

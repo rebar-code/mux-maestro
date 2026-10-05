@@ -894,6 +894,37 @@ final class ManagerPaneDriverTests: XCTestCase {
         XCTAssertEqual(marks.split(separator: "\n").filter { $0.hasSuffix("=1") }, ["\(maestro)=1"])
     }
 
+    func testTheLaunchCommandRunsTheChosenAgentWithItsModel() {
+        XCTAssertEqual(MaestroAgent.claude.command(model: ""), "claude")
+        XCTAssertEqual(MaestroAgent.codex.command(model: "  "), "codex")
+        XCTAssertEqual(MaestroAgent.claude.command(model: " opus "), "claude --model 'opus'")
+        // A model is free text from a settings field: it never reaches the shell bare.
+        XCTAssertEqual(MaestroAgent.codex.command(model: "x; rm -rf ~"), "codex --model 'x; rm -rf ~'")
+        XCTAssertEqual(
+            ManagerPane.launchShell(homePath: "/Users/me/manager", agent: .claude, model: ""),
+            #"exec "$SHELL" -lc 'PATH='\''/Users/me/manager/bin'\'':"$PATH" exec claude'"#)
+        XCTAssertTrue(
+            ManagerPane.launchShell(homePath: "/Users/me/manager", agent: .codex, model: "gpt-5.5")
+                .contains("exec codex --model"))
+    }
+
+    /// A session from before the mark is found by its start command, whichever
+    /// agent the app launched in it.
+    func testAPaneLaunchedWithEitherAgentCountsAsLaunched() throws {
+        guard let tmux = PrivateTmux(environment: ["PATH": "/usr/bin:/bin", "HOME": "/tmp"]) else {
+            throw XCTSkip("no tmux on this machine")
+        }
+        addTeardownBlock { tmux.tmux(["kill-server"]) }
+        let run: ([String]) -> String? = { tmux.run(tmux.path, $0, stdin: nil) }
+        tmux.tmux(["-f", "/dev/null", "new-session", "-d", "-s", "mux-manager", "-c", "/", "cat"])
+        // `exec <agent>` only has to be in the start command; `cat` keeps the pane alive.
+        for agent in MaestroAgent.allCases {
+            tmux.tmux(["new-window", "-t", "mux-manager", "-c", "/", "cat; : exec \(agent.rawValue) --model m"])
+        }
+        let rows = ManagerPane.parse(run(ManagerPane.listArgv(session: "mux-manager")) ?? "")
+        XCTAssertEqual(rows.map(\.launched), [false, true, true])
+    }
+
     func testThePinnedPaneIsTheMarkedOneElseTheFirstTheAppLaunched() {
         let rows = ManagerPane.parse(
             "%12 0 0 1 /Users/me/code/acme-app\n"
