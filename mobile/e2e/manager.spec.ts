@@ -553,10 +553,12 @@ test('thinking: with no spinner line the phrases rotate, with a timer', async ({
 
 const footTop = async (page: Page): Promise<number> => (await foot(page).boundingBox())?.y ?? 0;
 
-test('the home has two tabs, Chat and Board, in the strip a thread uses', async ({ page }) => {
+test('the home has the tabs Chat, Board and Requests, in the strip a thread uses', async ({
+	page
+}) => {
 	await fresh(page);
 	const tabs = page.locator('.tabs .seg [role="tab"]');
-	await expect(tabs).toHaveText([/Chat\s*⇄/, 'Board']);
+	await expect(tabs).toHaveText([/Chat\s*⇄/, 'Board', 'Requests']);
 	await expect(tab(page, 'main')).toHaveAttribute('aria-selected', 'true');
 	await expect(tab(page, 'board')).toHaveAttribute('aria-selected', 'false');
 	await expect(pageOf(page, 'board')).toHaveAttribute('inert', '');
@@ -594,10 +596,15 @@ test('a left swipe on the chat shows the board; a right swipe comes back, then o
 	await expect(tab(page, 'board')).toHaveAttribute('aria-selected', 'true');
 	await expectDrawerClosed(page);
 
+	await drag(page, [320, 420], [90, 424]);
+	await expectTab(page, 2);
+	await expect(tab(page, 'requests')).toHaveAttribute('aria-selected', 'true');
 	// The last page stays.
 	await drag(page, [320, 420], [90, 424]);
-	await expectTab(page, 1);
+	await expectTab(page, 2);
 
+	await drag(page, [70, 420], [300, 424]);
+	await expectTab(page, 1);
 	await drag(page, [70, 420], [300, 424]);
 	await expectTab(page, 0);
 	await expect(tab(page, 'main')).toHaveAttribute('aria-selected', 'true');

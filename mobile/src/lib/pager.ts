@@ -170,3 +170,43 @@ export function keyboardInset(layout: number, visible: number): number {
 	const covered = Math.round(layout - visible);
 	return covered >= KEYBOARD_MIN ? covered : 0;
 }
+
+/** What the browser says about the page and the screen, in CSS pixels. */
+export interface PageMeasure {
+	/** The height the browser lays the page out at. */
+	layout: number;
+	/** The height of the visual viewport: what the keyboard leaves. */
+	visible: number;
+	/** How far the browser slid the visual viewport down the page. */
+	slid: number;
+	/** The height of the screen, as it is held now. */
+	screen: number;
+	/** Opened from the Home Screen, with no browser around the page. */
+	standalone: boolean;
+	/** The status bar's inset (`env(safe-area-inset-top)`). */
+	safeTop: number;
+}
+
+export interface PageFit {
+	/** What the page grows by to reach the bottom of the screen. */
+	lift: number;
+	/** What the keyboard takes off the grown page; 0 when there is none. */
+	keyboard: number;
+	/** How far down the page starts, while the keyboard is open. */
+	slid: number;
+}
+
+/**
+ * The size of the app root. A Home Screen app whose status bar is see-through
+ * is drawn on the whole screen, yet an iPhone lays it out one status bar
+ * shorter, which leaves an empty band under the last row: the page grows by
+ * that much. Any other difference from the screen is a browser's own bars and
+ * is left alone. With the keyboard open the page is exactly what is visible.
+ */
+export function pageFit(measure: PageMeasure): PageFit {
+	const short = measure.screen - measure.layout;
+	const lift =
+		measure.standalone && short > 0 && Math.abs(short - measure.safeTop) <= 1 ? short : 0;
+	const keyboard = keyboardInset(measure.layout + lift, measure.visible);
+	return { lift, keyboard, slid: keyboard ? Math.max(0, measure.slid) : 0 };
+}

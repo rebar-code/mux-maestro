@@ -9,6 +9,8 @@ export const ARTIFACTS = 'artifacts';
 export const SERVERS = 'servers';
 /** What needs the user, the review list and the updates. */
 export const BOARD = 'board';
+/** What the user asked agents for. */
+export const REQUESTS = 'requests';
 
 export interface TabSwitches {
 	/** The view shows a listed thread. False for the Maestro's own pane. */
@@ -23,7 +25,8 @@ export interface TabSwitches {
 
 /**
  * The tabs of a view. Files and servers belong to a listed thread. The
- * Maestro's pane has none, so its page has the board as a tab instead. A tab
+ * Maestro's pane has none, so its page has the board and the requests as tabs
+ * instead. A tab
  * whose feature is off on the Mac is not there at all.
  */
 export function viewTabs(on: TabSwitches): string[] {
@@ -32,6 +35,6 @@ export function viewTabs(on: TabSwitches): string[] {
 		...(on.listed && on.artifacts ? [ARTIFACTS] : []),
 		...(on.listed && on.servers ? [SERVERS] : []),
 		// The panel draws the board itself, under its text box.
-		...(!on.listed && !on.embedded ? [BOARD] : [])
+		...(!on.listed && !on.embedded ? [BOARD, REQUESTS] : [])
 	];
 }

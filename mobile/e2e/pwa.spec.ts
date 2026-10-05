@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { drawer, fakeMic, forget, fresh, pairingLink, reset, TOKEN_HEADER } from './helpers';
 
 test('cached lists paint before the network answers', async ({ page }) => {
@@ -290,4 +290,70 @@ test('a first visit is not reloaded when its first worker takes over', async ({ 
 		.toBe(true);
 	await page.waitForTimeout(1500);
 	expect(loads).toBe(1);
+});
+
+/** The top and bottom edges of an element, in page pixels. */
+const edges = (page: Page, selector: string): Promise<{ top: number; bottom: number }> =>
+	page.locator(selector).evaluate((el) => {
+		const { top, bottom } = el.getBoundingClientRect();
+		return { top, bottom };
+	});
+
+test('the page ends at the bottom of the screen, with the text box on it', async ({ page }) => {
+	await fresh(page);
+	await expect(page.locator('[data-compose]')).toBeVisible();
+	const height = await page.evaluate(() => window.innerHeight);
+	expect(await edges(page, '[data-app]')).toEqual({ top: 0, bottom: height });
+	// Under the box there is only its own padding: this browser has no safe area (0px).
+	expect((await edges(page, '[data-compose]')).bottom).toBe(height);
+	expect(
+		await page.locator('[data-compose]').evaluate((el) => getComputedStyle(el).paddingBottom)
+	).toBe('10px');
+});
+
+test('a Home Screen app laid out one status bar short still fills the screen', async ({ page }) => {
+	// What an iPhone does as a Home Screen app with a see-through status bar:
+	// the page is laid out 59px shorter than the screen it is drawn on.
+	const cdp = await page.context().newCDPSession(page);
+	await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: { top: 59, bottom: 34 } });
+	await page.addInitScript(() => {
+		const media = window.matchMedia.bind(window);
+		window.matchMedia = (query: string): MediaQueryList =>
+			query === '(display-mode: standalone)'
+				? ({ ...media(query), matches: true } as MediaQueryList)
+				: media(query);
+		Object.defineProperty(window.screen, 'height', { get: () => window.innerHeight + 59 });
+	});
+	await fresh(page);
+	await expect(page.locator('[data-compose]')).toBeVisible();
+	const height = await page.evaluate(() => window.innerHeight);
+	// The page reaches the bottom of the screen: no band is left under it.
+	await expect.poll(async () => (await edges(page, '[data-app]')).bottom).toBe(height + 59);
+	expect((await edges(page, '[data-app]')).top).toBe(0);
+	// Under the box: its padding and the home indicator, nothing more.
+	expect((await edges(page, '[data-compose]')).bottom).toBe(height + 59);
+	expect(
+		await page.locator('[data-compose]').evaluate((el) => getComputedStyle(el).paddingBottom)
+	).toBe('44px');
+
+	// With the keyboard open the page is exactly what is left above it.
+	await page.evaluate(() => {
+		const visible = window.visualViewport as VisualViewport;
+		Object.defineProperty(visible, 'height', { configurable: true, get: () => 516 });
+		visible.dispatchEvent(new Event('resize'));
+	});
+	await expect(page.locator('[data-app]')).toHaveAttribute('data-kb', '');
+	expect(await edges(page, '[data-app]')).toEqual({ top: 0, bottom: 516 });
+	expect((await edges(page, '[data-compose]')).bottom).toBe(516);
+});
+
+test('a browser tab that is short of the screen is not grown', async ({ page }) => {
+	// The same phone in a browser tab: the toolbars take the rest of the screen.
+	await page.addInitScript(() => {
+		Object.defineProperty(window.screen, 'height', { get: () => window.innerHeight + 59 });
+	});
+	await fresh(page);
+	await expect(page.locator('[data-compose]')).toBeVisible();
+	const height = await page.evaluate(() => window.innerHeight);
+	expect(await edges(page, '[data-app]')).toEqual({ top: 0, bottom: height });
 });
