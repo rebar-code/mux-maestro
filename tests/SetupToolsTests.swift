@@ -1,7 +1,7 @@
 import XCTest
 
 /// SetupTools.swift is compiled into this target; the Setup window
-/// (SetupWindowController.swift) is app-only.
+/// (SettingsWindowController.swift) is app-only.
 final class SetupToolsTests: XCTestCase {
     private func tool(_ name: String) -> SetupTool {
         SetupTools.all.first { $0.name == name }!

@@ -84,8 +84,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var commitService: TmuxService?
     /// The Help window (feature docs + shortcuts), created on first open.
     private var helpWindowController: HelpWindowController?
-    private var setupWindowController: SetupWindowController?
-    /// The phone server and its "Phone" switch (Setup window). Off by default.
+    private var settingsWindowController: SettingsWindowController?
+    /// The phone server and its "Phone" switch (Settings window). Off by default.
     private lazy var mobileServer = MobileServer(
         staticRoot: Bundle.main.resourceURL?.appendingPathComponent("mobile", isDirectory: true),
         sources: MobileServer.Sources(
@@ -185,19 +185,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let center = MobilePushCenter()
         center.configure(Settings.phonePush())
         center.onCount = { [weak self] count in
-            DispatchQueue.main.async { self?.setupWindowController?.phone.renderPushCount(count) }
+            DispatchQueue.main.async { self?.settingsWindowController?.phone.renderPushCount(count) }
         }
         return center
     }()
     private lazy var phoneLink: PhoneLink = {
         let link = PhoneLink(server: mobileServer)
         link.onChange = { [weak self] state in
-            self?.setupWindowController?.phone.render(state)
+            self?.settingsWindowController?.phone.render(state)
             // Hand the new listener the tree at once, not on the next change.
             if case .on = state { self?.pushMobileSnapshot() }
         }
         link.onMappings = { [weak self] mappings in
-            self?.setupWindowController?.phone.renderMappings(mappings.map(\.port))
+            self?.settingsWindowController?.phone.renderMappings(mappings.map(\.port))
         }
         return link
     }()
@@ -463,7 +463,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.mainMenu = makeMenu()
         NSApp.activate(ignoringOtherApps: true)
         if !SetupTools.missingRequired(isExecutable: FileManager.default.isExecutableFile(atPath:)).isEmpty {
-            actionShowSetup()
+            showSettings(.tools)
         }
 
         // Wire the manager machinery (started lazily — on first rail reveal, or
@@ -509,6 +509,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Voice models fetch once, in the background; nothing waits on them.
         VoiceModels.shared.start()
         VoiceSelfTest.runIfRequested()
+        SettingsSelfTest.runIfRequested()
 
         if ProcessInfo.processInfo.environment["SIDEKICK_ARCHIVE_SELFTEST"] == "1" {
             runArchiveSelfTest()
@@ -832,7 +833,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let appItem = NSMenuItem()
         let appMenu = NSMenu()
         appMenu.addItem(withTitle: "About MuxMaestro", action: nil, keyEquivalent: "")
-        appMenu.addItem(withTitle: "Setup…", action: #selector(actionShowSetup), keyEquivalent: "")
+        appMenu.addItem(withTitle: "Settings…", action: #selector(actionShowSettings), keyEquivalent: ",")
             .target = self
         appMenu.addItem(.separator())
         appMenu.addItem(
@@ -1036,11 +1037,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func actionShowHelp() { helpControllerOrCreate().show() }
     @objc private func actionShowShortcuts() { helpControllerOrCreate().show(scrollTo: "shortcuts") }
 
-    // MARK: - Setup
+    // MARK: - Settings
 
-    @objc private func actionShowSetup() {
-        if setupWindowController == nil {
-            let setup = SetupWindowController()
+    @objc private func actionShowSettings() {
+        showSettings(nil)
+    }
+
+    private func showSettings(_ tab: SettingsWindowController.Tab?) {
+        if settingsWindowController == nil {
+            let setup = SettingsWindowController()
+            setup.maestro.onRestart = { [weak self] in self?.actionRestartManager() }
             setup.onInstall = { [weak self] tool in self?.runSetupInstall(tool) }
             setup.phone.onToggle = { [weak self] on in
                 Settings.setPhoneEnabled(on)
@@ -1077,7 +1083,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             setup.phone.onTestPush = { [weak self] in
                 self?.pushCenter.sendTest { result in
-                    DispatchQueue.main.async { self?.setupWindowController?.phone.renderPushTest(result) }
+                    DispatchQueue.main.async { self?.settingsWindowController?.phone.renderPushTest(result) }
                 }
             }
             setup.phone.onRotate = { [weak self] in self?.phoneLink.rotateToken() }
@@ -1087,11 +1093,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             setup.phone.render(phoneLink.state)
             setup.phone.renderMappings(phoneLink.mappings.map(\.port))
-            setupWindowController = setup
+            settingsWindowController = setup
             // The count is in the Keychain: only a Mac that uses notifications reads it.
             if Settings.phoneCapability(.notifications) { pushCenter.reportCount() }
         }
-        setupWindowController?.show()
+        settingsWindowController?.show(tab)
     }
 
     /// Give the phone server the tree the sidebar just loaded. Costs nothing

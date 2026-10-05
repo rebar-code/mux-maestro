@@ -1,7 +1,7 @@
 import Cocoa
 import CoreImage
 
-/// The "Phone" section of the Setup window: the master switch, the settings
+/// The "Phone" tab of the Settings window: the master switch, the settings
 /// that go with it, and while it is on, the URL to open on the phone and that
 /// URL as a QR code. A PR that adds a phone feature adds its row here.
 final class PhoneSettingsView: NSView, NSTextFieldDelegate {
