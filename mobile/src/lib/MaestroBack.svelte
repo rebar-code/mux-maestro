@@ -8,7 +8,7 @@
 </script>
 
 <div class="back" data-maestro-back>
-	<button class="go" onclick={maestro.back}>✦ Back to Maestro</button>
+	<button class="go" onclick={maestro.show}>✦ Back to Maestro</button>
 	<button class="tb" aria-label="Dismiss" onclick={maestro.seen}>✕</button>
 </div>
 

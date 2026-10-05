@@ -18,12 +18,12 @@
 	const tally = $derived(live.threads ? counts(live.threads) : null);
 	const managerOn = $derived(can('manager'));
 	const waiting = $derived(needsYouCards(live.threads ?? [], []));
-	// The Maestro pane's prompts and keys: the same ones the panel shows.
+	// The Maestro pane's prompts and keys.
 	const reply = maestro.reply;
 </script>
 
 {#snippet header()}
-	<header class="tbar" data-maestro-grab>
+	<header class="tbar">
 		<button class="tb" aria-label="Menu" onclick={() => ui.openDrawer()}>☰</button>
 		<div class="chips">
 			{#if tally}
@@ -57,6 +57,7 @@
 			{header}
 			{tail}
 			pending={manager.pending}
+			held={manager.queued}
 			{reply}
 			bind:terminal={maestro.terminal}
 		/>

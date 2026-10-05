@@ -121,7 +121,7 @@ test('a refused turn says why and gives the text back', async ({ page }) => {
 	await expect(page.getByRole('alert')).toHaveCount(0);
 });
 
-test('a turn typed on the Mac shows on the phone, and holds Send until it ends', async ({
+test('a turn typed on the Mac shows on the phone, and Send queues until it ends', async ({
 	page
 }) => {
 	await fresh(page);
@@ -132,9 +132,9 @@ test('a turn typed on the Mac shows on the phone, and holds Send until it ends',
 		`/__fixture/mac-turn?text=${encodeURIComponent('how are the builds?')}&reply=${encodeURIComponent(reply)}`
 	);
 	await expect(said(page).locator('.u')).toHaveText('how are the builds?');
-	await expect(page.getByRole('button', { name: /^Send(ing)?$/ })).toBeDisabled();
+	await expect(page.getByRole('button', { name: 'Send, queued' })).toBeEnabled();
 	await expect(said(page).locator('.a').last()).toHaveText(reply);
-	await expect(page.getByRole('button', { name: /^Send(ing)?$/ })).toBeEnabled();
+	await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeEnabled();
 	await expect(box(page)).toHaveValue('and after that?');
 });
 
@@ -430,7 +430,9 @@ test('the updates are listed, and one with a thread opens it', async ({ page }) 
 	await expect(page).toHaveURL(/\/t\/localhost(:|%3A)3$/);
 });
 
-test('Enter does not send a second turn while one runs', async ({ page }) => {
+test('Enter while a turn runs queues the text: one turn, after the first ends', async ({
+	page
+}) => {
 	await fresh(page);
 	let turns = 0;
 	page.on('request', (request) => {
@@ -444,14 +446,15 @@ test('Enter does not send a second turn while one runs', async ({ page }) => {
 	await box(page).fill('and after that?');
 	await submit(page);
 	await submit(page);
-	await expect(said(page).locator('.a').last()).toHaveText(reply);
+	await expect(box(page)).toHaveValue('');
+	await expect(said(page).locator('[data-queued]')).toHaveText('and after that?');
 	expect(turns).toBe(0);
-	await expect(box(page)).toHaveValue('and after that?');
 
-	// The turn is over: now it sends.
-	await expect(page.getByRole('button', { name: /^Send(ing)?$/ })).toBeEnabled();
-	await submit(page);
+	// The turn is over: the text goes, once.
+	await expect(said(page).locator('.a', { hasText: 'Still checking.' })).toHaveText(reply);
 	await expect(said(page).locator('.u').last()).toHaveText('and after that?');
+	await expect(said(page).locator('[data-queued]')).toHaveCount(0);
+	await expect(said(page).locator('.a').last()).toContainText('threads need you');
 	expect(turns).toBe(1);
 });
 
@@ -613,22 +616,12 @@ test('a left swipe on the chat shows the board; a right swipe comes back, then o
 	await expectTab(page, 0);
 });
 
-test('a listed thread has no Board tab, and the panel has none either', async ({ page }) => {
+test('a listed thread has no Board tab', async ({ page }) => {
 	await fresh(page, threadPath('localhost:3'));
 	await expect(page.locator('.tbar .title b')).toHaveText('docs-site · search');
 	await expect(tab(page, 'main')).toBeVisible();
 	await expect(tab(page, 'board')).toHaveCount(0);
 	await expect(pageOf(page, 'board')).toHaveCount(0);
-
-	// The panel draws its own board, under its text box, and has no tab for it.
-	const panel = page.locator('[data-panel]');
-	await page.locator('[data-maestro]').click();
-	await expect(panel).toHaveAttribute('data-stop', '1');
-	await panel.locator('[data-panel-grab]').click();
-	await expect(panel).toHaveAttribute('data-stop', '2');
-	await expect(panel.locator('.tabs')).toBeVisible();
-	await expect(panel.locator('[data-tab="board"]')).toHaveCount(0);
-	await expect(panel.locator('[data-tab]')).toHaveCount(1);
 });
 
 test('an empty board says Nothing waiting', async ({ page }) => {
