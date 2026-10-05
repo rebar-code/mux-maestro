@@ -72,6 +72,37 @@ final class ArtifactsTests: XCTestCase {
         XCTAssertEqual(try scanClaude().first { $0.path == "/work/repo/README.md" }?.exists, true)
     }
 
+    // MARK: Named files
+
+    /// A file the agent wrote with a shell command has no edit-tool record. It
+    /// lists when the agent names it in its own text and the disk shows it
+    /// changed during the thread. A name with spaces counts inside backticks.
+    func testClaudeListsFilesTheAgentNamedAndChanged() throws {
+        let fresh = date("2026-10-02T10:01:01Z")
+        let old = date("2025-01-01T00:00:00Z")
+        let mtimes = ["/work/repo/tasks/report.md": fresh,
+                      "/work/repo/out/Build Estimate 2026-10-02.pdf": fresh,
+                      "/work/repo/build.log": fresh, "/work/repo/package.json": fresh,
+                      "/work/repo/docs/brief.md": fresh, "/work/repo/src/old.ts": old]
+        let found = ArtifactScanner.scan(
+            lines: try lines("claude-named.jsonl"), cwd: "", threadStart: nil,
+            fileExists: { mtimes[$0] != nil }, mtime: { mtimes[$0] })
+        // Left out: tool output (build.log, package.json), the user's own
+        // path (docs/brief.md), an unchanged file, a missing file, a URL.
+        XCTAssertEqual(found.map(\.path), [
+            "/work/repo/out/Build Estimate 2026-10-02.pdf",
+            "/work/repo/tasks/report.md",
+        ])
+        XCTAssertEqual(found.map(\.kind), [.image, .file])
+    }
+
+    func testNamedPathsSkipURLsAndReadSpacesOnlyInBackticks() {
+        XCTAssertEqual(
+            ArtifactScanner.namedPaths(
+                in: "See a/b.md, https://x.com/c.md, `My Notes.txt`, Other Notes.txt and d.swift:12."),
+            ["a/b.md", "Notes.txt", "d.swift", "My Notes.txt"])
+    }
+
     // MARK: Codex
 
     func testCodexListsPatchedFilesAndFreshImages() throws {

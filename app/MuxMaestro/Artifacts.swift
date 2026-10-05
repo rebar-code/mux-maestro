@@ -61,12 +61,16 @@ enum ArtifactMarkdown {
 
 /// What a transcript says, before any disk check. `made` holds the paths an
 /// edit tool wrote; `imageCandidates` holds image paths that appeared anywhere
-/// the agent acted (tool input, tool result, its own text). A candidate only
-/// counts once the disk shows it was written during the thread.
+/// the agent acted (tool input, tool result, its own text). `namedCandidates`
+/// holds file paths of any type from the agent's own text: a file a shell
+/// command wrote has no edit-tool record, so the agent naming it is the only
+/// trace. A candidate only counts once the disk shows it was written during
+/// the thread.
 struct ArtifactMentions: Equatable {
     var threadStart: Date?
     var made: [String: Date] = [:]
     var imageCandidates: [String: Date] = [:]
+    var namedCandidates: [String: Date] = [:]
     /// `http(s)` URLs from the agent's own text (never tool input or results:
     /// those are full of URLs the agent only read). URL → newest mention.
     var urls: [String: Date] = [:]
@@ -115,6 +119,7 @@ struct ArtifactMentions: Equatable {
             case "text" where assistant:
                 let text = block["text"] as? String ?? ""
                 noteImages(in: [text], at: at)
+                noteNamed(in: [text], at: at)
                 noteURLs(in: [text], at: at)
             default:
                 break
@@ -133,6 +138,7 @@ struct ArtifactMentions: Equatable {
         case "message" where payload["role"] as? String == "assistant":
             let texts = ArtifactScanner.strings(in: payload["content"] ?? "")
             noteImages(in: texts, at: at)
+            noteNamed(in: texts, at: at)
             noteURLs(in: texts, at: at)
         default:
             break
@@ -147,6 +153,15 @@ struct ArtifactMentions: Equatable {
     private mutating func noteURLs(in texts: [String], at: Date) {
         for text in texts {
             for url in ArtifactScanner.urls(in: text) { urls[url] = max(urls[url] ?? at, at) }
+        }
+    }
+
+    private mutating func noteNamed(in texts: [String], at: Date) {
+        for text in texts {
+            for path in ArtifactScanner.namedPaths(in: text) {
+                let abs = ArtifactScanner.absolute(path, cwd: cwd)
+                namedCandidates[abs] = max(namedCandidates[abs] ?? at, at)
+            }
         }
     }
 
@@ -175,10 +190,10 @@ enum ArtifactScanner {
         return resolve(mentions, fileExists: fileExists, mtime: mtime)
     }
 
-    /// Made paths always list (missing ones marked). An image candidate lists
-    /// only when it exists and was modified at or after the thread's start:
-    /// that is what separates a screenshot the agent took from an old asset it
-    /// merely mentioned. Newest first; ties by path.
+    /// Made paths always list (missing ones marked). A candidate lists only
+    /// when it exists and was modified at or after the thread's start: that is
+    /// what separates a screenshot the agent took or a report it wrote from an
+    /// old file it merely mentioned. Newest first; ties by path.
     static func resolve(
         _ mentions: ArtifactMentions,
         fileExists: (String) -> Bool, mtime: (String) -> Date?
@@ -186,10 +201,11 @@ enum ArtifactScanner {
         var out: [Artifact] = mentions.made.map { path, at in
             Artifact(kind: kind(of: path), path: path, at: at, exists: fileExists(path))
         }
-        for (path, at) in mentions.imageCandidates where mentions.made[path] == nil {
+        let candidates = mentions.imageCandidates.merging(mentions.namedCandidates) { max($0, $1) }
+        for (path, at) in candidates where mentions.made[path] == nil {
             guard fileExists(path), let modified = mtime(path),
                   modified >= (mentions.threadStart ?? .distantPast) else { continue }
-            out.append(Artifact(kind: .image, path: path, at: at, exists: true))
+            out.append(Artifact(kind: kind(of: path), path: path, at: at, exists: true))
         }
         return out.sorted { $0.at != $1.at ? $0.at > $1.at : $0.path < $1.path }
     }
@@ -211,6 +227,31 @@ enum ArtifactScanner {
     private static let imageRegex = try! NSRegularExpression(
         pattern: #"(?<![\w/.~:@%+=,-])((?:~|\.{1,2})?/?(?:[\w@%+=,.~-]+/)*[\w@%+=,~-][\w@%+=,.~-]*\.(?:png|jpe?g|gif|webp|svg|pdf))(?![\w/-]|\.\w)"#,
         options: [.caseInsensitive])
+
+    /// File-looking paths in the agent's own prose, any extension, under the
+    /// same rules as `imagePaths`. A name with spaces counts only as a whole
+    /// backtick span. Most matches are not files (`e.g`, `record.type`): the
+    /// disk check in `resolve` drops those.
+    static func namedPaths(in text: String) -> [String] {
+        guard text.count < 2_000_000 else { return [] }
+        let range = NSRange(text.startIndex..., in: text)
+        var out: [String] = []
+        for regex in [namedRegex, backtickRegex] {
+            for match in regex.matches(in: text, range: range) {
+                guard let r = Range(match.range(at: 1), in: text) else { continue }
+                let path = String(text[r])
+                if !out.contains(path) { out.append(path) }
+            }
+        }
+        return out
+    }
+
+    private static let namedRegex = try! NSRegularExpression(
+        pattern: #"(?<![\w/.~:@%+=,-])((?:~|\.{1,2})?/?(?:[\w@%+=,.~-]+/)*[\w@%+=,~-][\w@%+=,.~-]*\.[a-z][a-z0-9]{0,9})(?![\w/-]|\.\w)"#,
+        options: [.caseInsensitive])
+
+    private static let backtickRegex = try! NSRegularExpression(
+        pattern: #"`([^`\n]*[^`\s]\.[a-z][a-z0-9]{0,9})`"#, options: [.caseInsensitive])
 
     /// Paths a Codex `apply_patch` adds or updates, in order. A `Move to:` line
     /// replaces the `Update File:` before it. Deletes are not artifacts. The
