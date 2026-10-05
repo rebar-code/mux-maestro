@@ -874,9 +874,12 @@ test('a double tap on an agent message opens its menu under it, one menu at a ti
 	const menus = page.locator('[data-menu]');
 	const first = page.locator('.a').nth(0);
 	const second = page.locator('.a').nth(1);
-	// Nothing under a message until it is asked for.
+	// No menu until it is asked for. Play is under each agent message, and only there.
 	await expect(menus).toHaveCount(0);
-	await expect(page.locator('[data-say]')).toHaveCount(0);
+	await expect(page.locator('[data-say]')).toHaveCount(await page.locator('.a').count());
+	await expect(first.getByRole('button', { name: 'Play' })).toBeVisible();
+	await expect(first.getByRole('button', { name: 'Copy' })).toHaveCount(0);
+	await expect(page.locator('.u [data-say]')).toHaveCount(0);
 
 	// One tap is not the gesture, and neither are two slow ones.
 	await first.tap({ position: { x: 24, y: 12 } });
@@ -943,7 +946,7 @@ test('a double tap on an agent message opens its menu under it, one menu at a ti
 	expect(await page.evaluate(() => String(getSelection()))).toBe('');
 });
 
-test('Play in the menu of a message reads it aloud, one message at a time', async ({ page }) => {
+test('Play under a message reads it aloud, one message at a time', async ({ page }) => {
 	const THREAD = 'localhost:7';
 	const playButton = (row: Locator): Locator => row.locator('[data-say]');
 	const clips = (): Promise<number> => page.evaluate(() => window.__clips);
@@ -953,8 +956,7 @@ test('Play in the menu of a message reads it aloud, one message at a time', asyn
 	await openMessages(page, THREAD);
 	const first = page.locator('.a').nth(0);
 	const second = page.locator('.a').nth(1);
-	await doubleTap(page, first);
-	await expect(page.locator('[data-say]')).toHaveCount(1);
+	// No double tap: the button is there.
 	await expect(playButton(first)).toHaveAccessibleName('Play');
 	await expect(playButton(first).locator('[data-icon="play"]')).toBeVisible();
 
@@ -977,17 +979,17 @@ test('Play in the menu of a message reads it aloud, one message at a time', asyn
 	expect(await clips()).toBeGreaterThan(0);
 	if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/play-playing.png` });
 
-	// A tap outside closes no menu of a message that is read: its Stop stays in reach.
+	// A tap outside does not stop it.
 	await page.locator('.u').first().tap();
 	await expect(playButton(first)).toHaveAttribute('data-say', 'playing');
-	// So does the menu of another message.
+	// Neither does the menu of another message.
 	await doubleTap(page, second);
 	await expect(playButton(first)).toHaveAttribute('data-say', 'playing');
 	await expect(playButton(second)).toHaveAttribute('data-say', 'idle');
 
 	// Play on another message stops this one: they never talk over each other.
 	await playButton(second).tap();
-	await expect(playButton(first)).toHaveCount(0);
+	await expect(playButton(first)).toHaveAttribute('data-say', 'idle');
 	await expect(playButton(second)).toHaveAttribute('data-say', 'playing');
 	// A tap on the message that is read is its Stop: nothing new is asked for.
 	await playButton(second).tap();
@@ -995,7 +997,6 @@ test('Play in the menu of a message reads it aloud, one message at a time', asyn
 	expect((await said()).map((one) => one.cached)).toEqual([false, false]);
 
 	// The same message again comes from the Mac's cache, and starts sooner.
-	await doubleTap(page, first);
 	const again = Date.now();
 	await playButton(first).tap();
 	await expect(playButton(first)).toHaveAttribute('data-say', 'playing');
