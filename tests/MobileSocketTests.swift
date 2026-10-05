@@ -133,6 +133,14 @@ final class MobileSocketTests: XCTestCase {
         XCTAssertFalse(MobileAPI.sameToken("", token: "demo-token"))
         XCTAssertFalse(MobileAPI.sameToken("", token: ""))
         XCTAssertFalse(MobileAPI.sameToken("demo-token", token: nil))
+        // The server holds the digest alone.
+        let digest = MobileAPI.tokenDigest("demo-token")
+        XCTAssertEqual(digest.count, 64)
+        XCTAssertTrue(MobileAPI.sameToken("demo-token", digest: digest))
+        XCTAssertFalse(MobileAPI.sameToken("demo-toke", digest: digest))
+        XCTAssertFalse(MobileAPI.sameToken(digest, digest: digest))
+        XCTAssertFalse(MobileAPI.sameToken("demo-token", digest: nil))
+        XCTAssertFalse(MobileAPI.sameToken("demo-token", digest: ""))
     }
 
     // MARK: policy

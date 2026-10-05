@@ -217,7 +217,8 @@ final class MobileServer {
     private var identity: MobileIdentity?
     /// The port the listener is bound to: the one port no mapping may publish.
     private var boundPort: Int?
-    private var token: String?
+    /// The pairing token's digest (`MobileAPI.tokenDigest`). The token itself is never held.
+    private var tokenDigest: String?
     private var shellPolicyCache: (shell: Data, socket: String?, policy: String)?
     private var snapshot = MobileSnapshot()
     private var threadsBody = MobileSnapshot().threadsJSON()
@@ -299,6 +300,16 @@ final class MobileServer {
         port: Int, identity: MobileIdentity, token: String,
         completion: @escaping (Result<Int, StartError>) -> Void
     ) {
+        start(
+            port: port, identity: identity, tokenDigest: MobileAPI.tokenDigest(token),
+            completion: completion)
+    }
+
+    /// The same start from the token's digest: all a start after the first has.
+    func start(
+        port: Int, identity: MobileIdentity, tokenDigest: String,
+        completion: @escaping (Result<Int, StartError>) -> Void
+    ) {
         queue.async { [self] in
             stopNow()
             guard let nwPort = NWEndpoint.Port(rawValue: UInt16(clamping: port)),
@@ -334,10 +345,15 @@ final class MobileServer {
             }
             listener.newConnectionHandler = { [weak self] connection in self?.accept(connection) }
             self.identity = identity
-            self.token = token
+            self.tokenDigest = tokenDigest
             self.listener = listener
             listener.start(queue: self.queue)
         }
+    }
+
+    /// Write the Phone switch's new state to the phone log.
+    func logLink(_ state: String, failed: Bool) {
+        log?.link(state, failed: failed)
     }
 
     func stop() {
@@ -349,7 +365,7 @@ final class MobileServer {
         listener = nil
         identity = nil
         boundPort = nil
-        token = nil
+        tokenDigest = nil
         pushTracker = MobilePushTracker()
         // Each connection goes the way a dropped one does: a live terminal's
         // tmux client ends with it.
@@ -369,7 +385,7 @@ final class MobileServer {
     func setToken(_ token: String) {
         queue.async {
             guard self.listener != nil else { return }
-            self.token = token
+            self.tokenDigest = MobileAPI.tokenDigest(token)
             self.push?.forgetAll()
             for client in self.clients.values where client.streaming { self.drop(client) }
         }
@@ -586,12 +602,12 @@ final class MobileServer {
     private func drain(_ client: Client) {
         // A take's megabytes are held only for a caller that is already let in.
         var refusal = "bad_request"
-        let parsed = MobileHTTP.parse(client.buffer) { [identity, token, config] request in
+        let parsed = MobileHTTP.parse(client.buffer) { [identity, tokenDigest, config] request in
             if MobileAPI.authorize(request, identity: identity) != .allowed {
                 refusal = "forbidden"
                 return 403
             }
-            guard MobileAPI.hasToken(request, token: token) else {
+            guard MobileAPI.hasToken(request, digest: tokenDigest) else {
                 refusal = "unpaired"
                 return 401
             }
@@ -676,7 +692,7 @@ final class MobileServer {
             return send(.error(403, "forbidden"), to: client, head: head)
         }
         // The API also needs the pairing token; the static bundle does not.
-        guard !MobileAPI.needsToken(request) || MobileAPI.hasToken(request, token: token) else {
+        guard !MobileAPI.needsToken(request) || MobileAPI.hasToken(request, digest: tokenDigest) else {
             return send(.error(401, "unpaired"), to: client, head: head)
         }
         activityLock.lock()
@@ -1147,7 +1163,7 @@ final class MobileServer {
             return close(client, .normal)
         case .text(let sent) where !socket.paired:
             // The first message is the pairing token, and nothing else is.
-            guard MobileAPI.sameToken(String(decoding: sent, as: UTF8.self), token: token) else {
+            guard MobileAPI.sameToken(String(decoding: sent, as: UTF8.self), digest: tokenDigest) else {
                 return close(client, .unauthorized)
             }
             socket.paired = true

@@ -34,6 +34,8 @@ usage: mux <command> …
   mux phone-log [--last N] [--severity info|warn|error] [--since 30m|2h|3d]
                 [--project SESSION] [--json] # what went wrong on the phone, oldest first
   mux phone-log --projects [--since …]       # errors and warnings per project
+  mux phone status                           # the Phone switch, the server and the tailnet route
+  mux phone on|off [--no-wait]               # turn the Phone switch, as Setup does
   mux notify [--session S] [--host H] TEXT…
   mux review add --key K --text T [--session S] [--host H] [--window N]
                  [--severity info|warn|blocked]
@@ -613,6 +615,127 @@ FROM ($rows ORDER BY r DESC LIMIT $last) ORDER BY r;"
         "$imports" "$query" | "$SQLITE" :memory:
 }
 
+# The Phone switch from the command line, for when nobody is at the Mac.
+# `status` asks the Mac itself, not the app: does anything listen on the phone
+# port, and does `tailscale serve` publish it. `on` and `off` leave a request
+# file that the running app takes within a second (PhoneRequest in
+# PhoneLink.swift) and handles as a click on the switch in Setup.
+# Tests override the pieces: MUX_PHONE_DOMAIN (preference domain),
+# MUX_PHONE_PORT, MUX_TAILSCALE (the CLI), MUX_PHONE_REQUEST (the file) and
+# MUX_PHONE_WAIT (seconds to wait for the app).
+PHONE_DOMAIN=${MUX_PHONE_DOMAIN:-is.rebar.MuxMaestro}
+
+phone_port() {
+    if [ -n "${MUX_PHONE_PORT:-}" ]; then
+        printf %s "$MUX_PHONE_PORT"
+        return
+    fi
+    port=$(/usr/bin/defaults read "$PHONE_DOMAIN" phone.port 2>/dev/null || true)
+    case "$port" in ''|*[!0-9]*) port=7433;; esac
+    printf %s "$port"
+}
+
+phone_tailscale() {
+    if [ -n "${MUX_TAILSCALE:-}" ]; then
+        printf %s "$MUX_TAILSCALE"
+        return
+    fi
+    for candidate in /opt/homebrew/bin/tailscale /usr/local/bin/tailscale \
+        /Applications/Tailscale.app/Contents/MacOS/Tailscale; do
+        if [ -x "$candidate" ]; then
+            printf %s "$candidate"
+            return
+        fi
+    done
+}
+
+phone_listens() { /usr/bin/nc -z -G 1 127.0.0.1 "$1" >/dev/null 2>&1; }
+
+# 0 when `tailscale serve` proxies the port to the phone server, 1 when it does
+# not, 2 when Tailscale cannot be asked.
+phone_routed() {
+    tailscale=$(phone_tailscale)
+    [ -n "$tailscale" ] || return 2
+    serving=$("$tailscale" serve status --json 2>/dev/null) || return 2
+    case "$serving" in
+        *"\"http://127.0.0.1:$1\""*) return 0;;
+        *) return 1;;
+    esac
+}
+
+# Print the four lines. 0 when the phone can reach the Mac: the server listens
+# and the route is there.
+phone_status() {
+    port=$(phone_port)
+    enabled=$(/usr/bin/defaults read "$PHONE_DOMAIN" phone.enabled 2>/dev/null || true)
+    ok=0
+    if [ "$enabled" = 1 ]; then echo "switch: on"; else echo "switch: off"; fi
+    if phone_listens "$port"; then
+        echo "server: listening on 127.0.0.1:$port"
+    else
+        echo "server: not listening on 127.0.0.1:$port"; ok=1
+    fi
+    routed=0; phone_routed "$port" || routed=$?
+    case "$routed" in
+        0) echo "route: tailscale serve publishes $port";;
+        1) echo "route: none for $port"; ok=1;;
+        *) echo "route: unknown, tailscale did not answer"; ok=1;;
+    esac
+    # The app's own word on the switch, when it keeps a phone log: a start
+    # that failed says why here.
+    dir=$(phone_log_dir)
+    if [ -f "$dir/phone.jsonl" ]; then
+        link=$(grep -F '"msg":"phone link: ' "$dir/phone.jsonl" | tail -n 1 \
+            | sed -n 's/.*"t":"\([^"]*\)".*"msg":"phone link: \([^"]*\)".*/\2 (\1)/p')
+        [ -z "$link" ] || echo "link: $link"
+    fi
+    return $ok
+}
+
+cmd_phone() {
+    [ $# -ge 1 ] || usage
+    want=$1
+    shift
+    case "$want" in
+        status)
+            [ $# -eq 0 ] || die "phone: unexpected argument: $1"
+            phone_status || exit 1
+            return;;
+        on|off) ;;
+        *) usage;;
+    esac
+    wait=${MUX_PHONE_WAIT:-20}
+    case "${1:-}" in
+        --no-wait) wait=0; shift;;
+    esac
+    [ $# -eq 0 ] || die "phone: unexpected argument: $1"
+    request=${MUX_PHONE_REQUEST:-$HOME/Library/Application Support/MuxMaestro/phone-request}
+    mkdir -p "$(dirname "$request")"
+    # Written whole, then moved: the app never reads half a line.
+    printf '%s %s\n' "$want" "$(now)" > "$request.$$"
+    mv "$request.$$" "$request"
+    [ "$wait" -gt 0 ] || return 0
+
+    # The app takes the file within a second; the start then needs Tailscale.
+    waited=0
+    while [ "$waited" -lt "$wait" ]; do
+        sleep 1
+        waited=$((waited + 1))
+        port=$(phone_port)
+        listens=1; phone_listens "$port" || listens=0
+        routed=0; phone_routed "$port" || routed=$?
+        if [ "$want" = on ] && [ "$listens" = 1 ] && [ "$routed" = 0 ]; then break; fi
+        if [ "$want" = off ] && [ "$listens" = 0 ] && [ "$routed" != 0 ]; then break; fi
+    done
+    if [ -e "$request" ]; then
+        rm -f "$request"
+        die "phone: MuxMaestro did not take the request. Is the app running?"
+    fi
+    status=0; phone_status || status=$?
+    if [ "$want" = on ]; then exit "$status"; fi
+    [ "$status" != 0 ] || die "phone: still reachable after off"
+}
+
 cmd_notify() {
     session=""
     host="localhost"
@@ -1120,6 +1243,13 @@ fi
 if [ "$1" = phone-log ]; then
     shift
     cmd_phone_log "$@"
+    exit 0
+fi
+
+# The Phone switch is the app's, not the DB's.
+if [ "$1" = phone ]; then
+    shift
+    cmd_phone "$@"
     exit 0
 fi
 

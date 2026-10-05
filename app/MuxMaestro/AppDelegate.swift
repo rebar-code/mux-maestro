@@ -193,6 +193,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let link = PhoneLink(server: mobileServer)
         link.onChange = { [weak self] state in
             self?.setupWindowController?.phone.render(state)
+            // The QR code is drawn only in Setup: read the token while it shows.
+            if self?.setupWindowController?.window?.isVisible == true { self?.phoneLink.loadPairing() }
             // Hand the new listener the tree at once, not on the next change.
             if case .on = state { self?.pushMobileSnapshot() }
         }
@@ -459,6 +461,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         mobileServer.configure(Settings.phoneConfig())
         if Settings.phoneEnabled() { phoneLink.turnOn() } else { phoneLink.removeLeftoverMapping() }
+        // `mux phone on|off`: the switch, for someone who is not at the Mac.
+        if let request = PhoneRequest.defaultURL() {
+            let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+                guard let self, let on = PhoneRequest.take(at: request) else { return }
+                // On already: a second start would drop the phones that are connected.
+                if on, self.phoneLink.isOn { return }
+                self.setPhone(on)
+            }
+            RunLoop.main.add(timer, forMode: .common)
+        }
 
         NSApp.mainMenu = makeMenu()
         NSApp.activate(ignoringOtherApps: true)
@@ -1042,11 +1054,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if setupWindowController == nil {
             let setup = SetupWindowController()
             setup.onInstall = { [weak self] tool in self?.runSetupInstall(tool) }
-            setup.phone.onToggle = { [weak self] on in
-                Settings.setPhoneEnabled(on)
-                if on { self?.phoneLink.turnOn() } else { self?.phoneLink.turnOff() }
-                self?.startManagerForPhoneIfNeeded()
-            }
+            setup.phone.onToggle = { [weak self] on in self?.setPhone(on) }
             setup.phone.onCapability = { [weak self] capability, on in
                 Settings.setPhoneCapability(capability, on)
                 self?.mobileServer.configure(Settings.phoneConfig())
@@ -1092,6 +1100,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if Settings.phoneCapability(.notifications) { pushCenter.reportCount() }
         }
         setupWindowController?.show()
+        phoneLink.loadPairing()
+    }
+
+    /// Turn the Phone switch: from the Setup window, or from `mux phone on|off`.
+    private func setPhone(_ on: Bool) {
+        Settings.setPhoneEnabled(on)
+        if on { phoneLink.turnOn() } else { phoneLink.turnOff() }
+        startManagerForPhoneIfNeeded()
     }
 
     /// Give the phone server the tree the sidebar just loaded. Costs nothing

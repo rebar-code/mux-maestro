@@ -1,73 +1,9 @@
 /**
- * The math of the Maestro panel: a sheet that drops from the top edge over any
- * page. Kept free of the DOM so it is tested directly.
+ * What the Maestro's button and board show. Kept free of the DOM so it is
+ * tested directly.
  */
 import { capped, isOpen, parseCard, type ActionCard } from './cards';
-import { clamp, SETTLE_VELOCITY } from './pager';
 import type { ManagerItem, Thread } from './types';
-
-/** Closed, peek, half, full. */
-export type PanelStop = 0 | 1 | 2 | 3;
-export type PanelHeights = readonly [number, number, number, number];
-
-/** The chat the peek shows above its text box: about one block. */
-export const PEEK_BLOCK = 104;
-const HALF = 0.56;
-const RUBBER = 0.25;
-/** How much of the way to the next stop a slow drag must go to land on it. */
-const COMMIT = 0.3;
-
-/**
- * The panel's height at each stop. `viewport` is the height the app has (less
- * with the keyboard open); `chrome` is what the panel always draws: its head,
- * its text box and its grabber.
- */
-export function panelStops(viewport: number, chrome: number): PanelHeights {
-	const full = Math.max(0, Math.floor(viewport));
-	const peek = Math.min(Math.round(chrome + PEEK_BLOCK), full);
-	const half = clamp(Math.round(viewport * HALF), peek, full);
-	return [0, peek, half, full];
-}
-
-/** The panel's height while a finger holds it `down` pixels below its stop. */
-export function panelHeight(heights: PanelHeights, stop: PanelStop, down: number): number {
-	const full = heights[3];
-	const wanted = heights[stop] + down;
-	// Past the full stop it resists; above closed there is nothing to push.
-	if (wanted > full) return full + (wanted - full) * RUBBER;
-	return Math.max(wanted, 0);
-}
-
-/**
- * The stop a released drag lands on. A flick goes to the next stop in its
- * direction from where the panel is; a slow release goes on to the stop ahead
- * once it is a third of the way there, so one long pull can pass a stop. `vy` is positive going down.
- */
-export function settlePanel(
-	heights: PanelHeights,
-	stop: PanelStop,
-	down: number,
-	vy: number
-): PanelStop {
-	const at = heights[stop] + down;
-	const stops: PanelStop[] = [0, 1, 2, 3];
-	if (Math.abs(vy) >= SETTLE_VELOCITY) {
-		if (vy > 0) return stops.find((s) => heights[s] > at + 1) ?? 3;
-		return stops.findLast((s) => heights[s] < at - 1) ?? 0;
-	}
-	// Between two stops: a pull of a third of the way goes on, less falls back.
-	const upper = stops.find((s) => heights[s] > at) ?? 3;
-	const lower = stops.findLast((s) => heights[s] <= at) ?? 0;
-	if (upper <= lower) return lower;
-	const part = (at - heights[lower]) / (heights[upper] - heights[lower]);
-	if (down > 0) return part >= COMMIT ? upper : lower;
-	return part <= 1 - COMMIT ? lower : upper;
-}
-
-/** The grabber's tap: one stop down, and from full back to the peek. */
-export function nextStop(stop: PanelStop): PanelStop {
-	return stop >= 3 ? 1 : ((stop + 1) as PanelStop);
-}
 
 /** What the header button shows. */
 export type MaestroState = 'off' | 'asks' | 'working' | 'idle';

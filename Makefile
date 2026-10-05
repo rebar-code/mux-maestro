@@ -27,6 +27,12 @@ APP := $(BUILD_DIR)/Release/MuxMaestro.app
 # (App Data, Automation, Documents…), leaving one more MuxMaestro row in System
 # Settings each time. The identity keeps the requirement stable across rebuilds.
 #
+# The Keychain is not covered by this. A self-signed identity has no Team ID,
+# and a rebuild signed with the same identity (same designated requirement, new
+# cdhash) is still asked for an item the build before it could read. That is
+# why the phone server starts from the pairing token's digest and not from a
+# Keychain read (see PhoneLink.swift).
+#
 # SIGN_IDENTITY is a name or the identity's SHA-1 hash, as `security
 # find-identity -v -p codesigning` lists them. An Apple identity's name has
 # spaces, a colon and parentheses ("Apple Development: Your Name (TEAMID)"), so

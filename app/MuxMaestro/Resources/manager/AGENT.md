@@ -53,6 +53,8 @@ mux phone-log                      # last 20 warnings and errors: time|severity|
 mux phone-log --project <session> --since 2h
 mux phone-log --severity info --json --last 50    # whole lines, with stacks and device details
 mux phone-log --projects           # project|errors|warnings|last line
+mux phone status                   # switch, server, tailnet route, and why a start failed; exit 0 when the phone can reach the Mac
+mux phone on                       # turn the Phone switch on (or `off`), as Setup does; waits and prints the status
 ```
 
 A build shown as `(stale: Mac serves …)` means the phone still runs an old

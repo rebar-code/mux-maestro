@@ -1543,10 +1543,13 @@ test('the Maestro home is not a listed thread: it gets no dock and no reply rout
 	await expect(page.locator('.a').first()).toBeVisible();
 	// Its own text box, and nothing of a thread's reply bar.
 	await expect(page.locator('[data-dock]')).toHaveCount(0);
-	// The pane's keys only: its text box belongs to the manager's own turns.
+	// The pane's keys come with its terminal: the chat has none.
+	await expect(keybar(page)).toHaveCount(0);
+	await page.locator('[data-tab="main"]').tap();
 	await expect(keybar(page).locator('.keys button')).toHaveCount(9);
 	// The manager's text box brings the keyboard up: the strip can put it away.
 	await expect(page.getByRole('button', { name: 'Hide keyboard' })).toHaveCount(1);
+	await page.locator('[data-tab="main"]').tap();
 	await expect(card(page)).toHaveCount(0);
 	await expect(nextBar(page)).toHaveCount(0);
 	// The attach button is the text box's own: it is there on every page.
