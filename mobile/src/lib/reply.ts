@@ -106,11 +106,27 @@ export function queueKey(
 }
 
 /**
- * What the slash list filters by: the text after the slash, while the box
- * holds only a command name. `null` when the list does not show.
+ * The command the caret is in: from its slash to its end, with the space after
+ * it. A command starts the text or follows a space, so a path is not one.
  */
-export function slashQuery(text: string): string | null {
-	return /^\/(\S*)$/.exec(text)?.[1] ?? null;
+export function slashToken(
+	text: string,
+	caret = text.length
+): { start: number; end: number } | null {
+	const typed = /(?:^|\s)(\/[^\s/]*)$/.exec(text.slice(0, caret))?.[1];
+	if (typed === undefined) return null;
+	const rest = /^[^\s/]*(\/?) ?/.exec(text.slice(caret));
+	if (rest?.[1]) return null;
+	return { start: caret - typed.length, end: caret + (rest?.[0].length ?? 0) };
+}
+
+/**
+ * What the slash list filters by: the command name up to the caret. `null`
+ * when the list does not show.
+ */
+export function slashQuery(text: string, caret = text.length): string | null {
+	const token = slashToken(text, caret);
+	return token ? text.slice(token.start + 1, caret) : null;
 }
 
 /** The commands whose name starts with `query`, then those that contain it. */
