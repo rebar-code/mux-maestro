@@ -740,7 +740,7 @@ final class MobileVoiceServerTests: XCTestCase {
                 pane: { [pane] _ in pane.io }),
             manager: MobileServer.Manager(
                 pane: { [unowned self] in locked { (status, transcript) } },
-                send: { [unowned self] text, onDelta, completion in
+                send: { [unowned self] text, _, onDelta, completion in
                     let script = locked { () -> (deltas: [String], outcome: ManagerTurnOutcome) in
                         sent.append(text)
                         return self.script

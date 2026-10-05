@@ -2,13 +2,16 @@
 	import { resolve } from '$app/paths';
 	import { linkThread } from './cards';
 	import { cards } from './cards.svelte';
+	import { swipeAway } from './gestures.svelte';
 	import { can } from './live.svelte';
 	import { maestro } from './maestro.svelte';
+	import { manager } from './manager.svelte';
 	import type { PointCard } from './panel';
 
 	/**
 	 * A pointer the user answers here: a title, its buttons, and the way to the
 	 * session. A tap goes to the pane the card came from, not to the Maestro.
+	 * A left swipe or the tick dismisses it, as on the board.
 	 */
 	const { point }: { point: PointCard } = $props();
 
@@ -24,7 +27,13 @@
 </script>
 
 {#if card}
-	<div class="card" data-card={point.key} data-source={card.source} aria-busy={sending}>
+	<div
+		class="card"
+		data-card={point.key}
+		data-source={card.source}
+		aria-busy={sending}
+		{@attach swipeAway(() => void manager.dismiss(point.key))}
+	>
 		<div class="head">
 			<b data-card-name>{name}</b>
 			{#if opens !== null}
@@ -35,6 +44,9 @@
 					onclick={(event) => maestro.jump(event.currentTarget.getAttribute('href') ?? '')}>Go</a
 				>
 			{/if}
+			<button class="tb done" aria-label="Dismiss {name}" onclick={() => manager.dismiss(point.key)}
+				>✓</button
+			>
 		</div>
 		<div class="title" data-card-title>{card.title}</div>
 		{#if card.body}<div class="body" data-card-body>{card.body}</div>{/if}
@@ -96,6 +108,12 @@
 		font-size: 12.5px;
 		font-weight: 600;
 		color: var(--text);
+	}
+
+	/* A 44pt touch area that does not make the card taller. */
+	.done {
+		margin: -12px -8px -12px -4px;
+		color: var(--muted);
 	}
 
 	.title {

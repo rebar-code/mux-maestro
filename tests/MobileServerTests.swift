@@ -43,6 +43,7 @@ final class MobileServerTests: XCTestCase {
         private let lock = NSLock()
         private var _status = MobileManagerStatus.idle
         private var _sent: [String] = []
+        private var _queued: [Bool] = []
         private var _dismissed: [String] = []
         private var _answered: [String] = []
         /// What a turn says: the deltas, then the outcome.
@@ -65,6 +66,8 @@ final class MobileServerTests: XCTestCase {
             set { lock.lock(); _status = newValue; lock.unlock() }
         }
         var sent: [String] { lock.lock(); defer { lock.unlock() }; return _sent }
+        /// For each text sent, whether a busy pane was to hold it.
+        var queued: [Bool] { lock.lock(); defer { lock.unlock() }; return _queued }
         var dismissed: [String] { lock.lock(); defer { lock.unlock() }; return _dismissed }
         /// Each answer the server recorded, as "key=label".
         var answered: [String] { lock.lock(); defer { lock.unlock() }; return _answered }
@@ -72,8 +75,8 @@ final class MobileServerTests: XCTestCase {
         var source: MobileServer.Manager {
             MobileServer.Manager(
                 pane: { [self] in (status, transcript) },
-                send: { [self] text, onDelta, completion in
-                    lock.lock(); _sent.append(text); lock.unlock()
+                send: { [self] text, queue, onDelta, completion in
+                    lock.lock(); _sent.append(text); _queued.append(queue); lock.unlock()
                     DispatchQueue.global().async { [self] in
                         gate?.wait()
                         script.deltas.forEach(onDelta)
@@ -1155,6 +1158,39 @@ final class MobileServerTests: XCTestCase {
         }
         XCTAssertEqual(turn.status, 200)
         XCTAssertEqual(manager.sent, ["first\nsecond"])
+    }
+
+    func testATextWithTheQueueModeGoesToABusyManager() {
+        managerOn()
+        manager.status = .busy
+        manager.script = ([], .done(reply: "ok"))
+        // Without the mode a busy pane refuses, as it always did.
+        XCTAssertEqual(post("/api/manager/text", json: #"{"text":"and the builds?"}"#).status, 409)
+        XCTAssertEqual(manager.sent, [])
+        let queued = post("/api/manager/text", json: #"{"text":"and the builds?","mode":"queue"}"#) {
+            $0.contains("event: end")
+        }
+        XCTAssertEqual(queued.status, 200)
+        XCTAssertTrue(queued.body.contains(#""outcome":"done""#))
+        XCTAssertEqual(manager.sent, ["and the builds?"])
+        XCTAssertEqual(manager.queued, [true])
+
+        // Only the busy status is dropped: a prompt still refuses the text.
+        manager.status = .waiting
+        let waiting = post("/api/manager/text", json: #"{"text":"again","mode":"queue"}"#)
+        XCTAssertEqual(waiting.status, 409)
+        XCTAssertEqual(waiting.body, #"{"error":"waiting","message":"Maestro is waiting on a prompt"}"#)
+        // A mode that is not known is refused before anything is typed.
+        manager.status = .busy
+        XCTAssertEqual(post("/api/manager/text", json: #"{"text":"again","mode":"now"}"#).status, 400)
+        XCTAssertEqual(manager.sent, ["and the builds?"])
+
+        // A turn the app follows still refuses: the phone holds that text itself.
+        server.managerTurnBegan("summarise the morning")
+        let running = post("/api/manager/text", json: #"{"text":"again","mode":"queue"}"#)
+        XCTAssertEqual(running.status, 409)
+        XCTAssertEqual(running.body, #"{"error":"busy","message":"A turn is running"}"#)
+        XCTAssertEqual(manager.sent, ["and the builds?"])
     }
 
     func testASecondPhoneIsRefusedWhileTheFirstOnesTurnRuns() {

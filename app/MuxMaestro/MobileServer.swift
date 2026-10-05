@@ -55,10 +55,11 @@ final class MobileServer {
         /// The pane's status and its transcript file. Called off the server
         /// queue and may block.
         var pane: () -> (status: MobileManagerStatus, transcript: String?)
-        /// Run one turn, the way the Mac rail does. Both callbacks may come on
-        /// any queue; `completion` comes exactly once.
+        /// Run one turn, the way the Mac rail does. With `queue` a busy pane
+        /// takes the text too. Both callbacks may come on any queue;
+        /// `completion` comes exactly once.
         var send: (
-            _ text: String, _ onDelta: @escaping (String) -> Void,
+            _ text: String, _ queue: Bool, _ onDelta: @escaping (String) -> Void,
             _ completion: @escaping (ManagerTurnOutcome) -> Void
         ) -> Void
         var dismiss: (_ key: String) -> Void
@@ -784,7 +785,11 @@ final class MobileServer {
             guard case .value(let text) = field else {
                 return send(field.refusal ?? .error(400, "bad_request"), to: client, head: head)
             }
-            startTurn(text, client: client)
+            // The modes of a thread's text. The Maestro has no interrupt.
+            guard let delivery = MobileReply.delivery(in: request.body), delivery != .interrupt else {
+                return send(.error(400, "bad_request"), to: client, head: head)
+            }
+            startTurn(text, queue: delivery == .queue, client: client)
         case .managerDismiss:
             let field = MobileManager.key(in: request.body)
             guard case .value(let key) = field else {
@@ -1490,7 +1495,8 @@ final class MobileServer {
 
     /// One manager turn. A turn that cannot start is a plain error; one that
     /// starts answers with a stream of `delta` events and one `end` event.
-    private func startTurn(_ text: String, client: Client) {
+    /// With `queue` a busy pane takes the text, as a thread's does.
+    private func startTurn(_ text: String, queue queued: Bool, client: Client) {
         guard let manager else {
             return send(.error(503, "unavailable", message: MobileManager.offMessage),
                         to: client, head: false)
@@ -1500,7 +1506,8 @@ final class MobileServer {
             self?.queue.async {
                 guard let self, let client, self.clients[ObjectIdentifier(client)] != nil else { return }
                 if let refusal = MobileManager.refusal(
-                    status: status, turnRunning: self.turn != nil || self.phoneTurns > 0) {
+                    status: status, turnRunning: self.turn != nil || self.phoneTurns > 0,
+                    queue: queued) {
                     return self.send(refusal, to: client, head: false)
                 }
                 self.phoneTurns += 1
@@ -1521,7 +1528,7 @@ final class MobileServer {
                     }
                 }
                 manager.send(
-                    text,
+                    text, queued,
                     { delta in event("delta", ["text": delta], false) },
                     { outcome in event("end", MobileManager.end(outcome), true) })
             }
@@ -1694,7 +1701,7 @@ final class MobileServer {
                     return completion(.refused(MobileVoice.message(of: refusal)))
                 }
                 self.phoneTurns += 1
-                manager.send(text, onDelta) { [weak self] outcome in
+                manager.send(text, false, onDelta) { [weak self] outcome in
                     self?.queue.async { self?.phoneTurns -= 1 }
                     completion(outcome)
                 }

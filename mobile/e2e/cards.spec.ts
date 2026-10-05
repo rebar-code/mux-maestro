@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import { fresh, threadPath, TOKEN_HEADER } from './helpers';
+import { drag, fresh, threadPath, TOKEN_HEADER } from './helpers';
 
 /** A session that stopped after a question in words: idle, and it still needs an answer. */
 const ASKS = 'localhost:7';
@@ -51,10 +51,10 @@ test.describe('action cards', () => {
 			'asks whether to run the migration'
 		);
 		await expect(shown.locator('[data-card-body]')).toHaveText('It adds two columns to invoices.');
-		await expect(shown.getByRole('button')).toHaveText(['Yes', 'No']);
+		await expect(shown.locator('[data-card-action]')).toHaveText(['Yes', 'No']);
 		// The answer goes to the session's thread: the card says which.
 		await expect(shown).toHaveAttribute('data-source', ASKS);
-		for (const button of await shown.getByRole('button').all()) {
+		for (const button of await shown.locator('[data-card-action]').all()) {
 			expect((await button.boundingBox())?.height).toBeGreaterThanOrEqual(44);
 		}
 		// The session is idle, and its pointer is still live: the question is open.
@@ -75,7 +75,7 @@ test.describe('action cards', () => {
 		expect(body).toMatchObject({ key: KEY, action: 1 });
 
 		await expect(card(page).locator('[data-card-answer]')).toHaveText('Sent · No');
-		await expect(card(page).getByRole('button')).toHaveCount(0);
+		await expect(card(page).locator('[data-card-action]')).toHaveCount(0);
 		await expect(card(page).locator('[data-card-failure]')).toHaveCount(0);
 		expect(await acted(page)).toEqual([{ key: KEY, action: 1, label: 'No', thread: ASKS }]);
 		// Nothing was said to the Maestro: its chat is as it was.
@@ -101,7 +101,7 @@ test.describe('action cards', () => {
 		await expect(failure).toHaveAttribute('role', 'alert');
 		// Not answered: no "Sent", and both answers are still there to tap.
 		await expect(card(page).locator('[data-card-answer]')).toHaveCount(0);
-		await expect(card(page).getByRole('button')).toHaveText(['Yes', 'No']);
+		await expect(card(page).locator('[data-card-action]')).toHaveText(['Yes', 'No']);
 		expect(await acted(page)).toEqual([]);
 		await page.screenshot({ path: 'test-results/shots/action-card-failed.png' });
 
@@ -144,7 +144,7 @@ test.describe('action cards', () => {
 		await fresh(page);
 		await raise(page);
 		await expect(card(page).locator('[data-card-title]')).toBeVisible();
-		await expect(card(page).getByRole('button')).toHaveCount(0);
+		await expect(card(page).locator('[data-card-action]')).toHaveCount(0);
 		await expect(card(page).locator('[data-go]')).toBeVisible();
 	});
 
@@ -163,6 +163,49 @@ test.describe('action cards', () => {
 });
 
 test.describe('session links in the chat', () => {
+	test('the tick dismisses a card in the Maestro thread, on the Mac too', async ({ page }) => {
+		await open(page);
+		await raise(page);
+		const dismissed = page.waitForRequest((request) =>
+			request.url().endsWith('/api/manager/dismiss')
+		);
+		await card(page).getByRole('button', { name: 'Dismiss acme-app · dark-mode' }).click();
+		expect((await dismissed).postDataJSON()).toEqual({ key: KEY });
+		await expect(card(page)).toHaveCount(0);
+		// It stays gone, and the board lost it too.
+		await page.reload();
+		await expect(chat(page)).toBeVisible();
+		await expect(card(page)).toHaveCount(0);
+		await expect(page.locator('[data-board] [data-point]')).toHaveCount(0);
+	});
+
+	test('a left swipe dismisses a card in the Maestro thread', async ({ page }) => {
+		await open(page);
+		await raise(page);
+		const shown = await card(page).boundingBox();
+		if (!shown) throw new Error('no card');
+		// On the title: not on an answer, and not on the tick.
+		const title = await card(page).locator('[data-card-title]').boundingBox();
+		if (!title) throw new Error('no card title');
+		const y = title.y + title.height / 2;
+
+		// A short drag follows the finger and springs back.
+		await drag(page, [300, y], [250, y]);
+		await expect(card(page)).toHaveCount(1);
+		await expect
+			.poll(() => card(page).evaluate((el) => Math.round(el.getBoundingClientRect().left)))
+			.toBe(Math.round(shown.x));
+
+		const dismissed = page.waitForRequest((request) =>
+			request.url().endsWith('/api/manager/dismiss')
+		);
+		await drag(page, [320, y], [80, y]);
+		expect((await dismissed).postDataJSON()).toEqual({ key: KEY });
+		await expect(card(page)).toHaveCount(0);
+		// No answer went to the session.
+		expect(await acted(page)).toEqual([]);
+	});
+
 	test('a muxmaestro link opens the session inside the app', async ({ page }) => {
 		await fresh(page);
 		// As the Maestro writes it: `mux link --target acme-app:7`.

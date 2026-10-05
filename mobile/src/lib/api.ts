@@ -560,13 +560,20 @@ const TURN_STALL_MS = 45_000;
 
 /**
  * Run one manager turn. `onDelta` gets the reply as it is written. A turn the
- * Mac refuses to start throws an `ApiError` whose `detail` says why.
+ * Mac refuses to start throws an `ApiError` whose `detail` says why. With no
+ * `mode` only an idle pane takes the text; `queue` lets a busy one hold it,
+ * as a thread's does.
  */
 export async function sendManagerText(
 	text: string,
-	onDelta: (text: string) => void
+	onDelta: (text: string) => void,
+	mode?: 'queue'
 ): Promise<TurnEnd> {
-	const response = await post('/api/manager/text', { text }, 'text/event-stream');
+	const response = await post(
+		'/api/manager/text',
+		mode ? { text, mode } : { text },
+		'text/event-stream'
+	);
 	const reader = response.body?.pipeThrough(new TextDecoderStream()).getReader();
 	const parse = frameParser();
 	while (reader) {
