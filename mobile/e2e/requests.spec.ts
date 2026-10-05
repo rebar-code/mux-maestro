@@ -1,6 +1,6 @@
 import { mkdirSync } from 'node:fs';
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import { fresh } from './helpers';
+import { fresh, touchDrag, WIDTH } from './helpers';
 
 /** Screenshots are taken only when SHOTS names a directory outside the repo. */
 async function shot(page: Page, name: string): Promise<void> {
@@ -240,4 +240,106 @@ test('the misread and corrected request, opened', async ({ page }) => {
 	// Let the caret finish turning.
 	await page.waitForTimeout(300);
 	await shot(page, 'requests-history');
+});
+
+/** A tab of the Maestro screen, and its page. */
+const tab = (page: Page, name: string): Locator => page.locator(`[data-tab="${name}"]`);
+const pageOf = (page: Page, name: string): Locator => page.locator(`[data-page="${name}"]`);
+const shows = (page: Page, name: string): Promise<void> =>
+	expect(pageOf(page, name)).not.toHaveAttribute('inert', '');
+
+/** The Maestro screen, on its Requests tab. */
+async function openTab(page: Page): Promise<void> {
+	await fresh(page);
+	await shot(page, 'maestro-tabs');
+	await tab(page, 'requests').click();
+	await shows(page, 'requests');
+	await expect(rows(page).first()).toBeVisible();
+}
+
+test('the Maestro screen has a Requests tab beside Chat and Board, with the list', async ({
+	page
+}) => {
+	await openTab(page);
+	await expect(page.locator('[data-tab]')).toHaveText([/Chat/, 'Board', 'Requests']);
+	await expect(tab(page, 'requests')).toHaveAttribute('aria-selected', 'true');
+	const list = pageOf(page, 'requests');
+	await expect(list.locator('[data-project]')).toHaveText(['acme-app · 4', 'devbox · 3']);
+	await expect(list.locator('[data-request]')).toHaveCount(7);
+	await expect(filter(page, 'Open')).toHaveText('Open 7');
+	// The tab strip names the page: the list has no title bar and no way back of its own.
+	await expect(page.getByRole('link', { name: 'Back' })).toHaveCount(0);
+	// The text box stays under it.
+	await expect(page.locator('[data-foot] textarea')).toBeInViewport();
+	// Let the pager come to rest on its third page.
+	await expect
+		.poll(() =>
+			page.locator('.track').evaluate((el) => Math.round(el.getBoundingClientRect().left))
+		)
+		.toBe(-2 * WIDTH);
+	await shot(page, 'maestro-requests');
+});
+
+test('on the tab a tick is written, the filter shows the done rows and a title opens its history', async ({
+	page
+}) => {
+	await openTab(page);
+	const title = 'Find why the build cache misses on every run';
+	await box(page, title).click();
+	await expect(box(page, title)).toHaveCount(0);
+	expect(await held(page, 'req-017')).toBe('done');
+	await filter(page, 'Done').click();
+	await expect(rows(page)).toHaveCount(3);
+	await expect(box(page, title)).toHaveAttribute('aria-checked', 'true');
+
+	await filter(page, 'Open').click();
+	await opener(page, 'req-016').click();
+	await expect(entries(page, 'req-016')).toHaveCount(4);
+	await opener(page, 'req-016').click();
+	await expect(historyOf(page, 'req-016')).toHaveCount(0);
+});
+
+test('a swipe moves between Board and Requests, and the refresh key reads the list again', async ({
+	page
+}) => {
+	await fresh(page);
+	await tab(page, 'board').click();
+	await shows(page, 'board');
+	await touchDrag(page, [330, 420], [60, 420]);
+	await shows(page, 'requests');
+	await expect(tab(page, 'requests')).toHaveAttribute('aria-selected', 'true');
+	await expect(rows(page)).toHaveCount(7);
+
+	await page.request.post('/__fixture/requests-set?id=req-014&state=done');
+	await page.getByRole('button', { name: 'Refresh' }).click();
+	await expect(rows(page)).toHaveCount(6);
+	// A pull down on the list reads it again too.
+	await page.request.post('/__fixture/requests-set?id=req-014&state=todo');
+	await touchDrag(page, [200, 320], [200, 560]);
+	await expect(rows(page)).toHaveCount(7);
+
+	await touchDrag(page, [60, 420], [330, 420]);
+	await shows(page, 'board');
+});
+
+test('a list that cannot be read shows the error and Retry on the tab', async ({ page }) => {
+	await openTab(page);
+	await page.request.post('/__fixture/requests-mode?value=corrupt');
+	await page.getByRole('button', { name: 'Refresh' }).click();
+	await expect(alertBlock(page)).toBeVisible();
+	await expect(rows(page)).toHaveCount(0);
+	await page.request.post('/__fixture/requests-mode?value=ok');
+	await page.getByRole('button', { name: 'Retry' }).click();
+	await expect(rows(page)).toHaveCount(7);
+});
+
+test('there is no Requests tab on a session, or with the Maestro off', async ({ page }) => {
+	await fresh(page, '/t/localhost%3A1');
+	await expect(tab(page, 'main')).toBeVisible();
+	await expect(tab(page, 'requests')).toHaveCount(0);
+
+	await page.request.post('/__fixture/capability?name=manager&on=0');
+	await page.goto('/');
+	await expect(page.locator('[data-foot]')).toBeVisible();
+	await expect(tab(page, 'requests')).toHaveCount(0);
 });
