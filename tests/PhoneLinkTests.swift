@@ -55,6 +55,14 @@ private final class MemoryPorts: PhonePortStore {
     func save(_ ports: [Int: String]) { stored = ports }
 }
 
+/// The stored digest, in memory.
+private final class MemoryDigests: PhoneDigestStore {
+    var digest: String?
+
+    func load() -> String? { digest }
+    func save(_ digest: String) { self.digest = digest }
+}
+
 /// The Keychain's stand-in: one token in memory.
 private final class MemoryTokens: PhoneTokenStore {
     var token: String?
@@ -86,6 +94,7 @@ final class PhoneLinkTests: XCTestCase {
     private var tokens: MemoryTokens!
     private var tailscale: FakeTailscale!
     private var ports: MemoryPorts!
+    private var digests: MemoryDigests!
     /// The clock the link reads; a test moves it.
     private var clock = Date(timeIntervalSince1970: 1_700_000_000)
     private var published: [[Int]] = []
@@ -98,6 +107,7 @@ final class PhoneLinkTests: XCTestCase {
         tailscale = FakeTailscale()
         tokens = MemoryTokens()
         ports = MemoryPorts()
+        digests = MemoryDigests()
         published = []
         push = MobilePushCenter(
             keys: MemoryTokenStore(), store: MemoryTokenStore(), transport: FakePushTransport())
@@ -117,6 +127,7 @@ final class PhoneLinkTests: XCTestCase {
         let link = PhoneLink(
             server: server, runner: tailscale, tailscalePath: { tailscalePath },
             port: { port }, keepAwake: { keepAwake }, tokens: tokens, ports: ports,
+            digests: digests,
             now: { [unowned self] in self.clock }, keychainNotice: 0.05, notify: { $0() })
         link.onMappings = { [weak self] mappings in
             guard let self else { return }
@@ -199,12 +210,100 @@ final class PhoneLinkTests: XCTestCase {
         XCTAssertFalse(link.isOn)
         // Nothing is published while the read is pending.
         XCTAssertFalse(tailscale.calls.contains { $0.contains("--bg") })
-
         dialog.signal()  // the user clicked Allow
         tokens.dialog = nil
         settle(link)
         guard case .on(_, let pairing) = link.state else { return XCTFail("\(link.state)") }
         XCTAssertTrue(pairing.hasSuffix("#pair=stored-token"))
+        link.shutdown()
+    }
+
+    /// Bug: every `make install` left the phone off. The new build's start
+    /// waited in the Keychain read for a dialog nobody was there to answer,
+    /// though the switch was on. A start after the first reads no Keychain.
+    func testAStartAfterANewBuildDoesNotWaitForTheKeychain() {
+        tokens.token = "stored-token"
+        let before = link()
+        before.turnOn()
+        settle(before)
+        XCTAssertTrue(before.isOn)
+        before.shutdown()
+        XCTAssertEqual(digests.digest, MobileAPI.tokenDigest("stored-token"))
+
+        // The new build: macOS asks for the token again, and nobody answers.
+        let dialog = DispatchSemaphore(value: 0)
+        tokens.dialog = dialog
+        let published = tailscale.calls.filter { $0.contains("--bg") }.count
+        let after = link()
+        after.turnOn()
+        settle(after)
+        XCTAssertTrue(after.isOn, "\(after.state)")
+        XCTAssertFalse(states.contains(.waitingForKeychain))
+        XCTAssertEqual(tailscale.calls.filter { $0.contains("--bg") }.count, published + 1)
+        // The paired phone's token is still the one the server takes.
+        XCTAssertTrue(MobileAPI.sameToken("stored-token", digest: digests.digest))
+
+        // The pairing link is the one thing that needs the token. Asking for
+        // it waits for the dialog; the link stays on meanwhile.
+        guard case .on(let url, let pairing) = after.state else { return XCTFail("\(after.state)") }
+        XCTAssertEqual(pairing, "")
+        after.loadPairing()
+        usleep(100_000)
+        XCTAssertEqual(after.state, .on(url: url, pairing: ""))
+        dialog.signal()  // the user clicked Allow
+        tokens.dialog = nil
+        let deadline = Date().addingTimeInterval(5)
+        while after.state == .on(url: url, pairing: ""), Date() < deadline { usleep(10_000) }
+        XCTAssertEqual(after.state, .on(url: url, pairing: url + "#pair=stored-token"))
+        after.shutdown()
+    }
+
+    func testThePairingLinkTakesTheKeychainTokenOverAStaleDigest() {
+        tokens.token = "stored-token"
+        digests.digest = MobileAPI.tokenDigest("another-token")
+        let link = link()
+        link.turnOn()
+        settle(link)
+        guard case .on(let url, _) = link.state else { return XCTFail("\(link.state)") }
+        link.loadPairing()
+        let deadline = Date().addingTimeInterval(5)
+        while link.state == .on(url: url, pairing: ""), Date() < deadline { usleep(10_000) }
+        XCTAssertEqual(link.state, .on(url: url, pairing: url + "#pair=stored-token"))
+        XCTAssertEqual(digests.digest, MobileAPI.tokenDigest("stored-token"))
+        link.shutdown()
+    }
+
+    func testAPairingLinkWithNoStoredTokenMakesANewOne() {
+        digests.digest = MobileAPI.tokenDigest("lost-token")
+        let link = link()
+        link.turnOn()
+        settle(link)
+        guard case .on(let url, _) = link.state else { return XCTFail("\(link.state)") }
+        link.loadPairing()
+        let deadline = Date().addingTimeInterval(5)
+        while link.state == .on(url: url, pairing: ""), Date() < deadline { usleep(10_000) }
+        let fresh = tokens.token ?? ""
+        XCTAssertEqual(fresh.count, 43)
+        XCTAssertEqual(link.state, .on(url: url, pairing: url + "#pair=" + fresh))
+        XCTAssertEqual(digests.digest, MobileAPI.tokenDigest(fresh))
+        link.shutdown()
+    }
+
+    func testASecondStartBehindTheKeychainStillSaysWhatHoldsIt() {
+        tokens.token = "stored-token"
+        let dialog = DispatchSemaphore(value: 0)
+        tokens.dialog = dialog
+        let link = link()
+        link.turnOn()
+        let deadline = Date().addingTimeInterval(5)
+        while link.state != .waitingForKeychain, Date() < deadline { usleep(10_000) }
+        // `mux phone on` meanwhile: not "Starting…", which hid the reason.
+        link.turnOn()
+        XCTAssertEqual(link.state, .waitingForKeychain)
+        dialog.signal()
+        tokens.dialog = nil
+        settle(link)
+        XCTAssertTrue(link.isOn)
         link.shutdown()
     }
 
@@ -764,5 +863,158 @@ final class PhoneLinkTests: XCTestCase {
         XCTAssertEqual(serves(own: own).last, ["serve", "--https=5173", "off"])
         XCTAssertEqual(link.mappings, [])
         link.shutdown()
+    }
+    // MARK: mux phone
+
+    func testAPhoneRequestIsTakenOnceAndAnOldOneIsDropped() throws {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        XCTAssertEqual(PhoneRequest.parse("on 1700000000\n", now: now), true)
+        XCTAssertEqual(PhoneRequest.parse("off 1699999990\n", now: now), false)
+        // Made while the app was not running: not done at a later launch.
+        XCTAssertNil(PhoneRequest.parse("on 1699999000\n", now: now))
+        XCTAssertNil(PhoneRequest.parse("toggle 1700000000\n", now: now))
+        XCTAssertNil(PhoneRequest.parse("on\n", now: now))
+        XCTAssertNil(PhoneRequest.parse("", now: now))
+
+        let file = try scratch().appendingPathComponent("phone-request")
+        XCTAssertNil(PhoneRequest.take(at: file, now: now))
+        try "on 1700000000\n".write(to: file, atomically: true, encoding: .utf8)
+        XCTAssertEqual(PhoneRequest.take(at: file, now: now), true)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+        XCTAssertNil(PhoneRequest.take(at: file, now: now))
+        // A stale file is removed too, so it is not read every second.
+        try "on 1699999000\n".write(to: file, atomically: true, encoding: .utf8)
+        XCTAssertNil(PhoneRequest.take(at: file, now: now))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+    }
+
+    func testMuxPhoneOnLeavesARequestTheAppTakes() throws {
+        let dir = try scratch()
+        let file = dir.appendingPathComponent("support dir/phone-request")
+        let on = mux(["phone", "on", "--no-wait"], dir: dir, request: file)
+        XCTAssertEqual(on.status, 0, on.err)
+        XCTAssertEqual(PhoneRequest.take(at: file), true)
+        XCTAssertEqual(mux(["phone", "off", "--no-wait"], dir: dir, request: file).status, 0)
+        XCTAssertEqual(PhoneRequest.take(at: file), false)
+
+        // No app takes it: the command says so and leaves nothing behind
+        // for the next launch to act on.
+        let nobody = mux(["phone", "on"], dir: dir, request: file, wait: 1)
+        XCTAssertEqual(nobody.status, 2)
+        XCTAssertTrue(nobody.err.contains("did not take the request"), nobody.err)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+
+        XCTAssertEqual(mux(["phone", "sideways"], dir: dir, request: file).status, 2)
+        XCTAssertEqual(mux(["phone", "on", "now"], dir: dir, request: file).status, 2)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+    }
+
+    func testMuxPhoneStatusReportsTheServerAndTheRoute() throws {
+        let dir = try scratch()
+        // Nothing listens and nothing is published.
+        let listener = try NWListener(using: .tcp, on: .any)
+        let ready = expectation(description: "listening")
+        listener.stateUpdateHandler = { if case .ready = $0 { ready.fulfill() } }
+        listener.newConnectionHandler = { $0.cancel() }
+        listener.start(queue: .global())
+        wait(for: [ready], timeout: 5)
+        let port = Int(try XCTUnwrap(listener.port).rawValue)
+        defer { listener.cancel() }
+
+        let down = mux(["phone", "status"], dir: dir, port: port + 1, serving: "{}")
+        XCTAssertEqual(down.status, 1)
+        XCTAssertEqual(down.out, """
+            switch: off
+            server: not listening on 127.0.0.1:\(port + 1)
+            route: none for \(port + 1)
+
+            """)
+
+        // The server listens, but the route is another project's.
+        let other = #"{"Web":{"devmac.example.ts.net:\#(port)":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:9"}}}}}"#
+        let unrouted = mux(["phone", "status"], dir: dir, port: port, serving: other)
+        XCTAssertEqual(unrouted.status, 1)
+        XCTAssertTrue(unrouted.out.contains("server: listening on 127.0.0.1:\(port)\n"), unrouted.out)
+        XCTAssertTrue(unrouted.out.contains("route: none for \(port)\n"), unrouted.out)
+
+        let ours = #"{"Web":{"devmac.example.ts.net:\#(port)":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:\#(port)"}}}}}"#
+        // The app's last word on the switch comes from the phone log.
+        let logs = dir.appendingPathComponent("logs")
+        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        try """
+            {"t":"2026-01-02T03:04:05.000Z","sev":"info","kind":"mac","msg":"phone link: starting"}
+            {"t":"2026-01-02T03:04:06.000Z","sev":"info","kind":"mac","msg":"phone link: on"}
+
+            """.write(to: logs.appendingPathComponent("phone.jsonl"), atomically: true, encoding: .utf8)
+        let up = mux(["phone", "status"], dir: dir, port: port, serving: ours)
+        XCTAssertEqual(up.status, 0, up.out + up.err)
+        XCTAssertEqual(up.out, """
+            switch: off
+            server: listening on 127.0.0.1:\(port)
+            route: tailscale serve publishes \(port)
+            link: on (2026-01-02T03:04:06.000Z)
+
+            """)
+
+        // Tailscale that cannot be asked is not "no route".
+        let silent = mux(["phone", "status"], dir: dir, port: port, serving: nil)
+        XCTAssertEqual(silent.status, 1)
+        XCTAssertTrue(silent.out.contains("route: unknown, tailscale did not answer\n"), silent.out)
+    }
+
+    func testTheLinkStateIsWrittenForTheLogWithNoSecret() {
+        XCTAssertEqual(PhoneLink.State.off.logText, "off")
+        XCTAssertEqual(PhoneLink.State.waitingForKeychain.logText, "waiting for Keychain")
+        XCTAssertEqual(
+            PhoneLink.State.on(url: "https://devmac.example.ts.net:7433/", pairing: "x#pair=secret").logText,
+            "on")
+        XCTAssertEqual(PhoneLink.State.failed("Port 7433 is in use").logText, "failed: Port 7433 is in use")
+        XCTAssertTrue(PhoneLink.State.failed("x").isFailure)
+        XCTAssertFalse(PhoneLink.State.starting.isFailure)
+    }
+
+    private func scratch() throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mux-phone-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        return dir
+    }
+
+    /// Run the bundled `mux` with every outside piece replaced: a preference
+    /// domain nothing writes, a fake `tailscale` that prints `serving` (or
+    /// fails when it is nil), and paths under `dir`.
+    private func mux(
+        _ args: [String], dir: URL, request: URL? = nil, port: Int = 1, serving: String? = "{}",
+        wait: Int? = nil
+    ) -> (status: Int32, out: String, err: String) {
+        let script = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appendingPathComponent("../app/MuxMaestro/Resources/manager/mux").standardizedFileURL.path
+        let tailscale = dir.appendingPathComponent("tailscale")
+        let body = serving.map { "#!/bin/sh\ncat <<'EOF'\n\($0)\nEOF\n" } ?? "#!/bin/sh\nexit 1\n"
+        try? body.write(to: tailscale, atomically: true, encoding: .utf8)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tailscale.path)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = [script] + args
+        var env = ProcessInfo.processInfo.environment
+        env["MUX_PHONE_DOMAIN"] = "com.example.mux-phone-test-\(UUID().uuidString)"
+        env["MUX_PHONE_PORT"] = String(port)
+        env["MUX_TAILSCALE"] = tailscale.path
+        env["MUX_PHONE_LOG_DIR"] = dir.appendingPathComponent("logs").path
+        env["MUX_PHONE_REQUEST"] = (request ?? dir.appendingPathComponent("phone-request")).path
+        env["MUX_MANAGER_DB"] = dir.appendingPathComponent("manager.db").path
+        if let wait { env["MUX_PHONE_WAIT"] = String(wait) }
+        process.environment = env
+        let out = Pipe(), err = Pipe()
+        process.standardOutput = out
+        process.standardError = err
+        try? process.run()
+        let outData = out.fileHandleForReading.readDataToEndOfFile()
+        let errData = err.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return (process.terminationStatus, String(decoding: outData, as: UTF8.self),
+                String(decoding: errData, as: UTF8.self))
     }
 }

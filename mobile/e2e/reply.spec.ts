@@ -490,6 +490,24 @@ test('slash: the list filters as you type and a tap fills the box', async ({ pag
 	await expect(box(page)).toBeFocused();
 	await expect(slash(page)).toHaveCount(0);
 
+	// A command after other text: a tap changes the command and nothing else.
+	await box(page).fill('fix the test then /com');
+	await slash(page).getByRole('option', { name: '/commit' }).tap();
+	await expect(box(page)).toHaveValue('fix the test then /commit ');
+	await expect(slash(page)).toHaveCount(0);
+
+	// The caret says which command, with text after it too.
+	await box(page).fill('run /co now');
+	await box(page).evaluate((el: HTMLTextAreaElement) => el.setSelectionRange(7, 7));
+	await page.keyboard.type('m');
+	await slash(page).getByRole('option', { name: '/commit' }).tap();
+	await expect(box(page)).toHaveValue('run /commit now');
+	expect(await box(page).evaluate((el: HTMLTextAreaElement) => el.selectionStart)).toBe(12);
+
+	// A path is not a command.
+	await box(page).fill('open /Users/me');
+	await expect(slash(page)).toHaveCount(0);
+
 	// Asked for once per thread, however often the list opens.
 	await box(page).fill('/');
 	await expect(slash(page)).toBeVisible();
@@ -1543,10 +1561,13 @@ test('the Maestro home is not a listed thread: it gets no dock and no reply rout
 	await expect(page.locator('.a').first()).toBeVisible();
 	// Its own text box, and nothing of a thread's reply bar.
 	await expect(page.locator('[data-dock]')).toHaveCount(0);
-	// The pane's keys only: its text box belongs to the manager's own turns.
+	// The pane's keys come with its terminal: the chat has none.
+	await expect(keybar(page)).toHaveCount(0);
+	await page.locator('[data-tab="main"]').tap();
 	await expect(keybar(page).locator('.keys button')).toHaveCount(9);
 	// The manager's text box brings the keyboard up: the strip can put it away.
 	await expect(page.getByRole('button', { name: 'Hide keyboard' })).toHaveCount(1);
+	await page.locator('[data-tab="main"]').tap();
 	await expect(card(page)).toHaveCount(0);
 	await expect(nextBar(page)).toHaveCount(0);
 	// The attach button is the text box's own: it is there on every page.

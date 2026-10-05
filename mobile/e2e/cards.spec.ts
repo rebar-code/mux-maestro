@@ -148,14 +148,16 @@ test.describe('action cards', () => {
 		await expect(card(page).locator('[data-go]')).toBeVisible();
 	});
 
-	test('the card is in the Maestro panel on every page', async ({ page }) => {
+	test("the header button of any page opens the Maestro's screen, with the card", async ({
+		page
+	}) => {
 		await open(page, threadPath(RUNNING));
 		await raise(page);
 		await page.locator('[data-maestro]').click();
-		const inPanel = card(page, page.locator('[data-panel]'));
-		await expect(inPanel).toHaveCount(1);
-		await inPanel.getByRole('button', { name: 'Yes' }).click();
-		await expect(inPanel.locator('[data-card-answer]')).toHaveText('Sent · Yes');
+		await expect(page.locator('[data-foot]')).toBeVisible();
+		await expect(card(page)).toHaveCount(1);
+		await card(page).getByRole('button', { name: 'Yes' }).click();
+		await expect(card(page).locator('[data-card-answer]')).toHaveText('Sent · Yes');
 		expect(await acted(page)).toEqual([{ key: KEY, action: 0, label: 'Yes', thread: ASKS }]);
 	});
 });

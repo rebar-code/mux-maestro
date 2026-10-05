@@ -57,6 +57,8 @@
 		tail?: Snippet;
 		/** A prompt that was sent and is not in the chat yet. */
 		pending?: string | null;
+		/** Texts the page holds until the turn ends (the manager). Left out: the reply's own. */
+		held?: string[];
 		/** The first tab shows the terminal, not the chat. */
 		terminal?: boolean;
 		/**
@@ -80,6 +82,7 @@
 		header,
 		tail,
 		pending = null,
+		held,
 		terminal = $bindable(false),
 		reply: givenReply,
 		embedded = false
@@ -238,7 +241,7 @@
 	}
 	const spoken = $derived(liveLines(feed.messages ?? [], reply.turn));
 	/** Text the busy agent holds: drawn as queued until the chat has it. */
-	const queued = $derived(queuedLines(feed.messages ?? [], reply.queued));
+	const queued = $derived(held ?? queuedLines(feed.messages ?? [], reply.queued));
 
 	function send(): void {
 		// A typed reply takes over: a reply that is still being read stops.
@@ -274,7 +277,6 @@
 {:else}
 	<header
 		class="tbar thread"
-		data-maestro-grab
 		style:border-bottom-color={color}
 		style:background="linear-gradient({color}3a, {color}14), var(--bar)"
 	>

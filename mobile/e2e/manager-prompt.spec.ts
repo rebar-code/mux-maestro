@@ -91,11 +91,8 @@ test('the Maestro waits on a question: the home shows the card, and an option an
 	const at = await card(page).boundingBox();
 	const foot = await page.locator('[data-foot]').boundingBox();
 	expect((at?.y ?? 0) + (at?.height ?? 0)).toBeLessThanOrEqual(foot?.y ?? 0);
-	// The keys are in the footer, above the text box.
-	const keys = await keybar(page).boundingBox();
-	const form = await page.locator('form.compose').boundingBox();
-	expect(keys?.y).toBeGreaterThanOrEqual(foot?.y ?? 0);
-	expect((keys?.y ?? 0) + (keys?.height ?? 0)).toBeLessThanOrEqual(form?.y ?? 0);
+	// The chat has no key strip: the card's own buttons answer.
+	await expect(keybar(page)).toHaveCount(0);
 	// The line the home had before is still there.
 	await expect(page.locator('[data-status="waiting"]')).toHaveText(
 		'Maestro is waiting on a prompt'
@@ -189,7 +186,9 @@ test('with the key bar alone the Maestro card is read-only, and Escape goes to t
 	// Nothing on it can be pressed: no options, no Cancel.
 	await expect(card(page).getByRole('button')).toHaveCount(0);
 
-	// The pane's keys, above the voice bar and the manager's own text box.
+	// The pane's keys come with its terminal, above the voice bar and the manager's own text box.
+	await expect(keybar(page)).toHaveCount(0);
+	await tab(page).tap();
 	await expect(keybar(page)).toBeVisible();
 	await expect(keybar(page).locator('.keys button')).toHaveText([
 		'Esc',
@@ -213,14 +212,15 @@ test('with the key bar alone the Maestro card is read-only, and Escape goes to t
 	await key(page, 'Escape').tap();
 	const request = await sent;
 	expect(request.headers()['x-muxmaestro']).toBe('1');
-	// The chat is on screen, not the terminal.
-	expect(request.postDataJSON()).toEqual({ key: 'Escape', prompt: 'mq-1' });
+	// The terminal is on screen.
+	expect(request.postDataJSON()).toEqual({ key: 'Escape', prompt: 'mq-1', terminal: true });
 	await expect
 		.poll(async () => (await received(page)).manager.keys)
-		.toEqual([{ key: 'Escape', prompt: 'mq-1' }]);
+		.toEqual([{ key: 'Escape', prompt: 'mq-1', terminal: true }]);
 
 	// An arrow moves the mark, as on a thread.
 	await key(page, 'Down').tap();
+	await tab(page).tap();
 	await expect(card(page).locator('[aria-current="true"]')).toHaveAttribute('data-option', '2');
 	expect((await received(page)).keys).toEqual([]);
 	expect(wrong).toEqual([]);
@@ -234,14 +234,8 @@ test('a Maestro prompt with no readable choices: the terminal, and Enter from th
 	await expect(card(page).locator('h3')).toHaveText('Waiting on a prompt');
 	await expect(card(page).getByRole('button')).toHaveText(['Show terminal', 'Cancel']);
 
-	// From the chat nobody can read what Enter would pick.
-	const refused = page.waitForResponse((response) => response.url().endsWith('/api/manager/key'));
-	await key(page, 'Enter').tap();
-	const answer = await refused;
-	expect(answer.status()).toBe(409);
-	expect(answer.request().postDataJSON()).toEqual({ key: 'Enter', prompt: 'mb-1' });
-	await expect(note(page)).toHaveText('Open the terminal to answer');
-	expect((await received(page)).manager.keys).toEqual([]);
+	// From the chat nobody can read what Enter would pick: it has no keys.
+	await expect(keybar(page)).toHaveCount(0);
 
 	// The terminal has the pane's own text.
 	await card(page).getByRole('button', { name: 'Show terminal' }).tap();
@@ -259,12 +253,10 @@ test('a Maestro prompt with no readable choices: the terminal, and Enter from th
 		.toEqual([{ key: 'Enter', prompt: 'mb-1', terminal: true }]);
 	await expect(note(page)).toHaveCount(0);
 
-	// Back on the chat the flag is gone again.
+	// Back on the chat the keys are gone again.
 	await tab(page).tap();
 	await expect(tab(page)).toHaveText(/Chat\s*⇄/);
-	const again = page.waitForRequest((request) => request.url().endsWith('/api/manager/key'));
-	await key(page, 'Escape').tap();
-	expect((await again).postDataJSON()).toEqual({ key: 'Escape', prompt: 'mb-1' });
+	await expect(keybar(page)).toHaveCount(0);
 });
 
 test('a Maestro that does not wait shows no card, and is asked once', async ({ page }) => {

@@ -582,11 +582,31 @@ enum MobileAPI {
         return sameToken(sent, token: token)
     }
 
+    /// The same check against the token's digest, which is all the server keeps.
+    static func hasToken(_ request: MobileRequest, digest: String?) -> Bool {
+        guard let sent = request.header(tokenHeader) else { return false }
+        return sameToken(sent, digest: digest)
+    }
+
+    /// What the server keeps of the pairing token: its SHA-256, in hex. The
+    /// token is 32 random bytes, so the digest tells nobody what it is, and
+    /// it can be stored where a read never waits for the Keychain.
+    static func tokenDigest(_ token: String) -> String {
+        SHA256.hash(data: Data(token.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
     /// Whether `sent` is the pairing token. The time it takes depends on the
     /// token's length alone, never on how much of `sent` is right.
     static func sameToken(_ sent: String, token: String?) -> Bool {
         guard let token, !token.isEmpty else { return false }
-        let a = Array(sent.utf8), b = Array(token.utf8)
+        return sameToken(sent, digest: tokenDigest(token))
+    }
+
+    /// Whether `sent` is the token `digest` was made from. Both sides are
+    /// digests of one length, compared in constant time.
+    static func sameToken(_ sent: String, digest: String?) -> Bool {
+        guard let digest, !digest.isEmpty else { return false }
+        let a = Array(tokenDigest(sent).utf8), b = Array(digest.utf8)
         var difference = UInt8(a.count == b.count ? 0 : 1)
         for index in b.indices { difference |= b[index] ^ (index < a.count ? a[index] : 0) }
         return difference == 0
