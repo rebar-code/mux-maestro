@@ -8,7 +8,7 @@
 	import type { SendStage } from './reply';
 	import { keepFocus } from './reply.svelte';
 	import TalkButton from './TalkButton.svelte';
-	import type { VoiceSink, VoiceTarget } from './voice.svelte';
+	import { voice, type VoiceSink, type VoiceTarget } from './voice.svelte';
 
 	/**
 	 * A text box and its primary button, for the manager home and for a thread.
@@ -80,6 +80,8 @@
 	/* eslint-enable prefer-const */
 
 	const canSend = $derived(value.trim() !== '');
+	/** A take is open here: it can be dropped. */
+	const recording = $derived(voiceOn && voice.statusOf(target) === 'recording');
 	/** Text queued to a busy agent keeps the button on screen with nothing in the box. */
 	const staged = $derived(stage !== 'idle');
 	/**
@@ -142,6 +144,15 @@
 		{onblur}
 		{box}
 	/>
+	{#if recording}
+		<button
+			class="cancel grow"
+			type="button"
+			data-cancel
+			{@attach keepFocus}
+			onclick={() => voice.cancel(target)}>Cancel</button
+		>
+	{/if}
 	<!-- Typing is always there: with text in the box the button sends it. -->
 	{#if (canSend || staged) && !off}
 		<!-- An icon alone: the row's width is the text box's. The name is for a screen reader. -->
@@ -234,6 +245,18 @@
 		border-radius: 50%;
 		background: var(--accent);
 		color: #fff;
+	}
+
+	.cancel {
+		position: relative;
+		flex: none;
+		height: 40px;
+		padding: 0 14px;
+		border-radius: 20px;
+		background: var(--surface);
+		border: 1px solid var(--border);
+		font-size: 14px;
+		white-space: nowrap;
 	}
 
 	/* A send on its way keeps its colour: dimmed like "off" it would read as broken. */
