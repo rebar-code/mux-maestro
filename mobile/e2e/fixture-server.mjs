@@ -1370,7 +1370,6 @@ const cardId = (key, labels) =>
 		.update([key, ...labels].join('\u001f'))
 		.digest('hex')
 		.slice(0, 16);
-
 function requestsApi(req, res, path, body) {
 	if (!capabilities.manager) return send(res, 403, { error: 'disabled' });
 	const corrupt = () =>
@@ -2291,9 +2290,6 @@ function hook(res, url) {
 			];
 			break;
 		}
-		case '/__fixture/no-updates':
-			manager.updates = [];
-			break;
 		case '/__fixture/card': {
 			// As `mux point <session> --reason … --action …` records it.
 			const key = url.searchParams.get('key') ?? 'point:localhost:acme-app';
@@ -2335,6 +2331,9 @@ function hook(res, url) {
 			return send(res, 200, acted);
 		case '/__fixture/maestro-say':
 			say('assistant', url.searchParams.get('text') ?? '');
+			break;
+		case '/__fixture/no-updates':
+			manager.updates = [];
 			break;
 		case '/__fixture/manager-status':
 			manager.status = url.searchParams.get('value') ?? 'idle';
