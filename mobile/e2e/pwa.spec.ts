@@ -192,6 +192,16 @@ test('a new build replaces the old one when the app comes to the front', async (
 	expect(api).toEqual([]);
 });
 
+test('a new build replaces the old one in an app that stays in front', async ({ page }) => {
+	await page.clock.install();
+	await installed(page, '/t/localhost%3A7');
+	await page.request.post('/__fixture/build?tag=6');
+	// Nothing brings the app to the front: it was never away. A minute passes.
+	await page.clock.fastForward(61_000);
+	await expect.poll(() => build(page), { timeout: 20_000 }).toBe('6');
+	await expect(page).toHaveURL(/\/t\/localhost(:|%3A)7$/);
+});
+
 /** The new worker is in control; the page has not reloaded for it yet. */
 async function workerChanged(page: import('@playwright/test').Page, tag: string): Promise<void> {
 	await expect
