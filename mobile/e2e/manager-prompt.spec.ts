@@ -91,8 +91,8 @@ test('the Maestro waits on a question: the home shows the card, and an option an
 	const at = await card(page).boundingBox();
 	const foot = await page.locator('[data-foot]').boundingBox();
 	expect((at?.y ?? 0) + (at?.height ?? 0)).toBeLessThanOrEqual(foot?.y ?? 0);
-	// The chat has no key strip: the card's own buttons answer.
-	await expect(keybar(page)).toHaveCount(0);
+	// The key strip is there, as on a session; the card's own buttons answer too.
+	await expect(keybar(page)).toBeVisible();
 	// The line the home had before is still there.
 	await expect(page.locator('[data-status="waiting"]')).toHaveText(
 		'Maestro is waiting on a prompt'
@@ -186,20 +186,25 @@ test('with the key bar alone the Maestro card is read-only, and Escape goes to t
 	// Nothing on it can be pressed: no options, no Cancel.
 	await expect(card(page).getByRole('button')).toHaveCount(0);
 
-	// The pane's keys come with its terminal, above the voice bar and the manager's own text box.
-	await expect(keybar(page)).toHaveCount(0);
+	// The same strip as a session's, on the chat and on the terminal, above the manager's own text box.
+	await expect(keybar(page)).toBeVisible();
 	await tab(page).tap();
 	await expect(keybar(page)).toBeVisible();
 	await expect(keybar(page).locator('.keys button')).toHaveText([
 		'Esc',
 		'Tab',
 		'Sh+Tab',
+		'Ctrl',
 		'Ctrl+C',
 		'←',
 		'↓',
 		'↑',
 		'→',
-		'⏎'
+		'⏎',
+		'/',
+		'~',
+		'|',
+		'-'
 	]);
 	const bar = await keybar(page).boundingBox();
 	const form = await page.locator('form.compose').boundingBox();
@@ -234,8 +239,10 @@ test('a Maestro prompt with no readable choices: the terminal, and Enter from th
 	await expect(card(page).locator('h3')).toHaveText('Waiting on a prompt');
 	await expect(card(page).getByRole('button')).toHaveText(['Show terminal', 'Cancel']);
 
-	// From the chat nobody can read what Enter would pick: it has no keys.
-	await expect(keybar(page)).toHaveCount(0);
+	// From the chat nobody can read what Enter would pick: the Mac refuses it, and the strip says why.
+	await key(page, 'Enter').tap();
+	await expect(note(page)).toHaveText('Open the terminal to answer');
+	expect((await received(page)).manager.keys).toEqual([]);
 
 	// The terminal has the pane's own text.
 	await card(page).getByRole('button', { name: 'Show terminal' }).tap();
@@ -253,10 +260,10 @@ test('a Maestro prompt with no readable choices: the terminal, and Enter from th
 		.toEqual([{ key: 'Enter', prompt: 'mb-1', terminal: true }]);
 	await expect(note(page)).toHaveCount(0);
 
-	// Back on the chat the keys are gone again.
+	// Back on the chat the keys stay.
 	await tab(page).tap();
 	await expect(tab(page)).toHaveText(/Chat\s*⇄/);
-	await expect(keybar(page)).toHaveCount(0);
+	await expect(keybar(page)).toBeVisible();
 });
 
 test('a Maestro that does not wait shows no card, and is asked once', async ({ page }) => {

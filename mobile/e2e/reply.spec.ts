@@ -1568,10 +1568,10 @@ test('the Maestro home is not a listed thread: it gets no dock and no reply rout
 	await expect(page.locator('.a').first()).toBeVisible();
 	// Its own text box, and nothing of a thread's reply bar.
 	await expect(page.locator('[data-dock]')).toHaveCount(0);
-	// The pane's keys come with its terminal: the chat has none.
-	await expect(keybar(page)).toHaveCount(0);
+	// The strip is on the chat and on the terminal, with a session's keys.
+	await expect(keybar(page).locator('.keys button')).toHaveCount(14);
 	await page.locator('[data-tab="main"]').tap();
-	await expect(keybar(page).locator('.keys button')).toHaveCount(9);
+	await expect(keybar(page).locator('.keys button')).toHaveCount(14);
 	// The manager's text box brings the keyboard up: the strip can put it away.
 	await expect(page.getByRole('button', { name: 'Hide keyboard' })).toHaveCount(1);
 	await page.locator('[data-tab="main"]').tap();

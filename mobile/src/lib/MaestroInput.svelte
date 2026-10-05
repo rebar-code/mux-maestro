@@ -12,7 +12,8 @@
 
 	/**
 	 * The Maestro's text box with its voice bar and its pane's keys: the home
-	 * page's footer. It sends through the Maestro's one turn.
+	 * page's footer, laid out as a thread's dock is. It sends through the
+	 * Maestro's one turn.
 	 * The attach button and its tiles are a thread's: the box is one thing.
 	 */
 	const { onfocus, onblur }: { onfocus?: () => void; onblur?: () => void } = $props();
@@ -20,8 +21,7 @@
 	const managerOn = $derived(can('manager'));
 	// A take goes to the Maestro, so voice needs the Maestro's switch too.
 	const voiceOn = $derived(managerOn && can('voice'));
-	// The keys are the pane's: they show with its terminal, not with the chat.
-	const keysOn = $derived(managerOn && can('keyBar') && maestro.terminal);
+	const keysOn = $derived(managerOn && can('keyBar'));
 	const boxLabel = $derived(isOff('manager') ? OFF_LABEL : 'Ask the Maestro');
 	const reply = maestro.reply;
 
@@ -52,12 +52,22 @@
 	-->
 	<!-- Typing clears it, as it does in a thread's box. -->
 	{#if reply.note}<NoteLine note={reply.note} />{/if}
+	<!-- The key strip is between the two parts of the voice bar: what it says, and its buttons. -->
+	{#if voiceOn && keysOn}
+		<VoiceBar target="manager" sink={manager.voice} part="status" />
+	{/if}
 	<!-- With a key bar the attach button is at its start; without one it is beside the text box. -->
-	{#if keysOn}<KeyBar {reply} composer={false} hides leading={attach} />{/if}
-	<VoiceBar target="manager" sink={manager.voice} off={!voiceOn} />
+	{#if keysOn}<KeyBar {reply} composer leading={attach} />{/if}
+	<VoiceBar
+		target="manager"
+		sink={manager.voice}
+		off={!voiceOn}
+		part={voiceOn && keysOn ? 'controls' : 'all'}
+	/>
 {/if}
 <Composer
 	bind:value={manager.draft}
+	box={managerOn ? reply.box : undefined}
 	label={boxLabel}
 	target="manager"
 	sink={manager.voice}
@@ -67,6 +77,7 @@
 	busy={manager.busy}
 	onsend={send}
 	oninput={() => (reply.note = null)}
+	onbeforeinput={managerOn ? reply.beforeInput : undefined}
 	onpaste={managerOn ? reply.pasted : undefined}
 	{onfocus}
 	{onblur}
