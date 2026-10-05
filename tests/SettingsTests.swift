@@ -272,4 +272,20 @@ final class SettingsTests: XCTestCase {
             XCTAssertEqual(Settings.phonePort(defaults: defaults), Settings.phonePortDefault)
         }
     }
+
+    func testTheMaestroIsClaudeWithTheDefaultModelUntilSet() {
+        XCTAssertEqual(Settings.maestroAgent(defaults: defaults), .claude)
+        XCTAssertEqual(Settings.maestroModel(.claude, defaults: defaults), "")
+        defaults.set("gemini", forKey: "maestro.agent")
+        XCTAssertEqual(Settings.maestroAgent(defaults: defaults), .claude)
+    }
+
+    func testEachMaestroAgentKeepsItsOwnModel() {
+        Settings.setMaestroAgent(.codex, defaults: defaults)
+        Settings.setMaestroModel(" gpt-5.5 ", agent: .codex, defaults: defaults)
+        Settings.setMaestroModel("opus", agent: .claude, defaults: defaults)
+        XCTAssertEqual(Settings.maestroAgent(defaults: defaults), .codex)
+        XCTAssertEqual(Settings.maestroModel(.codex, defaults: defaults), "gpt-5.5")
+        XCTAssertEqual(Settings.maestroModel(.claude, defaults: defaults), "opus")
+    }
 }

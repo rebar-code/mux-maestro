@@ -86,7 +86,7 @@ hidden or falls back.
   a window with its PRs; `@tn_base` / `@tn_tags` give it a name plus status tags.
   Without them, PRs come from the window name and `git`.
 - **[Tailscale](https://tailscale.com):** needed by the phone app. MuxMaestro ▸
-  Setup… ▸ Phone access starts a server on `127.0.0.1` and runs
+  Settings… ▸ Phone ▸ Phone access starts a server on `127.0.0.1` and runs
   `tailscale serve` for it. Only your own tailnet login is answered. Open the
   URL (or scan the QR code) on the phone and add it to the Home Screen.
 - **Agent hooks:** Settings can add a hook to `~/.claude/settings.json` and

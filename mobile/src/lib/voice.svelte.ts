@@ -34,7 +34,6 @@ const LIMIT_MARGIN_MS = 5000;
 
 interface Picked {
 	mode?: VoiceMode;
-	speaker?: boolean;
 }
 
 function picked(): Picked {
@@ -115,8 +114,10 @@ class Voice {
 	/** What this phone picked. Until it picks, the Mac's defaults apply. */
 	private picked = $state<Picked>(picked());
 	readonly mode: VoiceMode = $derived(this.picked.mode ?? live.config?.voice?.mode ?? 'manual');
-	/** On: two-way, the reply is spoken. Off: input only. */
-	readonly speaker: boolean = $derived(this.picked.speaker ?? live.config?.voice?.speaker ?? true);
+	/** On: two-way, the reply is spoken. Off: input only. The Mac's setting. */
+	readonly speaker: boolean = $derived(live.config?.voice?.speaker ?? true);
+	/** The player holds a reply's audio: it can be gone through again. */
+	private kept = $state(false);
 
 	private context: AudioContext | null = null;
 	private stream: MediaStream | null = null;
@@ -174,6 +175,11 @@ class Voice {
 		});
 	}
 
+	/** `target`'s bar can go back through the reply that was read: its audio is still here. */
+	scrubs(target: VoiceTarget): boolean {
+		return this.kept && this.target === target && this.status !== 'recording';
+	}
+
 	/** What the primary button of `target`'s bar does now. */
 	primaryOf(target: VoiceTarget): PrimaryKind {
 		switch (this.statusOf(target)) {
@@ -220,6 +226,7 @@ class Voice {
 			};
 			const player = new Player(context);
 			player.onStarted = () => {
+				this.kept = true;
 				if (this.status === 'recording') return;
 				this.status = 'speaking';
 				// The phone did not let the audio start: Resume, a tap, will.
@@ -445,12 +452,18 @@ class Voice {
 		running?.abort();
 		this.sink?.detach();
 		this.sink = null;
-		this.player?.stop();
+		this.quiet();
 		this.capture?.discard();
 		this.settleMic();
 		this.paused = false;
 		this.status = 'idle';
 		this.saying = null;
+	}
+
+	/** Stop the audio and drop what was kept of it. */
+	private quiet(): void {
+		this.player?.stop();
+		this.kept = false;
 	}
 
 	private async run(
@@ -576,22 +589,52 @@ class Voice {
 		this.rest();
 	};
 
+	/** Drop the open take: nothing is sent. Auto goes on listening. */
+	cancel = (target: VoiceTarget): void => {
+		if (this.statusOf(target) !== 'recording') return;
+		this.capture?.discard();
+		this.settleMic();
+		this.rest();
+	};
+
 	/** Stop speaking. The reply's text still arrives. */
 	skip = (): void => {
 		this.unlock();
 		this.silenced = true;
-		this.player?.stop();
+		this.quiet();
 		if (this.status !== 'speaking') return;
 		if (this.inFlight) this.status = 'thinking';
 		else this.rest();
 	};
 
 	/** Read `target`'s last reply again. */
-	replay = (target: VoiceTarget, sink: VoiceSink): void => {
+	private replay = (target: VoiceTarget, sink: VoiceSink): void => {
 		this.unlock();
 		this.halt();
 		this.note = null;
 		void this.run(target, sink, true, (handlers, signal) => replayVoice(target, handlers, signal));
+	};
+
+	/**
+	 * Move `seconds` through the reply that was read, back or forward. A reply
+	 * that has ended is read again from there; one that is paused plays on.
+	 */
+	seek = (target: VoiceTarget, seconds: number): void => {
+		if (!this.scrubs(target)) return;
+		this.unlock();
+		// Auto opened the mic again when the reply ended: it would hear the reply.
+		if (this.status === 'idle') this.closeMic();
+		this.player?.seek(seconds);
+		this.keepAwake();
+	};
+
+	/**
+	 * Back to the start of `target`'s last reply. The audio that is still here
+	 * plays again; without it the Mac reads the reply again.
+	 */
+	back = (target: VoiceTarget, sink: VoiceSink): void => {
+		if (this.scrubs(target)) this.seek(target, -Infinity);
+		else this.replay(target, sink);
 	};
 
 	/** What the play button of row `n` of `target`'s chat shows. */
@@ -631,12 +674,6 @@ class Voice {
 		if (mode !== 'auto' || this.micMuted) return;
 		this.bound = { target, sink };
 		await this.openMic();
-	};
-
-	setSpeaker = (on: boolean): void => {
-		this.unlock();
-		this.save({ speaker: on });
-		if (!on) this.skip();
 	};
 
 	/** Mute the mic. An open take is dropped, not sent. */
