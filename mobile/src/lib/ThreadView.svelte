@@ -422,9 +422,9 @@
 										{@const saying = sayOn ? voice.sayingOf(id, message.n) : 'idle'}
 										<div class="a" data-row={message.n}>
 											<Prose text={message.text} {hits} current={find.current} {links} />
-											<!-- A message that is read keeps its menu: its Stop stays in reach. -->
-											{#if menu === message.n || saying !== 'idle'}
-												<div class="menu" data-menu>
+											<!-- Play is always here. A double tap adds the rest: that is the menu. -->
+											{#if sayOn || menu === message.n}
+												<div class="menu" data-menu={menu === message.n ? '' : undefined}>
 													{#if sayOn}
 														<!-- Three shapes: a triangle, a turning ring, a square. -->
 														<button
@@ -441,13 +441,15 @@
 															{/if}
 														</button>
 													{/if}
-													<button
-														class="act grow"
-														aria-label="Copy"
-														onclick={(event) => copyText(event.currentTarget, message.text)}
-													>
-														<Icon name="copy" size={15} /><Icon name="check" size={15} />
-													</button>
+													{#if menu === message.n}
+														<button
+															class="act grow"
+															aria-label="Copy"
+															onclick={(event) => copyText(event.currentTarget, message.text)}
+														>
+															<Icon name="copy" size={15} /><Icon name="check" size={15} />
+														</button>
+													{/if}
 												</div>
 											{/if}
 										</div>
@@ -775,7 +777,7 @@
 		overflow-wrap: anywhere;
 	}
 
-	/* What a double tap on a message opens: a row of small buttons under its text. */
+	/* A row of small buttons under an agent message: Play, and what a double tap adds. */
 	.menu {
 		display: flex;
 		gap: 18px;

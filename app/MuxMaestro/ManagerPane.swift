@@ -1,5 +1,21 @@
 import Foundation
 
+/// The CLI that runs as the Maestro. The raw values are the ones
+/// `mux spin --agent` takes, and they are the commands themselves.
+enum MaestroAgent: String, CaseIterable {
+    case claude
+    case codex
+
+    var title: String { self == .claude ? "Claude" : "Codex" }
+
+    /// The agent with its model, as typed at a shell. An empty model leaves the
+    /// choice to the CLI. Both CLIs take `--model`.
+    func command(model: String) -> String {
+        let model = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        return model.isEmpty ? rawValue : "\(rawValue) --model \(Ssh.shellQuote(model))"
+    }
+}
+
 /// Which pane of the `mux-manager` session is the Maestro.
 ///
 /// A tmux target that is only a session name means the session's active pane.
@@ -39,10 +55,19 @@ enum ManagerPane {
     /// tmux client with no UTF-8 locale (an app opened from Finder) prints
     /// every control character as `_`.
     private static let format = [
-        "#{pane_id}", "#{?#{\(mark)},1,0}", "#{m:*exec claude*,#{pane_start_command}}",
+        "#{pane_id}", "#{?#{\(mark)},1,0}",
+        "#{||:" + MaestroAgent.allCases
+            .map { "#{m:*exec \($0.rawValue)*,#{pane_start_command}}" }.joined(separator: ",") + "}",
         "#{m/r:^-?(zsh|bash|sh|fish|dash|ksh|tcsh|csh|nu)$,#{pane_current_command}}",
         "#{pane_current_path}",
     ].joined(separator: " ")
+
+    /// The pane command for `agent`. See `ManagerController.launchShell` for
+    /// why it goes through a login shell.
+    static func launchShell(homePath: String, agent: MaestroAgent, model: String) -> String {
+        let inner = "PATH=\(Ssh.shellQuote(homePath + "/bin")):\"$PATH\" exec \(agent.command(model: model))"
+        return "exec \"$SHELL\" -lc \(Ssh.shellQuote(inner))"
+    }
 
     /// Every pane of the session, in all its windows.
     static func listArgv(session: String) -> [String] {

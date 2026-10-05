@@ -5,6 +5,10 @@
 		speakerOff: ['M11 5 6 9H3v6h3l5 4z', 'm22 9-6 6', 'm16 9 6 6'],
 		replay: ['M3 12a9 9 0 1 0 3-6.7', 'M3 4v5h5'],
 		skip: ['M5 5l9 7-9 7z', 'M18 5v14'],
+		skipBack: ['M19 5l-9 7 9 7z', 'M6 5v14'],
+		// An open circle with an arrowhead at its top: the number sits inside.
+		back: ['M12 4a8.5 8.5 0 1 1-7.4 4.3', 'M12 1 8.5 4 12 7'],
+		forward: ['M12 4a8.5 8.5 0 1 0 7.4 4.3', 'M12 1l3.5 3L12 7'],
 		// Lucide `file-up`.
 		fileUp: [
 			'M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z',

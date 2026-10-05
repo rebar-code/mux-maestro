@@ -22,7 +22,7 @@ enum VoiceModelsError: LocalizedError {
 /// ~24 MB of shared G2P assets) go to `VoiceModelStore.directory`. Files
 /// already there are skipped, so an interrupted download resumes where it
 /// stopped; a failed attempt is retried with backoff for as long as the app
-/// runs, and the Setup window's Retry button forces one now. After the first
+/// runs, and the Settings window's Retry button forces one now. After the first
 /// full download the engines are loaded once and released, so CoreML's
 /// per-Mac compile (about 84 s for Whisper on the M1 Max) happens here, not
 /// on the first talk press.

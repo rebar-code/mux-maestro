@@ -1,7 +1,7 @@
 import Foundation
 
 /// What the voice-model download is doing. Rendered as the "Voice models" row
-/// in the Setup window and polled by the voice self-test.
+/// in the Settings window and polled by the voice self-test.
 enum VoiceModelState: Equatable {
     case checking
     /// `stage` names the engine being fetched ("Kokoro", "Whisper"); `fraction` is 0…1.
@@ -81,7 +81,7 @@ enum VoiceModelStore {
         requiredFiles.filter { !fileExists(directory.appendingPathComponent($0).path) }
     }
 
-    /// The Setup window's status text for `state`. Label only.
+    /// The Settings window's status text for `state`. Label only.
     static func label(for state: VoiceModelState) -> String {
         switch state {
         case .checking: return "…"

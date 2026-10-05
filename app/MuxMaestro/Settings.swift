@@ -263,6 +263,33 @@ enum Settings {
         defaults.set(value, forKey: pollIntervalKey)
     }
 
+    // MARK: Maestro
+
+    private static let maestroAgentKey = "maestro.agent"
+
+    /// The CLI the Maestro session starts. Claude until the user picks Codex.
+    static func maestroAgent(defaults: UserDefaults = .standard) -> MaestroAgent {
+        defaults.string(forKey: maestroAgentKey).flatMap(MaestroAgent.init) ?? .claude
+    }
+
+    static func setMaestroAgent(_ agent: MaestroAgent, defaults: UserDefaults = .standard) {
+        defaults.set(agent.rawValue, forKey: maestroAgentKey)
+    }
+
+    /// The model `agent` runs as the Maestro; empty is the CLI's own default.
+    /// Kept per agent, so a change of agent brings its own model back.
+    static func maestroModel(_ agent: MaestroAgent, defaults: UserDefaults = .standard) -> String {
+        defaults.string(forKey: "maestro.model.\(agent.rawValue)") ?? ""
+    }
+
+    static func setMaestroModel(
+        _ model: String, agent: MaestroAgent, defaults: UserDefaults = .standard
+    ) {
+        defaults.set(
+            model.trimmingCharacters(in: .whitespacesAndNewlines),
+            forKey: "maestro.model.\(agent.rawValue)")
+    }
+
     // MARK: Phone
 
     private static let phoneEnabledKey = "phone.enabled"
