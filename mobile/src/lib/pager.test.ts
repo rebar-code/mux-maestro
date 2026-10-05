@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
 	KEYBOARD_PULL,
 	keyboardInset,
+	pageFit,
 	pageOffset,
 	pullsKeyboardDown,
 	resolveDrag,
@@ -259,6 +260,65 @@ describe('board drawer', () => {
 		expect(keyboardInset(844, 508)).toBe(336);
 		expect(keyboardInset(844, 507.6)).toBe(336);
 		expect(keyboardInset(500, 844)).toBe(0);
+	});
+});
+
+describe('pageFit', () => {
+	// A phone with a 59px status bar inset and an 852px screen.
+	const phone = { layout: 852, visible: 852, slid: 0, screen: 852, standalone: false, safeTop: 59 };
+	// As a Home Screen app the browser lays the page out one status bar short.
+	const home = { ...phone, layout: 793, visible: 793, standalone: true };
+
+	it('leaves a page that already fills its window alone', () => {
+		expect(pageFit(phone)).toEqual({ lift: 0, keyboard: 0, slid: 0 });
+		expect(pageFit({ ...phone, standalone: true })).toEqual({ lift: 0, keyboard: 0, slid: 0 });
+		// Playwright's Chromium: no insets.
+		expect(
+			pageFit({ layout: 844, visible: 844, slid: 0, screen: 844, standalone: false, safeTop: 0 })
+		).toEqual({ lift: 0, keyboard: 0, slid: 0 });
+	});
+
+	it('fills the screen as a Home Screen app laid out one status bar short', () => {
+		expect(pageFit(home)).toEqual({ lift: 59, keyboard: 0, slid: 0 });
+		// The visible height may be the true one: the result is the same.
+		expect(pageFit({ ...home, visible: 852 })).toEqual({ lift: 59, keyboard: 0, slid: 0 });
+		expect(pageFit({ ...home, layout: 793.4 }).lift).toBeCloseTo(58.6);
+	});
+
+	it('does not grow a page in a browser tab, where the toolbars take the rest', () => {
+		expect(pageFit({ ...phone, layout: 793, visible: 793 }).lift).toBe(0);
+		expect(pageFit({ ...phone, layout: 745, visible: 745 }).lift).toBe(0);
+	});
+
+	it('does not grow a page that is short by anything but the status bar', () => {
+		// Another system's bars, which the page does not lie under.
+		expect(pageFit({ ...home, layout: 780, visible: 780, safeTop: 0 }).lift).toBe(0);
+		expect(pageFit({ ...home, layout: 760, visible: 760 }).lift).toBe(0);
+		// On its side there is no status bar.
+		expect(pageFit({ ...home, layout: 393, visible: 393, screen: 393, safeTop: 0 }).lift).toBe(0);
+	});
+
+	it('is exactly the space above an open keyboard', () => {
+		for (const fit of [
+			pageFit({ ...phone, visible: 516 }),
+			pageFit({ ...home, visible: 516 }),
+			pageFit({ ...home, visible: 457 })
+		]) {
+			expect(fit.keyboard).toBeGreaterThan(0);
+		}
+		const height = (m: typeof phone): number => {
+			const fit = pageFit(m);
+			return m.layout + fit.lift - fit.keyboard;
+		};
+		expect(height({ ...phone, visible: 516 })).toBe(516);
+		expect(height({ ...home, visible: 516 })).toBe(516);
+		expect(height({ ...home, visible: 457 })).toBe(457);
+	});
+
+	it('follows a viewport the browser slid, only while the keyboard is open', () => {
+		expect(pageFit({ ...home, visible: 516, slid: 40 }).slid).toBe(40);
+		expect(pageFit({ ...home, visible: 516, slid: -3 }).slid).toBe(0);
+		expect(pageFit({ ...home, slid: 40 }).slid).toBe(0);
 	});
 });
 
