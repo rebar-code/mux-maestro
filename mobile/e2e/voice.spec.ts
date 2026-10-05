@@ -70,9 +70,18 @@ test('the voice controls are drawn only in talk mode', async ({ page }) => {
 	// A take starts talk mode. It lasts past the take: the controls do not come and go.
 	await talkMode(page);
 	await expect(primary(page)).toHaveText('Talk');
-	for (const name of ['Auto', 'Manual', 'Speaker', 'Replay', 'Skip']) {
+	for (const name of [
+		'Auto',
+		'Manual',
+		'Skip back',
+		'Back 15 seconds',
+		'Forward 15 seconds',
+		'Skip'
+	]) {
 		await expect(bar(page, name)).toBeVisible();
 	}
+	// Pause on the primary button is the way to silence a reply: there is no mute.
+	await expect(bar(page, 'Speaker')).toHaveCount(0);
 
 	// A typed turn ends it.
 	await box(page).fill('what needs me?');
@@ -172,11 +181,12 @@ test('Auto: speech starts a take, silence sends it, and the mic reopens', async 
 });
 
 test('input only: the speech becomes text and nothing is read back', async ({ page }) => {
-	await open(page);
+	// The Mac's setting: the phone has no switch for it.
+	await open(page, ['/__fixture/voice?speaker=0']);
+	// A choice an older build stored on this phone no longer counts.
+	await page.evaluate(() => localStorage.setItem('mm.voice', '{"speaker":true}'));
+	await page.reload();
 	await primary(page).click();
-	await bar(page, 'Speaker').click();
-	await expect(bar(page, 'Speaker')).toHaveAttribute('aria-pressed', 'false');
-	await expect(bar(page, 'Speaker').locator('[data-icon="speakerOff"]')).toBeVisible();
 
 	await say(page, 700);
 	const sent = page.waitForRequest((request) => request.url().includes('/api/voice?'));
@@ -232,23 +242,136 @@ test('interrupt: Stop while it thinks, Pause, Resume and Skip while it speaks', 
 	await expect(said(page).locator('.a').last()).toHaveText(REPLY);
 });
 
-test('Replay reads the last reply again, and Talk during it starts a take', async ({ page }) => {
+test('Skip back reads the last reply again, and the 15s buttons go through its audio', async ({
+	page
+}) => {
 	await open(page);
 	await talkMode(page);
-	await bar(page, 'Replay').click();
+	let asked = 0;
+	page.on('request', (request) => {
+		if (request.url().includes('/api/voice/replay')) asked += 1;
+	});
+	// Nothing was read yet: there is no audio to go through.
+	await expect(bar(page, 'Back 15 seconds')).toBeDisabled();
+	await expect(bar(page, 'Forward 15 seconds')).toBeDisabled();
+	// With no audio on the phone the Mac reads the reply.
+	await bar(page, 'Skip back').click();
 	await expect(status(page)).toHaveText('Speaking…');
-	expect(await page.evaluate(() => window.__clips)).toBeGreaterThan(0);
-	await bar(page, 'Skip').click();
+	await expect(bar(page, 'Back 15 seconds')).toBeEnabled();
+	await expect(bar(page, 'Forward 15 seconds')).toBeEnabled();
+	await expect(status(page)).toHaveCount(0, { timeout: 8000 });
+	expect(asked).toBe(1);
+
+	// The reply has ended. Its audio is kept: back 15 plays it from the phone.
+	const before = await page.evaluate(() => window.__clips);
+	await expect(bar(page, 'Forward 15 seconds')).toBeDisabled();
+	await bar(page, 'Back 15 seconds').click();
+	await expect(status(page)).toHaveText('Speaking…');
+	await expect(primary(page)).toHaveText('❚❚ Pause');
+	expect(await page.evaluate(() => window.__clips)).toBeGreaterThan(before);
+	// The clips are shorter than 15 seconds together: forward goes past the end.
+	await bar(page, 'Forward 15 seconds').click();
+	await expect(status(page)).toHaveCount(0);
 	await expect(primary(page)).toHaveText('Talk');
 
-	// Speaker off does not stop a Replay: the tap asks for it.
-	await bar(page, 'Speaker').click();
-	const before = await page.evaluate(() => window.__clips);
-	await bar(page, 'Replay').click();
+	// Skip back starts it again, from the phone too.
+	await bar(page, 'Skip back').click();
 	await expect(status(page)).toHaveText('Speaking…');
-	expect(await page.evaluate(() => window.__clips)).toBeGreaterThan(before);
-	await expect(status(page)).toHaveCount(0, { timeout: 12000 });
+	// Paused, a jump plays on.
+	await primary(page).click();
+	await expect(status(page)).toHaveText('Paused');
+	await bar(page, 'Back 15 seconds').click();
+	await expect(status(page)).toHaveText('Speaking…');
+	expect(asked).toBe(1);
+
+	// Skip drops the audio: there is nothing to go back through.
+	await bar(page, 'Skip').click();
+	await expect(primary(page)).toHaveText('Talk');
+	await expect(bar(page, 'Back 15 seconds')).toBeDisabled();
 });
+
+test('Cancel, left of Submit while a take is open, drops the take', async ({ page }) => {
+	await open(page);
+	const cancel = page.locator('[data-cancel]');
+	await expect(cancel).toHaveCount(0);
+	await primary(page).click();
+	await expect(primary(page)).toHaveText('↑ Submit');
+	await expect(cancel).toHaveText('Cancel');
+	// Immediately left of the submit button, on its line.
+	const left = (await cancel.boundingBox())!;
+	const right = (await primary(page).boundingBox())!;
+	expect(right.x - (left.x + left.width)).toBe(8);
+	expect(Math.abs(left.y - right.y)).toBeLessThanOrEqual(1);
+	expect(left.height).toBeGreaterThanOrEqual(40);
+	expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);
+
+	await say(page, 600);
+	await cancel.click();
+	await expect(primary(page)).toHaveText('Talk');
+	await expect(cancel).toHaveCount(0);
+	await expect(status(page)).toHaveCount(0);
+	// Nothing was sent, and Manual gave the mic back.
+	await page.waitForTimeout(500);
+	expect(await takes(page)).toEqual([]);
+	expect(await page.evaluate(() => window.__mic.live())).toBe(0);
+	// Talk mode stays, and the next take works.
+	await expect(bar(page, 'Manual')).toBeVisible();
+	await primary(page).click();
+	await say(page, 600);
+	await primary(page).click();
+	await expect(said(page).locator('.u')).toHaveText('What needs me?');
+	expect(await takes(page)).toHaveLength(1);
+
+	// Auto: Cancel drops the take and goes on listening.
+	await expect(primary(page)).toHaveText('Talk', { timeout: 8000 });
+	await bar(page, 'Auto').click();
+	await expect(status(page)).toHaveText('Listening…');
+	await primary(page).click();
+	await expect(cancel).toBeVisible();
+	await cancel.click();
+	await expect(status(page)).toHaveText('Listening…');
+	expect(await takes(page)).toHaveLength(1);
+});
+
+test('a thread has the same box: Cancel, the playback buttons, no mute', async ({ page }) => {
+	await fakeMic(page);
+	await reset(page);
+	for (const name of ['voice', 'replies']) {
+		await page.request.post(`/__fixture/capability?name=${name}&on=1`);
+	}
+	await forget(page);
+	await page.goto(pairingLink(threadPath('localhost:7')));
+	await expect(primary(page)).toHaveText('Talk');
+	await primary(page).click();
+	const cancel = page.locator('[data-cancel]');
+	const left = (await cancel.boundingBox())!;
+	const right = (await primary(page).boundingBox())!;
+	expect(right.x - (left.x + left.width)).toBe(8);
+	for (const name of ['Skip back', 'Back 15 seconds', 'Forward 15 seconds', 'Skip'])
+		await expect(bar(page, name)).toBeVisible();
+	await expect(bar(page, 'Speaker')).toHaveCount(0);
+	await cancel.click();
+	await expect(primary(page)).toHaveText('Talk');
+	await expect(cancel).toHaveCount(0);
+});
+
+for (const path of ['/', threadPath('localhost:7')]) {
+	test(`no empty band under the text box, above the home indicator: ${path}`, async ({ page }) => {
+		await reset(page);
+		for (const name of ['voice', 'replies']) {
+			await page.request.post(`/__fixture/capability?name=${name}&on=1`);
+		}
+		await forget(page);
+		// An iPhone with a home indicator: 34pt of inset at the bottom.
+		const cdp = await page.context().newCDPSession(page);
+		await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: { bottom: 34 } });
+		await page.goto(pairingLink(path));
+		await expect(primary(page)).toHaveText('Talk');
+		const pill = (await primary(page).boundingBox())!;
+		// The row clears the indicator's line and leaves nothing more under it.
+		expect(Math.round(844 - (pill.y + pill.height))).toBe(16);
+	});
+}
 
 test('the button is Send while the box has text, and Talk when it is empty', async ({ page }) => {
 	await open(page);
@@ -268,7 +391,7 @@ test('the button is Send while the box has text, and Talk when it is empty', asy
 	expect(await takes(page)).toEqual([]);
 });
 
-test('mode and speaker are remembered on this phone; the Mac sets the start', async ({ page }) => {
+test('the mode is remembered on this phone; the Mac sets the start', async ({ page }) => {
 	// A phone that has picked nothing starts with the Mac's defaults.
 	await open(page, ['/__fixture/voice?mode=auto&speaker=0']);
 	// No tap yet, so no mic: Auto says so by not claiming to listen.
@@ -276,18 +399,14 @@ test('mode and speaker are remembered on this phone; the Mac sets the start', as
 	expect(await page.evaluate(() => window.__mic.opened)).toBe(0);
 	await primary(page).click();
 	await expect(bar(page, 'Auto')).toHaveAttribute('aria-pressed', 'true');
-	await expect(bar(page, 'Speaker')).toHaveAttribute('aria-pressed', 'false');
 
 	await bar(page, 'Manual').click();
-	await bar(page, 'Speaker').click();
 	await page.reload();
 	await primary(page).click();
 	await expect(bar(page, 'Manual')).toHaveAttribute('aria-pressed', 'true');
-	await expect(bar(page, 'Speaker')).toHaveAttribute('aria-pressed', 'true');
 	// The phone's own choice outlives a change on the Mac.
 	await page.request.post('/__fixture/voice?mode=auto&speaker=0');
 	await expect(bar(page, 'Manual')).toHaveAttribute('aria-pressed', 'true');
-	await expect(bar(page, 'Speaker')).toHaveAttribute('aria-pressed', 'true');
 });
 
 test('a muted mic takes nothing, and a refused take says why', async ({ page }) => {
@@ -658,7 +777,9 @@ test('every voice control has a 44pt touch area, clear of its neighbours', async
 	await open(page);
 	await talkMode(page);
 	const controls = [
-		...['Auto', 'Manual', 'Speaker', 'Replay', 'Skip'].map((name) => bar(page, name)),
+		...['Auto', 'Manual', 'Skip back', 'Back 15 seconds', 'Forward 15 seconds', 'Skip'].map(
+			(name) => bar(page, name)
+		),
 		primary(page)
 	];
 	for (const control of controls) {
@@ -690,10 +811,10 @@ test('every voice control has a 44pt touch area, clear of its neighbours', async
 		expect(area.height, `${name} height`).toBeGreaterThanOrEqual(44);
 		expect(area.reached, `${name} taps`).toEqual([true, true, true, true]);
 	}
-	// 8pt between the icon buttons.
-	const speaker = (await bar(page, 'Speaker').boundingBox())!;
-	const replay = (await bar(page, 'Replay').boundingBox())!;
-	expect(replay.x - (speaker.x + speaker.width)).toBeGreaterThanOrEqual(8);
+	// 8pt between the mode switch and the playback buttons.
+	const mode = (await bar(page, 'Manual').boundingBox())!;
+	const back = (await bar(page, 'Skip back').boundingBox())!;
+	expect(back.x - (mode.x + mode.width)).toBeGreaterThanOrEqual(8);
 	// Nothing sits under the home indicator or runs off the side.
 	const form = (await page.locator('form.compose').boundingBox())!;
 	expect(form.y + form.height).toBeLessThanOrEqual(844);
@@ -709,7 +830,7 @@ test('the voice controls work with the Board tab showing', async ({ page }) => {
 	const voicebar = (await page.locator('[data-voicebar]').boundingBox())!;
 	const list = (await page.locator('[data-board]').boundingBox())!;
 	expect(voicebar.y).toBeGreaterThanOrEqual(list.y + list.height - 1);
-	for (const control of [bar(page, 'Auto'), bar(page, 'Speaker'), primary(page)]) {
+	for (const control of [bar(page, 'Auto'), bar(page, 'Skip back'), primary(page)]) {
 		const reached = await control.evaluate((element) => {
 			const box = element.getBoundingClientRect();
 			const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);

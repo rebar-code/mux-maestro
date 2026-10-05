@@ -33,6 +33,10 @@
 	);
 	/** The mic's loudness as the meter draws it, 0 to 1. Speech fills most of it. */
 	const level = $derived(hearing ? Math.min(1, Math.sqrt(voice.level * 8)) : 0);
+	/** The reply's audio is still on this phone: it can be gone through again. */
+	const scrubs = $derived(voice.scrubs(target));
+	/** Seconds one tap moves through the reply. */
+	const JUMP = 15;
 </script>
 
 {#if off}
@@ -103,20 +107,26 @@
 						onclick={() => voice.setMode('manual', target, sink)}>Manual</button
 					>
 				</div>
-				<button
-					class="ip"
-					class:off={!voice.speaker}
-					aria-label="Speaker"
-					aria-pressed={voice.speaker}
-					onclick={() => voice.setSpeaker(!voice.speaker)}
-					><Icon name={voice.speaker ? 'speaker' : 'speakerOff'} /></button
-				>
-				<!-- Both act on the reply that is read out, so they share one pill. -->
+				<!-- All four act on the reply that is read out, so they share one pill. -->
 				<div class="pair" role="group" aria-label="Playback">
 					<button
-						aria-label="Replay"
-						disabled={status === 'thinking' || status === 'recording'}
-						onclick={() => voice.replay(target, sink)}><Icon name="replay" /></button
+						aria-label="Skip back"
+						disabled={!scrubs && status !== 'idle'}
+						onclick={() => voice.back(target, sink)}><Icon name="skipBack" /></button
+					>
+					<button
+						class="jump"
+						aria-label="Back 15 seconds"
+						disabled={!scrubs}
+						onclick={() => voice.seek(target, -JUMP)}
+						><Icon name="back" size={26} /><b>{JUMP}</b></button
+					>
+					<button
+						class="jump"
+						aria-label="Forward 15 seconds"
+						disabled={!scrubs || status !== 'speaking'}
+						onclick={() => voice.seek(target, JUMP)}
+						><Icon name="forward" size={26} /><b>{JUMP}</b></button
 					>
 					<button aria-label="Skip" disabled={status !== 'speaking'} onclick={voice.skip}
 						><Icon name="skip" /></button
@@ -265,7 +275,9 @@
 
 	.vseg {
 		display: flex;
-		width: 136px;
+		/* On a narrow phone it gives way to the playback buttons. */
+		flex: 0 1 136px;
+		min-width: 0;
 		margin-right: auto;
 		padding: 2px;
 		border-radius: 9px;
@@ -332,6 +344,17 @@
 
 	.pair button + button {
 		border-left: 1px solid var(--border);
+	}
+
+	/* The seconds, inside the arrow's circle. */
+	.jump b {
+		position: absolute;
+		top: 50%;
+		left: 50%;
+		transform: translate(-50%, -38%);
+		font-size: 9px;
+		font-weight: 700;
+		line-height: 1;
 	}
 
 	.pair button::after {

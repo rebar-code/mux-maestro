@@ -738,11 +738,18 @@ test('voice into a thread: the take shows as your line and the reply streams in'
 	await page.evaluate(() => window.__mic.speak(true));
 	await page.waitForTimeout(600);
 	await page.evaluate(() => window.__mic.speak(false));
-	// The button changed; the text box did not move.
-	expect(await box(page).boundingBox()).toEqual(boxBefore);
+	// The button changed; the text box stays in place and gives Cancel its width.
+	const cancel = (await page.locator('[data-cancel]').boundingBox())!;
+	expect(await box(page).boundingBox()).toEqual({
+		...boxBefore!,
+		width: boxBefore!.width - cancel.width - 8
+	});
 
 	const sent = page.waitForRequest((request) => request.url().includes('/api/voice?'));
 	await primary.click();
+	// With the take sent, Cancel goes and the box is as wide as before.
+	await expect(page.locator('[data-cancel]')).toHaveCount(0);
+	expect(await box(page).boundingBox()).toEqual(boxBefore);
 	const request = await sent;
 	expect(new URL(request.url()).search).toBe('?target=localhost%3A7&speaker=1');
 	expect(request.headers()['x-muxmaestro']).toBe('1');
@@ -1585,14 +1592,14 @@ test('the voice status sits above the key strip, and its controls below it', asy
 	expect(await top(keybar(page))).toBeLessThan(await top(controls));
 	expect(await top(controls)).toBeLessThan(await top(box(page)));
 
-	// Replay and Skip act on the same reply: they share one pill.
+	// The four act on the same reply: they share one pill.
 	const playback = controls.getByRole('group', { name: 'Playback' });
-	await expect(playback.getByRole('button')).toHaveCount(2);
-	await expect(playback.getByRole('button', { name: 'Replay' })).toBeVisible();
-	await expect(playback.getByRole('button', { name: 'Skip' })).toBeVisible();
+	await expect(playback.getByRole('button')).toHaveCount(4);
+	await expect(playback.getByRole('button', { name: 'Skip back' })).toBeVisible();
+	await expect(playback.getByRole('button', { name: 'Skip', exact: true })).toBeVisible();
 
-	// Icons are drawn, not typed: speaker, replay and skip.
-	await expect(controls.locator('[data-icon]')).toHaveCount(3);
+	// Icons are drawn, not typed: skip back, the two jumps and skip.
+	await expect(controls.locator('[data-icon]')).toHaveCount(4);
 	expect(await page.locator('[data-dock]').innerText()).not.toMatch(/[⌨🔊🔇🎙⏭↻]/u);
 	// Manual has no mute control; Auto has one.
 	await expect(controls.getByRole('button', { name: 'Microphone' })).toHaveCount(0);
