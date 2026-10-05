@@ -46,7 +46,7 @@ const card = (page: Page): Locator => page.locator('[data-prompt]');
 const nextBar = (page: Page): Locator => page.locator('[data-next]');
 /** The pill beside an empty box: the voice button, switched off while Voice is off on the Mac. */
 const idlePill = (page: Page): Locator => page.locator('[data-compose] [data-primary="talk"]');
-/** The voice bar with its controls. Switched off, the bar is one line with none. */
+/** The voice bar that is switched on. Its controls are drawn in talk mode only. */
 const voiceControls = (page: Page): Locator =>
 	page.locator('[data-voicebar]:not([data-voice="off"])');
 /** The reply box while replies are switched off on the Mac. */
@@ -305,7 +305,8 @@ test('key bar: keys go to the pane, text keys go to the box', async ({ page }) =
 		.evaluate((keys) => {
 			const buttons = [...keys.querySelectorAll('button')];
 			return buttons.map((button, index) => {
-				keys.scrollLeft = Math.max(0, button.offsetLeft - 20);
+				// The strip starts after the attach button: the offset is from the strip.
+				keys.scrollLeft = Math.max(0, button.offsetLeft - keys.offsetLeft - 20);
 				const rect = button.getBoundingClientRect();
 				const x = rect.left + rect.width / 2;
 				const y = rect.top + rect.height / 2;
@@ -675,7 +676,8 @@ test('with the features off, the thread shows none of this', async ({ page }) =>
 	await expect(card(page)).not.toHaveAttribute('data-readonly', '');
 	await expect(card(page).locator('button[data-option]')).toHaveCount(3);
 	await expect(page.getByRole('button', { name: 'Attach' })).not.toHaveAttribute('aria-disabled');
-	await expect(voiceControls(page)).toBeVisible();
+	await expect(voiceControls(page)).toHaveCount(1);
+	await expect(idlePill(page)).toBeEnabled();
 	await expect(keybar(page).locator('.keys button')).toHaveCount(14);
 
 	await page.request.post('/__fixture/capability?name=upload&on=0');
@@ -1565,11 +1567,19 @@ test('the Maestro home is not a listed thread: it gets no dock and no reply rout
 });
 
 test('the voice status sits above the key strip, and its controls below it', async ({ page }) => {
+	await fakeMic(page);
 	await open(page, IDLE, ['replies', 'keyBar', 'voice']);
 	const line = page.locator('[data-voice-line]');
 	const controls = page.locator('[data-voicebar]');
 	// Idle, the voice says nothing: no status line is drawn in either part.
 	await expect(page.locator('[data-voice-status]')).toHaveCount(0);
+	// Outside talk mode the controls take no room: the keys sit right on the text box.
+	await expect(controls).toBeHidden();
+	await expect(page.locator('[data-primary="talk"] [data-icon="mic"]')).toBeVisible();
+	await idlePill(page).tap();
+	await expect(controls).toBeVisible();
+	// One status line, not one in each part.
+	await expect(page.locator('[data-voice-status]')).toHaveCount(1);
 	const top = async (target: Locator): Promise<number> => (await target.boundingBox())?.y ?? 0;
 	expect(await top(line)).toBeLessThan(await top(keybar(page)));
 	expect(await top(keybar(page))).toBeLessThan(await top(controls));
@@ -1581,9 +1591,8 @@ test('the voice status sits above the key strip, and its controls below it', asy
 	await expect(playback.getByRole('button', { name: 'Replay' })).toBeVisible();
 	await expect(playback.getByRole('button', { name: 'Skip' })).toBeVisible();
 
-	// Icons are drawn, not typed: speaker, replay, skip and the mic on Talk.
+	// Icons are drawn, not typed: speaker, replay and skip.
 	await expect(controls.locator('[data-icon]')).toHaveCount(3);
-	await expect(page.locator('[data-primary="talk"] [data-icon="mic"]')).toBeVisible();
 	expect(await page.locator('[data-dock]').innerText()).not.toMatch(/[⌨🔊🔇🎙⏭↻]/u);
 	// Manual has no mute control; Auto has one.
 	await expect(controls.getByRole('button', { name: 'Microphone' })).toHaveCount(0);

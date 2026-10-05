@@ -9,7 +9,12 @@ export interface BarKey {
 	/** A character for the text box. It is not sent as a key. */
 	insert?: string;
 	ctrl?: true;
+	/** Types the phone's clipboard. Only a sink that can paste shows it. */
+	paste?: true;
 }
+
+/** A terminal has no text box to paste into: this key does it. */
+export const PASTE_KEY: BarKey = { label: 'Paste', aria: 'Paste', paste: true };
 
 export const BAR_KEYS: readonly BarKey[] = [
 	{ label: 'Esc', aria: 'Escape', send: 'Escape' },
@@ -41,10 +46,13 @@ export interface KeySink {
 	/** Sticky Ctrl is on. */
 	readonly ctrl: boolean;
 	tap(key: BarKey): void;
+	/** The sink types the clipboard itself: its bar gets the Paste key. */
+	readonly pastes?: boolean;
 }
 
-export function barKeys(composer: boolean): readonly BarKey[] {
-	return composer ? BAR_KEYS : BAR_KEYS.filter((key) => key.send !== undefined);
+export function barKeys(composer: boolean, paste = false): readonly BarKey[] {
+	const keys = composer ? BAR_KEYS : BAR_KEYS.filter((key) => key.send !== undefined);
+	return paste ? [PASTE_KEY, ...keys] : keys;
 }
 
 export type CtrlEvent = { type: 'toggle' } | { type: 'input'; data: string | null };

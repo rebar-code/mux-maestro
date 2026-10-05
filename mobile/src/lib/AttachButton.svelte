@@ -1,9 +1,11 @@
 <script lang="ts">
+	import Icon from './Icon.svelte';
 	import { keepFocus } from './reply.svelte';
 
 	const {
 		off = false,
 		disabled = false,
+		slim = false,
 		onpick,
 		onoff
 	}: {
@@ -11,6 +13,8 @@
 		off?: boolean;
 		/** The whole reply box is off: the button does nothing. */
 		disabled?: boolean;
+		/** It sits in the key bar: the bar's size, not the text box's. */
+		slim?: boolean;
 		/** The files picked, in pick order. */
 		onpick?: (files: File[]) => void;
 		/** A tap while `off`. */
@@ -36,13 +40,14 @@
 <input type="file" multiple hidden tabindex="-1" onchange={picked} data-attach-input />
 <button
 	class="rnd"
+	class:slim
 	class:off={off || disabled}
 	type="button"
 	aria-label="Attach"
 	aria-disabled={off || disabled ? 'true' : undefined}
 	{disabled}
 	{@attach keepFocus}
-	onclick={open}>＋</button
+	onclick={open}><Icon name="fileUp" size={slim ? 17 : 19} /></button
 >
 
 <style>
@@ -58,14 +63,36 @@
 		border-radius: 50%;
 		background: var(--surface);
 		border: 1px solid var(--border);
-		font-size: 18px;
-		line-height: 1;
+		color: #cfcfcf;
 	}
 
 	.rnd::after {
 		content: '';
 		position: absolute;
 		inset: -3px;
+	}
+
+	/* In the key bar: the look is the strip's; the touch area is a full 44pt. */
+	.rnd.slim {
+		z-index: 1;
+		width: 34px;
+		height: 23px;
+		border: 0;
+		border-radius: 8px;
+		background: none;
+	}
+
+	.rnd.slim::after {
+		inset: auto;
+		left: 50%;
+		top: 50%;
+		width: var(--hit);
+		height: var(--hit);
+		transform: translate(-50%, -50%);
+	}
+
+	.rnd.slim:active {
+		background: #0c0c0c;
 	}
 
 	/* Switched off: dimmed, and still there to say why. */

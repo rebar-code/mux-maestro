@@ -51,12 +51,42 @@ async function open(page: Page, hooks: string[] = []): Promise<void> {
 	await expect(primary(page)).toHaveText('Talk');
 }
 
+/** Talk mode on, in Manual, with no take open: the controls are drawn. */
+async function talkMode(page: Page): Promise<void> {
+	await primary(page).click();
+	await bar(page, 'Auto').click();
+	await expect(status(page)).toHaveText('Listening…');
+	await bar(page, 'Manual').click();
+	await expect(primary(page)).toHaveText('Talk');
+	await expect(status(page)).toHaveCount(0);
+}
+
+test('the voice controls are drawn only in talk mode', async ({ page }) => {
+	await open(page);
+	const controls = page.locator('[data-voicebar]').getByRole('button');
+	await expect(status(page)).toHaveCount(0);
+	await expect(controls).toHaveCount(0);
+
+	// A take starts talk mode. It lasts past the take: the controls do not come and go.
+	await talkMode(page);
+	await expect(primary(page)).toHaveText('Talk');
+	for (const name of ['Auto', 'Manual', 'Speaker', 'Replay', 'Skip']) {
+		await expect(bar(page, name)).toBeVisible();
+	}
+
+	// A typed turn ends it.
+	await box(page).fill('what needs me?');
+	await page.locator('[data-send]').click();
+	await expect(said(page).locator('.a').last()).toHaveText(REPLY);
+	await expect(controls).toHaveCount(0);
+});
+
 test('Manual: tap to start, tap to send, and a pause never cuts the take', async ({ page }) => {
 	await open(page);
 	await expect(status(page)).toHaveCount(0);
-	await expect(bar(page, 'Manual')).toHaveAttribute('aria-pressed', 'true');
 
 	await primary(page).click();
+	await expect(bar(page, 'Manual')).toHaveAttribute('aria-pressed', 'true');
 	await expect(status(page)).toHaveText('Recording — tap to send');
 	await expect(primary(page)).toHaveText('↑ Submit');
 	// Red while the take is open.
@@ -98,6 +128,8 @@ test('Manual: tap to start, tap to send, and a pause never cuts the take', async
 
 test('Auto: speech starts a take, silence sends it, and the mic reopens', async ({ page }) => {
 	await open(page);
+	// The take that starts talk mode is dropped when Auto takes over.
+	await primary(page).click();
 	await bar(page, 'Auto').click();
 	await expect(bar(page, 'Auto')).toHaveAttribute('aria-pressed', 'true');
 	await expect(status(page)).toHaveText('Listening…');
@@ -141,11 +173,11 @@ test('Auto: speech starts a take, silence sends it, and the mic reopens', async 
 
 test('input only: the speech becomes text and nothing is read back', async ({ page }) => {
 	await open(page);
+	await primary(page).click();
 	await bar(page, 'Speaker').click();
 	await expect(bar(page, 'Speaker')).toHaveAttribute('aria-pressed', 'false');
 	await expect(bar(page, 'Speaker').locator('[data-icon="speakerOff"]')).toBeVisible();
 
-	await primary(page).click();
 	await say(page, 700);
 	const sent = page.waitForRequest((request) => request.url().includes('/api/voice?'));
 	await primary(page).click();
@@ -202,6 +234,7 @@ test('interrupt: Stop while it thinks, Pause, Resume and Skip while it speaks', 
 
 test('Replay reads the last reply again, and Talk during it starts a take', async ({ page }) => {
 	await open(page);
+	await talkMode(page);
 	await bar(page, 'Replay').click();
 	await expect(status(page)).toHaveText('Speaking…');
 	expect(await page.evaluate(() => window.__clips)).toBeGreaterThan(0);
@@ -238,15 +271,17 @@ test('the button is Send while the box has text, and Talk when it is empty', asy
 test('mode and speaker are remembered on this phone; the Mac sets the start', async ({ page }) => {
 	// A phone that has picked nothing starts with the Mac's defaults.
 	await open(page, ['/__fixture/voice?mode=auto&speaker=0']);
-	await expect(bar(page, 'Auto')).toHaveAttribute('aria-pressed', 'true');
-	await expect(bar(page, 'Speaker')).toHaveAttribute('aria-pressed', 'false');
 	// No tap yet, so no mic: Auto says so by not claiming to listen.
 	await expect(status(page)).toHaveCount(0);
 	expect(await page.evaluate(() => window.__mic.opened)).toBe(0);
+	await primary(page).click();
+	await expect(bar(page, 'Auto')).toHaveAttribute('aria-pressed', 'true');
+	await expect(bar(page, 'Speaker')).toHaveAttribute('aria-pressed', 'false');
 
 	await bar(page, 'Manual').click();
 	await bar(page, 'Speaker').click();
 	await page.reload();
+	await primary(page).click();
 	await expect(bar(page, 'Manual')).toHaveAttribute('aria-pressed', 'true');
 	await expect(bar(page, 'Speaker')).toHaveAttribute('aria-pressed', 'true');
 	// The phone's own choice outlives a change on the Mac.
@@ -258,6 +293,7 @@ test('mode and speaker are remembered on this phone; the Mac sets the start', as
 test('a muted mic takes nothing, and a refused take says why', async ({ page }) => {
 	await open(page);
 	// Manual opens the mic only on a tap: it has no mute control.
+	await primary(page).click();
 	await expect(bar(page, 'Microphone')).toHaveCount(0);
 	await bar(page, 'Auto').click();
 	await expect(status(page)).toHaveText('Listening…');
@@ -538,6 +574,8 @@ test('on the footer a drag never starts a take or presses a control; a tap does'
 	expect(await opened()).toBe(0);
 
 	// The same on the other voice controls: a drag from Auto does not switch the mode.
+	await talkMode(page);
+	const held = await opened();
 	[x, y] = await centre(bar(page, 'Auto'));
 	await page.mouse.move(x, y);
 	await page.mouse.down();
@@ -545,7 +583,7 @@ test('on the footer a drag never starts a take or presses a control; a tap does'
 	await page.waitForTimeout(120);
 	await page.mouse.up();
 	await expect(bar(page, 'Manual')).toHaveAttribute('aria-pressed', 'true');
-	expect(await opened()).toBe(0);
+	expect(await opened()).toBe(held);
 
 	// A drag to the side that starts on the button is not a take either.
 	[x, y] = await centre(primary(page));
@@ -555,7 +593,7 @@ test('on the footer a drag never starts a take or presses a control; a tap does'
 	await page.mouse.move(x - 20, y, { steps: 10 });
 	await page.mouse.up();
 	await page.waitForTimeout(300);
-	expect(await opened()).toBe(0);
+	expect(await opened()).toBe(held);
 	if (await page.locator('[data-drawer]').isVisible()) {
 		await page.getByRole('button', { name: 'Close sidebar' }).click();
 	}
@@ -569,7 +607,7 @@ test('on the footer a drag never starts a take or presses a control; a tap does'
 	await page.mouse.move(x + 3, y - 3);
 	await page.mouse.up();
 	await expect(primary(page)).toHaveText('↑ Submit');
-	expect(await opened()).toBe(1);
+	expect(await opened()).toBe(held + 1);
 	expect(await bottom()).toBe(rest);
 	// And the tap to send does not move it either.
 	await say(page, 500);
@@ -618,6 +656,7 @@ test('the first tap creates the audio the reply needs', async ({ page }) => {
 
 test('every voice control has a 44pt touch area, clear of its neighbours', async ({ page }) => {
 	await open(page);
+	await talkMode(page);
 	const controls = [
 		...['Auto', 'Manual', 'Speaker', 'Replay', 'Skip'].map((name) => bar(page, name)),
 		primary(page)
@@ -663,6 +702,7 @@ test('every voice control has a 44pt touch area, clear of its neighbours', async
 
 test('the voice controls work with the Board tab showing', async ({ page }) => {
 	await open(page);
+	await talkMode(page);
 	await page.locator('[data-tab="board"]').click();
 	await expect(page.locator('[data-page="board"]')).not.toHaveAttribute('inert', '');
 	// The bar is on the footer, under the board, and a tap reaches each control.

@@ -23,14 +23,16 @@
 	} = $props();
 
 	const status = $derived(voice.statusOf(target));
+	/** Outside talk mode the controls are not drawn: the Talk button starts it. */
+	const active = $derived(voice.activeOn(target));
+	/** The status line. With nothing to say it is not drawn, and takes no room. */
+	const said = $derived(voice.note ?? voice.label(target));
 	/** The mic is open for this bar: a take, or Auto waiting for one. */
 	const hearing = $derived(
 		!off && !voice.micMuted && (status === 'recording' || (status === 'idle' && voice.listening))
 	);
 	/** The mic's loudness as the meter draws it, 0 to 1. Speech fills most of it. */
 	const level = $derived(hearing ? Math.min(1, Math.sqrt(voice.level * 8)) : 0);
-	/** The status line. With nothing to say it is not drawn, and takes no room. */
-	const said = $derived(voice.note ?? voice.label(target));
 </script>
 
 {#if off}
@@ -75,7 +77,9 @@
 	<div
 		class="vbar"
 		class:bare={part === 'controls'}
+		hidden={part === 'controls' && !active}
 		data-voicebar
+		data-voice-active={active ? '' : undefined}
 		data-voice={status}
 		data-first-text-ms={voice.timing.text}
 		data-first-audio-ms={voice.timing.audio}
@@ -83,52 +87,54 @@
 		{@attach keepFocus}
 	>
 		{#if part === 'all' && said}{@render line()}{/if}
-		<div class="vrow">
-			<div class="vseg" role="group" aria-label="Voice mode">
-				<button
-					class="grow"
-					class:on={voice.mode === 'auto'}
-					aria-pressed={voice.mode === 'auto'}
-					onclick={() => voice.setMode('auto', target, sink)}>Auto</button
-				>
-				<button
-					class="grow"
-					class:on={voice.mode === 'manual'}
-					aria-pressed={voice.mode === 'manual'}
-					onclick={() => voice.setMode('manual', target, sink)}>Manual</button
-				>
-			</div>
-			<button
-				class="ip"
-				class:off={!voice.speaker}
-				aria-label="Speaker"
-				aria-pressed={voice.speaker}
-				onclick={() => voice.setSpeaker(!voice.speaker)}
-				><Icon name={voice.speaker ? 'speaker' : 'speakerOff'} /></button
-			>
-			<!-- Both act on the reply that is read out, so they share one pill. -->
-			<div class="pair" role="group" aria-label="Playback">
-				<button
-					aria-label="Replay"
-					disabled={status === 'thinking' || status === 'recording'}
-					onclick={() => voice.replay(target, sink)}><Icon name="replay" /></button
-				>
-				<button aria-label="Skip" disabled={status !== 'speaking'} onclick={voice.skip}
-					><Icon name="skip" /></button
-				>
-			</div>
-			<!-- Manual opens the mic only on a tap, so there is nothing to mute. -->
-			{#if voice.mode === 'auto'}
+		{#if active}
+			<div class="vrow">
+				<div class="vseg" role="group" aria-label="Voice mode">
+					<button
+						class="grow"
+						class:on={voice.mode === 'auto'}
+						aria-pressed={voice.mode === 'auto'}
+						onclick={() => voice.setMode('auto', target, sink)}>Auto</button
+					>
+					<button
+						class="grow"
+						class:on={voice.mode === 'manual'}
+						aria-pressed={voice.mode === 'manual'}
+						onclick={() => voice.setMode('manual', target, sink)}>Manual</button
+					>
+				</div>
 				<button
 					class="ip"
-					class:off={voice.micMuted}
-					aria-label="Microphone"
-					aria-pressed={!voice.micMuted}
-					onclick={() => voice.toggleMic(target, sink)}
-					><Icon name={voice.micMuted ? 'micOff' : 'mic'} /></button
+					class:off={!voice.speaker}
+					aria-label="Speaker"
+					aria-pressed={voice.speaker}
+					onclick={() => voice.setSpeaker(!voice.speaker)}
+					><Icon name={voice.speaker ? 'speaker' : 'speakerOff'} /></button
 				>
-			{/if}
-		</div>
+				<!-- Both act on the reply that is read out, so they share one pill. -->
+				<div class="pair" role="group" aria-label="Playback">
+					<button
+						aria-label="Replay"
+						disabled={status === 'thinking' || status === 'recording'}
+						onclick={() => voice.replay(target, sink)}><Icon name="replay" /></button
+					>
+					<button aria-label="Skip" disabled={status !== 'speaking'} onclick={voice.skip}
+						><Icon name="skip" /></button
+					>
+				</div>
+				<!-- Manual opens the mic only on a tap, so there is nothing to mute. -->
+				{#if voice.mode === 'auto'}
+					<button
+						class="ip"
+						class:off={voice.micMuted}
+						aria-label="Microphone"
+						aria-pressed={!voice.micMuted}
+						onclick={() => voice.toggleMic(target, sink)}
+						><Icon name={voice.micMuted ? 'micOff' : 'mic'} /></button
+					>
+				{/if}
+			</div>
+		{/if}
 	</div>
 {/snippet}
 
