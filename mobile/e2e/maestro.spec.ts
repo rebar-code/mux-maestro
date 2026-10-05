@@ -141,7 +141,7 @@ for (const viewport of [
 			await expect(page.locator('[data-panel]')).toHaveCount(0);
 		});
 
-		test('the key strip shows with the terminal, not with the chat', async ({ page }) => {
+		test('the key strip is on the chat and on the terminal, as on a session', async ({ page }) => {
 			await fresh(page, threadPath(RUNNING));
 			await hook(page, '/__fixture/capability?name=keyBar&on=1');
 			// The session's page has the strip: the switch is on.
@@ -149,11 +149,20 @@ for (const viewport of [
 			await expect(keybar(page)).toBeVisible();
 			await openMaestro(page);
 			await expect(ask(page)).toBeVisible();
-			await expect(keybar(page)).toHaveCount(0);
+			await expect(keybar(page).getByRole('button', { name: 'Escape', exact: true })).toBeVisible();
+			// The same keys as a session's strip, above the text box.
+			await expect(keybar(page).locator('.keys button')).toHaveCount(14);
+			const strip = (await keybar(page).boundingBox())!;
+			expect(strip.y + strip.height).toBeLessThanOrEqual((await ask(page).boundingBox())!.y);
+			// A text key types into the Maestro's box, where the caret is.
+			await ask(page).fill('ls ');
+			await keybar(page).getByRole('button', { name: 'Slash' }).click();
+			await expect(ask(page)).toHaveValue('ls /');
+			await ask(page).fill('');
 			await page.locator('[data-mode="chat"]').click();
 			await expect(keybar(page).getByRole('button', { name: 'Escape', exact: true })).toBeVisible();
 			await page.locator('[data-mode="terminal"]').click();
-			await expect(keybar(page)).toHaveCount(0);
+			await expect(keybar(page)).toBeVisible();
 		});
 
 		test('a message sent while the Maestro works waits, and goes when the turn ends', async ({

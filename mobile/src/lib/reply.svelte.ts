@@ -364,11 +364,12 @@ export class Reply {
 				input.selectionEnd ?? input.value.length,
 				'end'
 			);
-			this.draft = input.value;
+			// The box's own listeners take it from here: whose draft it is, and what typing does.
+			input.dispatchEvent(new Event('input', { bubbles: true }));
 		} else {
 			this.draft += key.insert;
+			this.typed();
 		}
-		this.typed();
 	};
 
 	/** The text box is about to change: with Ctrl on, a letter is a key. */
