@@ -72,7 +72,7 @@ clean-libghostty:
 # ARCHS is pinned on the command line so the Swift packages (FluidAudio,
 # WhisperKit) build arm64 only: the project-level setting does not reach
 # them, and FluidAudio uses Float16, which x86_64 macOS lacks.
-app:
+app: mobile
 	@test -e GhosttyKit.xcframework || { echo "GhosttyKit.xcframework missing — run 'make libghostty'"; exit 1; }
 	@$(HAVE_IDENTITY) || echo "warning: no signing identity named" $(call shq,$(SIGN_IDENTITY)) "— ad-hoc signing, so macOS re-asks for every permission after this build. Fix once with 'make signing-identity'."
 	DEVELOPER_DIR=$(DEVELOPER_DIR) \
@@ -116,8 +116,9 @@ demo-names-check:
 
 # Run the unit tests (pure tmux parsing + attention/sort logic). This is a
 # logic-test bundle with no app host, so it does not require GhosttyKit.
+# `mobile` is needed: one test reads the built phone app's index.html.
 # `demo-names-check` runs first: it takes about a second.
-test: demo-names-check
+test: demo-names-check mobile
 	DEVELOPER_DIR=$(DEVELOPER_DIR) \
 	xcodebuild test \
 		-project MuxMaestro.xcodeproj \
@@ -136,16 +137,27 @@ diff-bundle:
 	pnpm -C web/diff build
 	@echo "Rebuilt web/diff → app/MuxMaestro/Resources/diff/ (commit the output)"
 
-# Rebuild the phone web app (Svelte, source in mobile/) and refresh the
-# committed output under app/MuxMaestro/Resources/mobile/. Only needed when
-# changing mobile/: the built bundle is committed, so `make app` and CI need
-# no Node. The same sources build the same files. Requires pnpm + node.
+# Build the phone web app (Svelte, source in mobile/) into
+# app/MuxMaestro/Resources/mobile/, which Xcode copies into the app. The output
+# is not committed: vite puts a content hash in each file name, so two branches
+# that both rebuilt it conflicted on every merge. `make app` and `make test`
+# build it instead, and only when a source is newer than the last build (a
+# directory is a prerequisite too, so a deleted file counts). Requires node +
+# pnpm; pnpm switches itself to the version pinned in mobile/package.json.
 MOBILE_OUT := app/MuxMaestro/Resources/mobile
-mobile:
+MOBILE_STAMP := $(MOBILE_OUT)/_app/version.json
+MOBILE_IN := $(shell find mobile/src mobile/static) \
+	mobile/package.json mobile/pnpm-lock.yaml mobile/pnpm-workspace.yaml \
+	mobile/vite.config.ts mobile/tsconfig.json
+mobile: $(MOBILE_STAMP)
+
+$(MOBILE_STAMP): $(MOBILE_IN)
+	@command -v node >/dev/null || { echo "node missing — the phone web app is built from mobile/ and needs Node 24 (see README, Requirements)"; exit 1; }
+	@command -v pnpm >/dev/null || { echo "pnpm missing — the phone web app is built from mobile/ and needs pnpm (see README, Requirements)"; exit 1; }
 	pnpm -C mobile install --frozen-lockfile
 	rm -rf $(CURDIR)/$(MOBILE_OUT)
 	pnpm -C mobile build
-	@echo "Rebuilt mobile → $(MOBILE_OUT)/ (commit the output)"
+	@echo "Built mobile → $(MOBILE_OUT)/"
 
 clean-app:
 	rm -rf $(BUILD_DIR)

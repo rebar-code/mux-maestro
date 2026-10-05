@@ -666,9 +666,10 @@ final class MobileAPITests: XCTestCase {
             MobileAPI.shellPolicy(html: "<script>const src = 1</script>").contains("'sha256-"))
     }
 
-    /// The committed bundle's own shell: its one inline start-up script is
-    /// named in the policy by the hash a browser will compute for it.
-    func testTheCommittedShellsInlineScriptIsAllowedByItsHash() throws {
+    /// The built bundle's own shell (`make test` builds it first): its one
+    /// inline start-up script is named in the policy by the hash a browser
+    /// will compute for it.
+    func testTheBuiltShellsInlineScriptIsAllowedByItsHash() throws {
         let shell = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .appendingPathComponent("../app/MuxMaestro/Resources/mobile/index.html")
         let html = try String(contentsOf: shell, encoding: .utf8)
