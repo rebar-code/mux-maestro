@@ -4,7 +4,11 @@ import { Player, type PlayerContext } from './player';
 /** An audio context that decodes on demand and plays until told a clip ended. */
 class FakeContext {
 	readonly destination = {} as AudioNode;
+	/** The context's clock, moved by the test. */
+	currentTime = 0;
 	started: string[] = [];
+	/** Where each clip began to play: `name@seconds`. */
+	from: string[] = [];
 	stopped: string[] = [];
 	private decodes = new Map<string, (ok: boolean) => void>();
 	private sources: { name: string; onended: (() => void) | null }[] = [];
@@ -13,7 +17,9 @@ class FakeContext {
 		const name = new TextDecoder().decode(data);
 		return new Promise((resolve, reject) => {
 			this.decodes.set(name, (ok) =>
-				ok ? resolve({ name } as unknown as AudioBuffer) : reject(new Error('bad clip'))
+				ok
+					? resolve({ name, duration: 10 } as unknown as AudioBuffer)
+					: reject(new Error('bad clip'))
 			);
 		});
 	}
@@ -23,8 +29,10 @@ class FakeContext {
 			buffer: null as { name: string } | null,
 			onended: null as (() => void) | null,
 			connect: () => {},
-			start: () => {
+			start: (...at: number[]) => {
+				const offset = at[1] ?? 0;
 				this.started.push(source.buffer!.name);
+				this.from.push(`${source.buffer!.name}@${offset}`);
 				this.sources.push({
 					name: source.buffer!.name,
 					get onended() {
@@ -46,7 +54,7 @@ class FakeContext {
 
 	/** The clip that is playing reaches its end. */
 	ended(name: string): void {
-		this.sources.find((source) => source.name === name)?.onended?.();
+		this.sources.findLast((source) => source.name === name)?.onended?.();
 	}
 }
 
@@ -118,5 +126,61 @@ describe('Player', () => {
 		await context.decoded('four');
 		expect(context.started).toEqual(['one', 'four']);
 		expect(events).toEqual(['started', 'started']);
+	});
+
+	it('seek moves back and forward through the clips, by their own lengths', async () => {
+		const { context, player, events } = setup();
+		for (const name of ['one', 'two', 'three']) player.enqueue(clip(name));
+		for (const name of ['one', 'two', 'three']) await context.decoded(name);
+		// Each clip is 10 seconds. 4 seconds into the second one:
+		context.currentTime = 10;
+		context.ended('one');
+		context.currentTime = 14;
+		expect(player.position).toBe(14);
+		expect(player.duration).toBe(30);
+
+		player.seek(-15);
+		// It stops at the start, in the first clip.
+		expect(context.stopped).toEqual(['two']);
+		expect(context.from.at(-1)).toBe('one@0');
+		context.currentTime = 16;
+		expect(player.position).toBe(2);
+
+		player.seek(15);
+		expect(context.from.at(-1)).toBe('two@7');
+		// The clip that was cut does not end the one that plays.
+		context.ended('one');
+		context.ended('two');
+		expect(context.from.at(-1)).toBe('three@0');
+		expect(events).toEqual(['started']);
+
+		// Past the end there is nothing left: the reply is over.
+		player.seek(15);
+		expect(events).toEqual(['started', 'drained']);
+		expect(player.busy).toBe(false);
+		expect(player.position).toBe(30);
+	});
+
+	it('a reply that has ended is kept, and plays again from where seek puts it', async () => {
+		const { context, player, events } = setup();
+		player.enqueue(clip('one'));
+		player.enqueue(clip('two'));
+		await context.decoded('one');
+		await context.decoded('two');
+		context.ended('one');
+		context.ended('two');
+		expect(events).toEqual(['started', 'drained']);
+
+		player.seek(-15);
+		expect(context.from.at(-1)).toBe('one@5');
+		expect(events).toEqual(['started', 'drained', 'started']);
+		context.ended('one');
+		context.ended('two');
+		expect(events).toEqual(['started', 'drained', 'started', 'drained']);
+
+		// After a stop there is nothing to go back through.
+		player.stop();
+		player.seek(-15);
+		expect(context.started).toHaveLength(4);
 	});
 });

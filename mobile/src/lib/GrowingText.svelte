@@ -202,6 +202,13 @@
 		-webkit-text-fill-color: var(--muted);
 	}
 
+	/* A label longer than a narrow box is cut short: it never wraps under the line. */
+	textarea::placeholder {
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
 	textarea:disabled::placeholder {
 		color: var(--muted);
 		opacity: 1;
