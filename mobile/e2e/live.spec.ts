@@ -175,6 +175,14 @@ test('the key bar and the keyboard type through the socket', async ({ page }) =>
 	await page.screenshot({ path: 'test-results/shots/live-keys.png' });
 });
 
+test('the Paste key types the clipboard into the pane', async ({ page, context }) => {
+	await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+	await live(page);
+	await page.evaluate(() => navigator.clipboard.writeText('git status'));
+	await key(page, 'Paste').click();
+	await expect.poll(async () => (await fixture(page)).typed).toBe('git status');
+});
+
 test('what the pane prints never types: terminal queries get no answer from the phone', async ({
 	page
 }) => {

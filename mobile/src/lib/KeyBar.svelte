@@ -1,4 +1,5 @@
 <script lang="ts">
+	import type { Snippet } from 'svelte';
 	import Icon from './Icon.svelte';
 	import { barKeys, type KeySink } from './reply';
 	import { keepFocus } from './reply.svelte';
@@ -10,16 +11,19 @@
 	const {
 		reply,
 		composer,
-		hides = composer
+		hides = composer,
+		leading
 	}: {
 		reply: KeySink;
 		/** A text box takes the strip's text keys. */
 		composer: boolean;
 		/** Something on this page brings the on-screen keyboard up, so the strip can put it away. */
 		hides?: boolean;
+		/** A control fixed at the strip's start. */
+		leading?: Snippet;
 	} = $props();
 
-	const keys = $derived(barKeys(composer));
+	const keys = $derived(barKeys(composer, reply.pastes));
 
 	/** Put the on-screen keyboard away: whatever takes the typing gives up the focus. */
 	function hide(): void {
@@ -29,6 +33,7 @@
 </script>
 
 <div class="kbar" data-keybar>
+	{@render leading?.()}
 	<div class="keys" data-hscroll role="group" aria-label="Keys">
 		{#each keys as key (key.label)}
 			<button

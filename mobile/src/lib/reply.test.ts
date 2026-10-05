@@ -90,6 +90,9 @@ describe('key bar', () => {
 		expect(barKeys(true)).toHaveLength(14);
 		expect(barKeys(false).every((key) => key.send !== undefined)).toBe(true);
 		expect(barKeys(false)).toHaveLength(9);
+		// A sink that pastes gets the Paste key, first.
+		expect(barKeys(true, true)).toHaveLength(15);
+		expect(barKeys(true, true)[0].paste).toBe(true);
 	});
 });
 

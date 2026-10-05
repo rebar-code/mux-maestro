@@ -140,7 +140,8 @@ for (const viewport of [
 
 			await button(page).click();
 			await settled(page, 0);
-			expect(await height(page)).toBe(0);
+			// On a slow machine the panel can hold still before it starts to close.
+			await expect.poll(() => height(page)).toBe(0);
 			// It opens again at the stop it was on.
 			await button(page).click();
 			await settled(page, 3);
@@ -401,6 +402,8 @@ for (const viewport of [
 			await hook(page, '/__fixture/capability?name=voice&on=1');
 			const live = (): Promise<number> => page.evaluate(() => window.__mic.live());
 			const dock = page.locator('[data-dock]');
+			// A take starts talk mode: only then are the voice controls drawn.
+			await dock.locator('[data-primary="talk"]').click();
 			await dock.getByRole('button', { name: 'Auto' }).click();
 			await expect(dock.locator('[data-voicebar]').first()).toContainText('Listening…');
 			expect(await live()).toBe(1);
