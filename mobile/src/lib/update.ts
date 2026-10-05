@@ -53,12 +53,15 @@ const RELOADED = 'mm.reloaded';
 const LOOP_MS = 10_000;
 /** How often a reload that had to wait is tried again. */
 const RETRY_MS = 5000;
+/** How often an app that stays in front asks the Mac for a new build. */
+const ASK_MS = 60_000;
 
 /**
  * Attachment for the app root: run the newest build. A Home Screen app is
  * rarely closed, so nothing would otherwise ask the Mac for a new worker, and
  * a page that is open keeps the code it started with. This asks each time the
- * app comes to the front, and reloads once a new worker has taken over.
+ * app comes to the front and each minute it stays there, and reloads once a
+ * new worker has taken over.
  */
 export function freshBuild(): (() => void) | void {
 	const workers = navigator.serviceWorker;
@@ -96,15 +99,17 @@ export function freshBuild(): (() => void) | void {
 		stale = true;
 		reload();
 	};
+	const ask = (): void => {
+		if (document.visibilityState !== 'visible') return;
+		void workers
+			.getRegistration()
+			.then((registration) => registration?.update())
+			.catch(() => {
+				// The Mac is out of reach: the next one asks again.
+			});
+	};
 	const front = (): void => {
-		if (document.visibilityState === 'visible') {
-			void workers
-				.getRegistration()
-				.then((registration) => registration?.update())
-				.catch(() => {
-					// The Mac is out of reach: the next time in front asks again.
-				});
-		}
+		ask();
 		reload();
 	};
 	workers.addEventListener('controllerchange', changed);
@@ -113,11 +118,13 @@ export function freshBuild(): (() => void) | void {
 	// A box that was sent or emptied no longer holds the reload.
 	document.addEventListener('input', reload);
 	const retry = setInterval(reload, RETRY_MS);
+	const asking = setInterval(ask, ASK_MS);
 	return () => {
 		workers.removeEventListener('controllerchange', changed);
 		document.removeEventListener('visibilitychange', front);
 		document.removeEventListener('focusout', reload);
 		document.removeEventListener('input', reload);
 		clearInterval(retry);
+		clearInterval(asking);
 	};
 }
