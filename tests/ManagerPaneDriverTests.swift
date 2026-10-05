@@ -1141,6 +1141,24 @@ final class ManagerPaneDriverTests: XCTestCase {
         XCTAssertNil(ManagerPaneDriver.status(for: row(.ended, now), fileStatus: .idle, now: now))
     }
 
+    func testAPrivateTmuxServerEndsWhenTheProcessThatMadeItIsGone() throws {
+        let owner = Process()
+        owner.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        owner.arguments = ["60"]
+        try owner.run()
+        guard let tmux = PrivateTmux(owner: owner.processIdentifier) else {
+            owner.terminate()
+            throw XCTSkip("no tmux on this machine")
+        }
+        addTeardownBlock { tmux.tmux(["kill-server"]) }
+        tmux.tmux(["-f", "/dev/null", "new-session", "-d", "-s", "mux-manager", "-x", "100", "-y", "30", "cat"])
+        XCTAssertFalse(tmux.tmux(["list-sessions"]).isEmpty)
+        // No teardown runs: the owner is gone at once.
+        owner.terminate()
+        owner.waitUntilExit()
+        XCTAssertTrue(eventually { tmux.tmux(["list-sessions"]).isEmpty })
+    }
+
     func testFileStatusReadsClaudesOwnStatusForTheManagerPane() throws {
         let dir = try makeClaudeDir()
         let driver = ManagerPaneDriver(
@@ -1258,12 +1276,16 @@ private final class PrivateTmux: CommandRunner {
     let name = "mm-maestro-\(UUID().uuidString.prefix(8))"
     /// The whole environment of each tmux call, when a test gives one.
     private let fixedEnvironment: [String: String]?
+    /// The process the server must not outlive.
+    private let owner: Int32
+    private var guarded = false
 
-    init?(environment: [String: String]? = nil) {
+    init?(environment: [String: String]? = nil, owner: Int32 = ProcessInfo.processInfo.processIdentifier) {
         guard let path = ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"]
             .first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else { return nil }
         self.path = path
         self.fixedEnvironment = environment
+        self.owner = owner
     }
 
     func run(_ path: String, _ args: [String], stdin: Data?) -> String? {
@@ -1287,6 +1309,11 @@ private final class PrivateTmux: CommandRunner {
         let data = out.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         guard process.terminationStatus == 0 else { return nil }
+        // The server exists from its first session on, whoever starts it.
+        if args.contains("new-session"), !guarded {
+            guarded = true
+            _ = run(self.path, TmuxOrphanGuard.argv(tmux: self.path, socket: name, owner: owner), stdin: nil)
+        }
         return String(decoding: data, as: UTF8.self)
     }
 
