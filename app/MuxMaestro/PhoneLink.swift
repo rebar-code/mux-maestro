@@ -94,6 +94,59 @@ struct DefaultsPortStore: PhonePortStore {
     }
 }
 
+/// Where the pairing token's digest is kept between launches. The server
+/// checks a phone against it, so a start does not have to read the Keychain.
+protocol PhoneDigestStore {
+    func load() -> String?
+    func save(_ digest: String)
+}
+
+struct DefaultsDigestStore: PhoneDigestStore {
+    var defaults = UserDefaults.standard
+    var key = "phone.tokenDigest"
+
+    func load() -> String? {
+        defaults.string(forKey: key).flatMap { $0.isEmpty ? nil : $0 }
+    }
+
+    func save(_ digest: String) { defaults.set(digest, forKey: key) }
+}
+
+/// What `mux phone on|off` leaves for the app: a file with one line, `on` or
+/// `off` and the time in seconds. The CLI cannot reach the switch itself, so
+/// someone away from the Mac asks this way and the app does it.
+enum PhoneRequest {
+    /// A request older than this is dropped: the app was not running when it
+    /// was made, and must not turn the phone on or off at a later launch.
+    static let maxAge: TimeInterval = 60
+
+    /// `~/Library/Application Support/MuxMaestro/phone-request`, as `mux` writes it.
+    static func defaultURL() -> URL? {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("MuxMaestro/phone-request")
+    }
+
+    /// Take the request at `url`: true for on, false for off, nil when there
+    /// is none to act on. The file is removed whatever it held.
+    static func take(at url: URL, now: Date = Date()) -> Bool? {
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        try? FileManager.default.removeItem(at: url)
+        return parse(text, now: now)
+    }
+
+    static func parse(_ text: String, now: Date) -> Bool? {
+        let words = text.split(whereSeparator: \.isWhitespace)
+        guard words.count == 2, let at = TimeInterval(words[1]),
+              abs(now.timeIntervalSince1970 - at) <= maxAge
+        else { return nil }
+        switch words[0] {
+        case "on": return true
+        case "off": return false
+        default: return nil
+        }
+    }
+}
+
 /// The "Phone" switch: starts the loopback server and publishes it on the
 /// tailnet with `tailscale serve`, and takes both away again. Foundation only;
 /// the Phone settings draw `state`.
@@ -105,9 +158,26 @@ final class PhoneLink {
         /// allow this build to use the pairing token.
         case waitingForKeychain
         /// `url` is the address; `pairing` is the same with the pairing token,
-        /// for the QR code.
+        /// for the QR code. `pairing` is empty until `loadPairing` has read
+        /// the token.
         case on(url: String, pairing: String)
         case failed(String)
+
+        /// The state as the phone log writes it: no address and no token.
+        var logText: String {
+            switch self {
+            case .off: return "off"
+            case .starting: return "starting"
+            case .waitingForKeychain: return "waiting for Keychain"
+            case .on: return "on"
+            case .failed(let why): return "failed: \(why)"
+            }
+        }
+
+        var isFailure: Bool {
+            if case .failed = self { return true }
+            return false
+        }
     }
 
     private let server: MobileServer
@@ -117,10 +187,14 @@ final class PhoneLink {
     private let keepAwake: () -> Bool
     private let tokens: PhoneTokenStore
     private let ports: PhonePortStore
+    private let digests: PhoneDigestStore
     private let now: () -> Date
     /// How long a Keychain read may take before the state says it is waiting.
     private let keychainNotice: TimeInterval
     private let queue = DispatchQueue(label: "is.rebar.muxmaestro.phone")
+    /// Where `loadPairing` reads the Keychain: a read that waits for the
+    /// dialog must not hold `queue`, which the running link works on.
+    private let keychain = DispatchQueue(label: "is.rebar.muxmaestro.phone.keychain")
     private let notify: (@escaping () -> Void) -> Void
 
     private let lock = NSLock()
@@ -155,6 +229,7 @@ final class PhoneLink {
         keepAwake: @escaping () -> Bool = { Settings.phoneKeepAwake() },
         tokens: PhoneTokenStore = KeychainTokenStore(),
         ports: PhonePortStore = DefaultsPortStore(),
+        digests: PhoneDigestStore = DefaultsDigestStore(),
         now: @escaping () -> Date = Date.init,
         keychainNotice: TimeInterval = 0.5,
         notify: @escaping (@escaping () -> Void) -> Void = { DispatchQueue.main.async(execute: $0) }
@@ -166,6 +241,7 @@ final class PhoneLink {
         self.keepAwake = keepAwake
         self.tokens = tokens
         self.ports = ports
+        self.digests = digests
         self.now = now
         self.keychainNotice = keychainNotice
         self.notify = notify
@@ -186,11 +262,13 @@ final class PhoneLink {
         lock.lock()
         current = state
         lock.unlock()
+        server.logLink(state.logText, failed: state.isFailure)
         notify { [weak self] in self?.onChange?(state) }
     }
 
     func turnOn() {
-        set(.starting)
+        // A start the Keychain holds keeps saying so: this one waits behind it.
+        if state != .waitingForKeychain { set(.starting) }
         queue.async { self.start() }
     }
 
@@ -210,12 +288,49 @@ final class PhoneLink {
     /// Make a new pairing token. Every phone paired with the old one is signed
     /// out and must scan the new QR code.
     func rotateToken() {
-        queue.async {
-            guard let served = self.served else { return }
-            let token = MobileTailnet.newToken()
-            guard self.tokens.save(token) else { return }
-            self.server.setToken(token)
-            self.set(self.on(served, token: token))
+        queue.async { self.replaceToken() }
+    }
+
+    private func replaceToken() {
+        guard let served else { return }
+        let token = MobileTailnet.newToken()
+        guard tokens.save(token) else { return }
+        adopt(token, served: served)
+    }
+
+    /// Make `token` the one the server checks and the pairing link holds.
+    private func adopt(_ token: String, served: (port: Int, identity: MobileIdentity)) {
+        digests.save(MobileAPI.tokenDigest(token))
+        server.setToken(token)
+        set(on(served, token: token))
+    }
+
+    /// Read the token for the pairing link. The QR code needs it; the server
+    /// does not. The read may wait for the Keychain dialog, so nothing else
+    /// waits for it: the phones already paired stay connected.
+    func loadPairing() {
+        keychain.async {
+            guard case .on(_, let pairing) = self.state, pairing.isEmpty else { return }
+            let read = self.tokens.read()
+            self.queue.async {
+                guard let served = self.served, case .on(_, let pairing) = self.state, pairing.isEmpty
+                else { return }
+                switch read {
+                case .found(let token):
+                    // The Keychain holds what the phones were paired from. A
+                    // digest that is not its digest is the stale one.
+                    if self.digests.load() == MobileAPI.tokenDigest(token) {
+                        self.set(self.on(served, token: token))
+                    } else {
+                        self.adopt(token, served: served)
+                    }
+                case .missing:
+                    // Nothing to pair from: the same as a new pairing code.
+                    self.replaceToken()
+                case .failed:
+                    break
+                }
+            }
         }
     }
 
@@ -242,9 +357,11 @@ final class PhoneLink {
         queue.sync { awake != nil }
     }
 
-    private func on(_ served: (port: Int, identity: MobileIdentity), token: String) -> State {
+    private func on(_ served: (port: Int, identity: MobileIdentity), token: String?) -> State {
         .on(url: MobileTailnet.url(identity: served.identity, port: served.port),
-            pairing: MobileTailnet.pairingURL(identity: served.identity, port: served.port, token: token))
+            pairing: token.map {
+                MobileTailnet.pairingURL(identity: served.identity, port: served.port, token: $0)
+            } ?? "")
     }
 
     private func start() {
@@ -267,24 +384,34 @@ final class PhoneLink {
                 _ = runner.runCapturing(tailscale, MobileTailnet.serveOffArgv(port: wanted))
             }
         }
-        // Without a stored token nothing could pair, so nothing is published.
-        // A token that could not be read is not replaced: the phones hold it.
-        var stored: String?
-        switch readToken() {
-        case .found(let token):
-            stored = token
-        case .failed:
-            return set(.failed("Keychain did not give the pairing token"))
-        case .missing:
-            let fresh = MobileTailnet.newToken()
-            if tokens.save(fresh) {
-                stored = fresh
-                // No phone holds the new token, so none is left subscribed.
-                server.forgetPhones()
+        // The server checks a phone against the token's digest, so only the
+        // first start reads the Keychain. macOS asks again for the token with
+        // every new build: a start that waited for that answer left the phone
+        // off after each install, until someone was at the Mac to click.
+        var token: String?
+        var digest = digests.load()
+        if digest == nil {
+            // Without a stored token nothing could pair, so nothing is published.
+            // A token that could not be read is not replaced: the phones hold it.
+            switch readToken() {
+            case .found(let stored):
+                token = stored
+            case .failed:
+                return set(.failed("Keychain did not give the pairing token"))
+            case .missing:
+                let fresh = MobileTailnet.newToken()
+                if tokens.save(fresh) {
+                    token = fresh
+                    // No phone holds the new token, so none is left subscribed.
+                    server.forgetPhones()
+                }
             }
+            guard let token else { return set(.failed("Keychain refused the pairing token")) }
+            digest = MobileAPI.tokenDigest(token)
+            digests.save(digest ?? "")
         }
-        guard let token = stored else { return set(.failed("Keychain refused the pairing token")) }
-        server.start(port: wanted, identity: identity, token: token) { [weak self] result in
+        guard let digest else { return }
+        server.start(port: wanted, identity: identity, tokenDigest: digest) { [weak self] result in
             self?.queue.async {
                 guard let self else { return }
                 guard case .success(let bound) = result else {
