@@ -348,11 +348,13 @@ final class MobileTerminalSocketTests: XCTestCase {
         let name = "mm-live-\(UUID().uuidString.prefix(8))"
         private var clients: [(process: Process, master: Int32, drain: DispatchSourceRead)] = []
 
-        init?() {
+        /// `owner` is the process the server must not outlive.
+        init?(owner: Int32 = ProcessInfo.processInfo.processIdentifier) {
             guard let path = ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"]
                 .first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else { return nil }
             self.path = path
             _ = run(["-f", "/dev/null", "new-session", "-d", "-s", "acme-app", "-x", "100", "-y", "30", "cat"])
+            run(TmuxOrphanGuard.argv(tmux: path, socket: name, owner: owner))
         }
 
         @discardableResult
@@ -1324,6 +1326,27 @@ final class MobileTerminalSocketTests: XCTestCase {
         XCTAssertGreaterThan(bytes, 100_000)
         // The socket is still good: the pane's screen keeps coming.
         XCTAssertEqual(tmux.clientCount, 1)
+    }
+
+    // MARK: a test run that is killed
+
+    func testTheTmuxServerEndsWhenTheProcessThatMadeItIsGone() throws {
+        let owner = Process()
+        owner.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        owner.arguments = ["60"]
+        try owner.run()
+        guard let orphan = PrivateTmux(owner: owner.processIdentifier), orphan.alive else {
+            owner.terminate()
+            return XCTFail("no server")
+        }
+        addTeardownBlock { orphan.stop() }
+        orphan.run(["new-window", "-d", "-t", "acme-app", "yes"])
+        let socket = orphan.run(["display-message", "-p", "#{socket_path}"])
+        // No teardown runs: the owner is gone at once.
+        owner.terminate()
+        owner.waitUntilExit()
+        XCTAssertTrue(eventually { !orphan.alive })
+        XCTAssertTrue(eventually { !FileManager.default.fileExists(atPath: socket) })
     }
 
     private static let flood =
