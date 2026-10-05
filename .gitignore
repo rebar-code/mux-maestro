@@ -36,7 +36,8 @@ zig-cache/
 # per-developer Makefile settings (a signing identity name is personal)
 /local.mk
 
-# phone web app: dependencies and test output (the built bundle is committed)
+# phone web app: the built bundle (`make app` builds it), dependencies and test output
+app/MuxMaestro/Resources/mobile/
 mobile/node_modules
 mobile/.svelte-kit
 mobile/test-results

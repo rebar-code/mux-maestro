@@ -5,8 +5,8 @@ import adapter from '@sveltejs/adapter-static';
 import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vitest/config';
 
-// The built bundle is committed, so the same sources must build the same files.
-// SvelteKit's default version is the build time; use a hash of the inputs.
+// The same sources must build the same files, so a build can be compared with
+// another. SvelteKit's default version is the build time; use a hash of the inputs.
 function sourceHash(): string {
 	const hash = createHash('sha1');
 	const walk = (dir: string): void => {

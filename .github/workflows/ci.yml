@@ -78,6 +78,19 @@ jobs:
           ln -s vendor/ghostty/macos/GhosttyKit.xcframework GhosttyKit.xcframework
           test -f GhosttyKit.xcframework/macos-arm64/Headers/ghostty.h
 
+      # `make app` and `make test` build the phone web app from mobile/ (its
+      # output is not committed). The runner image has Node but no pnpm. The
+      # pnpm version is the `packageManager` pin in mobile/package.json.
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: mobile/package.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: mobile/pnpm-lock.yaml
+
       # The Makefile pins DEVELOPER_DIR to /Applications/Xcode.app; on the runner
       # that is the default Xcode, whose Swift tools are too old for the packages.
       - name: Build app
@@ -103,7 +116,7 @@ jobs:
           DEVELOPER_DIR: /Applications/Xcode_16.2.app/Contents/Developer
 
   # The phone web app: its unit tests, and every end-to-end test in a browser
-  # against the committed bundle (the one the app ships).
+  # against a bundle built from this commit (as `make app` builds it).
   mobile:
     name: phone app (unit + e2e)
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
@@ -116,7 +129,7 @@ jobs:
 
       - uses: pnpm/action-setup@v4
         with:
-          version: 11
+          package_json_file: mobile/package.json
 
       - uses: actions/setup-node@v4
         with:
@@ -135,6 +148,10 @@ jobs:
 
       - name: Install the browser
         run: pnpm -C mobile exec playwright install chromium
+
+      # The fixture server serves the built bundle.
+      - name: Build
+        run: pnpm -C mobile build
 
       # Some tests time a turn against the fixture server; a busy runner can
       # make one late. A test that fails is run again, twice at most.

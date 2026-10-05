@@ -13,6 +13,12 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 cp Makefile "$work/Makefile"
 mkdir "$work/bin" "$work/GhosttyKit.xcframework"
+# `app` depends on the built phone web app. Stand in for it: the inputs the
+# Makefile names, then a newer build stamp, so nothing is built here.
+mkdir -p "$work/mobile/src" "$work/mobile/static" "$work/app/MuxMaestro/Resources/mobile/_app"
+touch "$work/mobile/package.json" "$work/mobile/pnpm-lock.yaml" "$work/mobile/pnpm-workspace.yaml" \
+  "$work/mobile/vite.config.ts" "$work/mobile/tsconfig.json"
+touch "$work/app/MuxMaestro/Resources/mobile/_app/version.json"
 
 # The stub records each argument on its own line.
 cat > "$work/bin/xcodebuild" <<'STUB'
