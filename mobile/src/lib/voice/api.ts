@@ -1,6 +1,7 @@
-import { postAudio } from '../api';
+import { postAudio, postHeard } from '../api';
 import { frameParser, readOrStall, STALLED } from '../sse';
 import type { VoiceEnd } from '../types';
+import type { KeptTake } from './takes';
 
 export interface VoiceHandlers {
 	/** What the Mac heard. */
@@ -9,6 +10,8 @@ export interface VoiceHandlers {
 	onDelta: (text: string) => void;
 	/** One clip of the spoken reply, a WAV file. They arrive in playing order. */
 	onAudio: (wav: ArrayBuffer) => void;
+	/** The take's text is in the chat: the phone need not keep the take. */
+	onSent?: () => void;
 }
 
 function decode(base64: string): ArrayBuffer {
@@ -35,6 +38,10 @@ async function follow(response: Response, handlers: VoiceHandlers): Promise<Voic
 		if (done) break;
 		for (const { event, data } of parse(value)) {
 			if (event === 'end') return JSON.parse(data) as VoiceEnd;
+			if (event === 'sent') {
+				handlers.onSent?.();
+				continue;
+			}
 			const body = JSON.parse(data) as { text?: string; wav?: string };
 			if (event === 'transcript') handlers.onTranscript(body.text ?? '');
 			else if (event === 'delta') handlers.onDelta(body.text ?? '');
@@ -50,15 +57,23 @@ const query = (target: string, speaker: boolean): string =>
 /**
  * Send one take. With `speaker` off the Mac synthesizes nothing. A take the
  * Mac refuses to start throws an `ApiError` whose `detail` says why.
+ *
+ * The take's `id` goes with it: the Mac remembers the takes whose text it
+ * sent, so a take that is sent again is never typed twice. A take the Mac
+ * heard before the send failed goes again as its words, not its audio.
  */
 export async function sendVoice(
-	target: string,
+	take: Pick<KeptTake, 'id' | 'target' | 'wav' | 'text'>,
 	speaker: boolean,
-	wav: ArrayBuffer,
 	handlers: VoiceHandlers,
 	signal?: AbortSignal
 ): Promise<VoiceEnd> {
-	return follow(await postAudio(`/api/voice?${query(target, speaker)}`, wav, signal), handlers);
+	const path = `/api/voice?${query(take.target, speaker)}&take=${encodeURIComponent(take.id)}`;
+	const response =
+		take.text === null
+			? await postAudio(path, take.wav, signal)
+			: await postHeard(`${path}&heard=1`, take.text, signal);
+	return follow(response, handlers);
 }
 
 /** Have the target's last reply read again. */

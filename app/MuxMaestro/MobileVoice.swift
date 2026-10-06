@@ -30,11 +30,18 @@ enum MobileVoiceTarget: Hashable {
     case thread(String)
 }
 
-/// The query of a voice request: `?target=manager&speaker=1`.
+/// The query of a voice request: `?target=manager&speaker=1`, and for a take
+/// `&take=<id>`, with `&heard=1` when the body is the take's words.
 struct MobileVoiceRequest: Equatable {
     var target: MobileVoiceTarget
     /// Off means input only: nothing is synthesized.
     var speaker: Bool
+    /// The phone's name for the take. It keeps the take until the Mac says
+    /// the text is sent, and may send it again under the same name.
+    var take: String?
+    /// The body is `{"text": "…"}`, what the Mac heard in this take before,
+    /// not audio.
+    var heard = false
 
     init(target: MobileVoiceTarget, speaker: Bool) {
         self.target = target
@@ -45,6 +52,72 @@ struct MobileVoiceRequest: Equatable {
         guard let target = query["target"], !target.isEmpty else { return nil }
         self.target = target == "manager" ? .manager : .thread(target)
         speaker = query["speaker"] == "1"
+        if let take = query["take"] {
+            guard MobileVoiceTakes.isID(take) else { return nil }
+            self.take = take
+        }
+        heard = query["heard"] == "1"
+    }
+}
+
+/// The takes whose text went to a target, by the phone's id for each. A phone
+/// that lost the answer sends its take again; the Mac may have typed the text
+/// already, and must not type it twice. Held in memory: the newest `limit`
+/// ids, for as long as the app runs. Safe on any queue.
+final class MobileVoiceTakes {
+    enum State: Equatable {
+        /// The text is on its way to the target: not known yet to be there.
+        case sending
+        case sent
+    }
+
+    private let limit: Int
+    private let lock = NSLock()
+    /// Oldest first.
+    private var ids: [String] = []
+    private var states: [String: State] = [:]
+
+    init(limit: Int = 64) {
+        self.limit = limit
+    }
+
+    /// An id is a short word of letters, digits and dashes (a UUID).
+    static func isID(_ id: String) -> Bool {
+        (1...64).contains(id.utf8.count)
+            && id.utf8.allSatisfy { $0 == 45 || (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) }
+    }
+
+    func state(of id: String) -> State? {
+        lock.lock()
+        defer { lock.unlock() }
+        return states[id]
+    }
+
+    /// The text of take `id` is about to go to its target. False when it is
+    /// on its way or there already: it must not go again.
+    func begin(_ id: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard states[id] == nil else { return false }
+        states[id] = .sending
+        ids.append(id)
+        while ids.count > limit { states[ids.removeFirst()] = nil }
+        return true
+    }
+
+    func sent(_ id: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        if states[id] != nil { states[id] = .sent }
+    }
+
+    /// The target did not take the text: the phone may send the take again.
+    func forget(_ id: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard states[id] == .sending else { return }
+        states[id] = nil
+        ids.removeAll { $0 == id }
     }
 }
 
@@ -74,6 +147,7 @@ enum MobileVoice {
     static let speechFailed = "Could not speak the reply"
     static let notText = "Could not use what was heard"
     static let tooMuchText = "Too much to send in one turn"
+    static let sending = "Still sending"
 
     /// What was heard, held to the rules typed text is held to: the same check,
     /// `MobileManager.text`, on the same request body. Speech has no way
@@ -87,9 +161,34 @@ enum MobileVoice {
 
     enum Take: Equatable {
         case samples([Float])
+        /// The words of a take that was heard before: nothing to transcribe.
+        case heard(String)
         /// Why the audio is refused, as the response the phone shows.
         case refused(MobileResponse)
     }
+
+    /// The take a request carries: its audio, or with `heard` its words.
+    static func take(body: Data, heard: Bool) -> Take {
+        guard heard else { return take(wav: body) }
+        let field = MobileManager.text(in: body)
+        guard case .value(let text) = field else {
+            return .refused(field.refusal ?? .error(400, "bad_request"))
+        }
+        return .heard(text)
+    }
+
+    /// The whole stream for a take whose text is in the chat already: `sent`,
+    /// then `end`. Nothing is typed and nothing is read.
+    static let alreadySent: MobileResponse = {
+        var body = MobileServer.event("sent", Data("{}".utf8))
+        let end = (try? JSONSerialization.data(
+            withJSONObject: MobileManager.end(.done(reply: "")), options: [.sortedKeys])) ?? Data("{}".utf8)
+        body.append(MobileServer.event("end", end))
+        return MobileResponse(
+            status: 200,
+            headers: ["Content-Type": "text/event-stream", "Cache-Control": "no-store"],
+            body: body)
+    }()
 
     /// The take in a WAV body as mono floats at `sampleRate`, or the refusal.
     static func take(wav: Data) -> Take {
@@ -347,21 +446,28 @@ struct MobileSpeechCache {
 /// One voice turn from the phone. The take becomes text, the text goes to the
 /// target the way typed text does, and the reply comes back as text and, with
 /// the speaker on, as one clip per sentence. Every step is an event:
-/// `transcript`, `delta`, `audio`, then one `end`.
+/// `transcript`, `sent`, `delta`, `audio`, then one `end`.
+///
+/// `sent` says the text is in the target's chat. Until it comes the phone
+/// keeps the take, and may send it again; see `MobileVoiceTakes`.
 ///
 /// With the speaker off nothing is synthesized: `VoiceSpeech.synthesize` is
 /// never called, so the read-back model is not even loaded.
 final class MobileVoiceTurn {
     /// `last` marks the event that ends the stream. Called on any queue.
     typealias Emit = (_ event: String, _ data: [String: Any], _ last: Bool) -> Void
-    /// The target's own turn: `MobileServer.Manager.send`.
+    /// The target's own turn: `MobileServer.Manager.send`. `onSent` is for a
+    /// target that knows the text is in its chat before the reply starts; a
+    /// reply that starts, or an outcome that is a reply, says so too.
     typealias Send = (
-        _ text: String, _ onDelta: @escaping (String) -> Void,
+        _ text: String, _ onSent: @escaping () -> Void, _ onDelta: @escaping (String) -> Void,
         _ completion: @escaping (ManagerTurnOutcome) -> Void
     ) -> Void
 
     private let speech: VoiceSpeech
     private let speaker: Bool
+    /// The phone's id for this take, and where the sent ones are remembered.
+    private let take: (id: String, takes: MobileVoiceTakes)?
     private let emit: Emit
 
     private let lock = NSLock()
@@ -370,18 +476,30 @@ final class MobileVoiceTurn {
     private var cancelled = false
     private var seq = 0
     private var streamed = false
+    /// The text is in the target's chat, and the phone was told.
+    private var submitted = false
     /// The clips sent so far, kept only for a read-aloud.
     private var kept: [MobileVoiceClip]?
 
-    init(speech: VoiceSpeech, speaker: Bool, emit: @escaping Emit) {
+    init(
+        speech: VoiceSpeech, speaker: Bool, take: (id: String, takes: MobileVoiceTakes)? = nil,
+        emit: @escaping Emit
+    ) {
         self.speech = speech
         self.speaker = speaker
+        self.take = take
         self.emit = emit
     }
 
     /// Transcribe `samples`, hand the text to `send`, and stream what comes back.
     func start(samples: [Float], send: @escaping Send) {
         run { await self.turn(samples: samples, send: send) }
+    }
+
+    /// Hand `text`, what an earlier try of this take was heard as, to `send`.
+    /// Nothing is transcribed.
+    func start(heard text: String, send: @escaping Send) {
+        run { await self.deliver(text, send: send) }
     }
 
     /// Read `text` back and send nothing anywhere: the Replay button.
@@ -474,6 +592,36 @@ final class MobileVoiceTurn {
             return finish(MobileVoice.end("failed", message: error.localizedDescription))
         }
         guard !isCancelled else { return }
+        await deliver(heard, send: send)
+    }
+
+    /// The text is in the target's chat: remember the take and tell the phone, once.
+    private func markSent() {
+        lock.lock()
+        let first = !submitted
+        submitted = true
+        lock.unlock()
+        guard first else { return }
+        if let take { take.takes.sent(take.id) }
+        emit("sent", [:], false)
+    }
+
+    /// What the target's turn came to, for the take: a reply means the text
+    /// was sent. A turn that was refused, or a pane that could not be typed
+    /// into, did not take it as far as the Mac can tell: the phone may try again.
+    private func settle(_ outcome: ManagerTurnOutcome) {
+        switch outcome {
+        case .done, .permission, .timeout:
+            markSent()
+        case .refused, .unreachable:
+            lock.lock()
+            let submitted = self.submitted
+            lock.unlock()
+            if !submitted, let take { take.takes.forget(take.id) }
+        }
+    }
+
+    private func deliver(_ heard: String, send: @escaping Send) async {
         guard !heard.isEmpty else {
             return finish(MobileVoice.end("empty", message: MobileVoice.heardNothing))
         }
@@ -484,6 +632,11 @@ final class MobileVoiceTurn {
         case .invalid: return finish(MobileVoice.end("failed", message: MobileVoice.notText))
         }
         emit("transcript", ["text": text], false)
+        // From here the text may reach the chat. A second try of this take
+        // that comes while this one runs must not type it too.
+        if let take, !take.takes.begin(take.id) {
+            return finish(MobileVoice.end("refused", message: MobileVoice.sending))
+        }
 
         let (stream, continuation) = AsyncStream.makeStream(of: String.self)
         var spoken: Task<Bool, Never>?
@@ -495,8 +648,11 @@ final class MobileVoiceTurn {
         let outcome = await withCheckedContinuation { (done: CheckedContinuation<ManagerTurnOutcome, Never>) in
             send(
                 text,
+                { [weak self] in self?.markSent() },
                 { [weak self] delta in
                     guard let self, !delta.isEmpty else { return }
+                    // A reply has started: the text is in the chat.
+                    self.markSent()
                     self.lock.lock()
                     self.streamed = true
                     self.lock.unlock()
@@ -504,6 +660,7 @@ final class MobileVoiceTurn {
                     continuation.yield(delta)
                 },
                 { [weak self] outcome in
+                    self?.settle(outcome)
                     // A reply that never streamed is still read back whole.
                     if let self, let reply = outcome.readback {
                         self.lock.lock()

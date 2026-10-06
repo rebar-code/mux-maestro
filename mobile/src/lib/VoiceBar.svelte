@@ -3,6 +3,7 @@
 	import Icon from './Icon.svelte';
 	import { live, OFF_LABEL } from './live.svelte';
 	import { voice, type VoiceSink, type VoiceTarget } from './voice.svelte';
+	import { takeLength } from './voice/takes';
 
 	/**
 	 * The bar of one target: the manager, or a thread. `part` draws only the
@@ -35,6 +36,8 @@
 	const level = $derived(hearing ? Math.min(1, Math.sqrt(voice.level * 8)) : 0);
 	/** The reply's audio is still on this phone: it can be gone through again. */
 	const scrubs = $derived(voice.scrubs(target));
+	/** What was said to this target and is not in its chat yet. */
+	const kept = $derived(off ? [] : voice.keptOf(target));
 	/** Seconds one tap moves through the reply. */
 	const JUMP = 15;
 </script>
@@ -50,6 +53,7 @@
 {:else if part === 'status'}
 	<!-- The bar's top edge stays; the line is there only while it says something. -->
 	<div class="vbar alone" data-voice-line>
+		{@render takes()}
 		{#if said}{@render line()}{/if}
 	</div>
 {:else}
@@ -77,6 +81,18 @@
 	</div>
 {/snippet}
 
+{#snippet takes()}
+	{#each kept as take (take.id)}
+		<div class="kept" data-kept-take>
+			<span class="what"><b>Not sent</b> {take.text ?? takeLength(take.seconds)}</span>
+			<button disabled={voice.status !== 'idle'} onclick={() => voice.resend(take.id, sink)}
+				>Resend</button
+			>
+			<button class="drop" onclick={() => voice.discard(take.id)}>Discard</button>
+		</div>
+	{/each}
+{/snippet}
+
 {#snippet controls()}
 	<div
 		class="vbar"
@@ -90,6 +106,7 @@
 		{@attach voice.attach(target)}
 		{@attach keepFocus}
 	>
+		{#if part === 'all'}{@render takes()}{/if}
 		{#if part === 'all' && said}{@render line()}{/if}
 		{#if active}
 			<div class="vrow">
@@ -194,6 +211,58 @@
 	.vstat.recording,
 	.vstat.speaking {
 		color: var(--text);
+	}
+
+	.kept {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 0 2px 7px;
+		font-size: 12.5px;
+	}
+
+	.kept .what {
+		flex: 1;
+		min-width: 0;
+		color: var(--text);
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.kept b {
+		margin-right: 4px;
+		color: #ff9f0a;
+		font-weight: 600;
+	}
+
+	.kept button {
+		position: relative;
+		flex: none;
+		height: 30px;
+		padding: 0 12px;
+		border-radius: 15px;
+		background: #fff;
+		color: #000;
+		font-size: 12.5px;
+		font-weight: 600;
+	}
+
+	.kept button.drop {
+		background: var(--surface);
+		border: 1px solid var(--border);
+		color: var(--text);
+	}
+
+	.kept button:disabled {
+		opacity: 0.4;
+	}
+
+	/* The look is 30pt high; the touch area is 44pt. */
+	.kept button::after {
+		content: '';
+		position: absolute;
+		inset: -7px 0;
 	}
 
 	.wave {

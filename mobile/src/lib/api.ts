@@ -191,6 +191,11 @@ export function postAudio(
 	);
 }
 
+/** A take the Mac heard before, sent again as its words. The answer is an event stream. */
+export function postHeard(path: string, text: string, signal?: AbortSignal): Promise<Response> {
+	return request(path, 'text/event-stream', undefined, signal, {}, { json: { text } });
+}
+
 function post(path: string, body: unknown, accept = 'application/json'): Promise<Response> {
 	return request(path, accept, undefined, undefined, {}, { json: body });
 }
