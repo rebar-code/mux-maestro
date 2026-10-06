@@ -793,9 +793,13 @@ struct MobileThread: Equatable {
     let sessionActivity: Int
     let claudeSessionId: String?
     let codexSessionId: String?
+    /// The phone started an agent here and it has not reported its id yet.
+    var startedAgent = false
 
     /// Transcripts are read from this Mac's disk, so only a local agent has chat.
-    var hasChat: Bool { host.isLocal && (claudeSessionId != nil || codexSessionId != nil) }
+    var hasChat: Bool {
+        host.isLocal && (claudeSessionId != nil || codexSessionId != nil || startedAgent)
+    }
 
     var json: [String: Any] {
         [
@@ -862,6 +866,37 @@ struct MobileHostInfo: Equatable {
 }
 
 /// Everything the phone lists, taken from the tree the sidebar already polls.
+/// The threads the phone started an agent in. An agent reports its session
+/// id some time after it starts (Codex only with its first message); until
+/// then the mark is what says the thread has a chat.
+struct MobileStartedAgents {
+    /// Seconds a mark waits for its pane to show in the tree.
+    static let grace = 30
+    private var marked: [String: Int] = [:]
+
+    mutating func mark(_ thread: String, now: Int) { marked[thread] = now }
+
+    /// `snapshot` with the marks on its threads. A mark ends when the agent
+    /// has its own id, or when its pane has gone.
+    mutating func apply(to snapshot: MobileSnapshot, now: Int) -> MobileSnapshot {
+        guard !marked.isEmpty else { return snapshot }
+        var snapshot = snapshot
+        var live = Set<String>()
+        for index in snapshot.threads.indices where marked[snapshot.threads[index].id] != nil {
+            let thread = snapshot.threads[index]
+            guard thread.claudeSessionId == nil, thread.codexSessionId == nil else {
+                marked[thread.id] = nil
+                continue
+            }
+            live.insert(thread.id)
+            snapshot.threads[index].startedAgent = true
+        }
+        // A tree read before the window was made does not have the pane yet.
+        marked = marked.filter { live.contains($0.key) || now - $0.value < Self.grace }
+        return snapshot
+    }
+}
+
 struct MobileSnapshot: Equatable {
     var threads: [MobileThread] = []
     var hosts: [MobileHostInfo] = []

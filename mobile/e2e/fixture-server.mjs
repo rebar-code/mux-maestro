@@ -1788,10 +1788,17 @@ function tmuxApi(req, res, path, body) {
 		threads.push(made);
 		result.session = name;
 	} else if (action === 'new-window') {
+		const agent = fields.agent ?? null;
+		if (agent !== null && agent !== 'claude' && agent !== 'codex')
+			return send(res, 400, { error: 'bad_agent' });
 		const made = makeThread(next, session, 'zsh', host, 'idle', '', 0, 'awake');
-		Object.assign(made, { command: 'zsh', chat: false, cwd: thread.cwd });
+		// As on the Mac: a transcript is read from its disk, so only a local agent has chat.
+		const chat = agent !== null && host === 'localhost';
+		Object.assign(made, { command: agent ?? 'zsh', chat, cwd: thread.cwd });
+		if (chat) chats[made.id] = [];
 		threads.push(made);
 		result.thread = made.id;
+		if (agent) result.agent = agent;
 	} else if (action === 'rename-session' || action === 'rename-window') {
 		const name = nameOf(fields.name);
 		if (!name) return send(res, 400, { error: 'bad_name' });

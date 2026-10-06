@@ -76,49 +76,52 @@
 				{/if}
 				{#each section.sessions as session (session.key)}
 					{@const shut = isCollapsed(collapse.keys, session.key, session.threads, collapse.opened)}
-					<!-- The row is the long-press target; the two buttons inside it are siblings,
+					<!-- The header sticks inside its own session: the next session pushes it out. -->
+					<div class="sess">
+						<!-- The row is the long-press target; the two buttons inside it are siblings,
 					     so the ＋ never toggles the session. -->
-					<div
-						class="shead"
-						class:shut
-						data-session={session.key}
-						{@attach can('sessionActions') && longPress(() => menu.open(sessionTarget(session)))}
-					>
-						<button
-							class="fold"
-							aria-expanded={!shut}
-							aria-controls={sessionDomId(session.key)}
-							onclick={() => collapse.toggle(session.key, shut, session.threads)}
+						<div
+							class="shead"
+							class:shut
+							data-session={session.key}
+							{@attach can('sessionActions') && longPress(() => menu.open(sessionTarget(session)))}
 						>
-							<span class="chev" aria-hidden="true">›</span>
-							<b>{session.name}</b>
-							<span
-								class="host"
-								style:color={session.hostColor}
-								style:border-color="{session.hostColor}66">{session.host}</span
+							<button
+								class="fold"
+								aria-expanded={!shut}
+								aria-controls={sessionDomId(session.key)}
+								onclick={() => collapse.toggle(session.key, shut, session.threads)}
 							>
-							{#if shut}
-								{@const summary = summaryStatus(session.threads)}
-								<span class="dot sum {summary}" data-summary={summary}>
-									<span class="sr">{SUMMARY_LABEL[summary]}</span>
-								</span>
-							{/if}
-							<span class="cnt">{session.threads.length}</span>
-						</button>
-						<button
-							class="tb add"
-							disabled={!can('sessionActions') || menu.busy}
-							aria-disabled={!can('sessionActions')}
-							aria-label="New window in {session.name}"
-							data-no-hold
-							onclick={() => menu.newWindow(sessionTarget(session))}>＋</button
-						>
-					</div>
-					<div class="windows" class:shut id={sessionDomId(session.key)} inert={shut}>
-						<div class="clip">
-							{#each session.threads as thread (thread.id)}
-								<ThreadRow {thread} selected={thread.id === openId} />
-							{/each}
+								<span class="chev" aria-hidden="true">›</span>
+								<b>{session.name}</b>
+								<span
+									class="host"
+									style:color={session.hostColor}
+									style:border-color="{session.hostColor}66">{session.host}</span
+								>
+								{#if shut}
+									{@const summary = summaryStatus(session.threads)}
+									<span class="dot sum {summary}" data-summary={summary}>
+										<span class="sr">{SUMMARY_LABEL[summary]}</span>
+									</span>
+								{/if}
+								<span class="cnt">{session.threads.length}</span>
+							</button>
+							<button
+								class="tb add"
+								disabled={!can('sessionActions') || menu.busy}
+								aria-disabled={!can('sessionActions')}
+								aria-label="New window in {session.name}"
+								data-no-hold
+								onclick={() => menu.openStart(sessionTarget(session))}>＋</button
+							>
+						</div>
+						<div class="windows" class:shut id={sessionDomId(session.key)} inert={shut}>
+							<div class="clip">
+								{#each session.threads as thread (thread.id)}
+									<ThreadRow {thread} selected={thread.id === openId} />
+								{/each}
+							</div>
 						</div>
 					</div>
 				{/each}
@@ -235,6 +238,11 @@
 		padding: 13px 8px 4px 0;
 		font-size: 13px;
 		color: #b5b5b5;
+		/* Stays at the top of the list while its windows scroll under it. */
+		position: sticky;
+		top: 0;
+		z-index: 1;
+		background: var(--bar);
 	}
 
 	/* The header's tap target: everything but the ＋. */

@@ -68,6 +68,8 @@ enum MobileActions {
         let host: Host
         let argv: [String]
         var made = Made.nothing
+        /// The agent to start in the window the command makes.
+        var agent: AgentHandoff.Agent?
     }
 
     /// Why an action is not run.
@@ -242,11 +244,20 @@ enum MobileActions {
                 host: host, argv: TmuxCommands.newSession(name: unique, dir: start), made: .session(unique))
         case .newWindow:
             let target = try session(fields, snapshot: snapshot)
+            var agent: AgentHandoff.Agent?
+            if let raw = fields["agent"], !(raw is NSNull) {
+                // One of two fixed words: nothing of the phone's is typed
+                // into the pane.
+                guard let asked = raw as? String,
+                      let known = [AgentHandoff.Agent.claude, .codex].first(where: { $0.launchCommand == asked })
+                else { throw Refusal(400, "bad_agent") }
+                agent = known
+            }
             return Call(
                 host: target.host,
                 argv: TmuxCommands.newWindow(
                     session: target.sessionId, cwd: path(target.cwd), printTarget: true),
-                made: .window)
+                made: .window, agent: agent)
         case .renameSession:
             let target = try session(fields, snapshot: snapshot)
             guard let new = name(fields["name"]) else { throw Refusal(400, "bad_name") }
@@ -318,11 +329,26 @@ enum MobileActions {
         case .window:
             if let created = TmuxCommands.parseCreatedPane(ran.output) {
                 result["thread"] = MobileSnapshot.threadID(host: call.host, pane: created.pane)
+                // The window is made either way; without `agent` in the
+                // answer the phone opens it as the shell it is.
+                if let agent = call.agent,
+                   run(TmuxCommands.startAgent(target: created.pane, command: agent.launchCommand))?.ok == true {
+                    result["agent"] = agent.launchCommand
+                }
             }
         case .session(let name):
             result["session"] = name
         }
         return .json(result)
+    }
+
+    /// The thread an answer of `perform` says an agent was started in.
+    static func startedThread(_ response: MobileResponse) -> String? {
+        guard response.status == 200,
+              let result = (try? JSONSerialization.jsonObject(with: response.body)) as? [String: Any],
+              result["agent"] is String
+        else { return nil }
+        return result["thread"] as? String
     }
 }
 // MARK: - Find

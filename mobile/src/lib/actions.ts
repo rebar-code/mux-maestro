@@ -28,13 +28,13 @@ export function menuItems(target: MenuTarget, canKill: boolean): MenuItem[] {
 	if (target.kind === 'host') return [{ key: 'new-session', label: 'New Session…' }];
 	if (target.kind === 'session') {
 		return [
-			{ key: 'new-window', label: 'New Window' },
+			{ key: 'new-window', label: 'New Window…' },
 			{ key: 'rename', label: 'Rename…' },
 			...(canKill ? [{ key: 'kill-session', label: 'Kill Session', danger: true } as const] : [])
 		];
 	}
 	return [
-		{ key: 'new-window', label: 'New Window' },
+		{ key: 'new-window', label: 'New Window…' },
 		{ key: 'rename', label: 'Rename Window…' },
 		{ key: 'zoom-pane', label: 'Zoom Pane' },
 		...(canKill && target.thread.panes > 1
@@ -42,6 +42,21 @@ export function menuItems(target: MenuTarget, canKill: boolean): MenuItem[] {
 			: []),
 		...(canKill ? [{ key: 'kill-window', label: 'Kill Window', danger: true } as const] : [])
 	];
+}
+
+/** What a new window starts with. */
+export type StartKind = 'claude' | 'codex' | 'terminal';
+
+export const START_ITEMS: { kind: StartKind; label: string }[] = [
+	{ kind: 'claude', label: 'Claude' },
+	{ kind: 'codex', label: 'Codex' },
+	{ kind: 'terminal', label: 'Terminal' }
+];
+
+/** The session a new window goes into. */
+export function startTitle(target: MenuTarget): string {
+	if (target.kind === 'thread') return target.thread.session;
+	return target.kind === 'session' ? target.session : '';
 }
 
 export function menuTitle(target: MenuTarget): string {

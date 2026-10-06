@@ -222,6 +222,7 @@ final class MobileServer {
     private var tokenDigest: String?
     private var shellPolicyCache: (shell: Data, socket: String?, policy: String)?
     private var snapshot = MobileSnapshot()
+    private var started = MobileStartedAgents()
     private var threadsBody = MobileSnapshot().threadsJSON()
     private var hostsBody = MobileSnapshot().hostsJSON()
     private var config = MobileConfig()
@@ -392,10 +393,20 @@ final class MobileServer {
         }
     }
 
+    /// The phone started an agent in `thread`.
+    private func agentStarted(in thread: String) {
+        queue.async {
+            self.started.mark(thread, now: Int(Date().timeIntervalSince1970))
+            // The tree may have the new pane already.
+            if self.snapshot.thread(id: thread) != nil { self.update(self.snapshot) }
+        }
+    }
+
     /// The latest tree. Pushes an event to open streams when a body changed.
     func update(_ snapshot: MobileSnapshot) {
         queue.async {
             guard self.listener != nil else { return }
+            let snapshot = self.started.apply(to: snapshot, now: Int(Date().timeIntervalSince1970))
             // A pane that starts or stops waiting ends the prompt that was
             // on it: the next one seen there is a new prompt.
             for thread in snapshot.threads
@@ -739,8 +750,10 @@ final class MobileServer {
                 return send(.error(404, "not_found"), to: client, head: head)
             }
             reply(to: client) { [sources] in
-                guard let file = sources.transcript(thread),
-                      let page = MobileChat.read(path: file.path, codex: file.codex, after: after)
+                // No transcript yet is an empty chat, not a missing thread:
+                // an agent writes its file with the first message.
+                guard let file = sources.transcript(thread) else { return .json(MobileChatPage().json) }
+                guard let page = MobileChat.read(path: file.path, codex: file.codex, after: after)
                 else { return .error(404, "not_found") }
                 return .json(page.json)
             }
@@ -958,10 +971,13 @@ final class MobileServer {
         case .tmux(let action):
             // Checked against the tree as it is now; tmux runs off the queue.
             let snapshot = snapshot
-            reply(to: client) { [sources] in
+            reply(to: client) { [sources, weak self] in
                 let response = MobileActions.perform(
                     action, body: request.body, snapshot: snapshot, home: sources.home,
                     tmux: sources.tmux)
+                // Marked before the tree is read again, so the new thread
+                // has its chat in the first tree it is in.
+                if let thread = MobileActions.startedThread(response) { self?.agentStarted(in: thread) }
                 if response.status == 200 { sources.changed() }
                 return response
             }

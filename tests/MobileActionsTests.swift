@@ -211,6 +211,48 @@ final class MobileActionsTests: XCTestCase {
         ])
     }
 
+    func testANewWindowStartsTheAskedAgentInTheNewPane() {
+        tmux.output = "3\t%41\n"
+        let claude = run(.newWindow, #"{"thread":"localhost:13","agent":"claude"}"#)
+        XCTAssertEqual(claude.status, 200)
+        XCTAssertEqual(claude.body["thread"] as? String, "localhost:41")
+        XCTAssertEqual(claude.body["agent"] as? String, "claude")
+        let codex = run(.newWindow, #"{"host":"devbox","session":"infra","agent":"codex"}"#)
+        XCTAssertEqual(codex.body["thread"] as? String, "devbox:41")
+        XCTAssertEqual(codex.body["agent"] as? String, "codex")
+        // No agent, or null, is a bare shell.
+        let shell = run(.newWindow, #"{"thread":"localhost:13","agent":null}"#)
+        XCTAssertEqual(shell.status, 200)
+        XCTAssertNil(shell.body["agent"])
+
+        let format = "#{window_index}\t#{pane_id}"
+        XCTAssertEqual(tmux.argv, [
+            ["new-window", "-a", "-t", "$1:", "-P", "-F", format, "-c", "/Users/me/acme-app/web"],
+            ["send-keys", "-t", "%41", "claude", "Enter"],
+            ["new-window", "-a", "-t", "$0:", "-P", "-F", format, "-c", "/home/me/infra"],
+            ["send-keys", "-t", "%41", "codex", "Enter"],
+            ["new-window", "-a", "-t", "$1:", "-P", "-F", format, "-c", "/Users/me/acme-app/web"],
+        ])
+        XCTAssertEqual(tmux.calls.map(\.host), ["localhost", "localhost", "devbox", "devbox", "localhost"])
+    }
+
+    func testANewWindowRefusesAnAgentItDoesNotKnow() {
+        for bad in [#""vim""#, #""Claude""#, #""claude; date""#, #""""#, "1", "true", #"["claude"]"#] {
+            XCTAssertEqual(
+                code(.newWindow, #"{"thread":"localhost:13","agent":\#(bad)}"#), "400 bad_agent", bad)
+        }
+        XCTAssertTrue(tmux.argv.isEmpty)
+    }
+
+    func testAWindowWhoseAgentDidNotStartIsStillMade() {
+        // tmux printed no pane id: there is no pane to type the command into.
+        tmux.output = ""
+        let made = run(.newWindow, #"{"thread":"localhost:13","agent":"claude"}"#)
+        XCTAssertEqual(made.status, 200)
+        XCTAssertNil(made.body["agent"])
+        XCTAssertEqual(tmux.argv.count, 1)
+    }
+
     func testANewSessionStartsOnlyInADirectoryTheServerOffered() {
         XCTAssertEqual(
             MobileActions.dirs(host: "localhost", snapshot: snapshot()),
