@@ -114,7 +114,8 @@ test('Manual: tap to start, tap to send, and a pause never cuts the take', async
 	expect(request.headers()['content-type']).toBe('audio/wav');
 	expect(request.headers()['x-muxmaestro']).toBe('1');
 	expect(request.headers()['x-muxmaestro-token']).toBe('demo-token');
-	expect(new URL(request.url()).search).toBe('?target=manager&speaker=1');
+	// The take has a name of its own: the Mac knows it when it comes again.
+	expect(new URL(request.url()).search).toMatch(/^\?target=manager&speaker=1&take=[0-9a-f-]{36}$/);
 
 	await expect(primary(page)).toHaveText('■ Stop');
 	await expect(status(page)).toHaveText('Thinking…');
@@ -191,7 +192,9 @@ test('input only: the speech becomes text and nothing is read back', async ({ pa
 	await say(page, 700);
 	const sent = page.waitForRequest((request) => request.url().includes('/api/voice?'));
 	await primary(page).click();
-	expect(new URL((await sent).url()).search).toBe('?target=manager&speaker=0');
+	expect(new URL((await sent).url()).search).toMatch(
+		/^\?target=manager&speaker=0&take=[0-9a-f-]{36}$/
+	);
 
 	await expect(said(page).locator('.u')).toHaveText('What needs me?');
 	await expect(said(page).locator('.a').last()).toHaveText(REPLY);
@@ -1005,4 +1008,182 @@ test('Play under a message reads it aloud, one message at a time', async ({ page
 	// Read to its end: the button is Play again.
 	await expect(playButton(first)).toHaveAttribute('data-say', 'idle', { timeout: 8000 });
 	await expect(playButton(first)).toHaveAccessibleName('Play');
+});
+
+// MARK: a take is kept until the Mac has it
+
+/** The takes this phone still holds for the bar on screen. */
+const kept = (page: Page): Locator => page.locator('[data-kept-take]');
+const resend = (page: Page): Locator => kept(page).getByRole('button', { name: 'Resend' });
+
+interface Sent {
+	target: string;
+	text: string;
+	from: 'audio' | 'words';
+}
+
+async function sent(page: Page): Promise<Sent[]> {
+	return ((await (await page.request.post('/__fixture/voice-takes')).json()) as { sent: Sent[] })
+		.sent;
+}
+
+/** One Manual take: tap, speak, tap. */
+async function take(page: Page): Promise<void> {
+	await primary(page).click();
+	await expect(primary(page)).toHaveText('↑ Submit');
+	await say(page, 600);
+	await primary(page).click();
+}
+
+test('a take the Mac never got is kept, lasts through a reload, and is sent again', async ({
+	page
+}) => {
+	await open(page);
+	// The Mac is asleep or off the tailnet.
+	await page.route('**/api/voice?*', (route) => route.abort());
+	await take(page);
+	await expect(status(page)).toHaveText('Mac not reachable');
+	await expect(kept(page)).toHaveCount(1);
+	await page.unroute('**/api/voice?*');
+
+	// It is on the phone, not in the page: a reload does not lose it.
+	await page.reload();
+	await expect(primary(page)).toHaveText('Talk');
+	await expect(kept(page)).toHaveCount(1);
+	expect(await sent(page)).toEqual([]);
+
+	await resend(page).click();
+	await expect(said(page).locator('.u').last()).toHaveText('What needs me?');
+	await expect(said(page).locator('.a').last()).toHaveText(REPLY);
+	await expect(kept(page)).toHaveCount(0);
+	// The audio went again: the Mac never had it.
+	expect(await sent(page)).toEqual([{ target: 'manager', text: 'What needs me?', from: 'audio' }]);
+	expect((await takes(page)).length).toBe(1);
+
+	// The Mac has it: nothing is left on the phone.
+	await page.reload();
+	await expect(primary(page)).toHaveText('Talk');
+	await expect(kept(page)).toHaveCount(0);
+});
+
+test('every way a send fails keeps the take', async ({ page }) => {
+	await open(page);
+	// The Mac answers, and does not take it.
+	await page.route('**/api/voice?*', (route) =>
+		route.fulfill({
+			status: 503,
+			contentType: 'application/json',
+			body: JSON.stringify({ error: 'models', message: 'Voice models not ready' })
+		})
+	);
+	await take(page);
+	await expect(status(page)).toHaveText('Voice models loading');
+	await expect(kept(page)).toHaveCount(1);
+	await page.unroute('**/api/voice?*');
+
+	// The stream dies before the Mac has the words.
+	await page.request.post('/__fixture/voice?fail=cut');
+	await take(page);
+	await expect(kept(page)).toHaveCount(2);
+
+	// The Mac could not transcribe it.
+	await page.request.post('/__fixture/voice?fail=failed');
+	await take(page);
+	await expect(status(page)).toHaveText('Could not transcribe');
+	await expect(kept(page)).toHaveCount(3);
+	expect(await sent(page)).toEqual([]);
+
+	// Each one goes again by itself.
+	for (const left of [2, 1, 0]) {
+		await resend(page).first().click();
+		await expect(kept(page)).toHaveCount(left);
+		await expect(primary(page)).toHaveText('Talk', { timeout: 15000 });
+	}
+	expect((await sent(page)).map((one) => one.text)).toEqual(Array(3).fill('What needs me?'));
+});
+
+test('a take the Mac heard and did not send goes again as words', async ({ page }) => {
+	await open(page, ['/__fixture/voice?fail=refused']);
+	await take(page);
+	// The words are known: they are what the kept take shows.
+	await expect(kept(page)).toHaveCount(1);
+	await expect(kept(page)).toContainText('What needs me?');
+	// In one place only: the words are not put in the text box as well.
+	await expect(box(page)).toHaveValue('');
+	expect(await sent(page)).toEqual([]);
+
+	const again = page.waitForRequest((request) => request.url().includes('/api/voice?'));
+	await resend(page).click();
+	const request = await again;
+	expect(request.url()).toContain('heard=1');
+	expect(request.postDataJSON()).toEqual({ text: 'What needs me?' });
+	await expect(said(page).locator('.a').last()).toHaveText(REPLY);
+	await expect(kept(page)).toHaveCount(0);
+	expect(await sent(page)).toEqual([{ target: 'manager', text: 'What needs me?', from: 'words' }]);
+	// The audio was sent once only.
+	expect((await takes(page)).length).toBe(1);
+});
+
+test('a take the Mac sent before the answer was lost is not typed twice', async ({ page }) => {
+	await open(page, ['/__fixture/voice?fail=lost']);
+	await take(page);
+	// The phone was never told, so it keeps the take.
+	await expect(kept(page)).toHaveCount(1);
+	await expect(primary(page)).toHaveText('Talk', { timeout: 15000 });
+	expect((await sent(page)).length).toBe(1);
+
+	// The Mac knows the take: it answers that it has it, and types nothing.
+	await resend(page).click();
+	await expect(kept(page)).toHaveCount(0);
+	await expect(primary(page)).toHaveText('Talk');
+	expect((await sent(page)).length).toBe(1);
+	expect((await takes(page)).length).toBe(1);
+	await expect(said(page).locator('.u')).toHaveCount(1);
+});
+
+test('Discard drops a kept take for good', async ({ page }) => {
+	await open(page);
+	await page.route('**/api/voice?*', (route) => route.abort());
+	await take(page);
+	await expect(kept(page)).toHaveCount(1);
+	await page.unroute('**/api/voice?*');
+
+	await kept(page).getByRole('button', { name: 'Discard' }).click();
+	await expect(kept(page)).toHaveCount(0);
+	// The phone's storage is written a moment after the tap.
+	await page.waitForTimeout(200);
+	await page.reload();
+	await expect(primary(page)).toHaveText('Talk');
+	await expect(kept(page)).toHaveCount(0);
+	expect(await sent(page)).toEqual([]);
+});
+
+test('a take that is open when the app goes to the background is kept', async ({ page }) => {
+	await open(page);
+	await primary(page).click();
+	await expect(primary(page)).toHaveText('↑ Submit');
+	await say(page, 600);
+	await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
+	await expect(primary(page)).toHaveText('Talk');
+	await expect(kept(page)).toHaveCount(1);
+	expect(await takes(page)).toEqual([]);
+
+	await resend(page).click();
+	await expect(said(page).locator('.a').last()).toHaveText(REPLY);
+	await expect(kept(page)).toHaveCount(0);
+	expect((await takes(page))[0].seconds).toBeGreaterThan(0.5);
+});
+
+test('a thread keeps its own takes', async ({ page }) => {
+	await open(page);
+	await page.route('**/api/voice?*', (route) => route.abort());
+	await take(page);
+	await expect(kept(page)).toHaveCount(1);
+	await page.unroute('**/api/voice?*');
+
+	// The manager's take is not offered in a thread.
+	await page.request.post('/__fixture/capability?name=replies&on=1');
+	await page.goto(threadPath('localhost:7'));
+	await expect(primary(page)).toHaveText('Talk');
+	await expect(kept(page)).toHaveCount(0);
 });

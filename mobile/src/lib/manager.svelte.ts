@@ -282,7 +282,12 @@ class Manager {
 	 * then goes back in the box, to send again. `note` is what a turn that did
 	 * land leaves to say.
 	 */
-	private async finish(refused: string | null, note: string | null): Promise<void> {
+	private async finish(
+		refused: string | null,
+		note: string | null,
+		/** The turn was spoken: the voice bar keeps the take, so its words do not go in the box too. */
+		spoken = false
+	): Promise<void> {
 		const text = this.turn?.prompt ?? '';
 		// The reply is in the transcript now: read it before the turn's line goes.
 		if (refused === null) await this.feed.load('chat');
@@ -292,7 +297,7 @@ class Manager {
 		if (refused === null) this.next();
 		else {
 			// What waited behind a refused turn would be refused too: it all goes back in the box.
-			const back = [text, ...this.queued].join('\n');
+			const back = [...(spoken ? [] : [text]), ...this.queued].join('\n');
 			this.hold([]);
 			if (!this.draft) this.draft = back;
 		}
@@ -300,9 +305,9 @@ class Manager {
 	}
 
 	/** How the Mac ended a turn, as `finish` takes it. */
-	private ended(end: TurnEnd | VoiceEnd): Promise<void> {
+	private ended(end: TurnEnd | VoiceEnd, spoken = false): Promise<void> {
 		return end.outcome === 'refused' || end.outcome === 'unreachable'
-			? this.finish(end.message ?? 'The Maestro did not take the message', null)
+			? this.finish(end.message ?? 'The Maestro did not take the message', null, spoken)
 			: this.finish(null, end.message);
 	}
 
@@ -351,8 +356,8 @@ class Manager {
 	readonly voice: VoiceSink = {
 		begin: (prompt) => this.begin(prompt),
 		delta: () => void this.feed.load('chat'),
-		end: (end) => void this.ended(end),
-		fail: (message) => void this.finish(message, null),
+		end: (end) => void this.ended(end, true),
+		fail: (message) => void this.finish(message, null, true),
 		// The Mac still runs the turn: its events draw the rest.
 		detach: () => {
 			this.sending = false;

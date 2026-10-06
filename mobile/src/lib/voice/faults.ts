@@ -38,6 +38,8 @@ export function requestFault(error: unknown): string {
 	if (error.code === 'disabled') return 'Off in MuxMaestro Settings';
 	// The models are still being fetched on the Mac.
 	if (error.code === 'models') return 'Voice models loading';
+	// The Mac is typing this very take into the chat now.
+	if (error.code === 'sending') return 'Still sending';
 	if (error.status === 413) return 'Take too long';
 	if (error.detail) return error.detail;
 	// The tailnet proxy answered for a Mac that did not.

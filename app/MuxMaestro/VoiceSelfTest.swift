@@ -121,7 +121,7 @@ enum VoiceSelfTest {
                 lock.unlock()
                 if last { done.resume(returning: seconds(t0)) }
             }
-            turn.start(samples: take) { _, onDelta, completion in
+            turn.start(samples: take) { _, _, onDelta, completion in
                 onDelta(reply)
                 completion(.done(reply: reply))
             }

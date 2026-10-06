@@ -769,7 +769,9 @@ test('voice into a thread: the take shows as your line and the reply streams in'
 	await expect(page.locator('[data-cancel]')).toHaveCount(0);
 	expect(await box(page).boundingBox()).toEqual(boxBefore);
 	const request = await sent;
-	expect(new URL(request.url()).search).toBe('?target=localhost%3A7&speaker=1');
+	expect(new URL(request.url()).search).toMatch(
+		/^\?target=localhost%3A7&speaker=1&take=[0-9a-f-]{36}$/
+	);
 	expect(request.headers()['x-muxmaestro']).toBe('1');
 	expect(request.headers()['content-type']).toBe('audio/wav');
 

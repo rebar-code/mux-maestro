@@ -230,6 +230,8 @@ final class MobileServer {
     private var turn: MobileManagerTurn?
     /// The voice turn in flight. One at a time: the Mac has one engine.
     private var voiceTurn: MobileVoiceTurn?
+    /// The takes whose text was sent: one that comes again is not typed twice.
+    private let voiceTakes = MobileVoiceTakes()
     private var voiceStarting = false
     /// The read-aloud in flight, and its phone: a newer one replaces it.
     private weak var reading: MobileVoiceTurn?
@@ -1415,7 +1417,8 @@ final class MobileServer {
     /// `follow`, the reply is then read from the thread's transcript.
     private func threadTurn(
         _ text: String, thread: MobileThread, io: MobilePaneIO, follow: Bool,
-        onDelta: @escaping (String) -> Void, completion: @escaping (ManagerTurnOutcome) -> Void
+        onSent: @escaping () -> Void, onDelta: @escaping (String) -> Void,
+        completion: @escaping (ManagerTurnOutcome) -> Void
     ) {
         let id = thread.id
         queue.async { [self] in
@@ -1434,6 +1437,7 @@ final class MobileServer {
                 guard response.status == 200 else {
                     return completion(.refused(MobileVoice.message(of: response)))
                 }
+                onSent()
                 guard let turn else { return completion(.done(reply: "")) }
                 turn.follow(onDelta: onDelta, completion: completion)
             }
@@ -1583,7 +1587,9 @@ final class MobileServer {
     /// Turn `client` into the stream of one voice turn and return the turn.
     /// The turn's events go to the client; the last one closes it. A client
     /// that hangs up cancels the turn.
-    private func voiceStream(to client: Client, voice: Voice, speaker: Bool) -> MobileVoiceTurn {
+    private func voiceStream(
+        to client: Client, voice: Voice, speaker: Bool, take: String? = nil
+    ) -> MobileVoiceTurn {
         client.streaming = true
         client.backlog = limits.voiceBacklog
         client.buffer.removeAll()
@@ -1591,8 +1597,9 @@ final class MobileServer {
         receive(client)
         pingTurn(client)
         weak var made: MobileVoiceTurn?
-        let turn = MobileVoiceTurn(speech: voice.speech, speaker: speaker) {
-            [weak self, weak client] name, object, last in
+        let turn = MobileVoiceTurn(
+            speech: voice.speech, speaker: speaker, take: take.map { ($0, voiceTakes) }
+        ) { [weak self, weak client] name, object, last in
             let json = Self.json(object)
             self?.queue.async {
                 guard let self, let client, self.clients[ObjectIdentifier(client)] != nil else { return }
@@ -1617,16 +1624,26 @@ final class MobileServer {
     /// starts answers with a stream: `transcript`, `delta` and `audio` events,
     /// then one `end`.
     private func startVoice(_ request: MobileRequest, client: Client) {
+        // A take the phone kept and sends again. The Mac may have typed its
+        // text before the answer was lost: then it says so and types nothing.
+        if let id = MobileVoiceRequest(query: request.query)?.take {
+            switch voiceTakes.state(of: id) {
+            case .sent: return send(MobileVoice.alreadySent, to: client, head: false)
+            case .sending:
+                return send(.error(409, "sending", message: MobileVoice.sending), to: client, head: false)
+            case nil: break
+            }
+        }
         if let refusal = voiceRefusal(request) { return send(refusal, to: client, head: false) }
         guard let ask = MobileVoiceRequest(query: request.query), let voice else { return }
         if case .thread(let id) = ask.target {
-            return startThreadVoice(request, id: id, speaker: ask.speaker, voice: voice, client: client)
+            return startThreadVoice(request, id: id, ask: ask, voice: voice, client: client)
         }
         guard let manager else { return }
         voiceStarting = true
         work.async { [weak self, weak client] in
-            let ready = voice.speech.modelsReady
-            let take = ready ? MobileVoice.take(wav: request.body) : .samples([])
+            let ready = Self.voiceReady(ask, voice: voice)
+            let take = ready ? MobileVoice.take(body: request.body, heard: ask.heard) : .samples([])
             let status = manager.pane().status
             self?.queue.async {
                 guard let self else { return }
@@ -1638,31 +1655,47 @@ final class MobileServer {
                     status: status, turnRunning: self.turn != nil || self.phoneTurns > 0) {
                     return self.send(refusal, to: client, head: false)
                 }
-                guard case .samples(let samples) = take else {
-                    if case .refused(let response) = take { self.send(response, to: client, head: false) }
-                    return
+                if case .refused(let response) = take {
+                    return self.send(response, to: client, head: false)
                 }
                 // The words go down the path typed text takes: the same send,
                 // counted as a phone turn until the manager ends it. The turn
                 // runs to its end even when the phone hangs up.
-                self.voiceStream(to: client, voice: voice, speaker: ask.speaker)
-                    .start(samples: samples) { [weak self] text, onDelta, completion in
-                        self?.sendHeard(text, manager: manager, onDelta: onDelta, completion: completion)
-                    }
+                let turn = self.voiceStream(
+                    to: client, voice: voice, speaker: ask.speaker, take: ask.take)
+                Self.start(turn, take) { [weak self] text, _, onDelta, completion in
+                    self?.sendHeard(text, manager: manager, onDelta: onDelta, completion: completion)
+                }
             }
+        }
+    }
+
+    /// Words that were heard before need no model, unless the reply is spoken.
+    private static func voiceReady(_ ask: MobileVoiceRequest, voice: Voice) -> Bool {
+        (ask.heard && !ask.speaker) || voice.speech.modelsReady
+    }
+
+    private static func start(
+        _ turn: MobileVoiceTurn, _ take: MobileVoice.Take, send: @escaping MobileVoiceTurn.Send
+    ) {
+        switch take {
+        case .samples(let samples): turn.start(samples: samples, send: send)
+        case .heard(let text): turn.start(heard: text, send: send)
+        case .refused: break
         }
     }
 
     /// One voice take into a thread. The pane is asked first, so a take into
     /// a pane that is busy or on a prompt costs nothing and types nothing.
     private func startThreadVoice(
-        _ request: MobileRequest, id: String, speaker: Bool, voice: Voice, client: Client
+        _ request: MobileRequest, id: String, ask: MobileVoiceRequest, voice: Voice, client: Client
     ) {
         guard let thread = snapshot.thread(id: id), let io = sources.pane(thread) else { return }
+        let speaker = ask.speaker
         voiceStarting = true
         work.async { [weak self, weak client] in
-            let ready = voice.speech.modelsReady
-            let take = ready ? MobileVoice.take(wav: request.body) : .samples([])
+            let ready = Self.voiceReady(ask, voice: voice)
+            let take = ready ? MobileVoice.take(body: request.body, heard: ask.heard) : .samples([])
             let refusal = MobileReply.refusal(state: self?.state(of: id, io: io), io: io)
             self?.queue.async {
                 guard let self else { return }
@@ -1670,17 +1703,16 @@ final class MobileServer {
                 guard let client, self.clients[ObjectIdentifier(client)] != nil else { return }
                 guard ready else { return self.send(MobileVoice.modelsMissing, to: client, head: false) }
                 if let refusal { return self.send(refusal, to: client, head: false) }
-                guard case .samples(let samples) = take else {
-                    if case .refused(let response) = take { self.send(response, to: client, head: false) }
-                    return
+                if case .refused(let response) = take {
+                    return self.send(response, to: client, head: false)
                 }
-                self.voiceStream(to: client, voice: voice, speaker: speaker)
-                    .start(samples: samples) { [weak self] text, onDelta, completion in
-                        guard let self else { return completion(.unreachable(MobileReply.unreachable)) }
-                        self.threadTurn(
-                            text, thread: thread, io: io, follow: speaker, onDelta: onDelta,
-                            completion: completion)
-                    }
+                let turn = self.voiceStream(to: client, voice: voice, speaker: speaker, take: ask.take)
+                Self.start(turn, take) { [weak self] text, onSent, onDelta, completion in
+                    guard let self else { return completion(.unreachable(MobileReply.unreachable)) }
+                    self.threadTurn(
+                        text, thread: thread, io: io, follow: speaker, onSent: onSent,
+                        onDelta: onDelta, completion: completion)
+                }
             }
         }
     }

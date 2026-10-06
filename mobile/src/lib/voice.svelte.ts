@@ -7,9 +7,10 @@ import { dropLabel, micFault, requestFault } from './voice/faults';
 import { voiceLabel, type VoiceStatus } from './voice/label';
 import { Player } from './voice/player';
 import { sayState, sayTap, type SayKey, type SayState } from './voice/say';
+import { endVerdict, errorVerdict, newTake, phoneTakes, type KeptTake } from './voice/takes';
 import { takeWav } from './voice/wav';
 
-export type { VoiceStatus };
+export type { KeptTake, VoiceStatus };
 
 /** Where a take goes: `manager`, or a thread's id. */
 export type VoiceTarget = string;
@@ -86,12 +87,21 @@ function session(type: 'playback' | 'play-and-record'): void {
  * The phone captures raw PCM and sends a WAV (not MediaRecorder: iOS records
  * a format the Mac would have to decode). Auto and Manual differ only in what
  * starts and ends a take; see `Capture`.
+ *
+ * What the human said is never held by a request alone. A take is written to
+ * the phone before it is sent and stays there until the Mac says its text is
+ * in the chat. A send that fails, a stream that dies, a reload: the take is
+ * still here, to send again or to discard.
  */
 class Voice {
 	constructor() {
 		// A take, the wait for its answer and the spoken reply are one turn:
 		// a new build does not reload the page in the middle of it.
 		blockReloadWhile(() => this.status !== 'idle' || this.abort !== null);
+		void this.store.all().then((stored) => {
+			const fresh = stored.filter((one) => !this.takes.some((take) => take.id === one.id));
+			this.takes = [...fresh, ...this.takes];
+		});
 	}
 
 	status = $state<VoiceStatus>('idle');
@@ -137,6 +147,12 @@ class Voice {
 	/** Keeps the screen on while a turn runs: a locked phone stops web audio. */
 	private wake: WakeLockSentinel | null = null;
 	private wakeWanted = false;
+
+	private readonly store = phoneTakes();
+	/** The takes the Mac has not confirmed, oldest first. Raw: each holds its audio. */
+	private takes = $state.raw<KeptTake[]>([]);
+	/** The kept take that is on its way now. */
+	private flying = $state<string | null>(null);
 
 	private get inFlight(): boolean {
 		return this.abort !== null;
@@ -201,6 +217,47 @@ class Voice {
 		} catch {
 			// Storage is full or blocked: the choice lasts until the page closes.
 		}
+	}
+
+	// MARK: kept takes
+
+	/** The takes of `target` that wait for the human: not sent, and not on their way. */
+	keptOf(target: VoiceTarget): KeptTake[] {
+		return this.takes.filter((take) => take.target === target && take.id !== this.flying);
+	}
+
+	private keep(take: KeptTake): void {
+		this.takes = [...this.takes, take];
+		void this.store.put(take);
+	}
+
+	/** The Mac heard the take: the words are what goes again, not the audio. */
+	private heardAs(id: string, text: string): void {
+		const take = this.takes.find((one) => one.id === id);
+		if (!take) return;
+		const heard = { ...take, text };
+		this.takes = this.takes.map((one) => (one.id === id ? heard : one));
+		void this.store.put(heard);
+	}
+
+	private forget(id: string): void {
+		this.takes = this.takes.filter((take) => take.id !== id);
+		void this.store.remove(id);
+	}
+
+	/**
+	 * A take that is open when the mic is taken away (a call, the app in the
+	 * background) is kept, not sent: the human decides when they are back.
+	 */
+	private keepOpen(): void {
+		const capture = this.capture;
+		const target = this.target;
+		if (this.status !== 'recording' || !capture || target === null) return;
+		const rate = capture.rate;
+		const take = capture.end(this.mode);
+		if ('dropped' in take) return;
+		const seconds = take.samples.length / rate;
+		this.keep(newTake(target, takeWav(take.samples, rate), seconds, Date.now()));
 	}
 
 	// MARK: audio
@@ -361,6 +418,7 @@ class Voice {
 		if (!lost && !this.stream) return;
 		// Auto does not start to listen again by itself: a tap does.
 		this.bound = null;
+		this.keepOpen();
 		this.closeMic();
 		if (lost) {
 			this.rest();
@@ -378,6 +436,7 @@ class Voice {
 
 	/** The page is going away or into the background: give everything back. */
 	release = (): void => {
+		this.keepOpen();
 		this.bound = null;
 		this.talking = null;
 		this.halt();
@@ -449,6 +508,8 @@ class Voice {
 	private halt(): void {
 		const running = this.abort;
 		this.abort = null;
+		// A take that was on its way and is not confirmed is a kept take again.
+		this.flying = null;
 		running?.abort();
 		this.sink?.detach();
 		this.sink = null;
@@ -471,7 +532,9 @@ class Voice {
 		sink: VoiceSink,
 		/** Play the reply whatever the speaker switch says: Replay asks for it. */
 		always: boolean,
-		make: (handlers: VoiceHandlers, signal: AbortSignal) => Promise<VoiceEnd>
+		make: (handlers: VoiceHandlers, signal: AbortSignal) => Promise<VoiceEnd>,
+		/** The kept take this turn carries. Only the Mac's answer lets it go. */
+		kept: string | null = null
 	): Promise<void> {
 		const control = new AbortController();
 		this.abort = control;
@@ -488,10 +551,16 @@ class Voice {
 		const heard = (): void => {
 			if (this.timing.text === null) this.timing = { ...this.timing, text: since() };
 		};
+		let sent = false;
 		try {
 			const end = await make(
 				{
+					onSent: () => {
+						sent = true;
+						if (kept) this.forget(kept);
+					},
 					onTranscript: (text) => {
+						if (kept) this.heardAs(kept, text);
 						if (!mine()) return;
 						heard();
 						this.sink = sink;
@@ -510,12 +579,15 @@ class Voice {
 				},
 				control.signal
 			);
+			if (kept && endVerdict(end, sent) !== 'keep') this.forget(kept);
 			if (!mine()) return;
 			if (this.sink) sink.end(end);
 			else if (end.outcome === 'empty') this.note = dropLabel('silent');
 			else if (end.outcome !== 'done') this.note = end.message ?? 'Mac not reachable';
 		} catch (error) {
+			// Stopped here, or replaced by another turn: the take stays kept.
 			if (!mine()) return;
+			if (kept && errorVerdict(error) === 'drop') this.forget(kept);
 			live.fail(error);
 			const message = requestFault(error);
 			if (this.sink) sink.fail(message);
@@ -523,6 +595,7 @@ class Voice {
 		}
 		this.sink = null;
 		this.abort = null;
+		this.flying = null;
 		// A reply still playing ends the turn when its last clip does.
 		if (!this.player?.busy) this.rest();
 	}
@@ -543,10 +616,22 @@ class Voice {
 			return;
 		}
 		this.blip();
+		const seconds = take.samples.length / rate;
+		const kept = newTake(target, takeWav(take.samples, rate), seconds, Date.now());
+		// On the phone before it is on the wire.
+		this.keep(kept);
+		this.send(kept, sink);
+	}
+
+	private send(take: KeptTake, sink: VoiceSink): void {
 		const speaker = this.speaker;
-		const wav = takeWav(take.samples, rate);
-		void this.run(target, sink, false, (handlers, signal) =>
-			sendVoice(target, speaker, wav, handlers, signal)
+		this.flying = take.id;
+		void this.run(
+			take.target,
+			sink,
+			false,
+			(handlers, signal) => sendVoice(take, speaker, handlers, signal),
+			take.id
 		);
 	}
 
@@ -596,6 +681,20 @@ class Voice {
 		this.settleMic();
 		this.rest();
 	};
+
+	/** Send a kept take again: its words when the Mac heard them, else its audio. */
+	resend = (id: string, sink: VoiceSink): void => {
+		const take = this.takes.find((one) => one.id === id);
+		// Not over an open take or a running turn: that one would be cut off.
+		if (!take || this.status !== 'idle') return;
+		this.unlock();
+		this.halt();
+		this.note = null;
+		this.send(take, sink);
+	};
+
+	/** Drop a kept take: the human does not want it sent. */
+	discard = (id: string): void => this.forget(id);
 
 	/** Stop speaking. The reply's text still arrives. */
 	skip = (): void => {

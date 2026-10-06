@@ -7,7 +7,7 @@
 // /__fixture/grouping?value=, /__fixture/deny?on=1, /__fixture/rotate?value=, /__fixture/drop,
 // /__fixture/capability?name=&on=, /__fixture/manager-status?value=,
 // /__fixture/mac-turn?text=&reply=&spinner=&ms= (ms: the pause between words),
-// /__fixture/voice?mode=&speaker=&heard=&delay=, /__fixture/voice-takes,
+// /__fixture/voice?mode=&speaker=&heard=&delay=&fail=, /__fixture/voice-takes,
 // /__fixture/voice-said (the messages the phone had read aloud, and which came from the cache),
 // /__fixture/replies, /__fixture/prompt?id=&pid=&kind=,
 // /__fixture/upload-max?value=, /__fixture/status?id=&value=,
@@ -751,6 +751,15 @@ function reset() {
 		heard: 'What needs me?',
 		delay: 300,
 		takes: [],
+		// How the next take goes wrong, once: `cut` (the stream dies before the
+		// words are known), `failed` (no transcription), `refused` (heard, then
+		// the pane does not take it), `lost` (typed into the chat, then the
+		// stream dies before the phone is told).
+		fail: null,
+		// Every text that reached a chat, and whether it came as audio or as words.
+		sent: [],
+		// The take ids whose text reached a chat.
+		known: new Set(),
 		// Every read-aloud asked for, and the messages already synthesized once.
 		said: [],
 		spoken: new Set()
@@ -1556,7 +1565,8 @@ function voiceApi(req, res, url, body) {
 	if (thread && typed && !capabilities.replies) return send(res, 403, { error: 'disabled' });
 	const stream = () =>
 		res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' });
-	const event = (name, data) => res.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
+	const event = (name, data) =>
+		res.destroyed || res.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
 	const speak = (reply) =>
 		reply
 			.split(/(?<=[.!?:])\s+/)
@@ -1596,9 +1606,23 @@ function voiceApi(req, res, url, body) {
 		return res.end();
 	}
 
-	const take = describeTake(body, url);
+	// A take the phone kept and sends again. One whose text is in the chat
+	// already is not typed a second time.
+	const id = url.searchParams.get('take');
+	if (id && voice.known.has(id)) {
+		stream();
+		event('sent', {});
+		event('end', { outcome: 'done', reply: '', message: null });
+		return res.end();
+	}
+	// The words, when the phone was told them before the send failed.
+	const words = url.searchParams.get('heard') === '1';
+	const take = words
+		? { target, speaker: url.searchParams.get('speaker') === '1' }
+		: describeTake(body, url);
 	if (body.length > 4194304) return send(res, 413, { error: 'too_long' });
-	if (!take.riff) return send(res, 400, { error: 'bad_audio', message: 'Not a WAV recording' });
+	if (!words && !take.riff)
+		return send(res, 400, { error: 'bad_audio', message: 'Not a WAV recording' });
 	const refused = thread && refusedBy(thread);
 	if (refused) return send(res, 409, refused);
 	if (!thread) {
@@ -1606,17 +1630,37 @@ function voiceApi(req, res, url, body) {
 		if (manager.status === 'waiting')
 			return send(res, 409, { error: 'waiting', message: 'Maestro is waiting on a prompt' });
 	}
-	voice.takes.push(take);
+	if (!words) voice.takes.push(take);
+	const fail = voice.fail;
+	voice.fail = null;
 	stream();
-	const { heard, delay } = voice;
+	// A stream that dies has begun: a browser sends a request again by itself
+	// when its connection closes before the first byte of an answer.
+	if (fail === 'cut' || fail === 'lost') res.write(': open\n\n');
+	const { delay } = voice;
+	const heard = words ? JSON.parse(body.toString()).text : voice.heard;
 	const mine = manager;
 	setTimeout(() => {
 		if (manager !== mine || res.destroyed) return res.end();
+		if (fail === 'cut') return res.destroy();
+		if (fail === 'failed') {
+			event('end', { outcome: 'failed', reply: '', message: 'Could not transcribe' });
+			return res.end();
+		}
 		if (!heard) {
 			event('end', { outcome: 'empty', reply: '', message: 'Heard nothing' });
 			return res.end();
 		}
-		event('transcript', { text: heard });
+		if (fail !== 'lost') event('transcript', { text: heard });
+		if (fail === 'refused') {
+			event('end', { outcome: 'refused', reply: '', message: 'Maestro is busy' });
+			return res.end();
+		}
+		if (id) voice.known.add(id);
+		voice.sent.push({ target, text: heard, from: words ? 'words' : 'audio' });
+		// The text is in the chat, and the phone never hears of it.
+		if (fail === 'lost') res.destroy();
+		else event('sent', {});
 		if (thread) {
 			replies.texts.push({ thread: thread.id, text: heard, spoken: true });
 			return runThreadTurn(
@@ -2346,12 +2390,12 @@ function hook(res, url) {
 			for (const [key, value] of url.searchParams) {
 				if (key === 'speaker') voice.speaker = value === '1';
 				else if (key === 'delay') voice.delay = Number(value);
-				else if (key === 'mode' || key === 'heard') voice[key] = value;
+				else if (key === 'mode' || key === 'heard' || key === 'fail') voice[key] = value;
 			}
 			push('config', configBody());
 			break;
 		case '/__fixture/voice-takes':
-			return send(res, 200, { takes: voice.takes });
+			return send(res, 200, { takes: voice.takes, sent: voice.sent });
 		case '/__fixture/voice-said':
 			return send(res, 200, { said: voice.said });
 		case '/__fixture/mac-turn':

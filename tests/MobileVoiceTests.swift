@@ -413,7 +413,7 @@ final class MobileVoiceTests: XCTestCase {
         let events = Events()
         let sent = Events()
         let turn = MobileVoiceTurn(speech: speech, speaker: speaker, emit: events.add)
-        turn.start(samples: tone(seconds: 1)) { text, onDelta, completion in
+        turn.start(samples: tone(seconds: 1)) { text, _, onDelta, completion in
             sent.add(text, [:], false)
             DispatchQueue.global().async {
                 deltas.forEach(onDelta)
@@ -461,7 +461,7 @@ final class MobileVoiceTests: XCTestCase {
         XCTAssertEqual(sent, ["what needs me"])
         XCTAssertEqual(speech.synthCalls, 0)
         XCTAssertEqual(speech.synthesized, [])
-        XCTAssertEqual(events.names, ["transcript", "delta", "end"])
+        XCTAssertEqual(events.names, ["transcript", "sent", "delta", "end"])
     }
 
     func testAReplyThatNeverStreamedIsStillReadBackWhole() async {
@@ -469,7 +469,7 @@ final class MobileVoiceTests: XCTestCase {
         let (events, _) = await turn(
             speech: speech, speaker: true, deltas: [], outcome: .done(reply: "Nothing needs you."))
         XCTAssertEqual(speech.synthesized, ["Nothing needs you."])
-        XCTAssertEqual(events.names, ["transcript", "audio", "end"])
+        XCTAssertEqual(events.names, ["transcript", "sent", "audio", "end"])
     }
 
     func testATakeWithNoWordsEndsBeforeTheTargetSeesIt() async {
@@ -498,7 +498,7 @@ final class MobileVoiceTests: XCTestCase {
             speech: speech, speaker: true, deltas: ["Two threads need you."],
             outcome: .done(reply: "Two threads need you."))
         XCTAssertEqual(sent, ["what needs me"])
-        XCTAssertEqual(events.names, ["transcript", "delta", "end"])
+        XCTAssertEqual(events.names, ["transcript", "sent", "delta", "end"])
         XCTAssertEqual(events.all.last?.data["outcome"] as? String, "done")
         XCTAssertEqual(events.all.last?.data["message"] as? String, "Could not speak the reply")
     }
@@ -535,7 +535,7 @@ final class MobileVoiceTests: XCTestCase {
         var finish: ((ManagerTurnOutcome) -> Void)?
         var reply: ((String) -> Void)?
         let turn = MobileVoiceTurn(speech: speech, speaker: true, emit: events.add)
-        turn.start(samples: tone(seconds: 1)) { _, onDelta, completion in
+        turn.start(samples: tone(seconds: 1)) { _, _, onDelta, completion in
             reply = onDelta
             finish = completion
         }
@@ -548,6 +548,137 @@ final class MobileVoiceTests: XCTestCase {
         try? await Task.sleep(nanoseconds: 50_000_000)
         XCTAssertFalse(events.names.contains("audio"))
         XCTAssertFalse(events.ended)
+    }
+
+    // MARK: a take the phone sends again
+
+    func testATakeIdIsAShortWordOfLettersDigitsAndDashes() {
+        XCTAssertTrue(MobileVoiceTakes.isID("3f2c9a1e-7b4d-4c1a-9e0f-5d6a7b8c9d0e"))
+        XCTAssertFalse(MobileVoiceTakes.isID(""))
+        XCTAssertFalse(MobileVoiceTakes.isID("a b"))
+        XCTAssertFalse(MobileVoiceTakes.isID("a/../b"))
+        XCTAssertFalse(MobileVoiceTakes.isID(String(repeating: "a", count: 65)))
+
+        let ask = MobileVoiceRequest(query: ["target": "manager", "speaker": "0", "take": "t-1", "heard": "1"])
+        XCTAssertEqual(ask?.take, "t-1")
+        XCTAssertEqual(ask?.heard, true)
+        XCTAssertNil(MobileVoiceRequest(query: ["target": "manager", "take": "not an id"]))
+        // A request with no take is what it was.
+        XCTAssertNil(MobileVoiceRequest(query: ["target": "manager"])?.take)
+        XCTAssertEqual(MobileVoiceRequest(query: ["target": "manager"])?.heard, false)
+    }
+
+    func testTheSentTakesAreRememberedAndARefusedOneMayGoAgain() {
+        let takes = MobileVoiceTakes(limit: 2)
+        XCTAssertNil(takes.state(of: "a"))
+        XCTAssertTrue(takes.begin("a"))
+        XCTAssertEqual(takes.state(of: "a"), .sending)
+        // On its way: it does not go a second time.
+        XCTAssertFalse(takes.begin("a"))
+        takes.sent("a")
+        XCTAssertEqual(takes.state(of: "a"), .sent)
+        XCTAssertFalse(takes.begin("a"))
+        // A sent take is never forgotten by a late refusal.
+        takes.forget("a")
+        XCTAssertEqual(takes.state(of: "a"), .sent)
+
+        XCTAssertTrue(takes.begin("b"))
+        takes.forget("b")
+        XCTAssertNil(takes.state(of: "b"))
+        XCTAssertTrue(takes.begin("b"))
+
+        // The oldest gives way.
+        XCTAssertTrue(takes.begin("c"))
+        XCTAssertNil(takes.state(of: "a"))
+        XCTAssertEqual(takes.state(of: "b"), .sending)
+        // What was never begun is not made up.
+        takes.sent("z")
+        XCTAssertNil(takes.state(of: "z"))
+    }
+
+    func testTheBodyOfATakeIsItsAudioOrItsWords() {
+        let wav = MobileVoice.wav(samples: tone(seconds: 1), sampleRate: 16_000)
+        guard case .samples = MobileVoice.take(body: wav, heard: false) else { return XCTFail("audio") }
+        XCTAssertEqual(
+            MobileVoice.take(body: Data(#"{"text":"run the tests"}"#.utf8), heard: true),
+            .heard("run the tests"))
+        // Words are held to the rules of typed text, and audio is not words.
+        XCTAssertEqual(
+            MobileVoice.take(body: Data(#"{"text":"stop\u0003now"}"#.utf8), heard: true),
+            .refused(.error(400, "bad_request")))
+        XCTAssertEqual(MobileVoice.take(body: wav, heard: true), .refused(.error(400, "bad_request")))
+    }
+
+    /// One turn of take `id` against a target that answers `outcome`.
+    private func keptTurn(
+        _ takes: MobileVoiceTakes, heard: String? = nil, outcome: ManagerTurnOutcome,
+        early: Bool = false
+    ) async -> (events: Events, sent: [String], speech: FakeSpeech) {
+        let speech = FakeSpeech()
+        let events = Events()
+        let sent = Events()
+        let turn = MobileVoiceTurn(speech: speech, speaker: false, take: ("t-1", takes), emit: events.add)
+        let send: MobileVoiceTurn.Send = { text, onSent, _, completion in
+            sent.add(text, [:], false)
+            if early { onSent() }
+            DispatchQueue.global().async { completion(outcome) }
+        }
+        if let heard { turn.start(heard: heard, send: send) } else {
+            turn.start(samples: tone(seconds: 1), send: send)
+        }
+        await settle { events.ended }
+        return (events, sent.names, speech)
+    }
+
+    func testTheStreamSaysWhenTheTextIsInTheChat() async {
+        // The target says so itself, before any reply.
+        var takes = MobileVoiceTakes()
+        var (events, sent, _) = await keptTurn(takes, outcome: .timeout(reply: ""), early: true)
+        XCTAssertEqual(sent, ["what needs me"])
+        XCTAssertEqual(events.names, ["transcript", "sent", "end"])
+        XCTAssertEqual(takes.state(of: "t-1"), .sent)
+
+        // A reply, or a prompt the pane reached, came after the send.
+        for outcome in [ManagerTurnOutcome.done(reply: "Ok."), .permission(reply: "")] {
+            takes = MobileVoiceTakes()
+            (events, sent, _) = await keptTurn(takes, outcome: outcome)
+            XCTAssertEqual(events.names, ["transcript", "sent", "end"])
+            XCTAssertEqual(takes.state(of: "t-1"), .sent)
+        }
+    }
+
+    func testATurnThatWasNotTakenLeavesTheTakeToBeSentAgain() async {
+        for outcome in [ManagerTurnOutcome.refused("Maestro is busy"), .unreachable("No pane")] {
+            let takes = MobileVoiceTakes()
+            let (events, sent, _) = await keptTurn(takes, outcome: outcome)
+            XCTAssertEqual(sent, ["what needs me"])
+            XCTAssertEqual(events.names, ["transcript", "end"])
+            XCTAssertNil(takes.state(of: "t-1"))
+        }
+        // A pane that took the text and then could not be followed has it all the same.
+        let takes = MobileVoiceTakes()
+        let (events, _, _) = await keptTurn(takes, outcome: .unreachable("No pane"), early: true)
+        XCTAssertEqual(events.names, ["transcript", "sent", "end"])
+        XCTAssertEqual(takes.state(of: "t-1"), .sent)
+    }
+
+    func testWordsThatWereHeardBeforeAreSentWithoutTheEngine() async {
+        let takes = MobileVoiceTakes()
+        let (events, sent, speech) = await keptTurn(takes, heard: "run the tests", outcome: .done(reply: ""))
+        XCTAssertEqual(sent, ["run the tests"])
+        XCTAssertEqual(speech.transcribed, [])
+        XCTAssertEqual(events.names, ["transcript", "sent", "end"])
+        XCTAssertEqual(events.all.first?.data["text"] as? String, "run the tests")
+    }
+
+    func testATakeThatIsOnItsWayIsNotHandedToTheTargetAgain() async {
+        let takes = MobileVoiceTakes()
+        XCTAssertTrue(takes.begin("t-1"))
+        let (events, sent, _) = await keptTurn(takes, outcome: .done(reply: "Ok."))
+        XCTAssertEqual(sent, [])
+        XCTAssertEqual(events.all.last?.data["outcome"] as? String, "refused")
+        XCTAssertEqual(events.all.last?.data["message"] as? String, "Still sending")
+        XCTAssertEqual(takes.state(of: "t-1"), .sending)
     }
 
     func testReplaySynthesizesTheTextAndSendsNothing() async {
@@ -831,13 +962,13 @@ final class MobileVoiceServerTests: XCTestCase {
         let turn = post("/api/voice?target=manager&speaker=1", body: Self.take)
         XCTAssertEqual(turn.status, 200)
         let all = events(turn.body)
-        XCTAssertEqual(all.map(\.name), ["transcript", "delta", "audio", "end"])
+        XCTAssertEqual(all.map(\.name), ["transcript", "sent", "delta", "audio", "end"])
         XCTAssertEqual(all[0].data["text"] as? String, "what needs me")
-        XCTAssertEqual(all[1].data["text"] as? String, "Two threads need you.")
         XCTAssertEqual(all[2].data["text"] as? String, "Two threads need you.")
-        XCTAssertNotNil((all[2].data["wav"] as? String).flatMap { Data(base64Encoded: $0) }
+        XCTAssertEqual(all[3].data["text"] as? String, "Two threads need you.")
+        XCTAssertNotNil((all[3].data["wav"] as? String).flatMap { Data(base64Encoded: $0) }
             .flatMap { MobileVoice.decode(wav: $0) })
-        XCTAssertEqual(all[3].data["outcome"] as? String, "done")
+        XCTAssertEqual(all[4].data["outcome"] as? String, "done")
         // The text went down the same path as typed text.
         XCTAssertEqual(locked { sent }, ["what needs me"])
         XCTAssertEqual(speech.transcribed, [16_000])
@@ -846,7 +977,7 @@ final class MobileVoiceServerTests: XCTestCase {
     func testAnInputOnlyTakeRunsNoSynthesis() {
         let turn = post("/api/voice?target=manager&speaker=0", body: Self.take)
         XCTAssertEqual(turn.status, 200)
-        XCTAssertEqual(events(turn.body).map(\.name), ["transcript", "delta", "end"])
+        XCTAssertEqual(events(turn.body).map(\.name), ["transcript", "sent", "delta", "end"])
         XCTAssertEqual(locked { sent }, ["what needs me"])
         XCTAssertEqual(speech.synthCalls, 0)
     }
@@ -998,6 +1129,74 @@ final class MobileVoiceServerTests: XCTestCase {
         XCTAssertEqual(speech.synthesized, [])
     }
 
+    // MARK: a take the phone sends again
+
+    private static let keptTake = "/api/voice?target=manager&speaker=0&take=t-1"
+
+    func testATakeTheMacSentIsNotTypedTwice() {
+        let first = post(Self.keptTake, body: Self.take)
+        XCTAssertEqual(events(first.body).map(\.name), ["transcript", "sent", "delta", "end"])
+        XCTAssertEqual(locked { sent }, ["what needs me"])
+
+        // The phone lost that answer and sends the take again: as audio, or as words.
+        for again in [
+            post(Self.keptTake, body: Self.take),
+            post(Self.keptTake + "&heard=1", body: Data(#"{"text":"what needs me"}"#.utf8)),
+        ] {
+            XCTAssertEqual(again.status, 200)
+            let all = events(again.body)
+            XCTAssertEqual(all.map(\.name), ["sent", "end"])
+            XCTAssertEqual(all.last?.data["outcome"] as? String, "done")
+        }
+        XCTAssertEqual(locked { sent }, ["what needs me"])
+        XCTAssertEqual(speech.transcribed.count, 1)
+
+        // Another take is another turn.
+        let other = post("/api/voice?target=manager&speaker=0&take=t-2", body: Self.take)
+        XCTAssertEqual(events(other.body).map(\.name), ["transcript", "sent", "delta", "end"])
+        XCTAssertEqual(locked { sent }.count, 2)
+        XCTAssertEqual(post("/api/voice?target=manager&take=not%20an%20id", body: Self.take).status, 400)
+    }
+
+    func testATakeThePaneRefusedGoesAgainAsItsWords() {
+        speech.whileTranscribing = { [unowned self] in locked { status = .busy } }
+        let first = post(Self.keptTake, body: Self.take)
+        XCTAssertEqual(events(first.body).map(\.name), ["transcript", "end"])
+        XCTAssertEqual(events(first.body).last?.data["outcome"] as? String, "refused")
+        XCTAssertEqual(locked { sent }, [])
+
+        speech.whileTranscribing = nil
+        locked { status = .idle }
+        // No model is needed for words when nothing is read back.
+        speech.modelsReady = false
+        let again = post(Self.keptTake + "&heard=1", body: Data(#"{"text":"what needs me"}"#.utf8))
+        XCTAssertEqual(again.status, 200)
+        let all = events(again.body)
+        XCTAssertEqual(all.map(\.name), ["transcript", "sent", "delta", "end"])
+        XCTAssertEqual(all[0].data["text"] as? String, "what needs me")
+        XCTAssertEqual(locked { sent }, ["what needs me"])
+        // Heard once: the second try carried the words.
+        XCTAssertEqual(speech.transcribed.count, 1)
+
+        // Words are held to the rules of typed text.
+        let bad = post(
+            "/api/voice?target=manager&speaker=0&take=t-3&heard=1",
+            body: Data(#"{"text":"stop\u0003now"}"#.utf8))
+        XCTAssertEqual(bad.status, 400)
+        XCTAssertEqual(locked { sent }, ["what needs me"])
+    }
+
+    func testATakeIntoAThreadThatIsSentAgainIsPastedOnce() {
+        server.configure(MobileConfig(capabilities: [.voice, .replies]))
+        speech.transcript = "run the tests"
+        let path = Self.threadTake + "&take=t-1"
+        XCTAssertEqual(events(post(path, body: Self.take).body).map(\.name), ["transcript", "sent", "end"])
+        let pasted = pane.argv.count
+        XCTAssertEqual(events(post(path, body: Self.take).body).map(\.name), ["sent", "end"])
+        XCTAssertEqual(pane.argv.count, pasted)
+        XCTAssertEqual(speech.transcribed.count, 1)
+    }
+
     private static let threadTake = "/api/voice?target=localhost%3A12&speaker=0"
 
     func testATakeIntoAThreadNeedsTheRepliesSwitchAndALiveThread() {
@@ -1022,7 +1221,7 @@ final class MobileVoiceServerTests: XCTestCase {
         let turn = post(Self.threadTake, body: Self.take)
         XCTAssertEqual(turn.status, 200)
         let all = events(turn.body)
-        XCTAssertEqual(all.map(\.name), ["transcript", "end"])
+        XCTAssertEqual(all.map(\.name), ["transcript", "sent", "end"])
         XCTAssertEqual(all.last?.data["outcome"] as? String, "done")
         // One bracketed paste and one Enter, as a typed reply.
         XCTAssertTrue(FakePane.sendArgv(pane.argv, target: "%12"), "\(pane.argv)")
