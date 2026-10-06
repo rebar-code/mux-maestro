@@ -223,3 +223,40 @@ test('reduced motion: nothing animates', async ({ page }) => {
 	);
 	for (const duration of durations) expect(duration).toMatch(/^0s/);
 });
+
+test('a session header stays at the top while its windows scroll, until the next one pushes it out', async ({
+	page
+}) => {
+	// Short enough that one session is taller than the list.
+	await page.setViewportSize({ width: 390, height: 360 });
+	const scroller = drawer(page).locator('.scroll');
+	const top = async (target: Locator): Promise<number> => (await target.boundingBox())?.y ?? -1;
+	/** Scroll to `into` px past the top of the session `after` places below acme-app. */
+	const scrollInto = (after: number, into: number): Promise<string> =>
+		scroller.evaluate(
+			(node, [key, after, into]) => {
+				const all = [...node.querySelectorAll<HTMLElement>('.sess')];
+				const mine = all.findIndex((sess) => sess.querySelector(`[data-session="${key}"]`));
+				const sess = all[mine + (after as number)];
+				node.scrollTop +=
+					sess.getBoundingClientRect().top - node.getBoundingClientRect().top + (into as number);
+				return sess.querySelector<HTMLElement>('.shead')?.dataset.session ?? '';
+			},
+			[ACME, after, into] as const
+		);
+	const rowHeight = (await rows(page).first().boundingBox())?.height ?? 0;
+	expect(await rows(page).count()).toBeGreaterThan(2);
+
+	// Past the header's own place and one row: without sticking it would be gone.
+	await scrollInto(0, rowHeight + 40);
+	await expect.poll(async () => (await top(head(page))) - (await top(scroller))).toBeCloseTo(0, 0);
+	// It still folds its session from there.
+	await expect(fold(page)).toHaveAttribute('aria-expanded', 'true');
+
+	// Into the next session: its header is at the top and the first is out.
+	const next = await scrollInto(1, 30);
+	await expect
+		.poll(async () => (await top(head(page, next))) - (await top(scroller)))
+		.toBeCloseTo(0, 0);
+	expect(await top(head(page))).toBeLessThan(await top(scroller));
+});

@@ -420,6 +420,49 @@ final class MobileAPITests: XCTestCase {
         ])
     }
 
+    func testAnAgentThePhoneStartedHasChatUntilItReportsItsOwnId() {
+        let devbox = Host(name: "devbox", sshAlias: "devbox")
+        func tree(_ local: [TmuxPane], remote: [TmuxPane] = []) -> MobileSnapshot {
+            MobileSnapshot.build([
+                MobileHostInput(host: .local, colorHex: "#3291ff", reachability: .reachable, stats: nil,
+                                sessions: local.isEmpty ? [] : [TmuxSession(name: "acme-app", attached: true, windows:
+                                    local.enumerated().map { TmuxWindow(index: $0, name: "w", active: true, panes: [$1]) })]),
+                MobileHostInput(host: devbox, colorHex: "#f5a623", reachability: .reachable, stats: nil,
+                                sessions: remote.isEmpty ? [] : [TmuxSession(name: "infra", attached: false, windows: [
+                                    TmuxWindow(index: 0, name: "w", active: true, panes: remote)])]),
+            ])
+        }
+        func chat(_ snapshot: MobileSnapshot) -> [String: Bool] {
+            Dictionary(uniqueKeysWithValues: snapshot.threads.map { ($0.id, $0.hasChat) })
+        }
+        var started = MobileStartedAgents()
+        started.mark("localhost:41", now: 100)
+        started.mark("devbox:7", now: 100)
+        let shells = tree(
+            [pane("%41", active: true), pane("%42", active: true)], remote: [pane("%7", active: true)])
+        // Transcripts are read from this Mac's disk: a remote agent has no chat.
+        XCTAssertEqual(
+            chat(started.apply(to: shells, now: 101)),
+            ["localhost:41": true, "localhost:42": false, "devbox:7": false])
+        XCTAssertEqual(chat(shells), ["localhost:41": false, "localhost:42": false, "devbox:7": false])
+
+        // The tree was read before the window was made: the mark waits for it.
+        XCTAssertEqual(chat(started.apply(to: tree([pane("%42", active: true)]), now: 102)), ["localhost:42": false])
+        XCTAssertEqual(chat(started.apply(to: shells, now: 103))["localhost:41"], true)
+
+        // The agent reports its id: the mark has done its work. When the
+        // agent then exits, the pane is a shell again.
+        let up = tree([pane("%41", command: "claude", active: true, claude: "c9")])
+        XCTAssertEqual(chat(started.apply(to: up, now: 104)), ["localhost:41": true])
+        XCTAssertEqual(chat(started.apply(to: shells, now: 105))["localhost:41"], false)
+
+        // The pane went: a later pane with its number is not marked.
+        started.mark("localhost:41", now: 200)
+        _ = started.apply(to: shells, now: 201)
+        _ = started.apply(to: tree([pane("%42", active: true)]), now: 200 + MobileStartedAgents.grace)
+        XCTAssertEqual(chat(started.apply(to: shells, now: 300))["localhost:41"], false)
+    }
+
     func testEveryAgentPaneIsAThreadAndAPlainWindowHasOne() {
         let snapshot = snapshot()
         XCTAssertEqual(

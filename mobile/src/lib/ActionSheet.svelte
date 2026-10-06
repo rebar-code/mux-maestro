@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { killWarning, menuItems, menuTitle, NAME_MAX } from './actions';
+	import { killWarning, menuItems, menuTitle, NAME_MAX, START_ITEMS, startTitle } from './actions';
 	import { menu } from './actions.svelte';
 	import { shortCwd } from './format';
 	import { can } from './live.svelte';
@@ -121,6 +121,16 @@
 			<p class="warn">{killWarning(menu.killKind)}</p>
 			<button class="item danger" disabled={menu.busy} onclick={() => menu.kill()}>Kill</button>
 			<button class="item" onclick={menu.close}>Cancel</button>
+		{:else if menu.stage === 'start'}
+			<div class="title">New window in {target ? startTitle(target) : ''}</div>
+			{#each START_ITEMS as item (item.kind)}
+				<button
+					class="item"
+					disabled={menu.busy}
+					data-start={item.kind}
+					onclick={() => menu.newWindow(item.kind)}>{item.label}</button
+				>
+			{/each}
 		{:else}
 			<div class="title">New session on {title}</div>
 			<div class="list" data-own-drag>

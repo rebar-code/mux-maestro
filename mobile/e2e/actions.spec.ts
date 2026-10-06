@@ -53,7 +53,7 @@ test('a long press opens the row menu and does not tap the row', async ({ page }
 	await expect(sheet(page)).toBeVisible();
 	await expect(sheet(page).locator('.title')).toHaveText('docs-site · search');
 	await expect(sheet(page).getByRole('button')).toHaveText([
-		'New Window',
+		'New Window…',
 		'Rename Window…',
 		'Zoom Pane',
 		'Kill Window'
@@ -99,7 +99,7 @@ test('session and host rows have their own menus', async ({ page }) => {
 	await longPress(page, session(page, 'localhost/acme-app'));
 	await expect(sheet(page).locator('.title')).toHaveText('acme-app');
 	await expect(sheet(page).getByRole('button')).toHaveText([
-		'New Window',
+		'New Window…',
 		'Rename…',
 		'Kill Session'
 	]);
@@ -124,7 +124,7 @@ test('with the switches off, a long press does nothing and Kill is not offered',
 }) => {
 	await page.request.post('/__fixture/capability?name=kill&on=0');
 	await longPress(page, row(page, 'localhost:3'));
-	await expect(sheet(page).getByRole('button', { name: 'New Window' })).toBeVisible();
+	await expect(sheet(page).getByRole('button', { name: 'New Window…' })).toBeVisible();
 	await expect(sheet(page).getByRole('button', { name: /Kill/ })).toHaveCount(0);
 	await page.keyboard.press('Escape');
 
@@ -140,24 +140,82 @@ test('with the switches off, a long press does nothing and Kill is not offered',
 	expect(refused.status()).toBe(403);
 });
 
-test('the + on a session row adds a window and opens it', async ({ page }) => {
+const start = (page: Page, kind: string): Locator => sheet(page).locator(`[data-start="${kind}"]`);
+const view = (page: Page): Locator => page.locator('[data-mode]');
+
+test('the + on a session row asks what to start, and Claude opens in chat', async ({ page }) => {
+	await allow(page, 'replies');
 	// The row also holds the button that folds the session.
 	await session(page, 'localhost/docs-site')
 		.getByRole('button', { name: 'New window in docs-site' })
 		.click();
+	await expect(sheet(page)).toHaveAttribute('data-action-sheet', 'start');
+	await expect(sheet(page).getByRole('button')).toHaveText(['Claude', 'Codex', 'Terminal']);
+	// Nothing is made until one is picked.
+	expect(await actions(page)).toEqual([]);
+	await shot(page, 'new-window-chooser');
+
+	await start(page, 'claude').click();
 	await expect(page).toHaveURL(/\/t\/localhost(:|%3A)\d+$/);
 	await expect(page.locator('.tbar .title b')).toHaveText('docs-site · zsh');
 	await expect(sheet(page)).toBeHidden();
 	// The session is named by one of its threads.
-	expect(await actions(page)).toEqual([{ action: 'new-window', thread: 'localhost:3' }]);
+	expect(await actions(page)).toEqual([
+		{ action: 'new-window', thread: 'localhost:3', agent: 'claude' }
+	]);
+	// Chat at once, before the agent has a first message.
+	await expect(view(page)).toHaveAttribute('data-mode', 'chat');
+	await expect(page.getByText('Closed', { exact: true })).toHaveCount(0);
+	const box = page.getByRole('textbox', { name: 'Reply' });
+	await expect(box).toBeEditable();
+	await box.fill('run the tests');
+	await page.locator('form.compose').evaluate((form: HTMLFormElement) => form.requestSubmit());
+	await expect(page.locator('section').getByText('run the tests')).toBeVisible();
 	await shot(page, 'new-window');
 });
 
-test('New Window in a row menu adds a window to that session', async ({ page }) => {
+test('Codex starts in chat and Terminal opens a shell', async ({ page }) => {
+	const add = session(page, 'localhost/docs-site').getByRole('button', {
+		name: 'New window in docs-site'
+	});
+	await add.click();
+	await start(page, 'codex').click();
+	await expect(page).toHaveURL(/\/t\/localhost(:|%3A)\d+$/);
+	await expect(view(page)).toHaveAttribute('data-mode', 'chat');
+
+	await openDrawer(page);
+	await add.click();
+	await start(page, 'terminal').click();
+	await expect(sheet(page)).toBeHidden();
+	await expect(view(page)).toHaveAttribute('data-mode', 'terminal');
+	// A terminal is asked for with no `agent` at all.
+	expect(await actions(page)).toEqual([
+		{ action: 'new-window', thread: 'localhost:3', agent: 'codex' },
+		{ action: 'new-window', thread: expect.stringMatching(/^localhost:\d+$/) }
+	]);
+});
+
+test('New Window in a row menu asks too, and a remote agent opens as a terminal', async ({
+	page
+}) => {
 	await longPress(page, row(page, 'devbox:2'));
-	await sheet(page).getByRole('button', { name: 'New Window' }).click();
+	await sheet(page).getByRole('button', { name: 'New Window…' }).click();
+	await expect(sheet(page)).toHaveAttribute('data-action-sheet', 'start');
+	await start(page, 'claude').click();
 	await expect(page).toHaveURL(/\/t\/devbox(:|%3A)\d+$/);
-	expect(await actions(page)).toEqual([{ action: 'new-window', thread: 'devbox:2' }]);
+	expect(await actions(page)).toEqual([
+		{ action: 'new-window', thread: 'devbox:2', agent: 'claude' }
+	]);
+	await expect(view(page)).toHaveAttribute('data-mode', 'terminal');
+});
+
+test('the Mac refuses an agent it does not know', async ({ page }) => {
+	const refused = await page.request.post('/api/tmux/new-window', {
+		headers: { ...TOKEN_HEADER, 'x-muxmaestro': '1', origin: new URL(page.url()).origin },
+		data: { thread: 'localhost:3', agent: 'vim' }
+	});
+	expect(refused.status()).toBe(400);
+	expect(await refused.json()).toEqual({ error: 'bad_agent' });
 });
 
 test('rename a window, and a name the Mac would refuse cannot be sent', async ({ page }) => {

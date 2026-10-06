@@ -5,6 +5,8 @@ import {
 	menuItems,
 	menuTitle,
 	refusalText,
+	START_ITEMS,
+	startTitle,
 	validName,
 	type MenuTarget
 } from './actions';
@@ -38,8 +40,13 @@ const labels = (target: MenuTarget, canKill: boolean): string[] =>
 describe('menuItems', () => {
 	it('lists each row kind and leaves the kills out without the switch', () => {
 		const row: MenuTarget = { kind: 'thread', thread: thread('localhost:1') };
-		expect(labels(row, true)).toEqual(['New Window', 'Rename Window…', 'Zoom Pane', 'Kill Window']);
-		expect(labels(row, false)).toEqual(['New Window', 'Rename Window…', 'Zoom Pane']);
+		expect(labels(row, true)).toEqual([
+			'New Window…',
+			'Rename Window…',
+			'Zoom Pane',
+			'Kill Window'
+		]);
+		expect(labels(row, false)).toEqual(['New Window…', 'Rename Window…', 'Zoom Pane']);
 		const split: MenuTarget = { kind: 'thread', thread: thread('localhost:1', { panes: 2 }) };
 		expect(labels(split, true)).toContain('Kill Pane');
 		const session: MenuTarget = {
@@ -48,9 +55,21 @@ describe('menuItems', () => {
 			session: 'infra',
 			thread: 'devbox:5'
 		};
-		expect(labels(session, true)).toEqual(['New Window', 'Rename…', 'Kill Session']);
-		expect(labels(session, false)).toEqual(['New Window', 'Rename…']);
+		expect(labels(session, true)).toEqual(['New Window…', 'Rename…', 'Kill Session']);
+		expect(labels(session, false)).toEqual(['New Window…', 'Rename…']);
 		expect(labels({ kind: 'host', host: 'devbox' }, true)).toEqual(['New Session…']);
+	});
+
+	it('offers Claude, Codex and a terminal for a new window', () => {
+		expect(START_ITEMS.map((item) => [item.kind, item.label])).toEqual([
+			['claude', 'Claude'],
+			['codex', 'Codex'],
+			['terminal', 'Terminal']
+		]);
+		expect(startTitle({ kind: 'thread', thread: thread('localhost:1') })).toBe('acme-app');
+		expect(
+			startTitle({ kind: 'session', host: 'devbox', session: 'infra', thread: 'devbox:5' })
+		).toBe('infra');
 	});
 
 	it('titles the sheet with the row', () => {

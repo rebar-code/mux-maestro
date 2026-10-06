@@ -462,7 +462,12 @@ export interface ActionResult {
  */
 export async function tmuxAction(
 	action: TmuxAction,
-	body: (ActionTarget | { host: string }) & { name?: string; dir?: string; confirm?: true }
+	body: (ActionTarget | { host: string }) & {
+		name?: string;
+		dir?: string;
+		confirm?: true;
+		agent?: 'claude' | 'codex';
+	}
 ): Promise<ActionResult> {
 	return (await (await post(`/api/tmux/${action}`, body)).json()) as ActionResult;
 }

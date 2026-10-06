@@ -9,13 +9,14 @@ import {
 	validName,
 	type ItemKey,
 	type KillKind,
-	type MenuTarget
+	type MenuTarget,
+	type StartKind
 } from './actions';
 import { ApiError, fetchDirs, tmuxAction } from './api';
 import { ui } from './gestures.svelte';
 import { live } from './live.svelte';
 
-export type Stage = 'menu' | 'rename' | 'kill' | 'dirs';
+export type Stage = 'menu' | 'rename' | 'kill' | 'dirs' | 'start';
 
 const APPEAR_TRIES = 8;
 const APPEAR_MS = 350;
@@ -58,7 +59,7 @@ class Menu {
 		} else if (key === 'new-session') {
 			if (target.kind === 'host') this.openDirs(target.host);
 		} else if (key === 'new-window') {
-			void this.newWindow(target);
+			this.stage = 'start';
 		} else {
 			void this.zoom(target);
 		}
@@ -87,13 +88,21 @@ class Menu {
 		});
 	}
 
-	/** Also the ＋ on a session row. The new window opens once the list has it. */
-	async newWindow(target: MenuTarget): Promise<void> {
-		const to = actionTarget(target);
+	/** The ＋ on a session row: pick what the new window starts with. */
+	openStart(target: MenuTarget): void {
+		this.open(target);
+		this.stage = 'start';
+	}
+
+	/** The new window opens once the list has it. */
+	async newWindow(kind: StartKind): Promise<void> {
+		const to = this.target && actionTarget(this.target);
 		if (!to) return;
-		if (!this.target) this.open(target);
 		await this.run(async () => {
-			const { thread } = await tmuxAction('new-window', to);
+			const { thread } = await tmuxAction('new-window', {
+				...to,
+				...(kind === 'terminal' ? {} : { agent: kind })
+			});
 			if (!thread) return void live.refresh();
 			for (let n = 0; n < APPEAR_TRIES && !live.byId(thread); n += 1) {
 				await live.refresh();

@@ -10,6 +10,8 @@ final class MobileServerTests: XCTestCase {
     private var port = 0
     private var root: URL!
     private var transcript: URL!
+    /// The agent has written no transcript file yet.
+    private var noTranscript = false
     private let manager = FakeManager()
     private let pane = FakePane()
     private let tmux = FakeTmux()
@@ -121,7 +123,7 @@ final class MobileServerTests: XCTestCase {
                 self?.askedLines.append(lines)
                 return thread.pane == "%12" ? (self?.screenText ?? "") : nil
             },
-            transcript: { _ in (transcript.path, false) },
+            transcript: { [weak self] _ in self?.noTranscript == true ? nil : (transcript.path, false) },
             pane: { [pane] _ in pane.io }, tmux: tmux.source,
             changed: { [changes] in changes.add() }, home: home.path,
             artifacts: withLocal ? local.artifactSource : nil,
@@ -475,6 +477,35 @@ final class MobileServerTests: XCTestCase {
         XCTAssertEqual(get("/api/threads/localhost%3A99/screen").status, 404)
         XCTAssertEqual(get("/api/threads/localhost%3A99/chat").status, 404)
         XCTAssertEqual(get("/api/threads", method: "POST").status, 403)
+    }
+
+    func testAnAgentWithNoTranscriptYetHasAnEmptyChat() {
+        // Claude has its session id at once; its transcript file comes with
+        // the first message.
+        noTranscript = true
+        let chat = get("/api/threads/localhost%3A12/chat")
+        XCTAssertEqual(chat.status, 200)
+        XCTAssertEqual(chat.body, #"{"messages":[],"next":0,"reset":false}"#)
+        XCTAssertEqual(get("/api/threads/localhost%3A13/chat").status, 404)
+        XCTAssertEqual(get("/api/threads/localhost%3A99/chat").status, 404)
+    }
+
+    func testAnAgentThePhoneStartedHasChatBeforeItHasASessionId() throws {
+        actionsOn()
+        noTranscript = true
+        // The new window's pane is %13: a shell until the agent is up.
+        tmux.output = "2\t%13\n"
+        XCTAssertEqual(get("/api/threads/localhost%3A13/chat").status, 404)
+        let made = post("/api/tmux/new-window", json: #"{"thread":"localhost:12","agent":"codex"}"#)
+        XCTAssertEqual(made.status, 200)
+        server.update(snapshot())
+        let chat = get("/api/threads/localhost%3A13/chat")
+        XCTAssertEqual(chat.status, 200)
+        XCTAssertEqual(chat.body, #"{"messages":[],"next":0,"reset":false}"#)
+        let body = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(get("/api/threads").body.utf8)) as? [String: Any])
+        let threads = try XCTUnwrap(body["threads"] as? [[String: Any]])
+        XCTAssertEqual(threads.map { $0["chat"] as? Bool }, [true, true])
     }
 
     func testScreenLinesReachThePaneClamped() {
