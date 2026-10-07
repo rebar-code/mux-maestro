@@ -830,7 +830,8 @@ function reset() {
 			lastPrompt: prompt ? { text: prompt, at: started - ageSeconds } : null,
 			lastActivityAt: local ? started - ageSeconds : null,
 			sessionActivity: started - ageSeconds,
-			chat: local
+			chat: local,
+			prs: []
 		};
 	};
 	makeThread = make;
@@ -851,6 +852,14 @@ function reset() {
 				'dozing'
 			);
 		})
+	];
+	threads[0].prs = [
+		{
+			number: 128,
+			state: 'open',
+			url: 'https://github.com/acme/acme-app/pull/128',
+			title: 'Fix the failing checkout test'
+		}
 	];
 	chats = {};
 	for (const t of threads.filter((t) => t.chat)) {
@@ -1742,6 +1751,7 @@ const ACTIONS = [
 	'new-window',
 	'rename-session',
 	'rename-window',
+	'archive-window',
 	'kill-session',
 	'kill-window',
 	'kill-pane',
@@ -1782,7 +1792,13 @@ function tmuxApi(req, res, path, body) {
 	if (fields === null || typeof fields !== 'object' || Array.isArray(fields))
 		return send(res, 400, { error: 'bad_request' });
 
-	const byThread = ['rename-window', 'kill-window', 'kill-pane', 'zoom-pane'].includes(action);
+	const byThread = [
+		'rename-window',
+		'archive-window',
+		'kill-window',
+		'kill-pane',
+		'zoom-pane'
+	].includes(action);
 	let thread = null;
 	let host = null;
 	let session = null;
@@ -1853,6 +1869,10 @@ function tmuxApi(req, res, path, body) {
 			for (const t of threads.filter((t) => inSession(t) && t.window === thread.window))
 				t.name = name;
 		}
+	} else if (action === 'archive-window') {
+		// No confirmation: the Mac can undo an archive.
+		const { window } = thread;
+		threads = threads.filter((t) => !(inSession(t) && t.window === window));
 	} else if (action !== 'zoom-pane') {
 		if (fields.confirm !== true) return send(res, 400, { error: 'confirm_required' });
 		const { id, window } = thread;

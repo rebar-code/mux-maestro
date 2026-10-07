@@ -28,6 +28,15 @@ export interface Thread {
 	chat: boolean;
 	/** The Claude or Codex conversation the pane runs: what a `muxmaestro://thread/` link names. */
 	agent?: string | null;
+	/** The pull requests the Mac shows on the window. */
+	prs?: ThreadPR[];
+}
+
+export interface ThreadPR {
+	number: number;
+	state: 'open' | 'draft' | 'merged' | 'closed';
+	url: string;
+	title: string;
 }
 
 export interface HostStats {
@@ -209,6 +218,7 @@ export type TmuxAction =
 	| 'new-window'
 	| 'rename-session'
 	| 'rename-window'
+	| 'archive-window'
 	| 'kill-session'
 	| 'kill-window'
 	| 'kill-pane'

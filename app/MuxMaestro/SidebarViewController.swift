@@ -3110,8 +3110,23 @@ final class SidebarViewController: NSViewController {
                 host: host, colorHex: Settings.colorHex(host: host),
                 reachability: reachabilityByHost[host.name] ?? .unknown,
                 stats: hostStatsByName[host.name],
-                sessions: loadedSessions(host: host))
+                sessions: loadedSessions(host: host),
+                prs: { [self] session, window in
+                    prByWindow[windowKey(host: host, session: session, window: window)] ?? []
+                })
         })
+    }
+
+    /// The window that holds the pane `paneID` on `host` in the tree as it is
+    /// now, for the phone's archive. nil once the pane has gone. The manager's
+    /// own session is not looked in.
+    func windowRef(paneID: String, host: Host) -> WindowRef? {
+        for session in loadedSessions(host: host) {
+            if let window = session.windows.first(where: { $0.panes.contains { $0.id == paneID } }) {
+                return WindowRef(session: session.name, window: window.index, host: host)
+            }
+        }
+        return nil
     }
 
     /// `session`'s attention on `host` from the cached tree, or nil when it isn't

@@ -126,7 +126,7 @@ final class MobileActionsTests: XCTestCase {
     func testTheActionListIsFixed() {
         XCTAssertEqual(MobileAction.allCases.map(\.rawValue), [
             "new-session", "new-window", "rename-session", "rename-window",
-            "kill-session", "kill-window", "kill-pane", "zoom-pane",
+            "kill-session", "kill-window", "kill-pane", "zoom-pane", "archive-window",
         ])
         for word in ["kill-server", "send-keys", "run-shell", "split-window", "kill", "", "new-window "] {
             XCTAssertNil(MobileAction(rawValue: word), word)
@@ -174,6 +174,79 @@ final class MobileActionsTests: XCTestCase {
         XCTAssertEqual(
             route("GET", "/api/threads/localhost%3A12/find", [.sessionActions, .kill]), .disabled(.find))
         XCTAssertEqual(route("GET", "/api/hosts", []), .api(.hosts))
+    }
+
+    /// The Mac can undo an archive, so the kill switch is not asked for.
+    func testAnArchiveNeedsSessionActionsAndNotKill() {
+        let route = { (capabilities: Set<MobileCapability>) in
+            MobileAPI.route(
+                MobileRequest(method: "POST", path: "/api/tmux/archive-window"),
+                config: MobileConfig(capabilities: capabilities))
+        }
+        XCTAssertEqual(route([.sessionActions]), .api(.tmux(.archiveWindow)))
+        XCTAssertEqual(route([.kill, .find]), .disabled(.sessionActions))
+        XCTAssertEqual(route([]), .disabled(.sessionActions))
+        XCTAssertFalse(MobileAction.archiveWindow.isKill)
+        XCTAssertEqual(MobileEndpoint.tmux(.archiveWindow).capability, .sessionActions)
+    }
+
+    // MARK: archive
+
+    private func archive(
+        _ json: String, archived: Bool = true
+    ) -> (code: String, asked: [MobileThread]) {
+        var asked: [MobileThread] = []
+        let response = MobileActions.perform(
+            .archiveWindow, body: Data(json.utf8), snapshot: snapshot(), tmux: tmux.source,
+            archive: { thread in
+                asked.append(thread)
+                return archived
+            })
+        let body = (try? JSONSerialization.jsonObject(with: response.body)) as? [String: Any] ?? [:]
+        return ("\(response.status) \(body["error"] as? String ?? "ok")", asked)
+    }
+
+    func testAnArchiveGoesToTheMacWithTheThreadsOwnWindowAndRunsNoTmux() throws {
+        // No `confirm` field.
+        let done = archive(#"{"thread":"localhost:13"}"#)
+        XCTAssertEqual(done.code, "200 ok")
+        let thread = try XCTUnwrap(done.asked.first)
+        XCTAssertEqual(done.asked.count, 1)
+        XCTAssertEqual(thread.host, .local)
+        XCTAssertEqual(thread.session, "acme-app")
+        XCTAssertEqual(thread.window, 2)
+        XCTAssertEqual(thread.pane, "%13")
+
+        let remote = archive(#"{"thread":"devbox:3"}"#)
+        XCTAssertEqual(remote.code, "200 ok")
+        XCTAssertEqual(remote.asked.first?.host, devbox)
+        XCTAssertEqual(tmux.argv.count, 0)
+    }
+
+    func testAnArchiveOfAThreadThatIsNotInTheLiveTreeIsA404() {
+        for body in [
+            #"{"thread":"localhost:99"}"#, #"{"thread":"devbox:12"}"#, #"{"thread":"%12"}"#,
+            #"{"thread":"localhost:12; kill-server"}"#,
+        ] {
+            let stale = archive(body)
+            XCTAssertEqual(stale.code, "404 not_found", body)
+            XCTAssertTrue(stale.asked.isEmpty, body)
+        }
+        XCTAssertEqual(archive(#"{"host":"localhost","session":"acme-app"}"#).code, "400 bad_request")
+        XCTAssertEqual(archive("[]").code, "400 bad_request")
+    }
+
+    func testTheManagersOwnWindowIsNotArchived() {
+        let manager = archive(#"{"thread":"localhost:30"}"#)
+        XCTAssertEqual(manager.code, "403 protected")
+        XCTAssertTrue(manager.asked.isEmpty)
+    }
+
+    func testAnArchiveThatDidNotRunIsA409AndWithoutAMacA503() {
+        XCTAssertEqual(archive(#"{"thread":"localhost:12"}"#, archived: false).code, "409 failed")
+        // The dev server: tmux or not, there is nothing to archive with.
+        XCTAssertEqual(code(.archiveWindow, #"{"thread":"localhost:12"}"#), "503 unavailable")
+        XCTAssertEqual(tmux.argv.count, 0)
     }
 
     // MARK: argv

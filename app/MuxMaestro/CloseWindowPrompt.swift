@@ -101,6 +101,9 @@ enum CloseWindowPrompt {
         case keyboard
         /// The trash on a window row whose PR merged (`WindowPRs.allMerged`).
         case mergedTrash
+        /// A swipe on a thread in the phone app. The Mac may be out of sight,
+        /// so it raises no sheet and no alert there.
+        case phone
     }
 
     /// Whether a close raises the confirm sheet. Choosing Archive Window or Kill

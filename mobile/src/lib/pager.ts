@@ -5,7 +5,7 @@
  */
 
 export type DragKind =
-	'drawer-open' | 'drawer-close' | 'page' | 'back' | 'hscroll' | 'swipe' | 'none';
+	'drawer-open' | 'drawer-close' | 'page' | 'back' | 'hscroll' | 'swipe' | 'reveal' | 'none';
 
 export interface DragContext {
 	/** Finger movement so far: positive is a right swipe. */
@@ -19,6 +19,10 @@ export interface DragContext {
 	canSwipe?: boolean;
 	/** The page shows something opened from its own list: a right swipe closes that first. */
 	canBack?: boolean;
+	/** The drawer row under the finger has buttons behind it, which a right swipe shows. */
+	canReveal?: boolean;
+	/** That row's buttons show now: a left swipe hides them before it closes the drawer. */
+	revealed?: boolean;
 }
 
 /** What a horizontal drag moves. Decided once, when the drag locks. */
@@ -29,8 +33,11 @@ export function resolveDrag({
 	index,
 	canScrollX,
 	canSwipe = false,
-	canBack = false
+	canBack = false,
+	canReveal = false,
+	revealed = false
 }: DragContext): DragKind {
+	if (drawerOpen && canReveal && (dx > 0 || revealed)) return 'reveal';
 	if (drawerOpen) return dx < 0 ? 'drawer-close' : 'none';
 	if (canScrollX) return 'hscroll';
 	if (dx > 0 && canBack) return 'back';
@@ -85,6 +92,15 @@ export function pullsKeyboardDown(dx: number, dy: number): boolean {
 /** Whether a row released at `dx` (a left swipe is negative) is swiped away. */
 export function settleSwipe(dx: number, vx: number, width: number): boolean {
 	return dx < 0 && commits(dx, vx, width) === -1;
+}
+
+/**
+ * Whether a drawer row ends with its buttons showing. `x` is how far the row
+ * is pulled right when it is released, `width` how far it goes.
+ */
+export function settleReveal(x: number, vx: number, width: number): boolean {
+	if (Math.abs(vx) >= SETTLE_VELOCITY) return vx > 0;
+	return x >= width / 2;
 }
 
 /** Whether a right swipe released at `dx` goes back. */
@@ -171,6 +187,13 @@ export function keyboardInset(layout: number, visible: number): number {
 	return covered >= KEYBOARD_MIN ? covered : 0;
 }
 
+/**
+ * The bar of the iPhone keyboard (previous, next, done) and the gap under it.
+ * Since iOS 26 it floats over the page, and the visual viewport does not count
+ * it. A web page cannot take the bar away, so the page ends above it.
+ */
+export const KEYBOARD_BAR = 58;
+
 /** What the browser says about the page and the screen, in CSS pixels. */
 export interface PageMeasure {
 	/** The height the browser lays the page out at. */
@@ -185,6 +208,8 @@ export interface PageMeasure {
 	standalone: boolean;
 	/** The status bar's inset (`env(safe-area-inset-top)`). */
 	safeTop: number;
+	/** The keyboard's own bar floats over the page (see `KEYBOARD_BAR`). */
+	floatingBar?: boolean;
 }
 
 export interface PageFit {
@@ -201,12 +226,14 @@ export interface PageFit {
  * is drawn on the whole screen, yet an iPhone lays it out one status bar
  * shorter, which leaves an empty band under the last row: the page grows by
  * that much. Any other difference from the screen is a browser's own bars and
- * is left alone. With the keyboard open the page is exactly what is visible.
+ * is left alone. With the keyboard open the page is exactly what is visible,
+ * less the keyboard's bar where that floats over the page.
  */
 export function pageFit(measure: PageMeasure): PageFit {
 	const short = measure.screen - measure.layout;
 	const lift =
 		measure.standalone && short > 0 && Math.abs(short - measure.safeTop) <= 1 ? short : 0;
-	const keyboard = keyboardInset(measure.layout + lift, measure.visible);
+	const covered = keyboardInset(measure.layout + lift, measure.visible);
+	const keyboard = covered && measure.floatingBar ? covered + KEYBOARD_BAR : covered;
 	return { lift, keyboard, slid: keyboard ? Math.max(0, measure.slid) : 0 };
 }

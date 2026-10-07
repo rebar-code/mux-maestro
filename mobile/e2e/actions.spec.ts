@@ -55,6 +55,7 @@ test('a long press opens the row menu and does not tap the row', async ({ page }
 	await expect(sheet(page).getByRole('button')).toHaveText([
 		'New Window…',
 		'Rename Window…',
+		'Archive Window',
 		'Zoom Pane',
 		'Kill Window'
 	]);

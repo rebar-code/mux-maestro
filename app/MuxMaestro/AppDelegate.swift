@@ -107,6 +107,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             tmux: { [registry] host in
                 { args in registry.service(for: host).phoneTmux(args) }
             },
+            archive: { [weak self] thread in
+                // The close flow belongs to the main thread and its kill runs
+                // on the host's queue: wait here for both.
+                let done = DispatchSemaphore(value: 0)
+                var archived = false
+                DispatchQueue.main.async {
+                    guard let self else {
+                        done.signal()
+                        return
+                    }
+                    self.archiveWindowFromPhone(thread) {
+                        archived = $0
+                        done.signal()
+                    }
+                }
+                done.wait()
+                return archived
+            },
             changed: { [weak self] in
                 // The sidebar loads the tree again, and the phone follows it.
                 DispatchQueue.main.async { self?.sidebarVC?.refresh() }
@@ -1958,10 +1976,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// named pane id is killed by id for the same reason the window index is:
     /// what the sheet named is what dies, even if focus moved while it was up.
     ///
-    /// `source` `.contextMenu` and `.mergedTrash` skip the sheet (see `CloseWindowPrompt.needsConfirm`).
+    /// `source` `.contextMenu`, `.mergedTrash` and `.phone` skip the sheet (see
+    /// `CloseWindowPrompt.needsConfirm`). `completion` is for those: it comes on
+    /// the main thread with whether the kill ran, and never after a sheet.
+    /// `.phone` also shows no alert on failure: its caller tells the phone.
     private func confirmCloseWindow(
         session: String, window: Int?, service: TmuxService, paneFirst: Bool = false,
-        source: CloseWindowPrompt.Source = .keyboard
+        source: CloseWindowPrompt.Source = .keyboard, completion: ((Bool) -> Void)? = nil
     ) {
         let target = closeTarget(session: session, window: window, service: service)
         let action = paneFirst ? CloseWindowPrompt.action(for: target) : .window
@@ -1998,8 +2019,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } : nil
         guard CloseWindowPrompt.needsConfirm(source) else {
             performDestructive(
-                failure: failure, on: service, cleanUp: worktree, perform: perform,
-                onSuccess: archived)
+                failure: source == .phone ? nil : failure, on: service, cleanUp: worktree,
+                perform: perform, onSuccess: archived, completion: completion)
             return
         }
         confirmDestructive(
@@ -2011,6 +2032,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             worktree: worktree,
             perform: perform,
             onSuccess: archived)
+    }
+
+    /// Archive the window that holds `thread`, for the phone: the sidebar's
+    /// Archive Window, so the Mac's Edit > Undo brings it back. The window is
+    /// found by the thread's pane in the tree as it is now: tmux may have
+    /// renumbered the windows since the phone's tree was read. `done` comes on
+    /// the main thread, false when the pane has gone or the kill failed.
+    private func archiveWindowFromPhone(_ thread: MobileThread, done: @escaping (Bool) -> Void) {
+        guard let ref = sidebarVC?.windowRef(paneID: thread.pane, host: thread.host) else {
+            return done(false)
+        }
+        confirmCloseWindow(
+            session: ref.session, window: ref.window, service: registry.service(for: ref.host),
+            source: .phone, completion: done)
     }
 
     /// Read a close target out of the cached sidebar tree (`window` nil ⇒ the
@@ -2130,11 +2165,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Run a destructive tmux mutation now — what a confirm sheet does once
     /// accepted, and what a sidebar right-click does with no sheet. `perform` runs
     /// off-main; success refreshes the tree and hands `cleanUp` to spindown,
-    /// failure shows `failure`. With `onSuccess`, the worktree goes to it instead:
-    /// an archive decides when its worktree is cleaned up.
+    /// failure shows `failure` (nil shows nothing). With `onSuccess`, the worktree
+    /// goes to it instead: an archive decides when its worktree is cleaned up.
+    /// `completion` comes on the main thread with whether `perform` succeeded.
     private func performDestructive(
-        failure: String, on service: TmuxService?, cleanUp: String?,
-        perform: @escaping () -> Bool, onSuccess: ((String?) -> Void)? = nil
+        failure: String?, on service: TmuxService?, cleanUp: String?,
+        perform: @escaping () -> Bool, onSuccess: ((String?) -> Void)? = nil,
+        completion: ((Bool) -> Void)? = nil
     ) {
         // Route to the target host's serial queue so a wedged remote can't block
         // another host; herdr and host-agnostic ops fall back to the global queue.
@@ -2142,8 +2179,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         queue.async { [weak self] in
             let ok = perform()
             DispatchQueue.main.async {
+                defer { completion?(ok) }
                 guard let self else { return }
-                if ok { self.sidebarVC?.refresh() } else { self.presentError(failure) }
+                if ok { self.sidebarVC?.refresh() } else if let failure { self.presentError(failure) }
                 guard ok else { return }
                 if let onSuccess {
                     onSuccess(cleanUp)
@@ -3962,6 +4000,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         sidebarVC?.onPullRequestsChanged = { [weak self] in
             self?.updatePRsItem()
             self?.reloadPullRequestsScreen()
+            // The phone's threads carry their window's PRs.
+            self?.pushMobileSnapshot()
         }
         updatePRsItem()
         return item

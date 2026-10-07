@@ -16,6 +16,7 @@ final class MobileServerTests: XCTestCase {
     private let pane = FakePane()
     private let tmux = FakeTmux()
     private let changes = Counter()
+    private let archives = Counter()
     private let local = FakeLocal()
     private let pushTransport = FakePushTransport()
     private lazy var push = MobilePushCenter(
@@ -125,6 +126,10 @@ final class MobileServerTests: XCTestCase {
             },
             transcript: { [weak self] _ in self?.noTranscript == true ? nil : (transcript.path, false) },
             pane: { [pane] _ in pane.io }, tmux: tmux.source,
+            archive: { [archives] thread in
+                archives.add()
+                return thread.pane == "%12"
+            },
             changed: { [changes] in changes.add() }, home: home.path,
             artifacts: withLocal ? local.artifactSource : nil,
             running: withLocal ? local.runningSource : nil),
@@ -1778,6 +1783,7 @@ final class MobileServerTests: XCTestCase {
             ("/api/tmux/kill-pane", #"{"thread":"localhost:12","confirm":true}"#),
             ("/api/tmux/kill-window", #"{"thread":"localhost:12","confirm":true}"#),
             ("/api/tmux/kill-session", #"{"thread":"localhost:12","confirm":true}"#),
+            ("/api/tmux/archive-window", #"{"thread":"localhost:12"}"#),
         ]
     }
 
@@ -1810,6 +1816,26 @@ final class MobileServerTests: XCTestCase {
         XCTAssertEqual(get(Self.dirs).status, 403)
         XCTAssertEqual(tmux.argv.count, 0)
         XCTAssertEqual(changes.count, 0)
+        XCTAssertEqual(archives.count, 0)
+    }
+
+    func testAnArchiveIsTheMacsOwnAndNeedsNoKillSwitch() {
+        server.configure(MobileConfig(capabilities: [.sessionActions]))
+        let done = post("/api/tmux/archive-window", json: #"{"thread":"localhost:12"}"#)
+        XCTAssertEqual(done.status, 200)
+        XCTAssertEqual(done.body, #"{"ok":true}"#)
+        XCTAssertEqual(archives.count, 1)
+        // The tree is loaded again, so the phone drops the row.
+        XCTAssertEqual(changes.count, 1)
+
+        // The Mac did not archive it.
+        let failed = post("/api/tmux/archive-window", json: #"{"thread":"localhost:13"}"#)
+        XCTAssertEqual(failed.status, 409)
+        XCTAssertTrue(failed.body.contains(#""error":"failed""#), failed.body)
+        XCTAssertEqual(post("/api/tmux/archive-window", json: #"{"thread":"localhost:99"}"#).status, 404)
+        XCTAssertEqual(archives.count, 2)
+        XCTAssertEqual(changes.count, 1)
+        XCTAssertEqual(tmux.argv.count, 0)
     }
 
     func testAnActionOrFindWithoutThePairingTokenIsRefusedAndRunsNothing() {

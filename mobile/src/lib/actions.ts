@@ -12,6 +12,7 @@ export type ItemKey =
 	| 'new-window'
 	| 'new-session'
 	| 'rename'
+	| 'archive-window'
 	| 'zoom-pane'
 	| 'kill-pane'
 	| 'kill-window'
@@ -36,6 +37,7 @@ export function menuItems(target: MenuTarget, canKill: boolean): MenuItem[] {
 	return [
 		{ key: 'new-window', label: 'New Window…' },
 		{ key: 'rename', label: 'Rename Window…' },
+		{ key: 'archive-window', label: 'Archive Window' },
 		{ key: 'zoom-pane', label: 'Zoom Pane' },
 		...(canKill && target.thread.panes > 1
 			? [{ key: 'kill-pane', label: 'Kill Pane', danger: true } as const]

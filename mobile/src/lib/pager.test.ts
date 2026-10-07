@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
 	KEYBOARD_PULL,
+	KEYBOARD_BAR,
 	keyboardInset,
 	pageFit,
 	pageOffset,
@@ -10,6 +11,7 @@ import {
 	settleBack,
 	settleDrawer,
 	settlePage,
+	settleReveal,
 	settleSheet,
 	settleSwipe,
 	SHEET_STEP,
@@ -48,6 +50,29 @@ describe('resolveDrag', () => {
 		expect(resolveDrag({ ...base, drawerOpen: true, dx: -12, canScrollX: true })).toBe(
 			'drawer-close'
 		);
+	});
+});
+
+describe('row buttons', () => {
+	const open = { ...base, drawerOpen: true, canReveal: true };
+
+	it('a right swipe on a drawer row shows its buttons', () => {
+		expect(resolveDrag({ ...open, dx: 12 })).toBe('reveal');
+		// Not on a row without buttons, and not while the drawer is closed.
+		expect(resolveDrag({ ...open, dx: 12, canReveal: false })).toBe('none');
+		expect(resolveDrag({ ...open, dx: 12, drawerOpen: false })).toBe('drawer-open');
+	});
+
+	it('a left swipe hides the buttons first, and closes the drawer otherwise', () => {
+		expect(resolveDrag({ ...open, dx: -12, revealed: true })).toBe('reveal');
+		expect(resolveDrag({ ...open, dx: -12 })).toBe('drawer-close');
+	});
+
+	it('stays open past half way or after a flick right', () => {
+		expect(settleReveal(70, 0, 112)).toBe(true);
+		expect(settleReveal(20, 0.8, 112)).toBe(true);
+		expect(settleReveal(40, 0, 112)).toBe(false);
+		expect(settleReveal(100, -0.8, 112)).toBe(false);
 	});
 });
 
@@ -313,6 +338,17 @@ describe('pageFit', () => {
 		expect(height({ ...phone, visible: 516 })).toBe(516);
 		expect(height({ ...home, visible: 516 })).toBe(516);
 		expect(height({ ...home, visible: 457 })).toBe(457);
+	});
+
+	it('ends above a keyboard bar that floats over the page', () => {
+		const height = (m: typeof phone & { floatingBar: boolean }): number => {
+			const fit = pageFit(m);
+			return m.layout + fit.lift - fit.keyboard;
+		};
+		expect(height({ ...home, visible: 516, floatingBar: true })).toBe(516 - KEYBOARD_BAR);
+		expect(height({ ...phone, visible: 516, floatingBar: true })).toBe(516 - KEYBOARD_BAR);
+		// No keyboard, no bar.
+		expect(pageFit({ ...home, floatingBar: true }).keyboard).toBe(0);
 	});
 
 	it('follows a viewport the browser slid, only while the keyboard is open', () => {
