@@ -376,11 +376,12 @@ final class MobileAPITests: XCTestCase {
 
     private func pane(
         _ id: String, command: String = "zsh", active: Bool = false, claude: String? = nil,
-        attention: AttentionStatus = .unknown
+        codex: String? = nil, attention: AttentionStatus = .unknown
     ) -> TmuxPane {
         var pane = TmuxPane(id: id, index: 0, command: command, title: "", active: active)
         pane.path = "/Users/me/code/acme-app"
         pane.claudeSessionId = claude
+        pane.codexSessionId = codex
         pane.attention = attention
         return pane
     }
@@ -440,10 +441,19 @@ final class MobileAPITests: XCTestCase {
         started.mark("devbox:7", now: 100)
         let shells = tree(
             [pane("%41", active: true), pane("%42", active: true)], remote: [pane("%7", active: true)])
-        // Transcripts are read from this Mac's disk: a remote agent has no chat.
+        // A started agent has chat before it has an id, on any host. (A
+        // remote Codex is never marked: see `MobileActions.startedThread`.)
         XCTAssertEqual(
             chat(started.apply(to: shells, now: 101)),
-            ["localhost:41": true, "localhost:42": false, "devbox:7": false])
+            ["localhost:41": true, "localhost:42": false, "devbox:7": true])
+        // A remote Claude has chat: its transcript is copied to this Mac. A
+        // remote Codex has none.
+        XCTAssertEqual(
+            chat(tree([], remote: [pane("%7", command: "claude", active: true, claude: "c1")])), ["devbox:7": true])
+        XCTAssertEqual(
+            chat(tree([], remote: [pane("%7", command: "codex", active: true, codex: "x1")])), ["devbox:7": false])
+        XCTAssertEqual(
+            chat(tree([pane("%41", command: "codex", active: true, codex: "x1")])), ["localhost:41": true])
         XCTAssertEqual(chat(shells), ["localhost:41": false, "localhost:42": false, "devbox:7": false])
 
         // The tree was read before the window was made: the mark waits for it.
@@ -504,8 +514,8 @@ final class MobileAPITests: XCTestCase {
         XCTAssertTrue(threads[1]["since"] is NSNull)
         XCTAssertTrue(threads[2]["lastPrompt"] is NSNull)
         XCTAssertEqual(threads[2]["chat"] as? Bool, false)
-        // A remote agent has no transcript on this Mac: terminal only.
-        XCTAssertEqual(threads[3]["chat"] as? Bool, false)
+        // A remote Claude has chat: its transcript is copied to this Mac.
+        XCTAssertEqual(threads[3]["chat"] as? Bool, true)
         XCTAssertEqual(threads[3]["local"] as? Bool, false)
         XCTAssertEqual(threads[3]["hostColor"] as? String, "#f5a623")
         // Always an array: a window with no pull request has an empty one.

@@ -356,6 +356,9 @@ enum MobileActions {
                 if let agent = call.agent,
                    run(TmuxCommands.startAgent(target: created.pane, command: agent.launchCommand))?.ok == true {
                     result["agent"] = agent.launchCommand
+                    // A remote Codex has no transcript on this Mac: it opens
+                    // as the terminal it is, and never as a chat that stays empty.
+                    result["chat"] = call.host.isLocal || agent == .claude
                 }
             }
         case .session(let name):
@@ -364,11 +367,11 @@ enum MobileActions {
         return .json(result)
     }
 
-    /// The thread an answer of `perform` says an agent was started in.
+    /// The thread an answer of `perform` says an agent with a chat was started in.
     static func startedThread(_ response: MobileResponse) -> String? {
         guard response.status == 200,
               let result = (try? JSONSerialization.jsonObject(with: response.body)) as? [String: Any],
-              result["agent"] is String
+              result["agent"] is String, result["chat"] as? Bool != false
         else { return nil }
         return result["thread"] as? String
     }

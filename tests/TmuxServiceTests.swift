@@ -722,6 +722,74 @@ final class TmuxServiceTests: XCTestCase {
         XCTAssertNil(service.runHostData(remote: "tail", []))
     }
 
+    // MARK: a remote transcript, copied here
+
+    /// A host with one transcript file, answered by the tool that was run.
+    private final class TranscriptHost: CommandRunner {
+        private(set) var calls: [[String]] = []
+        var file = Data()
+        let path = "/home/me/.claude/projects/-home-me-acme-app/0f8fad5b-d9cb-469f-a165-70867728950e.jsonl"
+        func run(_ path: String, _ args: [String], stdin: Data?) -> String? {
+            runData(path, args, stdin: stdin).flatMap { String(data: $0, encoding: .utf8) }
+        }
+        func runData(_ path: String, _ args: [String], stdin: Data?) -> Data? {
+            calls.append(args)
+            let quoted = Ssh.shellQuote(self.path)
+            guard let tool = args.firstIndex(where: { ["'pwd'", "'find'", "'wc'", "'tail'"].contains($0) })
+            else { return nil }
+            switch args[tool] {
+            case "'pwd'": return Data("/home/me\n".utf8)
+            case "'find'": return Data((self.path + "\n").utf8)
+            case "'wc'": return args.last == quoted ? Data("  \(file.count) \(self.path)\n".utf8) : nil
+            default:
+                guard args.last == quoted, args[tool + 1] == "'-c'",
+                      let from = Int(args[tool + 2].trimmingCharacters(in: CharacterSet(charactersIn: "'+")))
+                else { return nil }
+                return Data(file.dropFirst(from - 1))
+            }
+        }
+    }
+
+    func testARemoteTranscriptIsCopiedHereOverSshAndFollowed() throws {
+        let host = TranscriptHost()
+        host.file = Data("{\"n\":1}\n".utf8)
+        let service = TmuxService(
+            host: Host(name: "devbox", sshAlias: "devbox"), transport: SshTmuxTransport(host: "devbox"),
+            runner: host, statusProvider: StaticStatusProvider())
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("mm-copy-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        var clock = Date(timeIntervalSince1970: 1_000_000)
+        let mirror = RemoteTranscriptMirror(root: root) { clock }
+        let id = "0f8fad5b-d9cb-469f-a165-70867728950e"
+
+        let copy = try XCTUnwrap(service.transcriptCopy(sessionId: id, in: mirror))
+        XCTAssertEqual(copy, root.appendingPathComponent("devbox/\(id).jsonl").path)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: copy)), host.file)
+        // Every word of every command was quoted for the far shell, the path after `--`.
+        let find = try XCTUnwrap(host.calls.first { $0.contains("'find'") })
+        XCTAssertEqual(Array(find.suffix(7)), [
+            "'/home/me/.claude/projects'", "'-type'", "'f'", "'-name'", "'\(id).jsonl'", "'-print'", "'-quit'",
+        ])
+        let quoted = Ssh.shellQuote(host.path)
+        XCTAssertEqual(host.calls.first { $0.contains("'wc'") }?.suffix(4), ["'wc'", "'-c'", "'--'", quoted])
+        XCTAssertEqual(host.calls.last?.suffix(5), ["'tail'", "'-c'", "'+1'", "'--'", quoted])
+
+        // More was written there, ending inside a character: whole lines come over.
+        host.file.append(Data("{\"n\":2}\n{\"caf".utf8) + Data([0xC3]))
+        clock = clock.addingTimeInterval(2)
+        _ = service.transcriptCopy(sessionId: id, in: mirror)
+        XCTAssertEqual(
+            String(decoding: try Data(contentsOf: URL(fileURLWithPath: copy)), as: UTF8.self),
+            "{\"n\":1}\n{\"n\":2}\n")
+        XCTAssertEqual(host.calls.last?.suffix(5), ["'tail'", "'-c'", "'+9'", "'--'", quoted])
+
+        // An id that is not one never reaches the host.
+        let asked = host.calls.count
+        XCTAssertNil(service.transcriptCopy(sessionId: "x; rm -rf ~", in: mirror))
+        XCTAssertNil(service.transcriptPath(agent: .claude, sessionId: "../../etc/passwd"))
+        XCTAssertEqual(host.calls.count, asked)
+    }
+
     func testAFakeThatOnlyAnswersTextStillAnswersBytes() {
         let runner = FakeRunner()
         runner.defaultResponse = "caf\u{e9}"

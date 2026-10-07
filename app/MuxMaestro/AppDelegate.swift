@@ -85,6 +85,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The Help window (feature docs + shortcuts), created on first open.
     private var helpWindowController: HelpWindowController?
     private var settingsWindowController: SettingsWindowController?
+    /// Copies of remote agents' transcripts, for the phone's chat and voice.
+    private let transcriptMirror = RemoteTranscriptMirror()
     /// The phone server and its "Phone" switch (Settings window). Off by default.
     private lazy var mobileServer = MobileServer(
         staticRoot: Bundle.main.resourceURL?.appendingPathComponent("mobile", isDirectory: true),
@@ -92,8 +94,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             screen: { [registry] thread, lines in
                 registry.service(for: thread.host).captureScrollback(target: thread.pane, lines: lines)
             },
-            transcript: { thread in
-                [thread.claudeSessionId, thread.codexSessionId].compactMap { $0 }
+            transcript: { [registry, transcriptMirror] thread in
+                guard thread.host.isLocal else {
+                    // A remote Claude session: its transcript as a copy here.
+                    return thread.claudeSessionId.flatMap {
+                        registry.service(for: thread.host).transcriptCopy(sessionId: $0, in: transcriptMirror)
+                    }.map { ($0, false) }
+                }
+                return [thread.claudeSessionId, thread.codexSessionId].compactMap { $0 }
                     .compactMap { TranscriptTailReader.shared.transcript(sessionId: $0) }.first
             },
             pane: { [registry, agentStates = AgentStateReader()] thread in
@@ -334,6 +342,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             fatalError("Failed to initialize libghostty app")
         }
         self.ghostty = ghostty
+        // Copies of remote transcripts nobody opened for a week.
+        DispatchQueue.global(qos: .utility).async { [transcriptMirror] in transcriptMirror.purge() }
 
         // Match the system appearance for the terminal palette.
         let dark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua

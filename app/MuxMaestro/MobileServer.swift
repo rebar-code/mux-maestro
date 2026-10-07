@@ -1458,7 +1458,12 @@ final class MobileServer {
                 let file = follow && thread.hasChat ? sources.transcript(thread) : nil
                 let turn = file.map { file in
                     MobileThreadTurn(
-                        read: { MobileChat.read(path: file.path, codex: file.codex, after: $0) },
+                        read: { [sources] after in
+                            // A remote transcript is a copy on this Mac: asking
+                            // for it again brings the copy up to date.
+                            if !thread.host.isLocal { _ = sources.transcript(thread) }
+                            return MobileChat.read(path: file.path, codex: file.codex, after: after)
+                        },
                         status: { state()?.status })
                 }
                 turn?.mark()

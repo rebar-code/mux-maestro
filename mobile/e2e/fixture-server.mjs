@@ -31,6 +31,7 @@
 // `mux point --action` records it; `refuse` is the error a tap gets), /__fixture/acted (the taps that landed),
 // /__fixture/maestro-say?text= (the Maestro says something in its chat),
 // /__fixture/terminal (what the live terminal's sockets were sent, and how they were opened),
+// /__fixture/remote-agent?id= (a remote pane runs Claude and has chat),
 // /__fixture/terminal-drop (cut every live socket), /__fixture/terminal-say?text=,
 // /__fixture/terminal-refuse?code= (close the next sockets with that code; 0 to stop)
 // /__fixture/requests (GET too: the request list as the Mac holds it),
@@ -1889,8 +1890,9 @@ function tmuxApi(req, res, path, body) {
 		if (agent !== null && agent !== 'claude' && agent !== 'codex')
 			return send(res, 400, { error: 'bad_agent' });
 		const made = makeThread(next, session, 'zsh', host, 'idle', '', 0, 'awake');
-		// As on the Mac: a transcript is read from its disk, so only a local agent has chat.
-		const chat = agent !== null && host === 'localhost';
+		// As on the Mac: a local agent's transcript is read from its disk and a remote
+		// Claude's is copied there. A remote Codex has none.
+		const chat = agent !== null && (host === 'localhost' || agent === 'claude');
 		Object.assign(made, { command: agent ?? 'zsh', chat, cwd: thread.cwd });
 		if (chat) chats[made.id] = [];
 		threads.push(made);
@@ -2190,6 +2192,15 @@ function hook(res, url) {
 		case '/__fixture/reset':
 			reset();
 			push('config', configBody());
+			break;
+		case '/__fixture/remote-agent':
+			// A Claude session in a remote pane: the Mac copies its transcript, so it has chat.
+			if (!thread || thread.local) return send(res, 404, { error: 'not_found' });
+			Object.assign(thread, { command: 'claude', chat: true });
+			chats[thread.id] = [
+				['user', thread.lastPrompt?.text ?? 'continue'],
+				['assistant', 'Done on devbox. 2 files changed, tests pass.']
+			].map(([role, text], n) => ({ n, role, text }));
 			break;
 		case '/__fixture/wait':
 			if (!thread) return send(res, 404, { error: 'not_found' });
