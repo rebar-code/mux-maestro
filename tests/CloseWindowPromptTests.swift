@@ -111,6 +111,12 @@ final class CloseWindowPromptTests: XCTestCase {
         XCTAssertFalse(CloseWindowPrompt.needsConfirm(.mergedTrash))
     }
 
+    /// The swipe on the phone was the deliberate step, and its request waits
+    /// for the archive: a sheet on the Mac would leave it waiting.
+    func testAPhoneArchiveNeverConfirms() {
+        XCTAssertFalse(CloseWindowPrompt.needsConfirm(.phone))
+    }
+
     /// ⌘W is one keystroke away from typing, so it keeps the sheet (Return confirms).
     func testKeyboardCloseConfirms() {
         XCTAssertTrue(CloseWindowPrompt.needsConfirm(.keyboard))

@@ -8,6 +8,7 @@ import {
 	resolveSheetDrag,
 	settleDrawer,
 	settlePage,
+	settleReveal,
 	settleSheet,
 	settleSwipe,
 	type DragKind,
@@ -33,6 +34,8 @@ class Ui {
 	drawer = $state(0);
 	/** A finger is moving the drawer or the pager, so nothing animates. */
 	dragging = $state(false);
+	/** The drawer row whose buttons show: the value of its `data-reveal`. */
+	revealed = $state<string | null>(null);
 	/** The pages of the current view, left to right. Empty on a view with none. */
 	pages = $state.raw<string[]>([]);
 	index = $state(0);
@@ -94,6 +97,7 @@ class Ui {
 
 	closeDrawer(): void {
 		this.drawer = 0;
+		this.revealed = null;
 	}
 
 	setPages(pages: string[], landed: ((index: number) => void) | null = null): void {
@@ -195,6 +199,8 @@ export function gestures(node: HTMLElement): () => void {
 	let hscroll: HTMLElement | null = null;
 	let hscrollStart = 0;
 	let swiped: HTMLElement | null = null;
+	let row: HTMLElement | null = null;
+	let rowStart = 0;
 	let origin: Element | null = null;
 	let momentum = 0;
 	let suppressClick = false;
@@ -203,6 +209,12 @@ export function gestures(node: HTMLElement): () => void {
 	/** More than one finger has been down since the first one landed. */
 	let multi = false;
 	let lastTap: { t: number; x: number; y: number } | null = null;
+
+	/** The row a touch is on, as `ui.revealed` names it. */
+	const revealKey = (el: HTMLElement | null): string | null => el?.dataset.reveal ?? null;
+	/** How far a row goes to show its buttons: as wide as they are. */
+	const revealWidth = (el: HTMLElement): number =>
+		el.parentElement?.querySelector<HTMLElement>('[data-row-actions]')?.offsetWidth ?? 0;
 
 	const drawerWidth = (): number =>
 		node.querySelector<HTMLElement>('[data-drawer]')?.offsetWidth ?? node.clientWidth * 0.86;
@@ -224,6 +236,11 @@ export function gestures(node: HTMLElement): () => void {
 			(event.target as Element).closest('[data-row]') === null;
 		hscroll = (event.target as Element).closest<HTMLElement>('[data-hscroll]');
 		swiped = (event.target as Element).closest<HTMLElement>('[data-swipe]');
+		// The row and the buttons behind it share one holder.
+		const slot = (event.target as Element).closest<HTMLElement>('[data-reveal-slot]');
+		row = slot?.querySelector<HTMLElement>('[data-reveal]') ?? null;
+		// A touch anywhere but the row whose buttons show puts them away.
+		if (ui.revealed !== null && ui.revealed !== revealKey(row)) ui.revealed = null;
 		origin = event.target as Element;
 		// A drag that begins in the text box is typing or moving the caret, not the drawer.
 		onSheet =
@@ -252,6 +269,10 @@ export function gestures(node: HTMLElement): () => void {
 		else if (kind === 'drawer-close') ui.drawer = 1;
 		else if (kind === 'page') ui.dragX = 0;
 		else if (kind === 'sheet') ui.sheetUp = 0;
+		else if (kind === 'reveal') {
+			row?.style.removeProperty('transition');
+			row?.style.removeProperty('transform');
+		}
 		if (start) kind = 'none';
 		ui.dragging = false;
 		ui.sheetDragging = false;
@@ -317,14 +338,19 @@ export function gestures(node: HTMLElement): () => void {
 				index: over ? 0 : ui.index,
 				canScrollX: canScroll(hscroll, dx),
 				canSwipe: swiped !== null,
-				canBack: !over && ui.back !== null
+				canBack: !over && ui.back !== null,
+				canReveal: row !== null,
+				revealed: row !== null && ui.revealed === revealKey(row)
 			});
 			if (kind === 'none') return;
 			base = dx;
 			hscrollStart = hscroll?.scrollLeft ?? 0;
 			node.setPointerCapture(start.id);
 			if (kind === 'swipe') swiped?.style.setProperty('transition', 'none');
-			else if (kind !== 'hscroll') ui.dragging = true;
+			else if (kind === 'reveal' && row) {
+				rowStart = ui.revealed === revealKey(row) ? revealWidth(row) : 0;
+				row.style.setProperty('transition', 'none');
+			} else if (kind !== 'hscroll') ui.dragging = true;
 		}
 		if (kind === 'vertical' || kind === 'none') return;
 
@@ -340,6 +366,11 @@ export function gestures(node: HTMLElement): () => void {
 		else if (kind === 'back') ui.backX = Math.max(moved, 0);
 		else if (kind === 'swipe')
 			swiped?.style.setProperty('transform', `translateX(${Math.min(moved, 0)}px)`);
+		else if (kind === 'reveal' && row)
+			row.style.setProperty(
+				'transform',
+				`translateX(${clamp(rowStart + moved, 0, revealWidth(row))}px)`
+			);
 		else if (hscroll) hscroll.scrollLeft = hscrollStart - moved;
 	}
 
@@ -380,6 +411,14 @@ export function gestures(node: HTMLElement): () => void {
 		const speed = still ? 0 : vx;
 		if (kind === 'drawer-open' || kind === 'drawer-close') {
 			ui.drawer = settleDrawer(ui.drawer, speed, kind === 'drawer-close') ? 1 : 0;
+			if (ui.drawer === 0) ui.revealed = null;
+		} else if (kind === 'reveal' && row) {
+			const width = revealWidth(row);
+			const shown = settleReveal(clamp(rowStart + moved, 0, width), speed, width);
+			// The row's own class takes over from here, and animates the rest.
+			row.style.removeProperty('transition');
+			row.style.removeProperty('transform');
+			ui.revealed = shown ? revealKey(row) : null;
 		} else if (kind === 'page') {
 			ui.goTo(settlePage(moved, speed, ui.index, ui.pages.length, node.clientWidth));
 			ui.dragX = 0;

@@ -146,12 +146,12 @@ test('rows show status, sleep and yawn tags, last prompt, age and host colour', 
 	);
 	await expect(waiting.locator('.age')).toHaveText('2m');
 	await expect(waiting.locator('.why')).toHaveText('needs you');
-	await expect(waiting).toHaveCSS('border-left-color', 'rgb(50, 145, 255)');
+	// No line down the side of the rows: the host is on the session's chip.
+	await expect(waiting).toHaveCSS('border-left-width', '0px');
 
 	await expect(row('localhost:3').locator('.dot')).toHaveClass(/busy/);
 	await expect(row('localhost:9').locator('.age')).toHaveText('🥱 52m');
 	await expect(row('localhost:100').locator('.age')).toHaveText('💤 2h');
-	await expect(row('devbox:2')).toHaveCSS('border-left-color', 'rgb(245, 166, 35)');
 
 	const chip = drawer(page).locator('[data-session="devbox/billing"] .host');
 	await expect(chip).toHaveText('devbox');

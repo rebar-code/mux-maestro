@@ -17,6 +17,8 @@ import Foundation
 // - A name passes `MobileActions.name`. It is one argv item of its own.
 // - A new session starts in a directory from `MobileActions.dirs`, or at home.
 // - A kill needs `"confirm": true`, and names its session by a thread.
+// - An archive is not a tmux call of this file: the Mac archives the window
+//   the way its own sidebar does, so the archive can be undone there.
 // - The manager's own session takes no action.
 
 /// One tmux call on a host: whether it exited 0, and what it printed (its
@@ -33,11 +35,16 @@ enum MobileAction: String, CaseIterable {
     case killWindow = "kill-window"
     case killPane = "kill-pane"
     case zoomPane = "zoom-pane"
+    case archiveWindow = "archive-window"
 
+    /// Whether the action needs the `kill` switch on top of `sessionActions`.
+    /// An archive does not: the Mac can undo it (Edit > Undo Archive Window),
+    /// and a kill it cannot.
     var isKill: Bool {
         switch self {
         case .killSession, .killWindow, .killPane: return true
-        case .newSession, .newWindow, .renameSession, .renameWindow, .zoomPane: return false
+        case .newSession, .newWindow, .renameSession, .renameWindow, .zoomPane, .archiveWindow:
+            return false
         }
     }
 }
@@ -70,7 +77,13 @@ enum MobileActions {
         var made = Made.nothing
         /// The agent to start in the window the command makes.
         var agent: AgentHandoff.Agent?
+        /// The thread whose window the Mac archives. No tmux command then.
+        var archive: MobileThread?
     }
+
+    /// Archive the window that holds a thread, the way the Mac's sidebar
+    /// does. False when the window was not archived. May block.
+    typealias Archive = (MobileThread) -> Bool
 
     /// Why an action is not run.
     struct Refusal: Error {
@@ -289,14 +302,19 @@ enum MobileActions {
         case .zoomPane:
             let thread = try thread(fields, snapshot: snapshot)
             return Call(host: thread.host, argv: TmuxCommands.toggleZoom(target: thread.pane))
+        case .archiveWindow:
+            // No `confirm`: the Mac keeps the archive in its undo history.
+            let thread = try thread(fields, snapshot: snapshot)
+            return Call(host: thread.host, argv: [], archive: thread)
         }
     }
 
     /// Run one action. `tmux` gives the runner for a host, nil where there is
-    /// none. Blocks on the tmux call.
+    /// none; `archive` is nil where no Mac archives a window. Blocks on the
+    /// tmux call.
     static func perform(
         _ action: MobileAction, body: Data, snapshot: MobileSnapshot, home: String = NSHomeDirectory(),
-        tmux: (Host) -> MobileTmux?
+        tmux: (Host) -> MobileTmux?, archive: Archive? = nil
     ) -> MobileResponse {
         guard let fields = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] else {
             return .error(400, "bad_request")
@@ -308,6 +326,10 @@ enum MobileActions {
             return refusal.response
         } catch {
             return .error(400, "bad_request")
+        }
+        if let thread = call.archive {
+            guard let archive else { return .error(503, "unavailable", message: unreachable) }
+            return archive(thread) ? .json(["ok": true]) : .error(409, "failed", message: failed)
         }
         guard let run = tmux(call.host), let ran = run(call.argv) else {
             return .error(503, "unavailable", message: unreachable)
