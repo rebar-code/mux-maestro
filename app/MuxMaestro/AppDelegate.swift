@@ -96,10 +96,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             transcript: { [registry, transcriptMirror] thread in
                 guard thread.host.isLocal else {
-                    // A remote Claude session: its transcript as a copy here.
-                    return thread.claudeSessionId.flatMap {
-                        registry.service(for: thread.host).transcriptCopy(sessionId: $0, in: transcriptMirror)
-                    }.map { ($0, false) }
+                    // A remote agent session: its transcript as a copy here.
+                    return registry.service(for: thread.host).transcriptCopy(
+                        claudeSessionId: thread.claudeSessionId, codexSessionId: thread.codexSessionId,
+                        in: transcriptMirror)
                 }
                 return [thread.claudeSessionId, thread.codexSessionId].compactMap { $0 }
                     .compactMap { TranscriptTailReader.shared.transcript(sessionId: $0) }.first
@@ -149,12 +149,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard !thread.host.isLocal else {
                     return MobileArtifacts.scan(thread: thread, reader: artifactReader)
                 }
-                // A remote Claude session: what its copied transcript mentions,
+                // A remote agent session: what its copied transcript mentions,
                 // as those files are on its host.
                 let service = registry.service(for: thread.host)
-                guard let id = thread.claudeSessionId,
-                      let copy = service.transcriptCopy(sessionId: id, in: transcriptMirror),
-                      let mentions = artifactReader.mentions(transcript: copy)
+                guard let copy = service.transcriptCopy(
+                          claudeSessionId: thread.claudeSessionId, codexSessionId: thread.codexSessionId,
+                          in: transcriptMirror),
+                      let mentions = artifactReader.mentions(transcript: copy.path)
                 else { return nil }
                 return service.artifactFiles.source(mentions: mentions, cwd: thread.cwd)
             },

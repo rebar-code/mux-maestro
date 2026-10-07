@@ -561,6 +561,7 @@ enum TmuxModel {
         paneStatusSince: [String: Int] = [:],
         codexByPid: [Int: String] = [:],
         ppids: [Int: Int] = [:],
+        paneCodexSessionIds joinedOnHost: [String: String] = [:],
         agentStates: [String: AgentStateRow] = [:],
         cacheClocks: [String: CacheClock] = [:],
         fallbackTTL: Int? = nil,
@@ -573,8 +574,9 @@ enum TmuxModel {
         let claudeTTL = AgentState.observedTTL(cacheClocks.values) ?? fallbackTTL
             ?? AgentState.dozeSeconds
         // Codex ids join by process ancestry, not pane id, so resolve them to pane
-        // ids once against the whole tree before walking it.
-        var paneCodexSessionIds: [String: String] = [:]
+        // ids once against the whole tree before walking it. A remote host did
+        // that join itself (`joinedOnHost`): its process table is not here.
+        var paneCodexSessionIds = joinedOnHost
         if !codexByPid.isEmpty {
             var panePidToId: [Int: String] = [:]
             for session in sessions {
@@ -584,8 +586,8 @@ enum TmuxModel {
                     }
                 }
             }
-            paneCodexSessionIds = paneCodexIds(
-                panePidToId: panePidToId, codexByPid: codexByPid, ppids: ppids)
+            paneCodexSessionIds.merge(paneCodexIds(
+                panePidToId: panePidToId, codexByPid: codexByPid, ppids: ppids)) { _, here in here }
         }
         let joined = sessions.map { session -> TmuxSession in
             var s = session
@@ -803,6 +805,51 @@ enum TmuxModel {
         return map
     }
 
+    /// Parse `tools/sessions.py list --full` JSON into what a remote host says
+    /// of its transcripts. Every value is data from that host: an id that is
+    /// not a session id is dropped, and a prompt goes through the same
+    /// `LastPrompt.firstLine` cut as one read on this Mac. Output of an older
+    /// copy of the script (no `--full`) parses to empty maps and schema 0.
+    static func parseRemoteFields(fromSessionsJSON data: Data) -> RemoteSessionFields {
+        guard let arr = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else {
+            return RemoteSessionFields()
+        }
+        var out = RemoteSessionFields()
+        var pidAtPane: [String: Int] = [:]
+        for entry in arr {
+            let id: String
+            switch entry["agent"] as? String {
+            case "meta":
+                out.schema = max(out.schema, (entry["schema"] as? NSNumber)?.intValue ?? 0)
+                continue
+            case "codex":
+                guard let codex = entry["codexSessionId"] as? String,
+                      RemoteTranscriptMirror.isSessionID(codex) else { continue }
+                id = codex
+                if let path = entry["rolloutPath"] as? String, !path.isEmpty { out.codexRollouts[id] = path }
+                // Two codex processes in one pane: the newest (highest pid)
+                // names it, as `paneCodexIds` has it on this Mac.
+                let pid = (entry["codexPid"] as? NSNumber)?.intValue ?? 0
+                if let pane = entry["codexPane"] as? String, !pane.isEmpty, pid >= pidAtPane[pane] ?? 0 {
+                    pidAtPane[pane] = pid
+                    out.paneCodexSessionIds[pane] = id
+                }
+            case nil:
+                guard let claude = entry["sessionId"] as? String, !claude.isEmpty else { continue }
+                id = claude
+            default:
+                continue
+            }
+            if let prompt = entry["lastPrompt"] as? [String: Any],
+               let text = (prompt["text"] as? String).flatMap(LastPrompt.firstLine) {
+                out.lastPrompts[id] = LastPrompt(
+                    text: text, at: max(0, (prompt["at"] as? NSNumber)?.intValue ?? 0))
+            }
+            if let at = (entry["lastWriteAt"] as? NSNumber)?.intValue, at > 0 { out.lastWrites[id] = at }
+        }
+        return out
+    }
+
     /// Parse `tools/sessions.py list` JSON into **pane id** → epoch **seconds** the
     /// pane's session entered its status (`updatedAt`, which `sessions.py` takes
     /// from Claude Code's `statusUpdatedAt`). When two sessions map to one pane,
@@ -824,4 +871,21 @@ enum TmuxModel {
         }
         return map
     }
+}
+
+/// What `sessions.py list --full` on a remote host says of the transcripts
+/// there: this Mac cannot read them, so the host reads their tails itself.
+struct RemoteSessionFields: Equatable {
+    /// pane id → Codex conversation id, joined by process ancestry on the host.
+    var paneCodexSessionIds: [String: String] = [:]
+    /// Codex conversation id → the path of its rollout as the host gave it.
+    /// Not checked here: see `RemoteTranscriptMirror.isRollout`.
+    var codexRollouts: [String: String] = [:]
+    /// Claude or Codex session id → last prompt, and → epoch seconds of the
+    /// transcript's newest timestamped entry.
+    var lastPrompts: [String: LastPrompt] = [:]
+    var lastWrites: [String: Int] = [:]
+    /// The output format the host's copy of the script says it writes. 0 for
+    /// a copy older than `--full`.
+    var schema = 0
 }

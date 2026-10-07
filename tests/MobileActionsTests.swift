@@ -307,16 +307,15 @@ final class MobileActionsTests: XCTestCase {
         let codex = run(.newWindow, #"{"host":"devbox","session":"infra","agent":"codex"}"#)
         XCTAssertEqual(codex.body["thread"] as? String, "devbox:41")
         XCTAssertEqual(codex.body["agent"] as? String, "codex")
-        // Which starts have a chat to open: any local agent, and a remote
-        // Claude. A remote Codex has no transcript on this Mac, so it is
-        // never marked as a chat that would stay empty.
+        // Every started agent has a chat to open, on any host: a remote
+        // transcript is copied to this Mac.
         XCTAssertEqual(claude.body["chat"] as? Bool, true)
-        XCTAssertEqual(codex.body["chat"] as? Bool, false)
+        XCTAssertEqual(codex.body["chat"] as? Bool, true)
         let started = { (body: [String: Any]) -> String? in
             MobileActions.startedThread(.json(body))
         }
         XCTAssertEqual(started(claude.body), "localhost:41")
-        XCTAssertNil(started(codex.body))
+        XCTAssertEqual(started(codex.body), "devbox:41")
         // No agent, or null, is a bare shell.
         let shell = run(.newWindow, #"{"thread":"localhost:13","agent":null}"#)
         XCTAssertEqual(shell.status, 200)

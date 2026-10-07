@@ -29,6 +29,8 @@ g() { env HOME="$T/home" GIT_CONFIG_NOSYSTEM=1 git -c user.email=selftest@exampl
 echo "sessions.py"
 out=$(bare $PY "$TOOLS/sessions.py" list)
 check "list prints [] with no ~/.claude" test "$out" = "[]"
+out=$(bare $PY "$TOOLS/sessions.py" list --full | tr -d ' \n')
+check "list --full prints only its schema row" test "$out" = '[{"agent":"meta","schema":2}]'
 
 echo "spindown.py"
 g init -q --bare -b main "$T/origin.git"

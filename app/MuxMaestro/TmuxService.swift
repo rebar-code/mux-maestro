@@ -323,7 +323,16 @@ struct StatusSnapshot {
     var codexByPid: [Int: String] = [:]
     var ppids: [Int: Int] = [:]
     /// codex conversation UUID → its own rollout file, for its last prompt.
+    /// From the remote provider this is a path on that host, as the host gave
+    /// it: only `TmuxService.codexRolloutPath` takes it, after a check.
     var codexRollouts: [String: String] = [:]
+    /// What a remote host read from its own disk (`RemoteSessionFields`): pane
+    /// id → Codex conversation id, and session id → last prompt / last write.
+    /// Remote hosts only. The local provider leaves all three empty: this
+    /// Mac's transcripts are read by `TranscriptTailReader`.
+    var paneCodexSessionIds: [String: String] = [:]
+    var lastPrompts: [String: LastPrompt] = [:]
+    var lastWrites: [String: Int] = [:]
 }
 
 extension AttentionStatusProvider {
@@ -468,6 +477,11 @@ final class RemoteSessionsPyStatusProvider: AttentionStatusProvider {
     /// first — so a host that was offline, or lost the file, gets it again.
     private let pushLock = NSLock()
     private var pushed = false
+    /// An older copy of the script answered and ours was pushed over it once.
+    private var pushedOverOlder = false
+
+    /// The `--full` output format this app reads (`SCHEMA` in `sessions.py`).
+    static let schema = 2
 
     init(
         host: String,
@@ -497,25 +511,43 @@ final class RemoteSessionsPyStatusProvider: AttentionStatusProvider {
     }
 
     /// One ssh round-trip. Until a read has succeeded it pipes the bundled script
-    /// in and runs it (`<push> && python3 <path> list`); after that it only runs
-    /// it (`test -f <path> && python3 <path> list`). Any failure exits non-zero,
-    /// so `run` returns nil → explicit degrade, and the next read pushes again.
+    /// in and runs it (`<push> && python3 <path> list --full`); after that it
+    /// only runs it (`test -f <path> && python3 <path> list --full`). Any failure
+    /// exits non-zero, so `run` returns nil → explicit degrade, and the next
+    /// read pushes again.
+    ///
+    /// `--full` asks for what only the host can read: each transcript's last
+    /// prompt and last write, and its live Codex panes. A copy of the script
+    /// older than the flag ignores it and answers the plain list. Another Mac
+    /// with an older app can put such a copy there: the answer then has no
+    /// schema row, and the next read pushes ours again (once, until a current
+    /// answer is seen, so two apps never push in turns for ever).
     private func readRemoteSessions() -> Data? {
         pushLock.lock()
         let push = script != nil && !pushed
         pushLock.unlock()
-        let list = "python3 \(scriptPath) list"
+        let list = "python3 \(scriptPath) list --full"
         let remoteCmd = push
             ? "\(Self.pushCommand(scriptPath: scriptPath)) && \(list)"
             : "test -f \(scriptPath) && \(list)"
         let args = Ssh.opts(host: host) + ["sh", "-c", Ssh.shellQuote(remoteCmd)]
         let out = runner.run(Ssh.sshPath, args, stdin: push ? script : nil)
         let ok = !(out ?? "").isEmpty
+        let data = ok ? out?.data(using: .utf8) : nil
+        let current = script == nil
+            || data.map { TmuxModel.parseRemoteFields(fromSessionsJSON: $0).schema >= Self.schema } == true
         pushLock.lock()
-        pushed = ok
+        if !ok {
+            pushed = false
+        } else if current {
+            pushed = true
+            pushedOverOlder = false
+        } else {
+            pushed = pushedOverOlder
+            pushedOverOlder = true
+        }
         pushLock.unlock()
-        guard ok, let out else { return nil }
-        return out.data(using: .utf8)
+        return data
     }
 
     /// Statuses keyed by tmux name, or nil when the remote status tool is
@@ -549,9 +581,10 @@ final class RemoteSessionsPyStatusProvider: AttentionStatusProvider {
     /// All three views from ONE ssh round-trip. The default three-call path paid a
     /// full remote python startup — over the network — three times per poll.
     ///
-    /// `codexByPid`/`ppids` stay empty: resolving codex ids needs an `lsof` on the
-    /// far host, an extra SSH round-trip per poll that isn't worth it yet. Remote
-    /// panes still get their Claude ids from `sessions.py` above.
+    /// `codexByPid`/`ppids` stay empty: the process table of the far host is not
+    /// here. The script joins its Codex processes to panes there, in the same
+    /// run, and reads the tails of the transcripts this Mac cannot reach
+    /// (`RemoteSessionFields`).
     func snapshot() -> StatusSnapshot {
         guard let data = readRemoteSessions() else {
             warnOnce("remote status tool unavailable on \(host) "
@@ -559,12 +592,17 @@ final class RemoteSessionsPyStatusProvider: AttentionStatusProvider {
                 + "tmux-level info with a neutral dot")
             return StatusSnapshot()
         }
+        let fields = TmuxModel.parseRemoteFields(fromSessionsJSON: data)
         return StatusSnapshot(
             statuses: TmuxModel.parseStatuses(fromSessionsJSON: data),
             activity: TmuxModel.parseActivity(fromSessionsJSON: data),
             paneStatuses: TmuxModel.parsePaneStatuses(fromSessionsJSON: data),
             paneSessionIds: TmuxModel.parsePaneSessionIds(fromSessionsJSON: data),
-            paneStatusSince: TmuxModel.parsePaneStatusSince(fromSessionsJSON: data))
+            paneStatusSince: TmuxModel.parsePaneStatusSince(fromSessionsJSON: data),
+            codexRollouts: fields.codexRollouts,
+            paneCodexSessionIds: fields.paneCodexSessionIds,
+            lastPrompts: fields.lastPrompts,
+            lastWrites: fields.lastWrites)
     }
 }
 
@@ -941,6 +979,8 @@ final class TmuxService {
         let agentStates = Dictionary(
             (self.agentStates?() ?? []).map { ($0.sessionId, $0) },
             uniquingKeysWith: { first, _ in first })
+        // This Mac's transcripts. A remote service has no reader (`transcripts`
+        // is nil): its host read the tails itself, and they came in `status`.
         let tails = transcripts?(status.sessionCwds, status.codexRollouts) ?? TranscriptTails()
         ObservedCacheTTL.shared.record(AgentState.observedTTL(tails.clocks.values))
         let result = TmuxModel.sorted(
@@ -951,11 +991,12 @@ final class TmuxService {
             paneStatusSince: status.paneStatusSince,
             codexByPid: status.codexByPid,
             ppids: status.ppids,
+            paneCodexSessionIds: status.paneCodexSessionIds,
             agentStates: agentStates,
             cacheClocks: tails.clocks,
             fallbackTTL: ObservedCacheTTL.shared.value,
-            lastPrompts: tails.prompts,
-            lastWrites: tails.lastWrites)
+            lastPrompts: status.lastPrompts.merging(tails.prompts) { _, here in here },
+            lastWrites: status.lastWrites.merging(tails.lastWrites) { _, here in here })
         // The app explicitly clears the snapshot when its close actions remove the
         // last session. An empty poll can instead mean tmux died, so it must not
         // erase the last useful tree before manual recovery can use it.
@@ -1500,14 +1541,55 @@ final class TmuxService {
         runHostData(remote: "tail", ["-c", "+\(max(0, from) + 1)", "--", path], slow: true)
     }
 
-    /// A Claude session's transcript on this (remote) host, as a copy on this
-    /// Mac that `mirror` keeps up to date. Blocks on ssh: call off the main
-    /// thread, and not on `driverQueue`, which carries what is typed.
-    func transcriptCopy(sessionId: String, in mirror: RemoteTranscriptMirror) -> String? {
-        mirror.file(host: host.name, sessionId: sessionId, remote: RemoteTranscriptMirror.Remote(
-            locate: { [self] in transcriptPath(agent: .claude, sessionId: sessionId) },
+    /// Where a Codex conversation's own rollout is on this host. The path the
+    /// host's status scan gave is taken first, and only when it is a rollout
+    /// of this conversation under the host's `~/.codex/sessions`: it is data
+    /// from the host, never a free path. Else `find`, by the rollout's name.
+    /// The id is checked to be letters, digits and `-` before either.
+    func codexRolloutPath(sessionId: String) -> String? {
+        guard RemoteTranscriptMirror.isSessionID(sessionId), let home = resolveHome() else { return nil }
+        let directory = URL(fileURLWithPath: home, isDirectory: true)
+            .appendingPathComponent(".codex/sessions", isDirectory: true).path
+        if let reported = statusProvider.snapshot().codexRollouts[sessionId],
+           RemoteTranscriptMirror.isRollout(reported, sessionId: sessionId, under: directory) {
+            return reported
+        }
+        let find = runHostCommand(
+            local: "/usr/bin/find", remote: "find",
+            [directory, "-type", "f", "-name", "rollout-*-\(sessionId).jsonl", "-print", "-quit"])?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let find, RemoteTranscriptMirror.isRollout(find, sessionId: sessionId, under: directory)
+        else { return nil }
+        return find
+    }
+
+    /// An agent session's transcript on this (remote) host, as a copy on this
+    /// Mac that `mirror` keeps up to date: a Claude transcript, or with
+    /// `codex` a Codex rollout. Blocks on ssh: call off the main thread, and
+    /// not on `driverQueue`, which carries what is typed.
+    func transcriptCopy(
+        sessionId: String, codex: Bool = false, in mirror: RemoteTranscriptMirror
+    ) -> String? {
+        mirror.file(host: host.name, sessionId: sessionId, codex: codex, remote: RemoteTranscriptMirror.Remote(
+            locate: { [self] in
+                codex ? codexRolloutPath(sessionId: sessionId)
+                    : transcriptPath(agent: .claude, sessionId: sessionId)
+            },
             size: { [self] in transcriptSize(path: $0) },
             fetch: { [self] in transcriptBytes(path: $0, from: $1) }))
+    }
+
+    /// The copy of the transcript of a thread on this (remote) host, and
+    /// whether it is a Codex rollout: what the phone's chat, voice read-back
+    /// and artifacts read. The Claude session wins, as it does on this Mac.
+    func transcriptCopy(
+        claudeSessionId: String?, codexSessionId: String?, in mirror: RemoteTranscriptMirror
+    ) -> (path: String, codex: Bool)? {
+        if let id = claudeSessionId {
+            return transcriptCopy(sessionId: id, in: mirror).map { ($0, false) }
+        }
+        return codexSessionId.flatMap { transcriptCopy(sessionId: $0, codex: true, in: mirror) }
+            .map { ($0, true) }
     }
 
     /// Reset the agent conversation in `target`, then paste the handoff prompt
