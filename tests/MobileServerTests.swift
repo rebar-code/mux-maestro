@@ -470,6 +470,27 @@ final class MobileServerTests: XCTestCase {
         XCTAssertTrue(get("/api/config").body.contains(#""liveTerminal":true"#))
     }
 
+    func testARemoteClaudeThreadHasChatAndARemoteCodexHasNone() {
+        var claude = TmuxPane(id: "%3", index: 0, command: "claude", title: "", active: true)
+        claude.claudeSessionId = "r1"
+        var codex = TmuxPane(id: "%4", index: 0, command: "codex", title: "", active: true)
+        codex.codexSessionId = "x1"
+        server.update(MobileSnapshot.build([MobileHostInput(
+            host: Host(name: "devbox", sshAlias: "devbox"), colorHex: "#f5a623", reachability: .reachable,
+            stats: nil,
+            sessions: [TmuxSession(name: "infra", attached: false, id: "$1", windows: [
+                TmuxWindow(index: 0, name: "api", active: true, panes: [claude]),
+                TmuxWindow(index: 1, name: "worker", active: false, panes: [codex]),
+            ])])]))
+        // The source answers the copy of the remote transcript: read like a local one.
+        let chat = get("/api/threads/devbox%3A3/chat")
+        XCTAssertEqual(chat.status, 200)
+        XCTAssertTrue(chat.body.contains(#""text":"hello""#))
+        XCTAssertTrue(chat.body.contains(#""session":"c1""#))
+        XCTAssertEqual(get("/api/threads/devbox%3A4/chat").status, 404)
+        XCTAssertTrue(get("/api/threads").body.contains(#""chat":true"#))
+    }
+
     func testServesChatAndScreenAndA404ForAStaleId() {
         let chat = get("/api/threads/localhost%3A12/chat")
         XCTAssertEqual(chat.status, 200)

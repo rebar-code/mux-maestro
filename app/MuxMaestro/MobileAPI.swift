@@ -802,9 +802,12 @@ struct MobileThread: Equatable {
     /// The pull requests of the thread's window, as its sidebar row has them.
     var prs: [PullRequest] = []
 
-    /// Transcripts are read from this Mac's disk, so only a local agent has chat.
+    /// A local agent's transcript is read from this Mac's disk. A remote
+    /// Claude session's is copied here (`RemoteTranscriptMirror`); a remote
+    /// Codex session has no copy, so it has no chat.
     var hasChat: Bool {
-        host.isLocal && (claudeSessionId != nil || codexSessionId != nil || startedAgent)
+        if host.isLocal { return claudeSessionId != nil || codexSessionId != nil || startedAgent }
+        return claudeSessionId != nil || startedAgent
     }
 
     var json: [String: Any] {

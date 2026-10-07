@@ -59,7 +59,23 @@ test('the first tab switches between chat and terminal', async ({ page }) => {
 	await expect(page.locator('.u').first()).toBeVisible();
 });
 
-test('a remote thread has the terminal only, with no switch', async ({ page }) => {
+test('a remote Claude session has chat, like a local one', async ({ page }) => {
+	await fresh(page);
+	await page.request.post(`/__fixture/remote-agent?id=${encodeURIComponent(REMOTE)}`);
+	await page.goto(threadPath(REMOTE));
+	const tab = page.locator('[data-tab="main"]');
+	await expect(tab).toHaveText(/Chat\s*⇄/);
+	await expect(page.locator('.u').first()).toHaveText('add proration to plan changes');
+	await expect(page.locator('.a').last()).toContainText('Done on devbox');
+	await expect(page.locator('.tbar .hchip')).toHaveText('devbox');
+	await page.screenshot({ path: 'test-results/shots/remote-chat.png' });
+	// The terminal is one tap away, as on a local thread.
+	await tab.click();
+	await expect(tab).toHaveText(/Terminal\s*⇄/);
+	await expect(page.locator('.screen')).toBeVisible();
+});
+
+test('a remote shell has the terminal only, with no switch', async ({ page }) => {
 	await fresh(page, threadPath(REMOTE));
 	const tab = page.locator('[data-tab="main"]');
 	await expect(tab).toHaveText('Terminal');

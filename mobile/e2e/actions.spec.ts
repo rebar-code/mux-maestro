@@ -196,9 +196,7 @@ test('Codex starts in chat and Terminal opens a shell', async ({ page }) => {
 	]);
 });
 
-test('New Window in a row menu asks too, and a remote agent opens as a terminal', async ({
-	page
-}) => {
+test('New Window in a row menu asks too, and a remote Claude opens as a chat', async ({ page }) => {
 	await longPress(page, row(page, 'devbox:2'));
 	await sheet(page).getByRole('button', { name: 'New Window…' }).click();
 	await expect(sheet(page)).toHaveAttribute('data-action-sheet', 'start');
@@ -207,6 +205,14 @@ test('New Window in a row menu asks too, and a remote agent opens as a terminal'
 	expect(await actions(page)).toEqual([
 		{ action: 'new-window', thread: 'devbox:2', agent: 'claude' }
 	]);
+	await expect(view(page)).toHaveAttribute('data-mode', 'chat');
+});
+
+test('a remote Codex opens as a terminal: it has no chat', async ({ page }) => {
+	await longPress(page, row(page, 'devbox:2'));
+	await sheet(page).getByRole('button', { name: 'New Window…' }).click();
+	await start(page, 'codex').click();
+	await expect(page).toHaveURL(/\/t\/devbox(:|%3A)\d+$/);
 	await expect(view(page)).toHaveAttribute('data-mode', 'terminal');
 });
 

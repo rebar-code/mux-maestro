@@ -358,6 +358,29 @@ test('a thread has the same box: Cancel, the playback buttons, no mute', async (
 	await expect(cancel).toHaveCount(0);
 });
 
+test('a remote Claude session takes a spoken turn and its reply is read back', async ({ page }) => {
+	// An idle pane: one that waits on a prompt takes no turn.
+	await fakeMic(page);
+	await reset(page);
+	for (const name of ['voice', 'replies']) {
+		await page.request.post(`/__fixture/capability?name=${name}&on=1`);
+	}
+	await page.request.post('/__fixture/remote-agent?id=buildbox%3A8');
+	await forget(page);
+	await page.goto(pairingLink(threadPath('buildbox:8')));
+	await expect(primary(page)).toHaveText('Talk');
+	await primary(page).click();
+	await say(page, 700);
+	const sent = page.waitForRequest((request) => request.url().includes('/api/voice?'));
+	await primary(page).click();
+	expect(new URL((await sent).url()).searchParams.get('target')).toBe('buildbox:8');
+	await expect(said(page).locator('.u').last()).toBeVisible();
+	// The phone asked for the reply to be read back, and the reply is in the chat.
+	await expect(said(page).locator('.a')).toHaveCount(2);
+	await expect(primary(page)).toHaveText('Talk');
+	expect((await takes(page)).at(-1)?.speaker).toBe(true);
+});
+
 test('the button is Send while the box has text, and Talk when it is empty', async ({ page }) => {
 	await open(page);
 	await box(page).fill('status?');

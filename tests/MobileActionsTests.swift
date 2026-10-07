@@ -284,6 +284,15 @@ final class MobileActionsTests: XCTestCase {
         ])
     }
 
+    func testARemoteClaudeStartHasAChatAndALocalCodexStartToo() {
+        tmux.output = "3\t%41\n"
+        let far = run(.newWindow, #"{"host":"devbox","session":"infra","agent":"claude"}"#)
+        XCTAssertEqual(far.body["chat"] as? Bool, true)
+        XCTAssertEqual(MobileActions.startedThread(.json(far.body)), "devbox:41")
+        let near = run(.newWindow, #"{"thread":"localhost:13","agent":"codex"}"#)
+        XCTAssertEqual(MobileActions.startedThread(.json(near.body)), "localhost:41")
+    }
+
     func testANewWindowStartsTheAskedAgentInTheNewPane() {
         tmux.output = "3\t%41\n"
         let claude = run(.newWindow, #"{"thread":"localhost:13","agent":"claude"}"#)
@@ -293,6 +302,16 @@ final class MobileActionsTests: XCTestCase {
         let codex = run(.newWindow, #"{"host":"devbox","session":"infra","agent":"codex"}"#)
         XCTAssertEqual(codex.body["thread"] as? String, "devbox:41")
         XCTAssertEqual(codex.body["agent"] as? String, "codex")
+        // Which starts have a chat to open: any local agent, and a remote
+        // Claude. A remote Codex has no transcript on this Mac, so it is
+        // never marked as a chat that would stay empty.
+        XCTAssertEqual(claude.body["chat"] as? Bool, true)
+        XCTAssertEqual(codex.body["chat"] as? Bool, false)
+        let started = { (body: [String: Any]) -> String? in
+            MobileActions.startedThread(.json(body))
+        }
+        XCTAssertEqual(started(claude.body), "localhost:41")
+        XCTAssertNil(started(codex.body))
         // No agent, or null, is a bare shell.
         let shell = run(.newWindow, #"{"thread":"localhost:13","agent":null}"#)
         XCTAssertEqual(shell.status, 200)

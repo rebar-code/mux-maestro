@@ -1467,9 +1467,14 @@ final class TmuxService {
     /// treated as an opaque filename component and restricted to UUID characters
     /// before it reaches `find`.
     func handoffTranscript(agent: AgentHandoff.Agent, sessionId: String) -> String? {
-        guard !sessionId.isEmpty,
-              sessionId.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }),
-              let home = resolveHome() else { return nil }
+        guard let find = transcriptPath(agent: agent, sessionId: sessionId) else { return nil }
+        return runHostCommand(local: "/usr/bin/tail", remote: "tail", ["-c", "8388608", find])
+    }
+
+    /// Where an agent session's transcript is on this host. The id is checked
+    /// to be letters, digits and `-` before it reaches `find`.
+    func transcriptPath(agent: AgentHandoff.Agent, sessionId: String) -> String? {
+        guard RemoteTranscriptMirror.isSessionID(sessionId), let home = resolveHome() else { return nil }
         let directory = URL(fileURLWithPath: home, isDirectory: true)
             .appendingPathComponent(agent == .claude ? ".claude/projects" : ".codex/sessions",
                                     isDirectory: true).path
@@ -1478,7 +1483,31 @@ final class TmuxService {
             [directory, "-type", "f", "-name", "\(sessionId).jsonl", "-print", "-quit"])?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard let find, !find.isEmpty else { return nil }
-        return runHostCommand(local: "/usr/bin/tail", remote: "tail", ["-c", "8388608", find])
+        return find
+    }
+
+    /// The size in bytes of the file at `path` on this host.
+    func transcriptSize(path: String) -> Int? {
+        runHostCommand(local: "/usr/bin/wc", remote: "wc", ["-c", "--", path])
+            .flatMap { $0.split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\t" }).first }
+            .flatMap { Int($0) }
+    }
+
+    /// The bytes of the file at `path` on this host, from byte `from` (0 is
+    /// its first) to its end. A first read can be megabytes over a slow link:
+    /// it runs under the slow ceiling.
+    func transcriptBytes(path: String, from: Int) -> Data? {
+        runHostData(remote: "tail", ["-c", "+\(max(0, from) + 1)", "--", path], slow: true)
+    }
+
+    /// A Claude session's transcript on this (remote) host, as a copy on this
+    /// Mac that `mirror` keeps up to date. Blocks on ssh: call off the main
+    /// thread, and not on `driverQueue`, which carries what is typed.
+    func transcriptCopy(sessionId: String, in mirror: RemoteTranscriptMirror) -> String? {
+        mirror.file(host: host.name, sessionId: sessionId, remote: RemoteTranscriptMirror.Remote(
+            locate: { [self] in transcriptPath(agent: .claude, sessionId: sessionId) },
+            size: { [self] in transcriptSize(path: $0) },
+            fetch: { [self] in transcriptBytes(path: $0, from: $1) }))
     }
 
     /// Reset the agent conversation in `target`, then paste the handoff prompt
