@@ -9,6 +9,10 @@ protocol CommandRunner {
     /// non-zero exit. Callers that need it trim trailing whitespace themselves.
     func run(_ path: String, _ args: [String], stdin: Data?) -> String?
 
+    /// The same run with stdout as it came, byte for byte: for a file's
+    /// content, which may be binary or end in the middle of a character.
+    func runData(_ path: String, _ args: [String], stdin: Data?) -> Data?
+
     /// Run capturing **stdout+stderr merged** and whether it succeeded (exit 0),
     /// with a generous timeout — for the commit panel's write ops (commit / push /
     /// pr create) that hit the network and whose error text we want to show.
@@ -17,6 +21,11 @@ protocol CommandRunner {
 
 extension CommandRunner {
     func run(_ path: String, _ args: [String]) -> String? { run(path, args, stdin: nil) }
+    /// Default derives from `run`, so test fakes that only implement `run`
+    /// keep working. A real runner must not: `run` loses what is not UTF-8.
+    func runData(_ path: String, _ args: [String], stdin: Data?) -> Data? {
+        run(path, args, stdin: stdin).map { Data($0.utf8) }
+    }
     /// Default derives from `run` (no stderr, no exit detail) so test fakes that
     /// only implement `run` keep working.
     func runCapturing(_ path: String, _ args: [String]) -> (ok: Bool, text: String) {
@@ -142,6 +151,10 @@ struct ProcessCommandRunner: CommandRunner {
     }()
 
     func run(_ path: String, _ args: [String], stdin: Data?) -> String? {
+        runData(path, args, stdin: stdin).flatMap { String(data: $0, encoding: .utf8) }
+    }
+
+    func runData(_ path: String, _ args: [String], stdin: Data?) -> Data? {
         let started = Date()
         defer {
             Diag.recordSpawn(
@@ -211,7 +224,7 @@ struct ProcessCommandRunner: CommandRunner {
         // behavior off "" vs nil (an empty `list-sessions` blanks the sidebar; nil
         // preserves the last good tree), so a partial read must report failure.
         guard let read = dataBox.load(), read.complete else { return nil }
-        return String(data: read.data, encoding: .utf8)
+        return read.data
     }
 
     /// Run capturing stdout+stderr merged and the success flag, with a generous
@@ -2787,6 +2800,20 @@ final class TmuxService {
             return slow.run(Ssh.sshPath, Ssh.opts(host: alias) + remoteCmd)
         }
         return slow.run(local, args)
+    }
+
+    /// A command's stdout as bytes, from this service's host: for the content
+    /// of a file there, which `runHostCommand` would lose when it is not whole
+    /// UTF-8. `remote` is a bare name, found on the host's PATH (on this Mac
+    /// too). Over ssh every word is single-quoted, so the remote shell hands
+    /// each one on as it is. `slow` runs under the 30s ceiling.
+    func runHostData(remote: String, _ args: [String], slow useSlow: Bool = false) -> Data? {
+        let run = useSlow ? slow : runner
+        if let alias = host.sshAlias {
+            let remoteCmd = ([remote] + args).map(Ssh.shellQuote)
+            return run.runData(Ssh.sshPath, Ssh.opts(host: alias) + remoteCmd, stdin: nil)
+        }
+        return run.runData("/usr/bin/env", [remote] + args, stdin: nil)
     }
 
     /// This host's `$HOME`: `NSHomeDirectory()` locally, or the remote login dir
