@@ -3,17 +3,22 @@
  * what a tap does to it. One message at a time, on this phone.
  */
 
-/** A message of a pane's chat: the pane (`manager`, or a thread's id) and the row's `n`. */
+/**
+ * A message of a pane's chat: the pane (`manager`, or a thread's id) and the
+ * row's `n`. With `artifact` it is a file of the thread instead, by its id,
+ * and `n` is 0.
+ */
 export interface SayKey {
 	target: string;
 	n: number;
+	artifact?: string;
 }
 
 /** What a play button shows: at rest, waiting for its first audio, or reading. */
 export type SayState = 'idle' | 'loading' | 'playing';
 
 export const sameMessage = (a: SayKey | null, b: SayKey): boolean =>
-	a !== null && a.target === b.target && a.n === b.n;
+	a !== null && a.target === b.target && a.n === b.n && a.artifact === b.artifact;
 
 /**
  * A tap on the button of `tapped` while `now` is read (or nothing is).

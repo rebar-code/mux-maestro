@@ -302,7 +302,7 @@
 							onclick={() => voice.say(id, message.n)}
 						>
 							{#if saying === 'loading'}
-								<i class="ring" aria-hidden="true"></i>
+								<i class="turning" aria-hidden="true"></i>
 							{:else}
 								<Icon name={saying === 'playing' ? 'stop' : 'play'} size={15} />
 							{/if}
@@ -848,22 +848,6 @@
 	.act:global([data-copied]) :global([data-icon='copy']),
 	.act:not(:global([data-copied])) :global([data-icon='check']) {
 		display: none;
-	}
-
-	/* The Mac is making the audio. With reduced motion it is a still ring. */
-	.ring {
-		width: 12px;
-		height: 12px;
-		border-radius: 50%;
-		border: 2px solid var(--border);
-		border-top-color: var(--text);
-		animation: turning 0.8s linear infinite;
-	}
-
-	@keyframes turning {
-		to {
-			transform: rotate(360deg);
-		}
 	}
 
 	/* Not sent yet: the agent holds it until its turn ends. A broken edge, and the queue's mark. */

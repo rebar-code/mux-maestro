@@ -360,6 +360,9 @@ final class MobileVoiceTests: XCTestCase {
         XCTAssertNil(cache.reply(for: key(1, voice: "af_heart")))
         XCTAssertNil(cache.reply(for: key(1, speed: 1)))
         XCTAssertNil(cache.reply(for: MobileSpeechCache.Key(target: .manager, n: 1, voice: "bm_fable", speed: 1.2)))
+        // A file of the thread is not a row of its chat.
+        XCTAssertNil(cache.reply(for: MobileSpeechCache.Key(
+            target: .thread("local:12"), n: 1, voice: "bm_fable", speed: 1.2, artifact: "0a1b")))
     }
 
     func testACacheHitReturnsItsClipsInOrder() {
@@ -850,6 +853,8 @@ final class MobileVoiceServerTests: XCTestCase {
     private var warmed: [Bool] = []
     private var status = MobileManagerStatus.idle
     private var transcript: String?
+    /// What the thread's transcript says its agent made.
+    private var listed: MobileArtifactSource?
     private var script: (deltas: [String], outcome: ManagerTurnOutcome) =
         (["Two threads need you."], .done(reply: "Two threads need you."))
 
@@ -868,7 +873,8 @@ final class MobileVoiceServerTests: XCTestCase {
             sources: MobileServer.Sources(
                 screen: { _, _ in nil },
                 transcript: { [unowned self] _ in (threadTranscript.path, false) },
-                pane: { [pane] _ in pane.io }),
+                pane: { [pane] _ in pane.io },
+                artifacts: { [unowned self] _ in locked { listed } }),
             manager: MobileServer.Manager(
                 pane: { [unowned self] in locked { (status, transcript) } },
                 send: { [unowned self] text, _, onDelta, completion in
@@ -891,9 +897,15 @@ final class MobileVoiceServerTests: XCTestCase {
         }
         wait(for: [started], timeout: 5)
         server.configure(MobileConfig(capabilities: [.manager, .voice]))
+        show()
+    }
+
+    /// The one thread, `localhost:12`, working in `cwd`.
+    private func show(cwd: String = "") {
         var agent = TmuxPane(id: "%12", index: 0, command: "claude", title: "", active: true)
         agent.claudeSessionId = "c1"
         agent.attention = .idle
+        agent.path = cwd
         server.update(MobileSnapshot.build([MobileHostInput(
             host: .local, colorHex: "#3291ff", reachability: .reachable, stats: nil,
             sessions: [TmuxSession(name: "acme-app", attached: true, windows: [
@@ -1393,6 +1405,103 @@ final class MobileVoiceServerTests: XCTestCase {
         let off = post("/api/voice/say?target=manager&n=0")
         XCTAssertEqual(off.status, 403)
         XCTAssertEqual(off.body, #"{"error":"disabled"}"#)
+    }
+
+    // MARK: read a file aloud
+
+    /// The folder the thread works in.
+    private var project: URL { root.appendingPathComponent("acme-app") }
+
+    private func filesOn() throws {
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        server.configure(MobileConfig(capabilities: [.voice, .artifacts]))
+        show(cwd: project.path)
+    }
+
+    /// Write `text` to a file the thread's agent made. The path that reads it aloud.
+    private func made(_ name: String, _ text: String) throws -> String {
+        let path = project.appendingPathComponent(name).path
+        try Data(text.utf8).write(to: URL(fileURLWithPath: path))
+        let file = Artifact(
+            kind: ArtifactScanner.kind(of: path), path: path,
+            at: Date(timeIntervalSince1970: 1_700_000_000), exists: true)
+        locked { listed = ((listed?.artifacts ?? []).filter { $0.path != path } + [file], []) }
+        return "/api/voice/say?target=localhost%3A12&artifact=\(MobileArtifacts.id(path: path))"
+    }
+
+    func testSayReadsAFileOfTheThreadWithNoRow() throws {
+        try filesOn()
+        let say = post(try made("PLAN.md", "Ship on Friday."))
+        XCTAssertEqual(say.status, 200)
+        let all = events(say.body)
+        XCTAssertEqual(all.map(\.name), ["audio", "end"])
+        XCTAssertEqual(all[0].data["text"] as? String, "Ship on Friday.")
+        XCTAssertEqual(all[1].data["outcome"] as? String, "done")
+        XCTAssertEqual(speech.synthCalls, 1)
+        XCTAssertEqual(pane.argv.count, 0)
+    }
+
+    func testSayingAFileAgainComesFromTheCacheUntilTheFileChanges() throws {
+        try filesOn()
+        let path = try made("PLAN.md", "Ship on Friday.")
+        let first = events(post(path).body)
+        let again = events(post(path).body)
+        XCTAssertEqual(again.map(\.name), ["audio", "end"])
+        XCTAssertEqual(again[0].data["wav"] as? String, first[0].data["wav"] as? String)
+        XCTAssertEqual(speech.synthCalls, 1)
+        // The same id, other words on disk.
+        XCTAssertEqual(try made("PLAN.md", "Ship on Monday."), path)
+        let changed = events(post(path).body)
+        XCTAssertEqual(changed.first?.data["text"] as? String, "Ship on Monday.")
+        XCTAssertEqual(speech.synthCalls, 2)
+    }
+
+    func testAFileAndARowOfOneThreadDoNotShareTheCache() throws {
+        try filesOn()
+        // The reply is row 0. Were the file kept as a row, it would be that one.
+        let line = #"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"All 12 pass. Ship it."}]}}"#
+        try Data((line + "\n").utf8).write(to: threadTranscript)
+        XCTAssertEqual(post(Self.say(0)).status, 200)
+        let all = events(post(try made("notes.txt", "All 12 pass. Ship it.")).body)
+        XCTAssertEqual(all.map(\.name), ["audio", "end"])
+        XCTAssertEqual(speech.synthCalls, 2)
+    }
+
+    func testSayRefusesAFileItCannotRead() throws {
+        try filesOn()
+        let plan = try made("PLAN.md", "Ship on Friday.")
+        // Code, a page, an id that is not in the list, no id, and a path.
+        for path in [
+            try made("main.swift", "let a = 1"), try made("report.html", "<p>Ship</p>"),
+            "/api/voice/say?target=localhost%3A12&artifact=0123456789abcdef0123456789abcdef",
+            "/api/voice/say?target=localhost%3A12&artifact=",
+            "/api/voice/say?target=localhost%3A12&artifact=..%2FPLAN.md",
+        ] {
+            let none = post(path)
+            XCTAssertEqual(none.status, 404, path)
+            XCTAssertEqual(none.body, #"{"error":"nothing","message":"Nothing to replay"}"#, path)
+        }
+        // The manager has no files, and a thread that is gone has none.
+        let id = plan.components(separatedBy: "artifact=")[1]
+        XCTAssertEqual(post("/api/voice/say?target=manager&artifact=\(id)").status, 400)
+        XCTAssertEqual(post("/api/voice/say?target=localhost%3A99&artifact=\(id)").status, 404)
+        XCTAssertEqual(post("/api/voice/say?artifact=\(id)").status, 400)
+        speech.modelsReady = false
+        XCTAssertEqual(post(plan).status, 503)
+        XCTAssertEqual(speech.synthCalls, 0)
+    }
+
+    func testSayingAFileNeedsTheArtifactsSwitch() throws {
+        try filesOn()
+        let plan = try made("PLAN.md", "Ship on Friday.")
+        server.configure(MobileConfig(capabilities: [.voice]))
+        let off = post(plan)
+        XCTAssertEqual(off.status, 403)
+        XCTAssertEqual(off.body, #"{"error":"disabled"}"#)
+        // A row of the chat is still read.
+        let rows = try writeThreadChat()
+        XCTAssertEqual(post(Self.say(rows.reply)).status, 200)
+        XCTAssertEqual(speech.synthCalls, 1)
     }
 
     func testANewerSayReplacesARunningOne() throws {

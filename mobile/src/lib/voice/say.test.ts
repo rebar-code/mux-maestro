@@ -24,6 +24,28 @@ describe('the play button: one message at a time', () => {
 	});
 });
 
+describe('the play button of a file', () => {
+	const file: SayKey = { target: 'localhost:7', n: 0, artifact: '0a1b' };
+	const row: SayKey = { target: 'localhost:7', n: 0 };
+
+	it('tells a file from a row of the same thread', () => {
+		expect(sameMessage(file, row)).toBe(false);
+		expect(sameMessage(row, file)).toBe(false);
+		expect(sayTap(row, file)).toEqual({ stop: true, start: file });
+		expect(sayState(row, file, true)).toBe('idle');
+	});
+
+	it('tells two files of one thread apart', () => {
+		expect(sameMessage(file, { ...file, artifact: '2c3d' })).toBe(false);
+	});
+
+	it('stops on a tap of the file that is read', () => {
+		expect(sayTap(file, { ...file })).toEqual({ stop: true, start: null });
+		expect(sayState(file, { ...file }, false)).toBe('loading');
+		expect(sayState(file, { ...file }, true)).toBe('playing');
+	});
+});
+
 describe('what a play button shows', () => {
 	it('shows Play on every message but the one that is read', () => {
 		expect(sayState(null, a, false)).toBe('idle');

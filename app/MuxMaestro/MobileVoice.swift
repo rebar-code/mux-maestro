@@ -138,6 +138,9 @@ enum MobileVoice {
     /// The most of a reply Replay reads again, in characters: about three
     /// minutes of speech. A longer reply is read from its start.
     static let maxReplayCharacters = 3000
+    /// The most of a file the play button reads, in characters: about twelve
+    /// minutes of speech. A longer file is read from its start.
+    static let maxArtifactCharacters = 12_000
 
     static let heardNothing = "Heard nothing"
     static let modelsNotReady = "Voice models not ready"
@@ -403,6 +406,9 @@ struct MobileSpeechCache {
         let n: UInt64
         let voice: String
         let speed: Float
+        /// The file that is read, by its id. nil for a row of the chat, so a
+        /// file and a row are never one entry.
+        var artifact: String? = nil
     }
 
     let entryLimit: Int

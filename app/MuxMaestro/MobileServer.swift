@@ -1801,23 +1801,48 @@ final class MobileServer {
     /// a thread needs only Voice. A newer read-aloud replaces a running one;
     /// a take or a Replay is never cut short. A message read to its end
     /// before is sent again from the cache, without the engine.
+    ///
+    /// With `artifact` in place of `n` it speaks one file of a thread's list,
+    /// named by its id. That needs Artifacts too, as the file itself does.
     private func startSay(_ request: MobileRequest, client: Client) {
-        guard let ask = MobileVoiceRequest(query: request.query),
-              let n = request.query["n"].flatMap(UInt64.init)
-        else { return send(.error(400, "bad_request"), to: client, head: false) }
-        let transcript: () -> (path: String, codex: Bool)?
-        switch ask.target {
-        case .manager:
+        guard let ask = MobileVoiceRequest(query: request.query) else {
+            return send(.error(400, "bad_request"), to: client, head: false)
+        }
+        let artifact = request.query["artifact"]
+        let row = request.query["n"].flatMap(UInt64.init)
+        // What is read, looked up off the server queue.
+        let words: () -> String?
+        switch (ask.target, artifact, row) {
+        case (.thread(let id), let artifact?, _):
+            guard config.allows(.artifacts) else { return send(.error(403, "disabled"), to: client, head: false) }
+            guard let thread = snapshot.thread(id: id) else {
+                return send(.error(404, "not_found"), to: client, head: false)
+            }
+            guard let source = sources.artifacts else {
+                return send(.error(503, "unavailable"), to: client, head: false)
+            }
+            // The id is looked up in the thread's own list; it is never a path.
+            words = { MobileArtifacts.speech(id: artifact, thread: thread, source: source) }
+        case (.manager, nil, let n?):
             guard config.allows(.manager) else { return send(.error(403, "disabled"), to: client, head: false) }
             guard let manager else {
                 return send(.error(503, "unavailable", message: MobileVoice.unavailable), to: client, head: false)
             }
-            transcript = { manager.pane().transcript.map { ($0, false) } }
-        case .thread(let id):
+            words = {
+                MobileVoice.sayText(of: manager.pane().transcript
+                    .flatMap { MobileChat.message(path: $0, codex: false, n: n) })
+            }
+        case (.thread(let id), nil, let n?):
             guard let thread = snapshot.thread(id: id) else {
                 return send(.error(404, "not_found"), to: client, head: false)
             }
-            transcript = { [sources] in thread.hasChat ? sources.transcript(thread) : nil }
+            words = { [sources] in
+                MobileVoice.sayText(of: (thread.hasChat ? sources.transcript(thread) : nil)
+                    .flatMap { MobileChat.message(path: $0.path, codex: $0.codex, n: n) })
+            }
+        default:
+            // No row and no file, or a file of the manager, which has none.
+            return send(.error(400, "bad_request"), to: client, head: false)
         }
         guard let voice else {
             return send(.error(503, "unavailable", message: MobileVoice.unavailable), to: client, head: false)
@@ -1830,11 +1855,11 @@ final class MobileServer {
         readingCount += 1
         let count = readingCount
         let key = MobileSpeechCache.Key(
-            target: ask.target, n: n, voice: VoiceModelStore.kokoroVoice, speed: VoiceModelStore.kokoroSpeed)
+            target: ask.target, n: artifact == nil ? row ?? 0 : 0,
+            voice: VoiceModelStore.kokoroVoice, speed: VoiceModelStore.kokoroSpeed, artifact: artifact)
         work.async { [weak self, weak client] in
             let ready = voice.speech.modelsReady
-            let text = MobileVoice.sayText(of: transcript()
-                .flatMap { MobileChat.message(path: $0.path, codex: $0.codex, n: n) })
+            let text = words()
             self?.queue.async {
                 guard let self, let client, self.clients[ObjectIdentifier(client)] != nil else { return }
                 // Replaced while it looked for its text, or a take began then.
@@ -1847,6 +1872,7 @@ final class MobileServer {
                 }
                 // The row is read first: a pane that began a new transcript
                 // has other words at the same `n`, and those are not these.
+                // A file that changed on disk misses the same way.
                 if let reply = self.spoken.reply(for: key), reply.text == text {
                     return self.readAloud(to: client, voice: voice).play(reply)
                 }

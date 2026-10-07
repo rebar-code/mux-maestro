@@ -186,6 +186,23 @@ button:disabled {
 	transform: translateY(-50%);
 }
 
+/* A play button while the Mac makes the audio. With reduced motion it is a still ring. */
+.turning {
+	display: block;
+	width: 12px;
+	height: 12px;
+	border-radius: 50%;
+	border: 2px solid var(--border);
+	border-top-color: var(--text);
+	animation: turning 0.8s linear infinite;
+}
+
+@keyframes turning {
+	to {
+		transform: rotate(360deg);
+	}
+}
+
 /* Segmented control */
 .seg {
 	display: flex;
