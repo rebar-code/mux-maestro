@@ -1551,16 +1551,41 @@ final class MobileReplyTests: XCTestCase {
             #"{"ok":true,"pasted":false,"path":"\/Users\/me\/uploads\/IMG_0042.png","text":"\/Users\/me\/uploads\/IMG_0042.png"}"#)
         XCTAssertEqual(local.saves.map(\.path), ["/Users/me/uploads/IMG_0042.png"])
 
-        // The folder from Settings is a path on this Mac. On a remote host
-        // the file goes to that host's own temp folder, and the path the
-        // agent gets is absolute there.
+        // A folder under this Mac's home is the same folder under the remote
+        // host's home, and the path the agent gets is absolute there.
+        let devbox = thread(host: Host(name: "devbox", sshAlias: "devbox"), cwd: "/home/me/acme-app")
         let remote = FakePane()
+        var io = remote.io
+        io.home = { "/home/dev" }
         _ = MobileReply.upload(
-            Data("x".utf8), name: "IMG_0042.png",
-            thread: thread(host: Host(name: "devbox", sshAlias: "devbox"), cwd: "/home/me/acme-app"),
-            folder: Self.uploads, io: remote.io, limit: 1024, state: { self.state(.idle) })
-        XCTAssertEqual(remote.saves.map(\.path), ["/tmp/MuxMaestro/IMG_0042.png"])
-        XCTAssertEqual(remote.calls[1].stdin, "/tmp/MuxMaestro/IMG_0042.png ")
+            Data("x".utf8), name: "IMG_0042.png", thread: devbox, folder: Self.uploads, io: io,
+            limit: 1024, home: "/Users/me", state: { self.state(.idle) })
+        XCTAssertEqual(remote.saves.map(\.path), ["/home/dev/uploads/IMG_0042.png"])
+        XCTAssertEqual(remote.calls[1].stdin, "/home/dev/uploads/IMG_0042.png ")
+
+        // A host whose home cannot be read takes the file in its temp folder.
+        let silent = FakePane()
+        _ = MobileReply.upload(
+            Data("x".utf8), name: "IMG_0042.png", thread: devbox, folder: Self.uploads, io: silent.io,
+            limit: 1024, home: "/Users/me", state: { self.state(.idle) })
+        XCTAssertEqual(silent.saves.map(\.path), ["/tmp/MuxMaestro/IMG_0042.png"])
+    }
+
+    func testTheRemoteUploadFolderIsTheSameFolderUnderThatHostsHome() {
+        let folder = { (folder: String, remoteHome: String?) in
+            MobileReply.remoteUploadFolder(for: folder, home: "/Users/me", remoteHome: remoteHome)
+        }
+        XCTAssertEqual(folder("/Users/me/Screenshots", "/home/dev"), "/home/dev/Screenshots")
+        XCTAssertEqual(folder("/Users/me/a/b", "/home/dev/"), "/home/dev/a/b")
+        XCTAssertEqual(folder("/Users/me/Screenshots", "/"), "/Screenshots")
+        // A path outside this Mac's home is one the host may not have.
+        XCTAssertEqual(folder("/Volumes/scratch/uploads", "/home/dev"), "/tmp/MuxMaestro")
+        XCTAssertEqual(folder("/Users/meg/Screenshots", "/home/dev"), "/tmp/MuxMaestro")
+        // The home folder itself is not a place for uploads on a host.
+        XCTAssertEqual(folder("/Users/me", "/home/dev"), "/tmp/MuxMaestro")
+        // No home, or one that is not a plain absolute path.
+        XCTAssertEqual(folder("/Users/me/Screenshots", nil), "/tmp/MuxMaestro")
+        XCTAssertEqual(folder("/Users/me/Screenshots", "not a path"), "/tmp/MuxMaestro")
     }
 
     func testAPathWithMoreThanPlainCharactersIsPastedQuoted() {
