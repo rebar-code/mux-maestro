@@ -3,7 +3,7 @@
 //
 //   PORT=5199 node e2e/fixture-server.mjs
 //
-// Test hooks (POST): /__fixture/reset, /__fixture/wait?id=, /__fixture/say?id=&text=&role=,
+// Test hooks (POST): /__fixture/reset, /__fixture/wait?id=, /__fixture/say?id=&text=&role=&tool=,
 // /__fixture/grouping?value=, /__fixture/deny?on=1, /__fixture/rotate?value=, /__fixture/drop,
 // /__fixture/capability?name=&on=, /__fixture/manager-status?value=,
 // /__fixture/mac-turn?text=&reply=&spinner=&ms= (ms: the pause between words),
@@ -155,6 +155,24 @@ const CHATS = {
 		['assistant', 'I need to run the spec to confirm it passes.']
 	]
 };
+
+// The thread with a long run of tool calls, and what the agent thought on the way.
+CHATS['localhost:100'] = [
+	['user', 'find out why the checkout e2e test is flaky'],
+	['reasoning', 'The test passes alone and fails in the suite. **Look for shared state first.**'],
+	['assistant', 'I will read the spec and its fixtures, then run it in a loop.'],
+	['tool', 'e2e/checkout.spec.ts', 'Read'],
+	['tool', 'e2e/fixtures.ts', 'Read'],
+	['tool', 'beforeEach', 'Grep'],
+	['tool', 'pnpm exec playwright test e2e/checkout.spec.ts --repeat-each 20', 'Bash'],
+	['tool', 'e2e/fixtures.ts', 'Edit'],
+	['tool', 'e2e/checkout.spec.ts', 'Edit'],
+	['tool', 'pnpm exec playwright test e2e/checkout.spec.ts --repeat-each 20', 'Bash'],
+	['assistant', 'Two tests shared one cart. Each test now makes its own.'],
+	['tool', 'pnpm exec tsc --noEmit', 'Bash'],
+	['tool', 'git diff --stat', 'Bash'],
+	['assistant', 'Done. 20 of 20 runs pass.']
+];
 
 // The thread with artifacts and servers.
 const MAKER = 'localhost:6';
@@ -2255,7 +2273,8 @@ function hook(res, url) {
 			chats[thread.id].push({
 				n: chats[thread.id].length,
 				role: url.searchParams.get('role') ?? 'assistant',
-				text: url.searchParams.get('text') ?? ''
+				text: url.searchParams.get('text') ?? '',
+				...(url.searchParams.get('tool') ? { tool: url.searchParams.get('tool') } : {})
 			});
 			thread.lastActivityAt = now;
 			break;

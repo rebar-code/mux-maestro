@@ -586,13 +586,17 @@ final class MobileAPITests: XCTestCase {
         let path = Self.fixtures.appendingPathComponent("claude.jsonl").path
         let page = try XCTUnwrap(MobileChat.read(path: path, codex: false, after: nil))
         XCTAssertFalse(page.reset)
-        XCTAssertEqual(page.messages.map(\.role), [.user, .assistant, .tool, .tool, .assistant])
+        // Thinking that has text is a row, in its place; thinking without is none.
+        XCTAssertEqual(
+            page.messages.map(\.role), [.user, .reasoning, .assistant, .tool, .tool, .assistant])
         XCTAssertEqual(page.messages[0].text, "fix the failing checkout test and open a PR")
-        XCTAssertEqual(page.messages[2].tool, "Read")
-        XCTAssertEqual(page.messages[2].text, "tests/checkout.spec.ts")
-        XCTAssertEqual(page.messages[3].tool, "Bash")
-        XCTAssertEqual(page.messages[3].text, "pnpm exec playwright test tests/checkout.spec.ts")
-        XCTAssertEqual(page.messages[4].text, "Edited. The page is up on the dev server.")
+        XCTAssertEqual(page.messages[1].text, "look at the spec")
+        XCTAssertEqual(page.messages[1].json["role"] as? String, "reasoning")
+        XCTAssertEqual(page.messages[3].tool, "Read")
+        XCTAssertEqual(page.messages[3].text, "tests/checkout.spec.ts")
+        XCTAssertEqual(page.messages[4].tool, "Bash")
+        XCTAssertEqual(page.messages[4].text, "pnpm exec playwright test tests/checkout.spec.ts")
+        XCTAssertEqual(page.messages[5].text, "Edited. The page is up on the dev server.")
         // Row numbers increase, so the client can key and order on them.
         XCTAssertEqual(page.messages.map(\.n), page.messages.map(\.n).sorted())
         XCTAssertEqual(Set(page.messages.map(\.n)).count, page.messages.count)
@@ -631,10 +635,18 @@ final class MobileAPITests: XCTestCase {
     func testCodexRolloutBecomesChatRows() throws {
         let path = Self.fixtures.appendingPathComponent("codex.jsonl").path
         let page = try XCTUnwrap(MobileChat.read(path: path, codex: true, after: nil))
-        XCTAssertEqual(page.messages.map(\.role), [.user, .tool, .assistant])
+        // A reasoning summary with text, what the agent says between tool
+        // calls, and a tool call with free-text input are all rows, in order.
+        XCTAssertEqual(
+            page.messages.map(\.role), [.user, .reasoning, .tool, .assistant, .tool, .assistant])
         XCTAssertEqual(page.messages[0].text, "wire the search box to the new index")
-        XCTAssertEqual(page.messages[1].tool, "shell")
-        XCTAssertEqual(page.messages[1].text, "rg searchIndex")
+        XCTAssertEqual(page.messages[1].text, "**Finding the index**\n\nThe box still calls the old client.")
+        XCTAssertEqual(page.messages[2].tool, "shell")
+        XCTAssertEqual(page.messages[2].text, "rg searchIndex")
+        XCTAssertEqual(page.messages[3].text, "The old client is in two files. I will patch both.")
+        XCTAssertEqual(page.messages[4].tool, "apply_patch")
+        XCTAssertEqual(page.messages[4].text, "*** Begin Patch")
+        XCTAssertEqual(page.messages[5].text, "Wired. The box now queries the new index.")
     }
 
     func testChatCursorReturnsOnlyNewRowsAndSkipsAHalfWrittenLine() throws {

@@ -6,9 +6,11 @@ import { renderer } from './renderer.svelte';
 import type { Mode } from './thread.svelte';
 import type { ChatMessage, FindResult } from './types';
 
-/** An assistant row is drawn as markdown: a find looks in what it shows. */
+/** What the agent says or thinks is drawn as markdown: a find looks in what it shows. */
 const shown = (message: ChatMessage): string =>
-	message.role === 'assistant' && renderer.api ? renderer.api.chatText(message.text) : message.text;
+	(message.role === 'assistant' || message.role === 'reasoning') && renderer.api
+		? renderer.api.chatText(message.text)
+		: message.text;
 
 const DEBOUNCE_MS = 250;
 /** The Mac runs few finds at once: a refused one is asked again, this often. */
