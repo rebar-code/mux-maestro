@@ -110,6 +110,10 @@ mux review done --key <key>
 mux review list
 ```
 
+The app clears this conversation on its own after a long idle, or when it has
+grown large. Nothing is lost: the DB holds the review list, the work log and
+the sessions. A fresh conversation starts with `mux review list`.
+
 Severity: `blocked` = they're the bottleneck right now; `warn` = will bite
 soon or needs a decision; `info` = worth knowing, no action.
 

@@ -109,9 +109,11 @@ struct NeedsYouItem: Equatable {
 /// session snapshot the agent reads back through `mux sessions`, and the pane
 /// driver that carries the rail's chat into the `mux-manager` pane.
 ///
-/// The agent is **on demand**: nothing here types into the `mux-manager` session
-/// on its own. It acts when the human talks to it, and surveys the fleet from
-/// the snapshot this controller publishes rather than by shelling out per host.
+/// The agent is **on demand**: it acts when the human talks to it, and surveys
+/// the fleet from the snapshot this controller publishes rather than by
+/// shelling out per host. The one thing typed into the `mux-manager` session
+/// unasked is the reset (`checkReset`): `/clear` once the conversation has sat
+/// idle for a long time or grown large.
 ///
 /// All store access runs on one serial queue (the store is not re-entrant);
 /// timers fire on the main run loop and hop over. Main-thread API unless noted.
@@ -128,6 +130,7 @@ final class ManagerController {
     /// longer than a DB poll may block for, so it gets its own serial queue.
     private let driverQueue = DispatchQueue(label: "is.rebar.muxmaestro.manager.driver")
     private var pollTimer: Timer?
+    private var resetTimer: Timer?
     private var driver: ManagerPaneDriver?
     private var lastSnapshot = ManagerSnapshot.empty
 
@@ -138,6 +141,9 @@ final class ManagerController {
     var onToast: ((ManagerNotification, Int) -> Void)?
 
     static let pollInterval: TimeInterval = 1.5
+    /// The reset check reads the transcript file, so it runs apart from the
+    /// DB poll and much less often.
+    static let resetCheckInterval: TimeInterval = 30
 
     init(service: TmuxService) {
         self.service = service
@@ -174,6 +180,11 @@ final class ManagerController {
         RunLoop.main.add(pollT, forMode: .common)
         pollTimer = pollT
         poll()
+        let resetT = Timer(timeInterval: Self.resetCheckInterval, repeats: true) { [weak self] _ in
+            self?.checkReset()
+        }
+        RunLoop.main.add(resetT, forMode: .common)
+        resetTimer = resetT
         return true
     }
 
@@ -329,6 +340,33 @@ final class ManagerController {
         else { return nil }
         return ManagerPaneDriver.status(
             for: row, fileStatus: driver?.fileStatus(), now: Int(Date().timeIntervalSince1970))
+    }
+
+    /// Clear the Maestro's conversation once it has sat idle for a long time or
+    /// grown large (`ManagerResetPolicy`). Claude only: the idle and size
+    /// signals are read from Claude's own status file and transcript, and a
+    /// Codex Maestro has neither. The thresholds are re-read on every check,
+    /// so a `defaults write` takes effect without a relaunch.
+    private func checkReset() {
+        guard let store, let driver, Settings.maestroAgent() == .claude else { return }
+        let policy = ManagerResetPolicy(
+            idleSeconds: Settings.maestroResetAfterIdleMinutes() * 60,
+            contextTokens: Settings.maestroResetAboveTokens())
+        guard policy != ManagerResetPolicy(idleSeconds: 0, contextTokens: 0) else { return }
+        queue.async {
+            guard let id = driver.currentSessionId() else { return }
+            // `since` moves only on a state change (`mux`), so an idle row's
+            // `since` is when the last turn ended.
+            let row = (try? store.agentStates())?.first(where: { $0.sessionId == id })
+            let idleSince = row.flatMap { [.idle, .done].contains($0.state) ? $0.since : nil }
+            guard let reason = ManagerResetPolicy.reason(
+                policy: policy, status: driver.paneStatus(), idleSince: idleSince,
+                contextTokens: driver.contextTokens(), now: Int(Date().timeIntervalSince1970))
+            else { return }
+            driver.reset(command: AgentHandoff.Agent.claude.resetCommand) { sent in
+                if sent { NSLog("maestro: reset (\(reason))") }
+            }
+        }
     }
 
     private func poll() {
