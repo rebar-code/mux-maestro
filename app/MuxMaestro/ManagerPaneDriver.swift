@@ -168,6 +168,23 @@ enum ManagerTranscript {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// The size of the conversation as the model last saw it: the `usage` of
+    /// the last assistant record, input plus the cache it wrote and read. nil
+    /// when no assistant has spoken yet; 0 when the record carries no usage
+    /// (an older build). Synthetic records (the harness's own notes, written
+    /// with no API call) are stepped over.
+    static func contextTokens(lines: [String]) -> Int? {
+        for line in lines.reversed() {
+            guard let record = record(line), record["type"] as? String == "assistant" else { continue }
+            let message = message(record)
+            guard message["model"] as? String != "<synthetic>" else { continue }
+            let usage = message["usage"] as? [String: Any] ?? [:]
+            let fields = ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"]
+            return fields.reduce(0) { $0 + ((usage[$1] as? NSNumber)?.intValue ?? 0) }
+        }
+        return nil
+    }
+
     /// The most recent user and assistant text in a Codex rollout. Codex stores
     /// messages as `response_item` records with `input_text` / `output_text`
     /// blocks; this reader skips tool and developer records.
@@ -597,6 +614,36 @@ struct ManagerTurnWatcher {
     }
 }
 
+/// When the Maestro's conversation is cleared and started over. Its durable
+/// state (the review list, the work log, the sessions) lives in the DB, so
+/// the conversation is disposable: a long idle leaves it with a stale
+/// picture of the fleet, and a large one is slow and near the model's limit.
+/// Pure, so the rules are tested with no clock and no pane.
+struct ManagerResetPolicy: Equatable {
+    /// Reset after this long idle. 0 turns the rule off.
+    var idleSeconds: Int
+    /// Reset once the context is this large. 0 turns the rule off.
+    var contextTokens: Int
+
+    /// Why the pane should be reset now, nil when it should not. Only an idle
+    /// pane with a transcript (`contextTokens` non-nil) is ever reset: a
+    /// session that is fresh after a reset has no transcript, which is what
+    /// keeps a reset from repeating on an empty session.
+    static func reason(
+        policy: ManagerResetPolicy, status: ManagerTurnStatus?, idleSince: Int?,
+        contextTokens: Int?, now: Int
+    ) -> String? {
+        guard status == .idle, let contextTokens else { return nil }
+        if policy.idleSeconds > 0, let idleSince, now - idleSince >= policy.idleSeconds {
+            return "idle \(now - idleSince)s"
+        }
+        if policy.contextTokens > 0, contextTokens >= policy.contextTokens {
+            return "context \(contextTokens) tokens"
+        }
+        return nil
+    }
+}
+
 /// Drives the `mux-manager` pane: pastes a prompt in, reads the reply back.
 ///
 /// One turn at a time. All mutable state lives on `queue`; `onDelta` and
@@ -760,6 +807,12 @@ final class ManagerPaneDriver {
         }
     }
 
+    /// How large the manager's conversation is (`ManagerTranscript.contextTokens`).
+    /// nil until the session has a transcript with a reply in it. Safe on any queue.
+    func contextTokens() -> Int? {
+        transcript().flatMap { ManagerTranscript.contextTokens(lines: ManagerTranscript.lines(of: $0)) }
+    }
+
     static let waitingMessage = "Maestro is waiting on a prompt"
     static let busyMessage = "Maestro is busy"
     static let notReadyMessage = "Maestro is not ready"
@@ -897,6 +950,32 @@ final class ManagerPaneDriver {
                 self.poll(generation: generation)
             }
         }
+    }
+
+    /// Start the pane's conversation over: `command` (`/clear`) is typed in as
+    /// one line. Only an idle pane is cleared, and every source with an
+    /// opinion must say idle: the hook row as the screen settles it, and
+    /// Claude's own status file. Runs on `queue`, so it cannot land in the
+    /// middle of a `send`. `completion` says whether the command went in, on
+    /// `callbackQueue`.
+    func reset(command: String, completion: @escaping (Bool) -> Void) {
+        queue.async {
+            let sent = self.resetNow(command: command)
+            self.callbackQueue.async { completion(sent) }
+        }
+    }
+
+    private func resetNow(command: String) -> Bool {
+        guard !running, let pane = maestroPane(),
+              let resolved = ManagerTranscript.session(
+                  forTmuxSession: config.tmuxSession, pane: pane, sessionsDir: sessionsDir)
+        else { return false }
+        let file = ManagerTranscript.status(sessionFile: resolved.file).0
+        let stored = statusOverride?(resolved.id) ?? file
+        guard file == .idle, verified(stored, pane: pane) == .idle else { return false }
+        // Out of copy mode first, or the Enter is read as a copy-mode key.
+        _ = tmux(["copy-mode", "-q", "-t", pane])
+        return tmux(TmuxCommands.resetForHandoff(target: pane, command: command))
     }
 
     /// Stop watching. The pane keeps running; we just stop reporting on it.

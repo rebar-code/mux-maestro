@@ -1170,6 +1170,130 @@ final class ManagerPaneDriverTests: XCTestCase {
         XCTAssertEqual(driver.fileStatus(), .idle)
     }
 
+    // MARK: Reset
+
+    /// A reply with the usage Claude Code records: 1,000 + 2,000 + 40,000.
+    private let sizedReply = #"""
+    {"type":"assistant","message":{"role":"assistant","model":"claude-x","content":[{"type":"text","text":"Sized."}],"stop_reason":"end_turn","usage":{"input_tokens":1000,"cache_creation_input_tokens":2000,"cache_read_input_tokens":40000,"output_tokens":9}}}
+    """#
+    /// The harness's own note, written with no API call: its usage is zero.
+    private let syntheticReply = #"""
+    {"type":"assistant","message":{"role":"assistant","model":"<synthetic>","content":[{"type":"text","text":"Note."}],"usage":{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}
+    """#
+
+    func testContextTokensIsTheLastRealReplysUsage() {
+        XCTAssertEqual(
+            ManagerTranscript.contextTokens(lines: [userPrompt, textTwo, sizedReply, syntheticReply, halfLine]),
+            43_000)
+        // A reply with no usage field (an older build) reads as empty.
+        XCTAssertEqual(ManagerTranscript.contextTokens(lines: [userPrompt, textTwo]), 0)
+        XCTAssertNil(ManagerTranscript.contextTokens(lines: [userPrompt, halfLine]))
+        XCTAssertNil(ManagerTranscript.contextTokens(lines: []))
+    }
+
+    func testResetPolicyNeedsAnIdlePaneWithATranscript() {
+        let policy = ManagerResetPolicy(idleSeconds: 1800, contextTokens: 80_000)
+        let now = 1_000_000
+        let reason = { (status: ManagerTurnStatus?, idleSince: Int?, tokens: Int?) in
+            ManagerResetPolicy.reason(
+                policy: policy, status: status, idleSince: idleSince, contextTokens: tokens, now: now)
+        }
+        XCTAssertNil(reason(.idle, now - 1799, 1000))
+        XCTAssertEqual(reason(.idle, now - 1800, 1000), "idle 1800s")
+        XCTAssertEqual(reason(.idle, now - 1, 80_000), "context 80000 tokens")
+        XCTAssertNil(reason(.idle, nil, 79_999), "no idle row and under size")
+        // Anything but idle is left alone, however old or large.
+        XCTAssertNil(reason(.busy, now - 9000, 500_000))
+        XCTAssertNil(reason(.waiting, now - 9000, 500_000))
+        XCTAssertNil(reason(nil, now - 9000, 500_000))
+        // No transcript: a session that is fresh after a reset. Never again.
+        XCTAssertNil(reason(.idle, now - 9000, nil))
+        // A threshold of 0 turns its rule off.
+        let off = ManagerResetPolicy(idleSeconds: 0, contextTokens: 0)
+        XCTAssertNil(ManagerResetPolicy.reason(
+            policy: off, status: .idle, idleSince: now - 9000, contextTokens: 500_000, now: now))
+        let sizeOnly = ManagerResetPolicy(idleSeconds: 0, contextTokens: 80_000)
+        XCTAssertNil(ManagerResetPolicy.reason(
+            policy: sizeOnly, status: .idle, idleSince: now - 9000, contextTokens: 1000, now: now))
+        XCTAssertEqual(ManagerResetPolicy.reason(
+            policy: sizeOnly, status: .idle, idleSince: nil, contextTokens: 80_000, now: now),
+            "context 80000 tokens")
+    }
+
+    func testContextTokensReadsTheManagerPanesTranscript() throws {
+        let dir = try makeClaudeDir()
+        let driver = ManagerPaneDriver(
+            config: config(claudeDir: dir), runner: FakeRunner(), queue: DispatchQueue(label: "test.pane"))
+        XCTAssertNil(driver.contextTokens(), "no session yet")
+        try seedSession(in: dir, sessionId: "wanted")
+        XCTAssertNil(driver.contextTokens(), "no transcript yet")
+        try seedTranscript(
+            in: dir.appendingPathComponent("projects"), sessionId: "wanted", lines: [userPrompt, sizedReply])
+        XCTAssertEqual(driver.contextTokens(), 43_000)
+    }
+
+    func testResetClearsAnIdlePane() throws {
+        let dir = try makeClaudeDir()
+        try seedSession(in: dir, sessionId: "wanted")
+        let runner = FakeRunner()
+        let driver = ManagerPaneDriver(
+            config: config(claudeDir: dir), runner: runner,
+            statusOverride: { _ in .idle }, queue: DispatchQueue(label: "test.pane"))
+        let done = expectation(description: "reset")
+        driver.reset(command: "/clear") {
+            XCTAssertTrue($0)
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 5)
+        XCTAssertEqual(runner.recorded(), [
+            ["copy-mode", "-q", "-t", "%5"],
+            ["send-keys", "-t", "%5", "/clear", "Enter"],
+        ])
+    }
+
+    func testResetLeavesAPaneThatIsNotIdleByEverySource() throws {
+        // The hook row, as the screen settles it, and the status file must
+        // both say idle. Each of these has one that does not. (No hook row
+        // is no opinion: the file answers, as for a turn.)
+        let cases: [(row: ManagerTurnStatus?, file: String)] = [
+            (.busy, "idle"), (.waiting, "idle"), (nil, "thinking"), (.idle, "busy"), (.idle, "waiting"),
+        ]
+        for (row, file) in cases {
+            let dir = try makeClaudeDir()
+            try write(["sessionId": "wanted", "tmux": "mux-manager:@1.%5", "status": file],
+                      to: dir.appendingPathComponent("sessions/4242.json"))
+            let runner = FakeRunner()
+            let driver = ManagerPaneDriver(
+                config: config(claudeDir: dir), runner: runner,
+                statusOverride: { _ in row }, queue: DispatchQueue(label: "test.pane"))
+            let done = expectation(description: "refused")
+            driver.reset(command: "/clear") {
+                XCTAssertFalse($0, "row \(String(describing: row)), file \(file)")
+                done.fulfill()
+            }
+            wait(for: [done], timeout: 5)
+            XCTAssertEqual(typed(runner), [], "row \(String(describing: row)), file \(file)")
+        }
+    }
+
+    func testResetDoesNotInterruptATurn() throws {
+        let dir = try makeClaudeDir()
+        try seedSession(in: dir, sessionId: "wanted")
+        let runner = FakeRunner()
+        let driver = ManagerPaneDriver(
+            config: config(claudeDir: dir), runner: runner,
+            statusOverride: { _ in .idle }, queue: DispatchQueue(label: "test.pane"))
+        driver.send("survey", onDelta: { _ in }) { _ in }
+        let done = expectation(description: "refused")
+        driver.reset(command: "/clear") {
+            XCTAssertFalse($0)
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 5)
+        driver.cancel()
+        XCTAssertFalse(runner.recorded().contains(["send-keys", "-t", "%5", "/clear", "Enter"]))
+    }
+
     private func seedSession(in claudeDir: URL, sessionId: String) throws {
         try write(["sessionId": sessionId, "tmux": "mux-manager:@1.%5", "status": "idle"],
                   to: claudeDir.appendingPathComponent("sessions/4242.json"))
