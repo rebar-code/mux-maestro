@@ -61,6 +61,55 @@ final class RemoteTranscriptMirrorTests: XCTestCase {
         XCTAssertEqual(mode(path), 0o600)
     }
 
+    func testACodexCopyHasItsOwnNameThatNoClaudeCopyCanHave() throws {
+        far = Data("{\"a\":1}\n".utf8)
+        clock = clock.addingTimeInterval(1)
+        let codex = try XCTUnwrap(mirror.file(host: "devbox", sessionId: session, codex: true, remote: remote))
+        XCTAssertEqual(codex, root.appendingPathComponent("devbox/codex.\(session).jsonl").path)
+        // The chat tells sessions apart by this name, a Codex one too.
+        XCTAssertEqual(MobileChat.session(path: codex), "codex.\(session)")
+        // A Claude session with the same id is another file, and no id can
+        // spell the Codex name: an id has no `.`.
+        let claude = try XCTUnwrap(mirrored())
+        XCTAssertNotEqual(claude, codex)
+        XCTAssertNil(mirror.path(host: "devbox", sessionId: "codex.\(session)"))
+        XCTAssertNil(mirror.path(host: "devbox", sessionId: "../\(session)", codex: true))
+        XCTAssertNil(mirror.path(host: "devbox", sessionId: "a/b", codex: true))
+        // Old copies of both kinds are deleted alike.
+        clock = clock.addingTimeInterval(RemoteTranscriptMirror.maxAge + 1)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 1_000_000)], ofItemAtPath: codex)
+        mirror.purge()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: codex))
+    }
+
+    func testARolloutPathFromAHostIsTakenOnlyUnderItsCodexSessions() {
+        let directory = "/home/me/.codex/sessions"
+        let name = "rollout-2026-10-02T10-00-00-\(session).jsonl"
+        let ok = { RemoteTranscriptMirror.isRollout($0, sessionId: self.session, under: directory) }
+        XCTAssertTrue(ok("\(directory)/2026/10/02/\(name)"))
+        XCTAssertTrue(ok("\(directory)/\(name)"))
+        // Outside the folder, by any spelling.
+        XCTAssertFalse(ok("/etc/passwd"))
+        XCTAssertFalse(ok("/home/me/.ssh/\(name)"))
+        XCTAssertFalse(ok("/home/me/.codex/sessions-old/\(name)"))
+        XCTAssertFalse(ok("\(directory)/../../.ssh/\(name)"))
+        XCTAssertFalse(ok("\(directory)/2026/./\(name)"))
+        XCTAssertFalse(ok("\(directory)//\(name)"))
+        XCTAssertFalse(ok(".codex/sessions/\(name)"))
+        // Not a rollout, or the rollout of another conversation.
+        XCTAssertFalse(ok("\(directory)/2026/10/02/notes.jsonl"))
+        XCTAssertFalse(ok("\(directory)/2026/10/02/rollout-x-\(session).json"))
+        XCTAssertFalse(ok("\(directory)/2026/10/02/rollout-x-11111111-2222-3333-4444-555555555555.jsonl"))
+        XCTAssertFalse(ok("\(directory)/2026/10/02/\(name)\n/etc/passwd"))
+        // An id that is not one matches nothing.
+        for id in ["", "..", "a/b", "*", "x; rm -rf ~"] {
+            XCTAssertFalse(
+                RemoteTranscriptMirror.isRollout("\(directory)/rollout-x-\(id).jsonl", sessionId: id, under: directory),
+                id)
+        }
+    }
+
     func testNewLinesAreAppendedFromWhereTheCopyStopped() {
         far = Data("one\n".utf8)
         let path = mirrored()

@@ -70,20 +70,36 @@ final class RemoteTranscriptMirror {
         return name
     }
 
+    /// Whether `path`, as a host gave it, is the rollout of the Codex
+    /// conversation `sessionId` under `directory` (the host's
+    /// `~/.codex/sessions`, no `/` at its end): inside it with no `..` step,
+    /// and named `rollout-…-<id>.jsonl`.
+    static func isRollout(_ path: String, sessionId: String, under directory: String) -> Bool {
+        guard isSessionID(sessionId), !directory.isEmpty, path.hasPrefix(directory + "/"),
+              !path.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F })
+        else { return false }
+        let steps = path.dropFirst(directory.count + 1).split(separator: "/", omittingEmptySubsequences: false)
+        guard let name = steps.last, !steps.contains(where: { $0.isEmpty || $0 == "." || $0 == ".." })
+        else { return false }
+        return name.hasPrefix("rollout-") && name.hasSuffix("-\(sessionId).jsonl")
+    }
+
     /// The path of the copy for `sessionId` of `host`, or nil when the id or
-    /// the host has no safe name.
-    func path(host: String, sessionId: String) -> String? {
+    /// the host has no safe name. A Claude copy is `<id>.jsonl`. A Codex copy
+    /// is `codex.<id>.jsonl`: no id has a `.`, so the two never share a file,
+    /// and the chat still tells sessions apart by the name.
+    func path(host: String, sessionId: String, codex: Bool = false) -> String? {
         guard Self.isSessionID(sessionId), let folder = Self.folder(host: host) else { return nil }
         return root.appendingPathComponent(folder, isDirectory: true)
-            .appendingPathComponent("\(sessionId).jsonl").path
+            .appendingPathComponent("\(codex ? "codex." : "")\(sessionId).jsonl").path
     }
 
     /// The copy of the transcript of `sessionId` on `host`, brought up to
     /// date. nil when there is no copy: the id is not one, the transcript was
     /// not found, or its host could not be reached and nothing was copied
     /// before. A copy made earlier is still answered when the host is away.
-    func file(host: String, sessionId: String, remote: Remote) -> String? {
-        guard let path = path(host: host, sessionId: sessionId) else { return nil }
+    func file(host: String, sessionId: String, codex: Bool = false, remote: Remote) -> String? {
+        guard let path = path(host: host, sessionId: sessionId, codex: codex) else { return nil }
         let entry = entry(path)
         entry.lock.lock()
         defer { entry.lock.unlock() }

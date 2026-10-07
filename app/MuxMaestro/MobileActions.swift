@@ -356,9 +356,9 @@ enum MobileActions {
                 if let agent = call.agent,
                    run(TmuxCommands.startAgent(target: created.pane, command: agent.launchCommand))?.ok == true {
                     result["agent"] = agent.launchCommand
-                    // A remote Codex has no transcript on this Mac: it opens
-                    // as the terminal it is, and never as a chat that stays empty.
-                    result["chat"] = call.host.isLocal || agent == .claude
+                    // Every agent has a chat, on any host: a remote one
+                    // reports its id through its host's status scan.
+                    result["chat"] = true
                 }
             }
         case .session(let name):

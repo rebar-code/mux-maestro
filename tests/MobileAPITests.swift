@@ -441,17 +441,27 @@ final class MobileAPITests: XCTestCase {
         started.mark("devbox:7", now: 100)
         let shells = tree(
             [pane("%41", active: true), pane("%42", active: true)], remote: [pane("%7", active: true)])
-        // A started agent has chat before it has an id, on any host. (A
-        // remote Codex is never marked: see `MobileActions.startedThread`.)
+        // A started agent has chat before it has an id, on any host.
         XCTAssertEqual(
             chat(started.apply(to: shells, now: 101)),
             ["localhost:41": true, "localhost:42": false, "devbox:7": true])
-        // A remote Claude has chat: its transcript is copied to this Mac. A
-        // remote Codex has none.
+        // A remote agent has chat, Claude or Codex: its transcript is copied
+        // to this Mac.
         XCTAssertEqual(
             chat(tree([], remote: [pane("%7", command: "claude", active: true, claude: "c1")])), ["devbox:7": true])
         XCTAssertEqual(
-            chat(tree([], remote: [pane("%7", command: "codex", active: true, codex: "x1")])), ["devbox:7": false])
+            chat(tree([], remote: [pane("%7", command: "codex", active: true, codex: "x1")])), ["devbox:7": true])
+        // A started remote Codex reports its id: the mark has done its work
+        // there too, and the pane is a shell again when the agent exits.
+        var far = MobileStartedAgents()
+        far.mark("devbox:7", now: 100)
+        let remoteShell = tree([], remote: [pane("%7", active: true)])
+        XCTAssertEqual(chat(far.apply(to: remoteShell, now: 101)), ["devbox:7": true])
+        XCTAssertEqual(
+            chat(far.apply(
+                to: tree([], remote: [pane("%7", command: "codex", active: true, codex: "x1")]), now: 102)),
+            ["devbox:7": true])
+        XCTAssertEqual(chat(far.apply(to: remoteShell, now: 103)), ["devbox:7": false])
         XCTAssertEqual(
             chat(tree([pane("%41", command: "codex", active: true, codex: "x1")])), ["localhost:41": true])
         XCTAssertEqual(chat(shells), ["localhost:41": false, "localhost:42": false, "devbox:7": false])

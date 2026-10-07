@@ -868,7 +868,7 @@ function reset() {
 			since: started - ageSeconds,
 			idleStage,
 			lastPrompt: prompt ? { text: prompt, at: started - ageSeconds } : null,
-			lastActivityAt: local ? started - ageSeconds : null,
+			lastActivityAt: started - ageSeconds,
 			sessionActivity: started - ageSeconds,
 			chat: local,
 			prs: []

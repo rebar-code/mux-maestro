@@ -14,6 +14,8 @@ final class MobileServerTests: XCTestCase {
     private var noTranscript = false
     /// The transcript of a later session in the same pane.
     private var laterTranscript: URL?
+    /// The copy of a Codex rollout: what the source answers for a Codex thread.
+    private var codexTranscript: URL?
     private let manager = FakeManager()
     private let pane = FakePane()
     private let tmux = FakeTmux()
@@ -126,8 +128,9 @@ final class MobileServerTests: XCTestCase {
                 self?.askedLines.append(lines)
                 return thread.pane == "%12" ? (self?.screenText ?? "") : nil
             },
-            transcript: { [weak self] _ in 
-                self?.noTranscript == true ? nil : ((self?.laterTranscript ?? transcript).path, false)
+            transcript: { [weak self] thread in
+                if thread.codexSessionId != nil, let codex = self?.codexTranscript { return (codex.path, true) }
+                return self?.noTranscript == true ? nil : ((self?.laterTranscript ?? transcript).path, false)
             },
             pane: { [pane] _ in pane.io }, tmux: tmux.source,
             archive: { [archives] thread in
@@ -470,7 +473,13 @@ final class MobileServerTests: XCTestCase {
         XCTAssertTrue(get("/api/config").body.contains(#""liveTerminal":true"#))
     }
 
-    func testARemoteClaudeThreadHasChatAndARemoteCodexHasNone() {
+    func testARemoteClaudeThreadAndARemoteCodexThreadHaveChat() throws {
+        // The copy of the remote rollout, named as `RemoteTranscriptMirror` names it.
+        let rollout = root.appendingPathComponent("codex.x1.jsonl")
+        try Data((#"{"timestamp":"2026-10-02T10:00:05.000Z","type":"response_item","payload":"#
+            + #"{"type":"message","role":"user","content":[{"type":"input_text","text":"fix the build"}]}}"#
+            + "\n").utf8).write(to: rollout)
+        codexTranscript = rollout
         var claude = TmuxPane(id: "%3", index: 0, command: "claude", title: "", active: true)
         claude.claudeSessionId = "r1"
         var codex = TmuxPane(id: "%4", index: 0, command: "codex", title: "", active: true)
@@ -487,8 +496,11 @@ final class MobileServerTests: XCTestCase {
         XCTAssertEqual(chat.status, 200)
         XCTAssertTrue(chat.body.contains(#""text":"hello""#))
         XCTAssertTrue(chat.body.contains(#""session":"c1""#))
-        XCTAssertEqual(get("/api/threads/devbox%3A4/chat").status, 404)
-        XCTAssertTrue(get("/api/threads").body.contains(#""chat":true"#))
+        let codexChat = get("/api/threads/devbox%3A4/chat")
+        XCTAssertEqual(codexChat.status, 200)
+        XCTAssertTrue(codexChat.body.contains(#""text":"fix the build""#), codexChat.body)
+        XCTAssertTrue(codexChat.body.contains(#""session":"codex.x1""#), codexChat.body)
+        XCTAssertFalse(get("/api/threads").body.contains(#""chat":false"#))
     }
 
     func testServesChatAndScreenAndA404ForAStaleId() {

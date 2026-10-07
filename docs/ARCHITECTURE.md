@@ -125,7 +125,9 @@ host the surface is on so a same-named session on a different host re-attaches).
 
 `RemoteSessionsPyStatusProvider` runs the app's bundled `sessions.py` on the remote
 in one round-trip, piping it to `~/.muxmaestro/tools/` first until a read succeeds
-(`test -f ~/.muxmaestro/tools/sessions.py && python3 … list` after that). If the
+(`test -f ~/.muxmaestro/tools/sessions.py && python3 … list --full` after that).
+`--full` adds what only the host can read: each transcript's last prompt and last
+write, and its live Codex panes (rows with `"agent": "codex"`). If the
 command fails it
 **degrades explicitly** — logs the reason once and returns nil — so remote
 sessions show tmux-level info (attached/activity) with a neutral grey dot rather

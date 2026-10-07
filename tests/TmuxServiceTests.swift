@@ -312,6 +312,8 @@ final class TmuxServiceTests: XCTestCase {
     // MARK: RemoteSessionsPyStatusProvider — pushes the bundled sessions.py
 
     private let remoteScript = "~/.muxmaestro/tools/sessions.py"
+    /// What a host with this app's copy of the script answers when no agent runs.
+    private let currentAnswer = #"[{"agent":"meta","schema":2}]"#
 
     func testRemotePushCommandWritesThroughATempFile() {
         XCTAssertEqual(
@@ -322,7 +324,7 @@ final class TmuxServiceTests: XCTestCase {
 
     func testRemoteStatusPushesTheBundledScriptThenOnlyRunsIt() {
         let runner = FakeRunner()
-        runner.defaultResponse = "[]"
+        runner.defaultResponse = currentAnswer
         let script = Data("print('[]')".utf8)
         let provider = RemoteSessionsPyStatusProvider(
             host: "box", runner: runner, scriptPath: remoteScript, script: script)
@@ -332,12 +334,12 @@ final class TmuxServiceTests: XCTestCase {
 
         XCTAssertEqual(runner.calls.map(\.path), [Ssh.sshPath, Ssh.sshPath])
         let pushThenList = RemoteSessionsPyStatusProvider.pushCommand(scriptPath: remoteScript)
-            + " && python3 \(remoteScript) list"
+            + " && python3 \(remoteScript) list --full"
         XCTAssertEqual(runner.calls[0].args.suffix(3), ["sh", "-c", Ssh.shellQuote(pushThenList)])
         XCTAssertEqual(runner.stdins[0], script)
         XCTAssertEqual(
             runner.calls[1].args.last,
-            Ssh.shellQuote("test -f \(remoteScript) && python3 \(remoteScript) list"))
+            Ssh.shellQuote("test -f \(remoteScript) && python3 \(remoteScript) list --full"))
         XCTAssertNil(runner.stdins[1])
     }
 
@@ -348,11 +350,37 @@ final class TmuxServiceTests: XCTestCase {
             host: "box", runner: runner, scriptPath: remoteScript, script: Data("x".utf8))
 
         XCTAssertNil(provider.statusesOrNil())
-        runner.defaultResponse = "[]"
+        runner.defaultResponse = currentAnswer
         XCTAssertNotNil(provider.statusesOrNil())
         XCTAssertNotNil(provider.statusesOrNil())
 
         XCTAssertEqual(runner.stdins.map { $0 != nil }, [true, true, false])
+    }
+
+    func testRemoteStatusPushesOverAnOlderCopyOfTheScriptOnce() {
+        // Another Mac with an older app put its copy on the host: the answer
+        // has no schema row. This app pushes its own again.
+        let runner = FakeRunner()
+        runner.defaultResponse = currentAnswer
+        let provider = RemoteSessionsPyStatusProvider(
+            host: "box", runner: runner, scriptPath: remoteScript, script: Data("x".utf8))
+        XCTAssertNotNil(provider.statusesOrNil())
+        runner.defaultResponse = #"[{"tmuxSession":"api","status":"waiting"}]"#
+        // The older answer is still read.
+        XCTAssertEqual(provider.statusesOrNil()?["api"], .waiting)
+        runner.defaultResponse = currentAnswer
+        XCTAssertNotNil(provider.statusesOrNil())
+        XCTAssertNotNil(provider.statusesOrNil())
+        XCTAssertEqual(runner.stdins.map { $0 != nil }, [true, false, true, false])
+
+        // A host that never answers in the current format is pushed to once
+        // more, not on every read.
+        let stuck = FakeRunner()
+        stuck.defaultResponse = "[]"
+        let other = RemoteSessionsPyStatusProvider(
+            host: "box", runner: stuck, scriptPath: remoteScript, script: Data("x".utf8))
+        for _ in 0..<4 { XCTAssertNotNil(other.statusesOrNil()) }
+        XCTAssertEqual(stuck.stdins.map { $0 != nil }, [true, true, false, false])
     }
 
     func testRemoteStatusWithoutABundledScriptOnlyRunsWhatIsThere() {
@@ -366,7 +394,7 @@ final class TmuxServiceTests: XCTestCase {
         XCTAssertEqual(runner.stdins.map { $0 != nil }, [false])
         XCTAssertEqual(
             runner.calls[0].args.last,
-            Ssh.shellQuote("test -f \(remoteScript) && python3 \(remoteScript) list"))
+            Ssh.shellQuote("test -f \(remoteScript) && python3 \(remoteScript) list --full"))
     }
 
     // MARK: ProcessCommandRunner timeout — hung child is bounded + reaped
