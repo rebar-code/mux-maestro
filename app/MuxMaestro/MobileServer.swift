@@ -44,9 +44,12 @@ final class MobileServer {
 
     /// The local ports published on the tailnet, as `PhoneLink` keeps them.
     /// nil where there is no tailnet (the dev server): the server routes then
-    /// answer 503. Every call may block.
+    /// answer 503. Every call may block. `host` is nil for a port of this
+    /// Mac, or the ssh alias of the host the port is on.
     struct Serving {
-        var open: (_ port: Int, _ https: Bool, _ thread: String, _ label: String) -> MobileServing.Opened
+        var open: (
+            _ port: Int, _ https: Bool, _ thread: String, _ label: String, _ host: String?
+        ) -> MobileServing.Opened
         /// False when this app has no mapping on the port.
         var close: (_ port: Int) -> Bool
         var list: () -> [MobilePortMapping]
@@ -1345,9 +1348,9 @@ final class MobileServer {
         }
     }
 
-    /// Publish one local port on the tailnet. The phone names a thread and a
-    /// port number, and the port must be one Running reports for that thread
-    /// now: what it is and where it listens come from the Mac, never the phone.
+    /// Publish one port on the tailnet. The phone names a thread and a port
+    /// number, and the port must be one Running reports for that thread now:
+    /// what it is and which host it listens on come from the Mac, never the phone.
     private func openServer(_ request: MobileRequest, client: Client) {
         guard let ask = MobileServing.openRequest(request.body) else {
             return send(.error(400, "bad_request"), to: client, head: false)
@@ -1365,7 +1368,7 @@ final class MobileServer {
         reply(to: client) {
             guard let found = running(thread).map({ MobileServing.mappable(in: $0, ownPort: ownPort) })?[ask.port]
             else { return .error(404, "not_running") }
-            let opened = serving.open(ask.port, found.https, thread.id, found.label)
+            let opened = serving.open(ask.port, found.https, thread.id, found.label, found.host)
             return MobileServing.response(opened, port: ask.port, identity: identity)
         }
     }

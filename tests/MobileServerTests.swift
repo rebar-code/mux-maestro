@@ -2119,7 +2119,7 @@ final class MobileServerTests: XCTestCase {
     /// What the transcript, the Running scan and `PhoneLink` would answer,
     /// scripted. It records what the server asks of them.
     private final class FakeLocal {
-        typealias Open = (port: Int, https: Bool, thread: String, label: String)
+        typealias Open = (port: Int, https: Bool, thread: String, label: String, host: String?)
         private let lock = NSLock()
         private var _artifacts: MobileArtifactSource?
         private var _running: RunningSet?
@@ -2164,8 +2164,8 @@ final class MobileServerTests: XCTestCase {
         }
         var serving: MobileServer.Serving {
             MobileServer.Serving(
-                open: { [self] port, https, thread, label in
-                    locked { _opens.append((port, https, thread, label)); return _opened }
+                open: { [self] port, https, thread, label, host in
+                    locked { _opens.append((port, https, thread, label, host)); return _opened }
                 },
                 close: { [self] port in
                     locked { _closes.append(port); return _mappings.contains { $0.port == port } }
@@ -2507,6 +2507,7 @@ final class MobileServerTests: XCTestCase {
         XCTAssertEqual(local.opens[2].port, 6006)
         XCTAssertEqual(local.opens[2].https, false)
         XCTAssertEqual(local.opens[2].label, "acme-app")
+        XCTAssertNil(local.opens[2].host)
         let count = local.opens.count
 
         // Not a port number.
@@ -2541,6 +2542,27 @@ final class MobileServerTests: XCTestCase {
         local.running = RunningSet(known: true, resources: [], unknowns: [])
         XCTAssertEqual(post("/api/servers/open", json: Self.openBody).body, #"{"error":"not_running"}"#)
         XCTAssertEqual(local.opens.count, count)
+    }
+
+    func testAPortOnAnotherHostIsOpenedWithTheHostRunningNamesAndNoOther() {
+        localOn()
+        local.running = RunningSet(
+            known: true,
+            resources: [RunningResource(
+                kind: .server(port: 3000), host: "devbox", paneID: "%12", label: "acme-app",
+                tooltip: "", url: nil, pid: 4242)],
+            unknowns: [])
+        let opened = post(
+            "/api/servers/open",
+            json: #"{"thread":"localhost:12","port":3000,"host":"evil.example","alias":"-oProxyCommand=id"}"#)
+        XCTAssertEqual(opened.status, 200)
+        XCTAssertEqual(local.opens.count, 1)
+        XCTAssertEqual(local.opens[0].port, 3000)
+        XCTAssertEqual(local.opens[0].host, "devbox")
+        // A port that host runs, but not for this thread, and a privileged one.
+        XCTAssertEqual(post("/api/servers/open", json: #"{"thread":"localhost:12","port":3001}"#).status, 404)
+        XCTAssertEqual(post("/api/servers/open", json: #"{"thread":"localhost:12","port":22}"#).status, 403)
+        XCTAssertEqual(local.opens.count, 1)
     }
 
     func testTheLinksRefusalsReachThePhoneAndMappingsAreListedAndClosed() throws {

@@ -387,6 +387,16 @@ const runningBody = (thread) =>
 						port: 6006,
 						https: false,
 						mappable: true
+					},
+					// On another host: the Mac reaches it over an ssh forward.
+					{
+						key: 'devbox|server|3000',
+						label: 'acme-app',
+						host: 'devbox',
+						local: false,
+						port: 3000,
+						https: false,
+						mappable: true
 					}
 				],
 				stacks: [
@@ -419,7 +429,7 @@ const runningBody = (thread) =>
 						host: 'devbox',
 						local: false,
 						count: 1,
-						links: [{ label: '', port: 8025, open: true, mappable: false }]
+						links: [link('', 8025)]
 					}
 				]
 			};
@@ -472,6 +482,12 @@ function serversApi(req, res, path, body) {
 		const code = serveFails;
 		serveFails = null;
 		tailnet = null;
+		// A remote port whose number the Mac already uses: "taken", and no sentence.
+		if (
+			code === 'taken' &&
+			runningBody(thread).servers.some((s) => s.port === ask.port && !s.local)
+		)
+			return send(res, 409, { error: code });
 		return send(res, code === 'unavailable' ? 503 : 409, {
 			error: code,
 			message:

@@ -390,17 +390,22 @@ test('servers: dev servers, Supabase stacks and containers of the thread', async
 	await tab(page, 'servers').click();
 	await expectTab(page, 2);
 	const list = pageOf(page, 'servers');
-	await expect(list.locator('.sect')).toHaveText(['Servers · 2', 'Supabase · 1', 'Docker · 2']);
+	await expect(list.locator('.sect')).toHaveText(['Servers · 3', 'Supabase · 1', 'Docker · 2']);
 	await expect(list.locator('[data-server="5173"]')).toContainText('mobile');
 	await expect(list.locator('[data-server="5173"]')).toContainText('localhost:5173');
+	// A server on another host opens the same way, and says where it runs.
+	await expect(list.locator('button[data-server="3000"]')).toContainText('devbox:3000');
+	await expect(
+		list.locator('[data-container="devbox|container|mailpit"] button.lnk')
+	).toBeVisible();
 	await expect(list.locator('[data-stack] .lnk')).toHaveText([
 		/Studio\s*54323/,
 		/API\s*54321/,
 		/DB\s*54322/,
 		/Mail\s*54324/
 	]);
-	// A database is not a page, and a port on another host is not this Mac's to publish.
-	await expect(list.locator('span.lnk.off')).toHaveCount(2);
+	// A database is not a page.
+	await expect(list.locator('span.lnk.off')).toHaveCount(1);
 	await expect(list.locator('.unknown')).toHaveText('Docker unavailable on devbox');
 	// Every row a finger taps is at least 44pt tall.
 	for (const row of await list.locator('button.row, .lnk').all()) {
@@ -489,6 +494,46 @@ test('a port the Mac will not publish says why and opens nothing', async ({ page
 	await expect(list.getByRole('alert')).toHaveText('Tailscale already serves port 6006');
 	await expect(list.locator('button[data-server="6006"]')).toBeVisible();
 	expect(context.pages()).toHaveLength(1);
+});
+
+test('a server on another host opens like a local one, and a port the Mac uses says so', async ({
+	page,
+	context
+}) => {
+	/** Screenshots are taken only when SHOTS names a directory outside the repo. */
+	const shot = async (name: string): Promise<void> => {
+		if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/${name}.png` });
+	};
+	await open(page);
+	await tab(page, 'servers').click();
+	const list = pageOf(page, 'servers');
+	const sheet = page.getByRole('alertdialog');
+	const row = list.locator('button[data-server="3000"]');
+	await expect(row).toBeEnabled();
+	await shot('servers-remote');
+
+	// The Mac already has something on that port number: it says so and opens nothing.
+	await page.request.post('/__fixture/serve-fails?code=taken');
+	await row.click();
+	await expect(sheet).toContainText('Open port 3000 on your tailnet?');
+	await sheet.getByRole('button', { name: 'Open' }).click();
+	await expect(list.getByRole('alert')).toHaveText('Port 3000 is taken');
+	await expect(row).toBeVisible();
+	expect(context.pages()).toHaveLength(1);
+	await shot('servers-remote-taken');
+
+	// The next tap opens it. Only the thread and the port go to the Mac: no host.
+	await page.evaluate(() => (window.open = () => null));
+	await row.click();
+	const [request] = await Promise.all([
+		page.waitForRequest((r) => r.url().endsWith('/api/servers/open')),
+		sheet.getByRole('button', { name: 'Open' }).click()
+	]);
+	expect(request.postDataJSON()).toEqual({ thread: MAKER, port: 3000 });
+	await expect(list.getByRole('alert')).toHaveCount(0);
+	await expect(list.locator('a[data-server="3000"]')).toBeVisible();
+	await expect(list.locator('[data-mapping="3000"]')).toContainText('acme-app');
+	await shot('servers-remote-open');
 });
 
 test('a feature switched off on the Mac takes its tab away', async ({ page }) => {
