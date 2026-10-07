@@ -178,7 +178,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 return (pane, io)
             },
-            cwd: { ManagerHome.defaultHome()?.path }),
+            cwd: { ManagerHome.defaultHome()?.path },
+            dozing: { [weak self] in
+                // The sidebar's tree belongs to the main thread.
+                DispatchQueue.main.sync {
+                    MobileManager.dozing(self?.sidebarVC?.cachedSessions(host: .local) ?? [])
+                }
+            }),
         requests: ManagerHome.defaultHome().map {
             RequestTracker(url: $0.appendingPathComponent(RequestTracker.fileName))
         },

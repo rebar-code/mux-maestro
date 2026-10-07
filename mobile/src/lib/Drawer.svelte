@@ -6,19 +6,31 @@
 	import { isCollapsed, sessionDomId, SUMMARY_LABEL, summaryStatus } from './collapse';
 	import { collapse } from './collapse.svelte';
 	import { pullToRefresh, ui } from './gestures.svelte';
-	import { awake, counts, GROUPINGS, sections, type SessionGroup } from './group';
+	import FilterButton from './FilterButton.svelte';
+	import { counts, GROUPINGS, sections, visible, type SessionGroup } from './group';
 	import HostCard from './HostCard.svelte';
-	import Icon from './Icon.svelte';
 	import { can, live } from './live.svelte';
 	import { longPress } from './longpress';
+	import { manager } from './manager.svelte';
 	import NotifyRow from './NotifyRow.svelte';
+	import { maestroDot, maestroState } from './panel';
 	import PullIndicator from './PullIndicator.svelte';
 	import ThreadRow from './ThreadRow.svelte';
 
 	const PULL = 'threads';
 
-	const groups = $derived(
-		live.threads ? sections(live.awakeOnly ? awake(live.threads) : live.threads, live.grouping) : []
+	// The clock is read only while a filter is on: a list with none does not follow it.
+	const shown = $derived(
+		live.threads && live.filter !== 'off'
+			? visible(live.threads, live.filter, live.now)
+			: live.threads
+	);
+	const groups = $derived(shown ? sections(shown, live.grouping) : []);
+	const maestro = $derived(
+		maestroDot(
+			maestroState({ on: can('manager'), busy: manager.busy, status: manager.status }),
+			manager.idleStage
+		)
 	);
 	const waiting = $derived(live.threads ? counts(live.threads).waiting : 0);
 	const onHome = $derived(page.route.id === '/');
@@ -28,9 +40,8 @@
 	let scroller = $state<HTMLElement>();
 
 	/** The filter changes the list's length: show all of it, from its top. */
-	const toggleFilter = (): void => {
-		live.toggleAwakeOnly();
-		if (live.awakeOnly) collapse.expandAll();
+	const filterChanged = (): void => {
+		if (live.filter !== 'off') collapse.expandAll();
 		scroller?.scrollTo({ top: 0 });
 	};
 
@@ -162,22 +173,21 @@
 
 	<!-- Always here, in reach of a thumb: the way back to the home, whatever is switched on. -->
 	<div class="dbar">
-		<button
-			class="tb filt"
-			class:on={live.awakeOnly}
-			aria-label="Awake only"
-			aria-pressed={live.awakeOnly}
-			onclick={toggleFilter}><Icon name="filter" /></button
-		>
+		<FilterButton onchange={filterChanged} />
 		<a
 			class="mrow"
 			class:sel={onHome}
 			href={resolve('/')}
 			aria-current={onHome ? 'page' : undefined}
 			data-home
+			data-state={maestro?.label}
 			onclick={() => ui.closeDrawer()}
 		>
-			<span>✦ Maestro</span>
+			<span class="who" class:sleep={maestro?.sleeps}>
+				{#if maestro}<span class="dot {maestro.dot}" title={maestro.label}></span>{/if}
+				<span>✦ Maestro</span>
+				{#if maestro?.sleeps}<span class="tag">💤</span>{/if}
+			</span>
 			{#if waiting}<span class="badge">{waiting}</span>{/if}
 		</a>
 	</div>
@@ -230,15 +240,24 @@
 		background: var(--bar);
 	}
 
-	.filt {
-		border: 1px solid #2b2b3d;
-		border-radius: 10px;
+	.who {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		min-width: 0;
 	}
 
-	.filt.on {
-		border-color: var(--accent);
-		background: #1b2333;
-		color: var(--accent);
+	/* The row's own line is centred: the dot needs no offset here. */
+	.who .dot {
+		margin-top: 0;
+	}
+
+	.who.sleep {
+		color: #8a8a8a;
+	}
+
+	.who .tag {
+		font-size: 12px;
 	}
 
 	.mrow {

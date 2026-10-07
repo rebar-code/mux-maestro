@@ -242,12 +242,24 @@ enum MobileManager {
     /// its own route, `/api/manager/chat`, read the way a thread's chat is.
     static func body(
         board: MobileManagerBoard, snapshot: MobileSnapshot, turn: MobileManagerTurn?,
-        status: MobileManagerStatus
+        status: MobileManagerStatus, dozing: Bool = false
     ) -> [String: Any] {
         var out = live(board: board, snapshot: snapshot, turn: turn)
         // A turn in flight is busy, whatever the pane's hooks last wrote.
-        out["status"] = (turn != nil && status != .off ? .busy : status).rawValue
+        let shown = turn != nil && status != .off ? .busy : status
+        out["status"] = shown.rawValue
+        // Only an idle pane sleeps, the rule a thread's row follows.
+        out["idleStage"] = (dozing && shown == .idle ? IdleStage.dozing : .awake).apiName
         return out
+    }
+
+    /// Whether the manager's pane sleeps: its session is there and every
+    /// window of it dozes.
+    static func dozing(_ sessions: [TmuxSession]) -> Bool {
+        guard let session = sessions.first(where: { $0.name == ManagerHome.sessionName }),
+              !session.windows.isEmpty
+        else { return false }
+        return session.windows.allSatisfy { $0.idleStage == .dozing }
     }
 
     /// The most text one turn takes, in UTF-8 bytes, and the longest review key.

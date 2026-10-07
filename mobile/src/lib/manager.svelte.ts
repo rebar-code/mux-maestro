@@ -11,6 +11,7 @@ import { ThreadFeed } from './thread.svelte';
 import { holdReload } from './update';
 import type {
 	ChatMessage,
+	IdleStage,
 	ManagerHome,
 	ManagerItem,
 	ManagerLive,
@@ -79,6 +80,8 @@ class Manager {
 	points = $state.raw<ManagerItem[]>([]);
 	updates = $state.raw<ManagerUpdate[]>([]);
 	status = $state<ManagerStatus>('idle');
+	/** Whether the pane sleeps, as the Mac last said. */
+	idleStage = $state<IdleStage>('awake');
 	turn = $state.raw<ManagerTurn | null>(null);
 	/** The pane's own spinner line while a turn runs, when the Mac could read it. */
 	spinner = $state<string | null>(null);
@@ -246,6 +249,7 @@ class Manager {
 			const current = events === this.events;
 			if (current) this.setCards(home);
 			this.setStatus(home.status);
+			this.idleStage = home.idleStage ?? 'awake';
 			// A refusal that named the pane's state is over once the pane is idle.
 			if (home.status === 'idle' && Object.values(STATUS_NOTES).includes(this.note ?? '')) {
 				this.note = null;

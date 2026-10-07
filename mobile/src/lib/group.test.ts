@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { age, hostStatLabels, shortCwd } from './format';
-import { counts, sections } from './group';
+import { counts, isFilter, sections, visible } from './group';
 import type { Host, Thread } from './types';
 
 function thread(over: Partial<Thread>): Thread {
@@ -78,6 +78,47 @@ describe('counts', () => {
 		expect(
 			counts([...threads, thread({ status: 'busy' }), thread({ idleStage: 'dozing' })])
 		).toEqual({ waiting: 1, busy: 1, dozing: 1 });
+	});
+});
+
+describe('visible', () => {
+	// Noon, local time: midnight is 12 hours before.
+	const now = Math.floor(new Date(2026, 0, 2, 12, 0, 0).getTime() / 1000);
+	const midnight = now - 12 * 3600;
+	const asleep = (id: string, lastActivityAt: number | null): Thread =>
+		thread({ id, idleStage: 'dozing', lastActivityAt });
+	const rows = [
+		thread({ id: 'awake' }),
+		thread({ id: 'yawning', idleStage: 'yawning' }),
+		asleep('1h', now - 3600),
+		asleep('2h', now - 7200),
+		asleep('2h+', now - 7201),
+		asleep('midnight', midnight),
+		asleep('yesterday', midnight - 1),
+		asleep('unknown', null)
+	];
+	const ids = (filter: Parameters<typeof visible>[1]): string[] =>
+		visible(rows, filter, now).map((row) => row.id);
+
+	it('off shows every thread', () => {
+		expect(visible(rows, 'off', now)).toBe(rows);
+	});
+
+	it('sleepy leaves every sleeping thread out, however recent', () => {
+		expect(ids('sleepy')).toEqual(['awake', 'yawning']);
+	});
+
+	it('2 hours also keeps the sleeping threads written in the last two hours', () => {
+		expect(ids('2h')).toEqual(['awake', 'yawning', '1h', '2h']);
+	});
+
+	it('today also keeps the sleeping threads written since local midnight', () => {
+		expect(ids('today')).toEqual(['awake', 'yawning', '1h', '2h', '2h+', 'midnight']);
+	});
+
+	it('knows a kept filter from anything else in storage', () => {
+		expect(['off', 'sleepy', '2h', 'today'].every(isFilter)).toBe(true);
+		expect([true, null, 'awake', ''].some(isFilter)).toBe(false);
 	});
 });
 

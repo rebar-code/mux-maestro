@@ -10,7 +10,7 @@ import {
 } from './api';
 import { tokenFrom } from './pairing';
 import type { Frame } from './sse';
-import type { Grouping } from './group';
+import { isFilter, type Filter, type Grouping } from './group';
 import { manager } from './manager.svelte';
 import type { Capability, Config, Host, ManagerLive, Thread } from './types';
 
@@ -18,6 +18,7 @@ const THREADS_KEY = 'mm.threads';
 const HOSTS_KEY = 'mm.hosts';
 const CONFIG_KEY = 'mm.config';
 const GROUPING_KEY = 'mm.grouping';
+const FILTER_KEY = 'mm.filter';
 const AWAKE_KEY = 'mm.awake';
 
 function read<T>(key: string): T | null {
@@ -35,6 +36,13 @@ function write(key: string, value: unknown): void {
 	} catch {
 		// Storage is full or blocked: the lists still work, only the instant open is lost.
 	}
+}
+
+/** The filter this phone kept. Before there were modes it kept a switch: on was Sleepy. */
+function storedFilter(): Filter {
+	const kept = read<unknown>(FILTER_KEY);
+	if (isFilter(kept)) return kept;
+	return read<boolean>(AWAKE_KEY) === true ? 'sleepy' : 'off';
 }
 
 const nowSeconds = (): number => Math.floor(Date.now() / 1000);
@@ -59,8 +67,8 @@ class Live {
 	private picked = $state<Grouping | null>(read<Grouping>(GROUPING_KEY));
 	readonly grouping: Grouping = $derived(this.picked ?? this.config?.grouping ?? 'recent');
 
-	/** The sidebar leaves the sleeping threads out. */
-	awakeOnly = $state(read<boolean>(AWAKE_KEY) === true);
+	/** What the sidebar leaves out. */
+	filter = $state<Filter>(storedFilter());
 
 	private listeners = new Set<() => void>();
 	private configListeners = new Set<() => void>();
@@ -69,9 +77,14 @@ class Live {
 		return this.threads?.find((thread) => thread.id === id);
 	}
 
-	toggleAwakeOnly(): void {
-		this.awakeOnly = !this.awakeOnly;
-		write(AWAKE_KEY, this.awakeOnly);
+	/** One tap: Sleepy from off, off from any mode. */
+	toggleFilter(): void {
+		this.setFilter(this.filter === 'off' ? 'sleepy' : 'off');
+	}
+
+	setFilter(filter: Filter): void {
+		this.filter = filter;
+		write(FILTER_KEY, filter);
 	}
 
 	setGrouping(grouping: Grouping): void {

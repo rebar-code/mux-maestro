@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { maestroState, needCount, pointCards, POINTS_MAX, REASON_MAX } from './panel';
+import { maestroDot, maestroState, needCount, pointCards, POINTS_MAX, REASON_MAX } from './panel';
 import type { ManagerItem, Thread } from './types';
 
 describe('maestroState', () => {
@@ -12,6 +12,32 @@ describe('maestroState', () => {
 		expect(maestroState({ on: true, busy: true, status: 'idle' })).toBe('working');
 		expect(maestroState({ on: true, busy: false, status: 'busy' })).toBe('working');
 		expect(maestroState({ on: true, busy: false, status: 'idle' })).toBe('idle');
+	});
+});
+
+describe('maestroDot', () => {
+	it('has no dot while the Maestro is off', () => {
+		expect(maestroDot('off', 'dozing')).toBeNull();
+	});
+
+	it('draws the dot a thread in that state has', () => {
+		expect(maestroDot('asks', 'awake')).toEqual({
+			dot: 'waiting',
+			label: 'needs you',
+			sleeps: false
+		});
+		expect(maestroDot('working', 'awake')).toEqual({
+			dot: 'busy',
+			label: 'running',
+			sleeps: false
+		});
+		expect(maestroDot('idle', 'awake')).toEqual({ dot: 'idle', label: 'idle', sleeps: false });
+		expect(maestroDot('idle', 'dozing')).toEqual({ dot: 'idle', label: 'sleeping', sleeps: true });
+	});
+
+	it('only an idle pane sleeps', () => {
+		expect(maestroDot('working', 'dozing')?.sleeps).toBe(false);
+		expect(maestroDot('asks', 'dozing')?.sleeps).toBe(false);
 	});
 });
 

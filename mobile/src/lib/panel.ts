@@ -3,7 +3,7 @@
  * tested directly.
  */
 import { capped, isOpen, parseCard, type ActionCard } from './cards';
-import type { ManagerItem, Thread } from './types';
+import type { IdleStage, ManagerItem, Thread } from './types';
 
 /** What the header button shows. */
 export type MaestroState = 'off' | 'asks' | 'working' | 'idle';
@@ -13,6 +13,22 @@ export function maestroState(input: { on: boolean; busy: boolean; status: string
 	// A question on the Maestro's own pane comes before its work.
 	if (input.status === 'waiting') return 'asks';
 	return input.busy || input.status === 'busy' ? 'working' : 'idle';
+}
+
+/**
+ * The Maestro's row in the sidebar: the dot a thread in that state has, and
+ * the word for it. `null`: the Maestro is off, there is no dot. Only an idle
+ * pane sleeps.
+ */
+export function maestroDot(
+	state: MaestroState,
+	idleStage: IdleStage
+): { dot: 'waiting' | 'busy' | 'idle'; label: string; sleeps: boolean } | null {
+	if (state === 'off') return null;
+	if (state === 'asks') return { dot: 'waiting', label: 'needs you', sleeps: false };
+	if (state === 'working') return { dot: 'busy', label: 'running', sleeps: false };
+	const sleeps = idleStage === 'dozing';
+	return { dot: 'idle', label: sleeps ? 'sleeping' : 'idle', sleeps };
 }
 
 /** The longest reason a pointer shows. The Mac caps it too; this text is not trusted. */

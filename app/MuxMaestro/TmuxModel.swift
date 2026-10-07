@@ -163,6 +163,16 @@ struct TmuxWindow: Equatable {
         }
     }
 
+    /// Whether the sidebar shows the window under `filter`. A window that is
+    /// not asleep always shows; the wider modes also keep a sleeping one that
+    /// was written recently enough.
+    func shows(under filter: SidebarFilter, now: Int, calendar: Calendar = .current) -> Bool {
+        guard filter != .off, idleStage == .dozing else { return true }
+        guard let since = filter.since(now: now, calendar: calendar),
+              let lastActivityAt else { return false }
+        return lastActivityAt >= since
+    }
+
     /// The window's working directory: its active pane's path (falling back to the
     /// first pane). Empty when no pane reported one. Each window can be a different
     /// repo/branch, which is why PR detection keys on this rather than the session.
@@ -176,6 +186,58 @@ struct TmuxWindow: Equatable {
     /// shows red even while collapsed. `.unknown` for a window with no panes.
     var attention: AttentionStatus {
         panes.map(\.attention).min { $0.sortRank < $1.sortRank } ?? .unknown
+    }
+}
+
+/// What the sidebar leaves out. Each mode after `sleepy` is wider: it keeps
+/// the sleeping windows that were written within its time span.
+enum SidebarFilter: String, CaseIterable {
+    case off
+    case sleepy
+    case twoHours
+    case today
+
+    /// The modes the control's menu lists.
+    static let modes: [SidebarFilter] = [.sleepy, .twoHours, .today]
+
+    var title: String {
+        switch self {
+        case .off: return ""
+        case .sleepy: return "Sleepy"
+        case .twoHours: return "2 hours"
+        case .today: return "Today"
+        }
+    }
+
+    /// What one click on the control gives: Sleepy from off, off from any mode.
+    var toggled: SidebarFilter { self == .off ? .sleepy : .off }
+
+    /// Epoch seconds from which a sleeping window still shows. nil: none does.
+    func since(now: Int, calendar: Calendar = .current) -> Int? {
+        switch self {
+        case .off, .sleepy: return nil
+        case .twoHours: return now - 2 * 3600
+        case .today:
+            let day = calendar.startOfDay(for: Date(timeIntervalSince1970: TimeInterval(now)))
+            return Int(day.timeIntervalSince1970)
+        }
+    }
+
+    /// `sessions` with the windows the filter hides taken out, and no session
+    /// left without a window. `keeping` names a window that shows whatever the
+    /// filter says: the selected one.
+    func apply(
+        to sessions: [TmuxSession], now: Int, calendar: Calendar = .current,
+        keeping: (TmuxSession, TmuxWindow) -> Bool = { _, _ in false }
+    ) -> [TmuxSession] {
+        guard self != .off else { return sessions }
+        return sessions.compactMap { session in
+            var kept = session
+            kept.windows = session.windows.filter {
+                $0.shows(under: self, now: now, calendar: calendar) || keeping(session, $0)
+            }
+            return kept.windows.isEmpty ? nil : kept
+        }
     }
 }
 
