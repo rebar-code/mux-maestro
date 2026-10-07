@@ -54,6 +54,8 @@ struct MobilePaneIO {
     /// agent keeps it in its input box; a shell or a question under a dead
     /// agent's last frame has it. nil when it cannot be read.
     var cursorRow: () -> Int? = { nil }
+    /// The home folder on the pane's host. nil when it cannot be read.
+    var home: () -> String? = { nil }
     /// The pane's prompt counter, given what the pane shows now (`key` names
     /// the prompt's words; nil for no prompt). The server raises it each time
     /// the pane starts waiting, each time the words change, and after each
@@ -870,9 +872,23 @@ enum MobileReply {
     /// Where an upload is saved on this Mac until Settings names a folder:
     /// the user's temporary folder, so never a repository.
     static let defaultUploadFolder = (NSTemporaryDirectory() as NSString).appendingPathComponent("MuxMaestro")
-    /// Where an upload is saved on a remote host. The folder in Settings is
-    /// a path on this Mac, and a host may not have it.
+    /// Where an upload is saved on a remote host when the folder in Settings
+    /// has no place there: the host's own temp folder.
     static let remoteUploadFolder = "/tmp/MuxMaestro"
+
+    /// The folder from Settings, on a remote host. A folder under this Mac's
+    /// home is the same folder under the host's home: `~/Screenshots` here is
+    /// `~/Screenshots` there. Any other path is one the host may not have,
+    /// and a home that cannot be read names no folder: then the file goes to
+    /// `remoteUploadFolder`.
+    static func remoteUploadFolder(
+        for folder: String, home: String = NSHomeDirectory(), remoteHome: String?
+    ) -> String {
+        guard let remoteHome = remoteHome.flatMap({ uploadFolder($0) }),
+              folder.hasPrefix(home + "/")
+        else { return remoteUploadFolder }
+        return (remoteHome == "/" ? "" : remoteHome) + folder.dropFirst(home.count)
+    }
 
     /// The folder `raw` names, as an absolute path: a leading `~` is the
     /// home folder. nil when it is not an absolute path made of plain text.
@@ -946,8 +962,8 @@ enum MobileReply {
 
     /// Save `data` in the upload folder and paste its path into the pane, as
     /// a file drop on the Mac does. `folder` is the one from Settings, on this
-    /// Mac; a thread on a remote host gets `remoteUploadFolder` on that host.
-    /// It is never the thread's working directory. Nothing is overwritten, no
+    /// Mac; a thread on a remote host gets `remoteUploadFolder(for:)` on that
+    /// host. It is never the thread's working directory. Nothing is overwritten, no
     /// link is followed and nothing is submitted. The path is text like any
     /// other, so a pane that cannot take text is refused before anything is
     /// written.
@@ -958,10 +974,13 @@ enum MobileReply {
     /// state does not matter here; `text` is the path as it should be typed.
     static func upload(
         _ data: Data, name raw: String, thread: MobileThread, folder: String, io: MobilePaneIO,
-        limit: Int, paste typed: Bool = true, state: () -> MobilePaneState?
+        limit: Int, paste typed: Bool = true, home: String = NSHomeDirectory(),
+        state: () -> MobilePaneState?
     ) -> MobileResponse {
-        upload(
-            data, name: raw, folder: thread.host.isLocal ? folder : remoteUploadFolder,
+        let there = thread.host.isLocal
+            ? folder : remoteUploadFolder(for: folder, home: home, remoteHome: io.home())
+        return upload(
+            data, name: raw, folder: there,
             target: thread.pane, io: io, limit: limit, paste: typed, state: state)
     }
 

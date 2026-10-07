@@ -2076,7 +2076,8 @@ final class TmuxService {
             cursorRow: { [self] in
                 tmux(["display-message", "-p", "-t", target, "#{cursor_y}"])
                     .flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
-            })
+            },
+            home: { [self] in resolveHome() })
     }
 
     /// The command that runs a tmux control client on this host for the
