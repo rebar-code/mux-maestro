@@ -61,7 +61,8 @@ export interface Host {
 
 export interface ChatMessage {
 	n: number;
-	role: 'user' | 'assistant' | 'tool';
+	/** `reasoning`: what the agent thought between its steps. */
+	role: 'user' | 'assistant' | 'tool' | 'reasoning';
 	text: string;
 	tool?: string;
 }

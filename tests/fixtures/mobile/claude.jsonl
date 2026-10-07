@@ -4,5 +4,5 @@
 {"type":"user","isMeta":true,"timestamp":"2026-10-02T10:00:07.000Z","message":{"role":"user","content":"Caveat: a harness note"}}
 {"type":"user","timestamp":"2026-10-02T10:00:08.000Z","message":{"role":"user","content":"<system-reminder>injected</system-reminder>"}}
 {"type":"assistant","isSidechain":true,"timestamp":"2026-10-02T10:00:09.000Z","message":{"role":"assistant","content":[{"type":"text","text":"a subagent talking"}]}}
-{"type":"assistant","cwd":"/Users/me/code/acme-app","sessionId":"c1","timestamp":"2026-10-02T10:01:00.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"pnpm exec playwright test tests/checkout.spec.ts\necho done","description":"Run the spec"}}]}}
+{"type":"assistant","cwd":"/Users/me/code/acme-app","sessionId":"c1","timestamp":"2026-10-02T10:01:00.000Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"","signature":"x"},{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"pnpm exec playwright test tests/checkout.spec.ts\necho done","description":"Run the spec"}}]}}
 {"type":"assistant","cwd":"/Users/me/code/acme-app","sessionId":"c1","timestamp":"2026-10-02T10:02:00.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Edited. The page is up on the dev server."}]}}

@@ -11,6 +11,7 @@
 	import FindBar from './FindBar.svelte';
 	import Icon from './Icon.svelte';
 	import type { Snippet } from 'svelte';
+	import { SvelteSet } from 'svelte/reactivity';
 	import { messageMenu } from './doubletap';
 	import { dotClass, statusLabel } from './format';
 	import { pages, pullToRefresh, ui } from './gestures.svelte';
@@ -40,6 +41,7 @@
 	import { BOARD, MAIN, REQUESTS, viewTabs } from './tabs';
 	import { text } from './textsize.svelte';
 	import { ThreadFeed, type Mode } from './thread.svelte';
+	import { chatRows, foldLabel, type ChatRow } from './toolruns';
 	import type { ArtifactFile, ChatMessage } from './types';
 	import { voice } from './voice.svelte';
 	import VoiceBar from './VoiceBar.svelte';
@@ -200,6 +202,18 @@
 	);
 	const finding = $derived(find.open && can('find'));
 
+	/** The tool runs the user opened, by the `n` of each one's first row. */
+	const openRuns = new SvelteSet<number>();
+	function toggleRun(key: number): void {
+		if (!openRuns.delete(key)) openRuns.add(key);
+	}
+	/** A find looks in every row, so it shows every row. */
+	const rows: ChatRow[] = $derived(
+		finding
+			? (feed.messages ?? []).map((message) => ({ kind: 'message', message }))
+			: chatRows(feed.messages ?? [], openRuns)
+	);
+
 	// svelte-ignore state_referenced_locally
 	const term = new LiveTerm(id);
 	// The manager's own pane is not a listed thread: it has no live terminal.
@@ -259,6 +273,64 @@
 		turn(index);
 	}
 </script>
+
+{#snippet line(message: ChatMessage)}
+	{@const hits = finding ? find.chat.byRow.get(message.n) : undefined}
+	{#snippet body()}
+		{#if hits}
+			<Marked text={message.text} {hits} current={find.current} />
+		{:else}
+			{message.text}
+		{/if}
+	{/snippet}
+	{#if message.role === 'user'}
+		<div class="u">{@render body()}</div>
+	{:else if message.role === 'assistant'}
+		{@const saying = sayOn ? voice.sayingOf(id, message.n) : 'idle'}
+		<div class="a" data-row={message.n}>
+			<Prose text={message.text} {hits} current={find.current} {links} />
+			<!-- Play is always here. A double tap adds the rest: that is the menu. -->
+			{#if sayOn || menu === message.n}
+				<div class="menu" data-menu={menu === message.n ? '' : undefined}>
+					{#if sayOn}
+						<!-- Three shapes: a triangle, a turning ring, a square. -->
+						<button
+							class="act grow"
+							aria-label={SAY[saying]}
+							aria-busy={saying === 'loading'}
+							data-say={saying}
+							onclick={() => voice.say(id, message.n)}
+						>
+							{#if saying === 'loading'}
+								<i class="ring" aria-hidden="true"></i>
+							{:else}
+								<Icon name={saying === 'playing' ? 'stop' : 'play'} size={15} />
+							{/if}
+						</button>
+					{/if}
+					{#if menu === message.n}
+						<button
+							class="act grow"
+							aria-label="Copy"
+							onclick={(event) => copyText(event.currentTarget, message.text)}
+						>
+							<Icon name="copy" size={15} /><Icon name="check" size={15} />
+						</button>
+					{/if}
+				</div>
+			{/if}
+		</div>
+	{:else if message.role === 'reasoning'}
+		<div class="think">
+			<Prose text={message.text} {hits} current={find.current} {links} />
+		</div>
+	{:else}
+		<div class="tool"><b>{message.tool}</b> {@render body()}</div>
+	{/if}
+	{#each below(message) as file (file.id)}
+		<ArtifactInline {file} {artifacts} onopen={openInline} />
+	{/each}
+{/snippet}
 
 {#snippet promptCard(shown: string, onterminal?: () => void)}
 	<PromptCard
@@ -407,58 +479,24 @@
 									<span class="skel" style:width="{width}%" style:height="16px"></span>
 								{/each}
 							{:else}
-								{#each feed.messages as message (message.n)}
-									{@const hits = finding ? find.chat.byRow.get(message.n) : undefined}
-									{#snippet body()}
-										{#if hits}
-											<Marked text={message.text} {hits} current={find.current} />
-										{:else}
-											{message.text}
+								{#each rows as row (row.kind === 'fold' ? `fold-${row.key}` : row.message.n)}
+									{#if row.kind === 'fold'}
+										<button
+											class="fold"
+											aria-expanded={row.open}
+											onclick={() => toggleRun(row.key)}
+										>
+											{foldLabel(row.hidden.length, row.open)}
+										</button>
+										<!-- A file a hidden row names keeps its place in the chat. -->
+										{#if !row.open}
+											{#each row.hidden.flatMap(below) as file (file.id)}
+												<ArtifactInline {file} {artifacts} onopen={openInline} />
+											{/each}
 										{/if}
-									{/snippet}
-									{#if message.role === 'user'}
-										<div class="u">{@render body()}</div>
-									{:else if message.role === 'assistant'}
-										{@const saying = sayOn ? voice.sayingOf(id, message.n) : 'idle'}
-										<div class="a" data-row={message.n}>
-											<Prose text={message.text} {hits} current={find.current} {links} />
-											<!-- Play is always here. A double tap adds the rest: that is the menu. -->
-											{#if sayOn || menu === message.n}
-												<div class="menu" data-menu={menu === message.n ? '' : undefined}>
-													{#if sayOn}
-														<!-- Three shapes: a triangle, a turning ring, a square. -->
-														<button
-															class="act grow"
-															aria-label={SAY[saying]}
-															aria-busy={saying === 'loading'}
-															data-say={saying}
-															onclick={() => voice.say(id, message.n)}
-														>
-															{#if saying === 'loading'}
-																<i class="ring" aria-hidden="true"></i>
-															{:else}
-																<Icon name={saying === 'playing' ? 'stop' : 'play'} size={15} />
-															{/if}
-														</button>
-													{/if}
-													{#if menu === message.n}
-														<button
-															class="act grow"
-															aria-label="Copy"
-															onclick={(event) => copyText(event.currentTarget, message.text)}
-														>
-															<Icon name="copy" size={15} /><Icon name="check" size={15} />
-														</button>
-													{/if}
-												</div>
-											{/if}
-										</div>
 									{:else}
-										<div class="tool"><b>{message.tool}</b> {@render body()}</div>
+										{@render line(row.message)}
 									{/if}
-									{#each below(message) as file (file.id)}
-										<ArtifactInline {file} {artifacts} onopen={openInline} />
-									{/each}
 								{/each}
 								{#if reply.turn}
 									{#if spoken.prompt}<div class="u" data-live>{reply.turn.prompt}</div>{/if}
@@ -862,6 +900,29 @@
 	.tool b {
 		color: #b8b8b8;
 		font-weight: 600;
+	}
+
+	/* What the agent thought: the tool rows' size and rule; it wraps, and it slants. */
+	.think {
+		font-size: 0.8333em;
+		font-style: italic;
+		color: var(--muted);
+		border-left: 2px solid var(--border);
+		padding: 1px 0 1px 9px;
+		overflow-wrap: anywhere;
+	}
+
+	/* Stands for a run's earlier tool rows. */
+	.fold {
+		align-self: flex-start;
+		font: inherit;
+		font-size: 0.8333em;
+		color: var(--muted);
+		background: none;
+		border: 1px solid var(--border);
+		border-radius: 999px;
+		padding: 3px 10px;
+		min-height: 28px;
 	}
 
 	/* The feed keeps the view in place itself; the browser must not also try. */

@@ -992,7 +992,8 @@ struct MobileSnapshot: Equatable {
 // MARK: - Chat
 
 struct MobileChatMessage: Equatable {
-    enum Role: String { case user, assistant, tool }
+    /// `reasoning`: what the agent thought between its steps, not a reply.
+    enum Role: String { case user, assistant, tool, reasoning }
 
     /// Increases through the transcript; the client keys rows on it.
     let n: UInt64
@@ -1166,6 +1167,12 @@ enum MobileChat {
                         .trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty
                     else { return nil }
                     return (.assistant, text, nil)
+                case "thinking":
+                    // Most thinking is written without its text: no row then.
+                    guard let text = (block["thinking"] as? String)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty
+                    else { return nil }
+                    return (.reasoning, text, nil)
                 case "tool_use":
                     let name = block["name"] as? String ?? "Tool"
                     return (.tool, toolDetail(block["input"] as? [String: Any] ?? [:]), name)
@@ -1224,6 +1231,18 @@ enum MobileChat {
             let input = (payload["arguments"] as? String)
                 .flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) } as? [String: Any]
             return [(.tool, toolDetail(input ?? [:]), name)]
+        case "custom_tool_call":
+            // Its input is free text, not named arguments.
+            let name = payload["name"] as? String ?? "Tool"
+            let input = (payload["input"] as? String ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return [(.tool, String(input.split(whereSeparator: \.isNewline).first ?? "").prefixString(200), name)]
+        case "reasoning":
+            // Only the summary is readable; it is often empty.
+            let text = (payload["summary"] as? [[String: Any]] ?? [])
+                .compactMap { $0["text"] as? String }.joined(separator: "\n\n")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return text.isEmpty ? [] : [(.reasoning, text, nil)]
         default:
             return []
         }
