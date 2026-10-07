@@ -66,6 +66,13 @@ export class Collapse {
 		this.save();
 	}
 
+	/** Every session shows open. */
+	expandAll(): void {
+		if (this.keys.size === 0) return;
+		this.keys = parseCollapsed(null);
+		this.save();
+	}
+
 	/** The user opened thread `id` from somewhere: its session expands. */
 	open(id: string): void {
 		this.opened = id;
