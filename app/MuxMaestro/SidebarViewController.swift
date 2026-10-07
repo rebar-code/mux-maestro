@@ -1042,6 +1042,79 @@ final class HoverTintButton: NSButton {
     override func mouseExited(with event: NSEvent) { contentTintColor = SidebarPalette.muted }
 }
 
+/// The sidebar header's filter. A click on the left part turns Sleepy on, or
+/// any mode off; the arrow lists the modes.
+final class SidebarFilterControl: NSStackView {
+    var onChange: ((SidebarFilter) -> Void)?
+    var filter: SidebarFilter = .off { didSet { render() } }
+
+    private let toggle = NSButton()
+    private let arrow = SidebarAddButton.make(tooltip: "Filter options", symbol: "chevron.down")
+
+    init() {
+        super.init(frame: .zero)
+        orientation = .horizontal
+        spacing = 0
+        translatesAutoresizingMaskIntoConstraints = false
+        toggle.image = NSImage(
+            systemSymbolName: "line.3.horizontal.decrease", accessibilityDescription: "Filter")
+        toggle.imagePosition = .imageLeading
+        toggle.imageScaling = .scaleProportionallyDown
+        toggle.bezelStyle = .inline
+        toggle.isBordered = false
+        toggle.font = .systemFont(ofSize: 11, weight: .semibold)
+        toggle.setButtonType(.momentaryChange)
+        toggle.setAccessibilityLabel("Filter")
+        toggle.target = self
+        toggle.action = #selector(toggleClicked)
+        arrow.target = self
+        arrow.action = #selector(showModes)
+        addArrangedSubview(toggle)
+        addArrangedSubview(arrow)
+        heightAnchor.constraint(equalToConstant: 18).isActive = true
+        render()
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) not supported")
+    }
+
+    private func render() {
+        let color = filter == .off ? SidebarPalette.muted : SidebarPalette.accent
+        toggle.contentTintColor = color
+        toggle.attributedTitle = NSAttributedString(
+            string: filter == .off ? "" : " " + filter.title,
+            attributes: [.foregroundColor: color, .font: toggle.font as Any])
+        toggle.setAccessibilityValue(filter.title)
+    }
+
+    @objc private func toggleClicked() { pick(filter.toggled) }
+
+    @objc private func showModes() {
+        let menu = NSMenu()
+        for mode in SidebarFilter.modes {
+            let item = NSMenuItem(title: mode.title, action: #selector(modePicked(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = mode.rawValue
+            item.state = mode == filter ? .on : .off
+            menu.addItem(item)
+        }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: bounds.height + 2), in: self)
+    }
+
+    @objc private func modePicked(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let mode = SidebarFilter(rawValue: raw)
+        else { return }
+        pick(mode)
+    }
+
+    private func pick(_ mode: SidebarFilter) {
+        guard mode != filter else { return }
+        filter = mode
+        onChange?(mode)
+    }
+}
+
 /// Generic row (host / window / pane / group / action / placeholder) with an
 /// optional trailing "+" button (directory rows) and a hover-only trash button
 /// (window rows). Window and pane rows take a second line for their thread's
@@ -1785,6 +1858,9 @@ final class SidebarViewController: NSViewController {
     private var collapsedByUser: Set<String> = []
     /// Identity of the selected node, preserved across refresh.
     private var selectedIdentity: String?
+    /// What the tree leaves out (the header's control).
+    private var filter = Settings.sidebarFilter()
+    private let filterControl = SidebarFilterControl()
     /// A just-created/renamed session awaiting selection: highlighted by the next
     /// refresh that loads it into the tree, then cleared. Main-thread only.
     /// A row to highlight once a refresh brings it into the tree. `window` is set
@@ -1849,6 +1925,10 @@ final class SidebarViewController: NSViewController {
         header.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(header)
 
+        filterControl.filter = filter
+        filterControl.onChange = { [weak self] in self?.setFilter($0) }
+        container.addSubview(filterControl)
+
         let column = NSTableColumn(identifier: .init("main"))
         column.resizingMask = .autoresizingMask
         outline.addTableColumn(column)
@@ -1901,7 +1981,10 @@ final class SidebarViewController: NSViewController {
             header.topAnchor.constraint(
                 equalTo: container.safeAreaLayoutGuide.topAnchor, constant: 8),
             header.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
-            header.trailingAnchor.constraint(
+            // Beside the label, on its line: the list under them does not move.
+            filterControl.leadingAnchor.constraint(equalTo: header.trailingAnchor, constant: 8),
+            filterControl.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            filterControl.trailingAnchor.constraint(
                 lessThanOrEqualTo: container.trailingAnchor, constant: -14),
 
             scroll.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 6),
@@ -4583,7 +4666,16 @@ final class SidebarViewController: NSViewController {
             }
         }
         let sessionCount = active.count
-        if active.isEmpty {
+        // The filter took every session out: say so, the sessions are still there.
+        let allHidden = active.isEmpty && filter != .off
+            && ([local] + activeRemotes(remotes)).contains { host in
+                (sessionsByHost[host.name] ?? []).contains {
+                    !Self.isHiddenManagerSession(host, $0.name)
+                }
+            }
+        if allHidden {
+            active = [SidebarNode(kind: .placeholder(parent: "ACTIVE", text: "Nothing awake"))]
+        } else if active.isEmpty {
             active = [SidebarNode(kind: .placeholder(
                 parent: "ACTIVE", text: "No sessions — click a server to create one"))]
             // The tree being empty is exactly the post-reboot state — offer to
@@ -4684,8 +4776,7 @@ final class SidebarViewController: NSViewController {
         var pairs: [(host: Host, session: TmuxSession)] = []
         let local = hosts.filter(\.isLocal)
         for host in local + activeRemotes(hosts.filter { !$0.isLocal }) {
-            for s in sessionsByHost[host.name] ?? []
-            where !Self.isHiddenManagerSession(host, s.name) {
+            for s in shownSessions(on: host) {
                 pairs.append((host, s))
             }
         }
@@ -4696,10 +4787,29 @@ final class SidebarViewController: NSViewController {
     /// The session nodes for `host` (custom-ordered), for the flat ACTIVE list —
     /// the flattened equivalent of `buildHostNode`'s children.
     private func flatSessionNodes(for host: Host) -> [SidebarNode] {
-        let raw = (sessionsByHost[host.name] ?? [])
-            .filter { !Self.isHiddenManagerSession(host, $0.name) }
+        let raw = shownSessions(on: host)
         let sessions = TmuxModel.applyCustomOrder(raw, order: Settings.sessionOrder(host: host))
         return sessions.map { buildSessionNode(host: host, session: $0) }
+    }
+
+    /// The sessions of `host` the tree shows: not the manager's own, and not
+    /// what the filter hides. The selected window shows whatever the filter says.
+    private func shownSessions(on host: Host) -> [TmuxSession] {
+        let sessions = (sessionsByHost[host.name] ?? [])
+            .filter { !Self.isHiddenManagerSession(host, $0.name) }
+        guard filter != .off else { return sessions }
+        let selected = selectedIdentity ?? ""
+        return filter.apply(to: sessions, now: Int(Date().timeIntervalSince1970)) { session, window in
+            selected.hasSuffix("W:\(host.name):\(session.name):\(window.index)")
+                || window.panes.contains { selected.hasSuffix("P:\(host.name):\($0.id)") }
+        }
+    }
+
+    /// Change what the sidebar leaves out, and keep it for the next launch.
+    private func setFilter(_ mode: SidebarFilter) {
+        filter = mode
+        Settings.setSidebarFilter(mode)
+        applyRefresh(buildHostNodes())
     }
 
     /// Switch the top-level organization (host ↔ directory) and rebuild from the
@@ -4721,8 +4831,7 @@ final class SidebarViewController: NSViewController {
     private func buildDirectoryNodes() -> [SidebarNode] {
         var byDir: [String: [(host: Host, session: TmuxSession)]] = [:]
         for host in hosts {
-            for session in sessionsByHost[host.name] ?? []
-            where !Self.isHiddenManagerSession(host, session.name) {
+            for session in shownSessions(on: host) {
                 byDir[session.cwd, default: []].append((host, session))
             }
         }

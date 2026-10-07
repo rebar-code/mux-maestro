@@ -347,6 +347,15 @@ enum Settings {
         defaults.set(port, forKey: phonePortKey)
     }
 
+    /// What the Mac sidebar leaves out. Off until it is changed there.
+    static func sidebarFilter(defaults: UserDefaults = .standard) -> SidebarFilter {
+        defaults.string(forKey: "sidebar.filter").flatMap(SidebarFilter.init) ?? .off
+    }
+
+    static func setSidebarFilter(_ filter: SidebarFilter, defaults: UserDefaults = .standard) {
+        defaults.set(filter.rawValue, forKey: "sidebar.filter")
+    }
+
     /// The grouping the phone's sidebar opens with until it is changed there.
     static func phoneGrouping(defaults: UserDefaults = .standard) -> MobileGrouping {
         defaults.string(forKey: "phone.grouping").flatMap(MobileGrouping.init) ?? .recent

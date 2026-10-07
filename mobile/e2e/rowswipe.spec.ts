@@ -14,6 +14,10 @@ const ROW = 'localhost:3';
 const PULLED = 112;
 
 const row = (page: Page, id = ROW): Locator => drawer(page).locator(`[data-thread="${id}"]`);
+const filterButton = (page: Page): Locator =>
+	page.getByRole('button', { name: 'Filter', exact: true });
+/** Asleep, and written 90 minutes ago. */
+const RECENT = 'localhost:200';
 const left = (target: Locator): Promise<number> =>
 	target.evaluate((el) => Math.round(el.getBoundingClientRect().left));
 
@@ -155,7 +159,7 @@ test('a row shows the pull request of its window', async ({ page }) => {
 });
 
 test('the filter opens every session and shows the list from its top', async ({ page }) => {
-	const filter = page.getByRole('button', { name: 'Awake only' });
+	const filter = filterButton(page);
 	const folds = drawer(page).locator('.shead .fold');
 	const scroll = drawer(page).locator('.scroll');
 	await folds.first().click();
@@ -176,7 +180,7 @@ test('the filter opens every session and shows the list from its top', async ({ 
 });
 
 test('the filter beside Maestro leaves the sleeping threads out', async ({ page }) => {
-	const filter = page.getByRole('button', { name: 'Awake only' });
+	const filter = filterButton(page);
 	const maestro = drawer(page).locator('[data-home]');
 	expect((await filter.boundingBox())?.x ?? 0).toBeLessThan((await maestro.boundingBox())?.x ?? 0);
 	expect((await filter.boundingBox())?.width ?? 0).toBeGreaterThanOrEqual(44);
@@ -193,10 +197,86 @@ test('the filter beside Maestro leaves the sleeping threads out', async ({ page 
 	// The phone keeps it.
 	await page.reload();
 	await page.getByRole('button', { name: 'Menu' }).click();
-	await expect(page.getByRole('button', { name: 'Awake only' })).toHaveAttribute(
-		'aria-pressed',
-		'true'
-	);
-	await page.getByRole('button', { name: 'Awake only' }).click();
+	await expect(filterButton(page)).toHaveAttribute('aria-pressed', 'true');
+	await expect(filterButton(page)).toHaveText('Sleepy');
+	await filterButton(page).click();
 	await expect(drawer(page).locator('[data-thread]')).toHaveCount(all);
+});
+
+test('the arrow beside the filter keeps the sleeping threads of the last 2 hours', async ({
+	page
+}) => {
+	const filter = filterButton(page);
+	const all = await drawer(page).locator('[data-thread]').count();
+	await filter.click();
+	await expect(row(page, RECENT)).toHaveCount(0);
+	const awake = await drawer(page).locator('[data-thread]').count();
+
+	await page.getByRole('button', { name: 'Filter options' }).click();
+	const options = page.getByRole('menuitemradio');
+	await expect(options).toHaveText(['Sleepy', '2 hours', 'Today']);
+	await expect(options.nth(0)).toHaveAttribute('aria-checked', 'true');
+	await shot(page, 'filter-menu');
+	await options.nth(1).click();
+	await expect(page.getByRole('menu')).toHaveCount(0);
+	await expect(filter).toHaveText('2 hours');
+	await expect(row(page, RECENT)).toBeAttached();
+	await expect(drawer(page).locator('[data-thread]')).toHaveCount(awake + 1);
+	await shot(page, 'filter-2h');
+
+	// The phone keeps the mode.
+	await page.reload();
+	await page.getByRole('button', { name: 'Menu' }).click();
+	await expect(filterButton(page)).toHaveText('2 hours');
+
+	// One tap turns any mode off; the next one is Sleepy again.
+	await filterButton(page).click();
+	await expect(filterButton(page)).toHaveAttribute('aria-pressed', 'false');
+	await expect(drawer(page).locator('[data-thread]')).toHaveCount(all);
+	await filterButton(page).click();
+	await expect(filterButton(page)).toHaveText('Sleepy');
+});
+
+test('a tap outside the filter options closes them and changes nothing', async ({ page }) => {
+	await page.getByRole('button', { name: 'Filter options' }).click();
+	await expect(page.getByRole('menu')).toBeVisible();
+	await drawer(page)
+		.getByRole('button', { name: 'Close' })
+		.click({ position: { x: 150, y: 200 } });
+	await expect(page.getByRole('menu')).toHaveCount(0);
+	await expect(filterButton(page)).toHaveAttribute('aria-pressed', 'false');
+});
+
+test('a phone that kept the old switch on opens with Sleepy', async ({ page }) => {
+	await page.evaluate(() => localStorage.setItem('mm.awake', 'true'));
+	await page.reload();
+	await page.getByRole('button', { name: 'Menu' }).click();
+	await expect(filterButton(page)).toHaveText('Sleepy');
+});
+
+test('the Maestro row shows the dot of what its pane does', async ({ page }) => {
+	const home = drawer(page).locator('[data-home]');
+	const dot = home.locator('.dot');
+	await expect(home).toHaveAttribute('data-state', 'idle');
+	await expect(dot).toHaveClass(/idle/);
+
+	for (const [query, state, cls] of [
+		['value=busy', 'running', /busy/],
+		['value=waiting', 'needs you', /waiting/],
+		['value=idle&stage=dozing', 'sleeping', /idle/]
+	] as const) {
+		await page.request.post(`/__fixture/manager-status?${query}`);
+		await page.reload();
+		await page.getByRole('button', { name: 'Menu' }).click();
+		await expect(home).toHaveAttribute('data-state', state);
+		await expect(dot).toHaveClass(cls);
+		await shot(page, `maestro-${state.replace(' ', '-')}`);
+	}
+	await expect(home).toContainText('💤');
+
+	// Switched off on the Mac: no dot.
+	await page.request.post('/__fixture/capability?name=manager&on=0');
+	await page.reload();
+	await page.getByRole('button', { name: 'Menu' }).click();
+	await expect(dot).toHaveCount(0);
 });

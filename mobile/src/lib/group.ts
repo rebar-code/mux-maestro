@@ -84,9 +84,40 @@ export function sections(threads: Thread[], grouping: Grouping): Section[] {
 	}));
 }
 
-/** The threads that are not asleep. */
-export function awake(threads: Thread[]): Thread[] {
-	return threads.filter((thread) => thread.idleStage !== 'dozing');
+/** What the sidebar leaves out. Each mode after `sleepy` keeps more of the sleeping threads. */
+export type Filter = 'off' | 'sleepy' | '2h' | 'today';
+
+export const FILTERS: { key: Exclude<Filter, 'off'>; label: string }[] = [
+	{ key: 'sleepy', label: 'Sleepy' },
+	{ key: '2h', label: '2 hours' },
+	{ key: 'today', label: 'Today' }
+];
+
+export const isFilter = (value: unknown): value is Filter =>
+	value === 'off' || FILTERS.some((option) => option.key === value);
+
+/** Epoch seconds from which a sleeping thread still shows. `null`: none does. */
+function shownSince(filter: Filter, now: number): number | null {
+	if (filter === '2h') return now - 2 * 3600;
+	if (filter !== 'today') return null;
+	const day = new Date(now * 1000);
+	day.setHours(0, 0, 0, 0);
+	return Math.floor(day.getTime() / 1000);
+}
+
+/**
+ * The threads the sidebar shows under `filter`. A thread that is not asleep
+ * always shows. The wider modes also keep a sleeping one that was written
+ * since their time. `now`: epoch seconds.
+ */
+export function visible(threads: Thread[], filter: Filter, now: number): Thread[] {
+	if (filter === 'off') return threads;
+	const since = shownSince(filter, now);
+	return threads.filter(
+		(thread) =>
+			thread.idleStage !== 'dozing' ||
+			(since !== null && thread.lastActivityAt !== null && thread.lastActivityAt >= since)
+	);
 }
 
 export function counts(threads: Thread[]): { waiting: number; busy: number; dozing: number } {

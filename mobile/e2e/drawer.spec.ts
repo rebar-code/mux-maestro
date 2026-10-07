@@ -187,7 +187,7 @@ test('hosts section: every host with colour, thread count and stats', async ({ p
 
 	const local = drawer(page).locator('[data-host="localhost"]');
 	await expect(local.locator('.hname')).toHaveCSS('color', 'rgb(50, 145, 255)');
-	await expect(local.locator('.cnt')).toHaveText('16 threads');
+	await expect(local.locator('.cnt')).toHaveText('17 threads');
 	await expect(local.locator('.stats span')).toHaveText([
 		'CPU 38%',
 		'load 0.31/core',
@@ -215,7 +215,7 @@ test('controls that arrive later are drawn but do nothing', async ({ page }) => 
 });
 
 test('home: status chips and the threads that need you, live', async ({ page }) => {
-	await expect(page.locator('.chip')).toHaveText(['2 need you', '4 running', '💤 14']);
+	await expect(page.locator('.chip')).toHaveText(['2 need you', '4 running', '💤 15']);
 	const cards = page.locator('.item[data-thread]');
 	await expect(cards).toHaveCount(2);
 	// The cards are on the Board tab: show it, and let the pager come to rest.

@@ -77,6 +77,9 @@ final class MobileServer {
         /// The directory the manager's pane works in: where a file from the
         /// phone is saved. nil where there is none.
         var cwd: () -> String? = { nil }
+        /// Whether the manager's pane sleeps (💤). Called off the server queue
+        /// and may block.
+        var dozing: () -> Bool = { false }
     }
 
     /// Speech for the phone: the Mac's own engine. nil where there is none
@@ -798,7 +801,8 @@ final class MobileServer {
             let (board, snapshot, turn) = (board, snapshot, turn)
             reply(to: client) {
                 .json(MobileManager.body(
-                    board: board, snapshot: snapshot, turn: turn, status: manager.pane().status))
+                    board: board, snapshot: snapshot, turn: turn, status: manager.pane().status,
+                    dozing: manager.dozing()))
             }
         case .managerText:
             let field = MobileManager.text(in: request.body)

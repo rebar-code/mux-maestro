@@ -165,13 +165,42 @@ final class MobileManagerTests: XCTestCase {
             for: .open(session: "acme-app", window: 7, pane: nil, host: "localhost"), in: snapshot))
     }
 
+    func testManagerBodySaysAnIdlePaneSleepsAndNoOtherDoes() {
+        func stage(_ status: MobileManagerStatus) -> String? {
+            MobileManager.body(
+                board: board(), snapshot: snapshot(), turn: nil, status: status, dozing: true
+            )["idleStage"] as? String
+        }
+        XCTAssertEqual(stage(.idle), "dozing")
+        XCTAssertEqual(stage(.waiting), "awake")
+        XCTAssertEqual(stage(.busy), "awake")
+        XCTAssertEqual(stage(.off), "awake")
+    }
+
+    func testTheManagerSleepsWhenEveryWindowOfItsSessionDozes() {
+        func session(_ name: String, _ stage: IdleStage) -> TmuxSession {
+            var pane = TmuxPane(id: "%1", index: 0, command: "claude", title: "", active: true)
+            pane.attention = .idle
+            pane.idleStage = stage
+            return TmuxSession(name: name, attached: false, windows: [
+                TmuxWindow(index: 0, name: "w", active: true, panes: [pane])])
+        }
+        XCTAssertTrue(MobileManager.dozing([session(ManagerHome.sessionName, .dozing)]))
+        XCTAssertFalse(MobileManager.dozing([session(ManagerHome.sessionName, .awake)]))
+        // Another session that sleeps says nothing about the manager.
+        XCTAssertFalse(MobileManager.dozing([session("acme-app", .dozing)]))
+    }
+
     func testManagerBodyShape() throws {
         let body = MobileManager.body(
             board: board(), snapshot: snapshot(), turn: nil, status: .idle)
         // The chat is its own route, read the way a thread's chat is.
-        XCTAssertEqual(Set(body.keys), ["status", "needsYou", "review", "points", "updates", "turn"])
+        XCTAssertEqual(
+            Set(body.keys),
+            ["status", "idleStage", "needsYou", "review", "points", "updates", "turn"])
         XCTAssertEqual((body["points"] as? [Any])?.count, 0)
         XCTAssertEqual(body["status"] as? String, "idle")
+        XCTAssertEqual(body["idleStage"] as? String, "awake")
         XCTAssertTrue(body["turn"] is NSNull)
 
         let needsYou = try XCTUnwrap(body["needsYou"] as? [[String: Any]])

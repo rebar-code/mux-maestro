@@ -5,7 +5,7 @@
 //
 // Test hooks (POST): /__fixture/reset, /__fixture/wait?id=, /__fixture/say?id=&text=&role=&tool=,
 // /__fixture/grouping?value=, /__fixture/deny?on=1, /__fixture/rotate?value=, /__fixture/drop,
-// /__fixture/capability?name=&on=, /__fixture/manager-status?value=,
+// /__fixture/capability?name=&on=, /__fixture/manager-status?value=&stage=,
 // /__fixture/mac-turn?text=&reply=&spinner=&ms= (ms: the pause between words),
 // /__fixture/voice?mode=&speaker=&heard=&delay=&fail=, /__fixture/voice-takes,
 // /__fixture/voice-said (the messages and files the phone had read aloud, and which came from the cache),
@@ -785,6 +785,7 @@ function reset() {
 	};
 	manager = {
 		status: 'idle',
+		stage: 'awake',
 		turn: null,
 		chat: [
 			{
@@ -870,7 +871,9 @@ function reset() {
 				(2 + i) * 3600,
 				'dozing'
 			);
-		})
+		}),
+		// Asleep, but written within the last two hours.
+		make(200, 'acme-app', 'seed-data', 'localhost', 'idle', '', 5400, 'dozing')
 	];
 	threads[0].prs = [
 		{
@@ -1330,7 +1333,8 @@ const managerLive = () => ({
 });
 const managerBody = () => ({
 	...managerLive(),
-	status: manager.turn ? 'busy' : manager.status
+	status: manager.turn ? 'busy' : manager.status,
+	idleStage: manager.stage
 });
 const say = (role, text) => manager.chat.push({ n: manager.chat.length, role, text });
 
@@ -2455,6 +2459,7 @@ function hook(res, url) {
 			break;
 		case '/__fixture/manager-status':
 			manager.status = url.searchParams.get('value') ?? 'idle';
+			manager.stage = url.searchParams.get('stage') ?? 'awake';
 			break;
 		case '/__fixture/voice':
 			// The Mac's voice settings, and how the next take goes.

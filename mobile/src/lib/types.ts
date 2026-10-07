@@ -200,6 +200,8 @@ export interface ManagerLive {
 
 export interface ManagerHome extends ManagerLive {
 	status: ManagerStatus;
+	/** Whether the Maestro's pane sleeps. An older Mac does not say. */
+	idleStage?: IdleStage;
 }
 
 /** The last event of a turn's stream. */
