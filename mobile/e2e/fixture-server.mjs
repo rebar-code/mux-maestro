@@ -37,6 +37,7 @@
 // /__fixture/requests-mode?value=ok|corrupt (the list file does not parse: reads and writes answer 500),
 // /__fixture/requests-fail?status=&error= (the next state write fails that way),
 // /__fixture/requests-set?id=&state= (the agent changed a row behind the phone's back)
+// /__fixture/new-session?id= (the agent in the pane starts a new session, with an empty transcript),
 // /__fixture/logs (GET or POST: every batch of the phone log the phone sent to /api/log)
 //
 // Every /api/ request needs the header `X-MuxMaestro-Token: demo-token`.
@@ -644,7 +645,7 @@ const REQUESTS = {
 };
 const REQUEST_STATES = ['todo', 'in_progress', 'blocked', 'review', 'done'];
 
-let started, threads, chats, grouping, deny, token, log, screenDefault, screenMax;
+let started, threads, chats, sessions, grouping, deny, token, log, screenDefault, screenMax;
 let capabilities, manager, voice;
 // Per thread id: the prompt on the pane. And everything the phone wrote.
 let prompts, replies, uploadMax, promptSeq, notSent, noInput, pasted, keyLocks, promptDelay;
@@ -862,6 +863,7 @@ function reset() {
 		}
 	];
 	chats = {};
+	sessions = {};
 	for (const t of threads.filter((t) => t.chat)) {
 		const lines = CHATS[t.id] ?? [
 			['user', t.lastPrompt?.text ?? 'continue'],
@@ -2111,10 +2113,15 @@ function api(req, res, url, body) {
 	const all = chats[thread.id];
 	if (!all) return send(res, 404, { error: 'not_found' });
 	const after = url.searchParams.get('after');
+	// As on the Mac: a cursor into an earlier session of the pane starts over.
+	const session = sessions[thread.id] ?? 's1';
+	const held = url.searchParams.get('session');
+	const moved = held !== null && held !== session;
 	return send(res, 200, {
-		messages: after === null ? all : all.slice(Number(after)),
+		messages: after === null || moved ? all : all.slice(Number(after)),
 		next: all.length,
-		reset: false
+		reset: moved,
+		session
 	});
 }
 
@@ -2251,6 +2258,11 @@ function hook(res, url) {
 				text: url.searchParams.get('text') ?? ''
 			});
 			thread.lastActivityAt = now;
+			break;
+		case '/__fixture/new-session':
+			if (!thread || !chats[thread.id]) return send(res, 404, { error: 'not_found' });
+			sessions[thread.id] = `s${Object.keys(sessions).length + 2}`;
+			chats[thread.id] = [];
 			break;
 		case '/__fixture/grouping':
 			grouping = url.searchParams.get('value') ?? 'recent';

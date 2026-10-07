@@ -12,6 +12,8 @@ final class MobileServerTests: XCTestCase {
     private var transcript: URL!
     /// The agent has written no transcript file yet.
     private var noTranscript = false
+    /// The transcript of a later session in the same pane.
+    private var laterTranscript: URL?
     private let manager = FakeManager()
     private let pane = FakePane()
     private let tmux = FakeTmux()
@@ -124,7 +126,9 @@ final class MobileServerTests: XCTestCase {
                 self?.askedLines.append(lines)
                 return thread.pane == "%12" ? (self?.screenText ?? "") : nil
             },
-            transcript: { [weak self] _ in self?.noTranscript == true ? nil : (transcript.path, false) },
+            transcript: { [weak self] _ in 
+                self?.noTranscript == true ? nil : ((self?.laterTranscript ?? transcript).path, false)
+            },
             pane: { [pane] _ in pane.io }, tmux: tmux.source,
             archive: { [archives] thread in
                 archives.add()
@@ -482,6 +486,70 @@ final class MobileServerTests: XCTestCase {
         XCTAssertEqual(get("/api/threads/localhost%3A99/screen").status, 404)
         XCTAssertEqual(get("/api/threads/localhost%3A99/chat").status, 404)
         XCTAssertEqual(get("/api/threads", method: "POST").status, 403)
+    }
+
+    private func chatPage(_ query: String = "") throws -> [String: Any] {
+        let chat = get("/api/threads/localhost%3A12/chat" + query)
+        XCTAssertEqual(chat.status, 200)
+        return try XCTUnwrap(JSONSerialization.jsonObject(with: Data(chat.body.utf8)) as? [String: Any])
+    }
+
+    private func texts(_ page: [String: Any]) -> [String] {
+        (page["messages"] as? [[String: Any]] ?? []).compactMap { $0["text"] as? String }
+    }
+
+    func testChatFollowsASecondSessionInTheSamePane() throws {
+        let first = try chatPage()
+        XCTAssertEqual(texts(first), ["hello"])
+        XCTAssertEqual(first["session"] as? String, "c1")
+        let next = try XCTUnwrap(first["next"] as? Int)
+
+        // The agent starts again in the pane (`/clear`, a crash, a new run):
+        // a new transcript, here longer than the cursor into the old one.
+        let later = root.appendingPathComponent("c2.jsonl")
+        let lines = ["first of the new session", "second of the new session"].map {
+            #"{"type":"user","message":{"role":"user","content":"\#($0)"}}"# + "\n"
+        }
+        try Data(lines.joined().utf8).write(to: later)
+        laterTranscript = later
+
+        // The cursor is a place in the old file. The new one is read from its
+        // start, and the phone is told to drop the old conversation.
+        let moved = try chatPage("?after=\(next)&session=c1")
+        XCTAssertEqual(moved["reset"] as? Bool, true)
+        XCTAssertEqual(texts(moved), ["first of the new session", "second of the new session"])
+        XCTAssertEqual(moved["session"] as? String, "c2")
+
+        // From there the cursor works as before.
+        let after = try XCTUnwrap(moved["next"] as? Int)
+        let quiet = try chatPage("?after=\(after)&session=c2")
+        XCTAssertEqual(quiet["reset"] as? Bool, false)
+        XCTAssertEqual(texts(quiet), [])
+    }
+
+    func testANewSessionWithNoTranscriptYetEmptiesTheChat() throws {
+        let first = try chatPage()
+        let next = try XCTUnwrap(first["next"] as? Int)
+        noTranscript = true
+        let moved = try chatPage("?after=\(next)&session=c1")
+        XCTAssertEqual(moved["reset"] as? Bool, true)
+        XCTAssertEqual(texts(moved), [])
+        // Its first message then arrives as a new conversation.
+        noTranscript = false
+        let started = try chatPage("?after=0&session=")
+        XCTAssertEqual(started["reset"] as? Bool, true)
+        XCTAssertEqual(texts(started), ["hello"])
+    }
+
+    func testASlashCommandTheUserSentIsAChatRow() throws {
+        let command = "<command-message>review</command-message>\\n<command-name>/review</command-name>\\n"
+            + "<command-args>did we answer the last email?</command-args>"
+        let handle = try FileHandle(forWritingTo: transcript)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(
+            (#"{"type":"user","message":{"role":"user","content":"\#(command)"}}"# + "\n").utf8))
+        try handle.close()
+        XCTAssertEqual(texts(try chatPage()), ["hello", "/review did we answer the last email?"])
     }
 
     func testAnAgentWithNoTranscriptYetHasAnEmptyChat() {

@@ -1014,9 +1014,14 @@ struct MobileChatPage: Equatable {
     var next: UInt64 = 0
     /// The client must drop what it holds and show `messages` alone.
     var reset = false
+    /// The transcript `next` is a place in: `MobileChat.session`. Empty when
+    /// the agent has written none yet.
+    var session = ""
 
     var json: [String: Any] {
-        ["messages": messages.map(\.json), "next": next, "reset": reset]
+        var out: [String: Any] = ["messages": messages.map(\.json), "next": next, "reset": reset]
+        if !session.isEmpty { out["session"] = session }
+        return out
     }
 }
 
@@ -1028,6 +1033,32 @@ enum MobileChat {
     /// A reply longer than this is cut; the phone is for triage, not for reading
     /// a whole diff.
     static let maxTextLength = 8000
+
+    /// The name of the agent session that wrote `path`: the file's base name.
+    static func session(path: String) -> String {
+        URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+    }
+
+    /// The chat of a pane whose live transcript is `file` (nil: none yet), for a
+    /// client that holds the cursor `after` into the transcript `session`. A
+    /// pane has many agent sessions over its life (`/clear`, a crash, a new
+    /// run), each with its own file. A cursor into an earlier one says nothing
+    /// about this one, so the live file is read from its tail and the client is
+    /// told to start over. nil when the file does not read.
+    static func page(
+        file: (path: String, codex: Bool)?, after: UInt64?, session: String?
+    ) -> MobileChatPage? {
+        let live = file.map { self.session(path: $0.path) } ?? ""
+        let moved = session.map { $0 != live } ?? false
+        // No transcript yet is an empty chat, not a missing thread: an agent
+        // writes its file with the first message.
+        guard let file else { return MobileChatPage(reset: moved) }
+        guard var page = read(path: file.path, codex: file.codex, after: moved ? nil : after)
+        else { return nil }
+        page.reset = page.reset || moved
+        page.session = live
+        return page
+    }
 
     /// Read `path` from the cursor `after` (nil: the recent tail).
     static func read(path: String, codex: Bool, after: UInt64?) -> MobileChatPage? {
@@ -1146,11 +1177,31 @@ enum MobileChat {
             // The manager's own prompt rules decide what counts as a human
             // prompt (no tool results, harness notes or injected tags).
             guard record["isCompactSummary"] as? Bool != true else { return [] }
+            if let command = slashCommand(record) { return [(.user, command, nil)] }
             let text = ManagerTranscript.lastUserPromptText(lines: [line])
             return text.isEmpty ? [] : [(.user, text, nil)]
         default:
             return []
         }
+    }
+
+    /// A slash command as the user typed it: `/review the last email`. Claude
+    /// Code writes it as tags (`<command-name>`, `<command-args>`), and text
+    /// that opens with a tag is otherwise not a prompt.
+    private static func slashCommand(_ record: [String: Any]) -> String? {
+        guard record["type"] as? String == "user", record["isMeta"] as? Bool != true,
+              let content = (record["message"] as? [String: Any])?["content"] as? String,
+              let name = tagged("command-name", in: content), name.hasPrefix("/")
+        else { return nil }
+        let args = tagged("command-args", in: content) ?? ""
+        return args.isEmpty ? name : name + " " + args
+    }
+
+    private static func tagged(_ tag: String, in text: String) -> String? {
+        guard let open = text.range(of: "<\(tag)>"),
+              let close = text.range(of: "</\(tag)>", range: open.upperBound..<text.endIndex)
+        else { return nil }
+        return text[open.upperBound..<close.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func codexRows(_ record: [String: Any]) -> [Row] {

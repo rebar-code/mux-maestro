@@ -754,11 +754,12 @@ final class MobileServer {
             guard let thread = snapshot.thread(id: id), thread.hasChat else {
                 return send(.error(404, "not_found"), to: client, head: head)
             }
+            let session = request.query["session"]
             reply(to: client) { [sources] in
-                // No transcript yet is an empty chat, not a missing thread:
-                // an agent writes its file with the first message.
-                guard let file = sources.transcript(thread) else { return .json(MobileChatPage().json) }
-                guard let page = MobileChat.read(path: file.path, codex: file.codex, after: after)
+                // The pane's transcript is asked for again on every request,
+                // so the chat is the session that is live in the pane now.
+                guard let page = MobileChat.page(
+                    file: sources.transcript(thread), after: after, session: session)
                 else { return .error(404, "not_found") }
                 return .json(page.json)
             }
@@ -774,10 +775,11 @@ final class MobileServer {
                 return send(.error(503, "unavailable", message: MobileManager.offMessage),
                             to: client, head: head)
             }
+            let session = request.query["session"]
             reply(to: client) {
                 // No transcript yet is an empty chat, not a missing thread.
-                let page = manager.pane().transcript
-                    .flatMap { MobileChat.read(path: $0, codex: false, after: after) }
+                let page = MobileChat.page(
+                    file: manager.pane().transcript.map { ($0, false) }, after: after, session: session)
                 return .json((page ?? MobileChatPage()).json)
             }
         case .managerScreen(let lines):
