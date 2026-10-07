@@ -32,6 +32,8 @@
 // /__fixture/maestro-say?text= (the Maestro says something in its chat),
 // /__fixture/terminal (what the live terminal's sockets were sent, and how they were opened),
 // /__fixture/remote-agent?id= (a remote pane runs Claude and has chat),
+// /__fixture/terminal-kind?kind=shell|agent|pager (the screen the next socket gets),
+// /__fixture/terminal-size?cols=&rows= (the pane's size changed on the Mac),
 // /__fixture/terminal-drop (cut every live socket), /__fixture/terminal-say?text=,
 // /__fixture/terminal-refuse?code= (close the next sockets with that code; 0 to stop)
 // /__fixture/requests (GET too: the request list as the Mac holds it),
@@ -407,6 +409,16 @@ const runningBody = (thread) =>
 						port: 6006,
 						https: false,
 						mappable: true
+					},
+					// On another host: the Mac reaches it over an ssh forward.
+					{
+						key: 'devbox|server|3000',
+						label: 'acme-app',
+						host: 'devbox',
+						local: false,
+						port: 3000,
+						https: false,
+						mappable: true
 					}
 				],
 				stacks: [
@@ -439,7 +451,7 @@ const runningBody = (thread) =>
 						host: 'devbox',
 						local: false,
 						count: 1,
-						links: [{ label: '', port: 8025, open: true, mappable: false }]
+						links: [link('', 8025)]
 					}
 				]
 			};
@@ -492,6 +504,12 @@ function serversApi(req, res, path, body) {
 		const code = serveFails;
 		serveFails = null;
 		tailnet = null;
+		// A remote port whose number the Mac already uses: "taken", and no sentence.
+		if (
+			code === 'taken' &&
+			runningBody(thread).servers.some((s) => s.port === ask.port && !s.local)
+		)
+			return send(res, 409, { error: code });
 		return send(res, code === 'unavailable' ? 503 : 409, {
 			error: code,
 			message:
@@ -713,7 +731,10 @@ const streams = new Set();
 // The live terminal: its open sockets, what they typed (as text), how each
 // was opened, and the close code the next ones get.
 const terminals = new Set();
-let terminalTyped, terminalOpens, terminalRefuse;
+// Also: the sizes they asked for, and the kind of screen the next one gets
+// ('shell', or 'agent': a program on the alternate screen that reads the mouse,
+// or 'pager': one on the alternate screen that does not).
+let terminalTyped, terminalOpens, terminalRefuse, terminalSizes, terminalKind;
 
 function reset() {
 	started = Math.floor(Date.now() / 1000);
@@ -739,6 +760,8 @@ function reset() {
 	terminalTyped = '';
 	terminalOpens = [];
 	terminalRefuse = 0;
+	terminalSizes = [];
+	terminalKind = 'shell';
 	pushSubs = [];
 	pushFocus = {};
 	pushLimit = false;
@@ -1832,6 +1855,20 @@ function nameOf(raw) {
 
 const dirsOf = (host) =>
 	[...new Set(threads.filter((t) => t.host === host).map((t) => t.cwd))].sort();
+const homeOf = (host) => (host === 'localhost' ? '/Users/me' : '/home/me');
+/** The folders under every home, for the directory browser. Any other folder is empty. */
+const FOLDERS = {
+	'': ['code', 'notes'],
+	'/code': ['acme-app', 'billing', 'docs-site', 'infra', 'reports'],
+	'/code/acme-app': ['api', 'web']
+};
+/** `path` below the host's home, or null: outside the home tree, or through a dot-directory. */
+function folderOf(host, path) {
+	const home = homeOf(host);
+	if (typeof path !== 'string' || !(path === home || path.startsWith(`${home}/`))) return null;
+	const rest = path.slice(home.length);
+	return rest.split('/').some((step) => step.startsWith('.')) ? null : rest;
+}
 
 /** One session action, checked the way the Mac checks it. */
 function tmuxApi(req, res, path, body) {
@@ -1888,9 +1925,16 @@ function tmuxApi(req, res, path, body) {
 	if (action === 'new-session') {
 		let dir = null;
 		if (fields.dir !== undefined && fields.dir !== null) {
-			if (!dirsOf(host).includes(fields.dir)) return send(res, 400, { error: 'bad_dir' });
+			if (!dirsOf(host).includes(fields.dir) && folderOf(host, fields.dir) === null)
+				return send(res, 400, { error: 'bad_dir' });
 			dir = fields.dir;
 		}
+		const agent = fields.agent ?? null;
+		if (agent !== null && agent !== 'claude' && agent !== 'codex')
+			return send(res, 400, { error: 'bad_agent' });
+		const prompt = fields.prompt ?? null;
+		if (prompt !== null && (typeof prompt !== 'string' || agent === null))
+			return send(res, 400, { error: 'bad_prompt' });
 		let name = dir ? nameOf(dir.split('/').at(-1).replace(/[.:]/g, '_')) : null;
 		if (fields.name !== undefined && fields.name !== null) {
 			name = nameOf(fields.name);
@@ -1900,10 +1944,13 @@ function tmuxApi(req, res, path, body) {
 		const base = name;
 		for (let n = 2; taken(name); n += 1) name = `${base}-${n}`;
 		const made = makeThread(next, name, 'zsh', host, 'idle', '', 0, 'awake');
-		const home = host === 'localhost' ? '/Users/me' : '/home/me';
-		Object.assign(made, { command: 'zsh', chat: false, cwd: dir ?? home });
+		// As for a new window: a local agent has chat, and a remote Claude.
+		const chat = agent !== null && (host === 'localhost' || agent === 'claude');
+		Object.assign(made, { command: agent ?? 'zsh', chat, cwd: dir ?? homeOf(host) });
+		if (chat) chats[made.id] = [];
 		threads.push(made);
 		result.session = name;
+		if (agent) Object.assign(result, { thread: made.id, agent });
 	} else if (action === 'new-window') {
 		const agent = fields.agent ?? null;
 		if (agent !== null && agent !== 'claude' && agent !== 'codex')
@@ -2154,7 +2201,16 @@ function api(req, res, url, body) {
 		if (!capabilities.sessionActions) return send(res, 403, { error: 'disabled' });
 		const host = decodeURIComponent(dirs[1]);
 		if (!HOSTS.some((h) => h.name === host)) return send(res, 404, { error: 'not_found' });
-		return send(res, 200, { dirs: dirsOf(host) });
+		const asked = url.searchParams.get('path');
+		if (asked === null) return send(res, 200, { dirs: dirsOf(host), home: homeOf(host) });
+		const rest = folderOf(host, asked);
+		if (rest === null) return send(res, 400, { error: 'bad_dir' });
+		return send(res, 200, {
+			dirs: (FOLDERS[rest] ?? []).map((name) => `${asked}/${name}`),
+			path: asked,
+			home: homeOf(host),
+			...(rest ? { parent: asked.slice(0, asked.lastIndexOf('/')) } : {})
+		});
 	}
 	const match =
 		/^\/api\/threads\/([^/]+)\/(chat|screen|text|key|prompt|answer|commands|upload|find)$/.exec(
@@ -2351,8 +2407,21 @@ function hook(res, url) {
 			return send(res, 200, {
 				typed: terminalTyped,
 				opens: terminalOpens,
-				sockets: terminals.size
+				sockets: terminals.size,
+				sizes: terminalSizes
 			});
+		case '/__fixture/terminal-kind':
+			terminalKind = url.searchParams.get('kind') ?? 'shell';
+			return send(res, 200, { ok: true });
+		case '/__fixture/terminal-size': {
+			// The Mac's own client took the window back: the pane has its size.
+			const size = {
+				cols: Number(url.searchParams.get('cols')) || TERMINAL.cols,
+				rows: Number(url.searchParams.get('rows')) || TERMINAL.rows
+			};
+			for (const socket of terminals) socket.send(JSON.stringify({ type: 'size', ...size }));
+			return send(res, 200, { ok: true });
+		}
 		case '/__fixture/terminal-drop':
 			for (const socket of terminals) socket.terminate();
 			terminals.clear();
@@ -2604,7 +2673,11 @@ function terminalScreen() {
 			`${E}[${31 + (n % 6)}mbuild ${String(n).padStart(3, '0')}${E}[0m compiling acme-app`
 		);
 	}
-	return `${lines.join('\r\n')}\r\nme@devbox acme-app % `;
+	const shell = `${lines.join('\r\n')}\r\nme@devbox acme-app % `;
+	if (terminalKind === 'shell') return shell;
+	// A program that took the screen: no scrollback, and it scrolls itself.
+	const mouse = terminalKind === 'agent' ? `${E}[?1003h${E}[?1006h` : '';
+	return `${E}[?1049h${E}[H${lines.slice(0, 12).join('\r\n')}\r\n> ${mouse}`;
 }
 
 const sockets = new WebSocketServer({ noServer: true, maxPayload: 4096 });
@@ -2629,7 +2702,21 @@ function terminal(socket) {
 			socket.send(Buffer.from(terminalScreen()));
 			return;
 		}
-		if (!binary) return socket.close(1003);
+		if (!binary) {
+			// The one text message of a paired phone: the size it has room for.
+			let size;
+			try {
+				size = JSON.parse(String(data));
+			} catch {
+				return socket.close(1003);
+			}
+			const whole = (n) => Number.isInteger(n) && n >= 1 && n <= 1000;
+			if (size?.type !== 'size' || !whole(size.cols) || !whole(size.rows))
+				return socket.close(1003);
+			terminalSizes.push({ cols: size.cols, rows: size.rows });
+			// The pane took it, and says so.
+			return socket.send(JSON.stringify({ type: 'size', cols: size.cols, rows: size.rows }));
+		}
 		const text = String(data);
 		terminalTyped += text;
 		let skip = 0;

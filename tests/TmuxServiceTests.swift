@@ -975,6 +975,27 @@ final class TmuxServiceTests: XCTestCase {
         XCTAssertNil(service.phoneTmux(["kill-window", "-t", "%3"]))
     }
 
+    func testAPhoneDirectoryListOnARemoteHostIsOneSshRunWithThePathQuoted() {
+        let runner = FakeRunner()
+        let service = TmuxService(
+            host: Host(name: "devbox", sshAlias: "devbox"),
+            transport: SshTmuxTransport(host: "devbox", moshPath: nil),
+            runner: runner, statusProvider: StaticStatusProvider())
+        let path = "/home/me/it's $(touch /tmp/x); `id`"
+        _ = service.phoneHostCommand(MobileActions.listArgv(path))
+        XCTAssertEqual(runner.calls.count, 1)
+        XCTAssertEqual(runner.calls[0].path, Ssh.sshPath)
+        // Every word is quoted for the remote login shell. The path is the
+        // last one, after `--`: an argument of the script, not a part of it.
+        XCTAssertEqual(
+            runner.calls[0].args,
+            Ssh.opts(host: "devbox") + [
+                "'sh'", "'-c'", Ssh.shellQuote(MobileActions.listScript), "'--'",
+                #"'/home/me/it'\''s $(touch /tmp/x); `id`'"#,
+            ])
+        XCTAssertNil(service.phoneHostCommand([]))
+    }
+
     func testTheTreeCarriesEachSessionsIdAndGroupsKeepTheirOwn() {
         // `a` and `a-view` are one group; the tree keeps `a`, with a's id.
         let out = "a\t1\ta\t100\t$0\na-view\t0\ta\t90\t$1\nother\t0\t\t80\t$2\nold\t0\t\t70\n"

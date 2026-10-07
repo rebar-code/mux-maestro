@@ -5,14 +5,15 @@ import Foundation
 // and runs it against a private tmux server.
 //
 // Control mode, and not a pty with `tmux attach` in it: a control client has
-// no size of its own, so tmux never resizes the window the human looks at on
-// the Mac, and it names the pane each line of output came from, so one pane
-// is told from the rest of its session.
+// no size until it is given one, so tmux resizes the window the human looks
+// at on the Mac only while a phone has the terminal open and has said its
+// size, and it names the pane each line of output came from, so one pane is
+// told from the rest of its session.
 //
 // What the phone types never becomes part of a tmux command. The only lines
-// written to the client are the three built here: each is fixed text, a pane
-// id that came from the tree and was checked to be `%` and digits, and, for
-// input, the bytes as hex pairs.
+// written to the client are the four kinds built here: each is fixed text, an
+// id that came from the tree and was checked to be a sigil and digits, and,
+// for input, the bytes as hex pairs, or, for a size, two checked integers.
 
 enum MobileTerminal {
     /// What Settings asks before the switch goes on. The one place the
@@ -23,7 +24,7 @@ enum MobileTerminal {
         + "the checks that Replies and the Key bar make do not apply."
 
     /// Scrollback lines the phone gets when it connects.
-    static let historyLines = 2000
+    static let historyLines = 5000
     /// Bytes of input in one `send-keys` line.
     static let inputChunk = 256
     /// The longest line of control output that is kept. A longer one ends the
@@ -85,8 +86,11 @@ enum MobileTerminal {
         return (read, write, path)
     }
 
+    /// The mouse flags come last: a tmux that does not know one of them
+    /// leaves it out, and the nine before them still stand.
     static let stateFormat = "#{pane_width} #{pane_height} #{cursor_x} #{cursor_y} #{alternate_on} "
-        + "#{cursor_flag} #{keypad_cursor_flag} #{scroll_region_upper} #{scroll_region_lower}"
+        + "#{cursor_flag} #{keypad_cursor_flag} #{scroll_region_upper} #{scroll_region_lower} "
+        + "#{mouse_standard_flag} #{mouse_button_flag} #{mouse_all_flag} #{mouse_sgr_flag}"
 
     static func stateCommand(_ target: Target) -> String {
         "display-message -p -t \(target.pane) '\(stateFormat)'"
@@ -99,10 +103,55 @@ enum MobileTerminal {
     /// Asks tmux to hold a pane's output for this client once the client is
     /// a second behind, and not to keep it. Without it tmux keeps every byte
     /// a slow client has not taken, and its memory grows with the pane. The
-    /// same command says the client's size never counts towards a window's.
+    /// same command says the client's size does not count towards a window's:
+    /// that holds until the phone says a size, see `sizeCommands`.
     /// A tmux older than 3.2 refuses it, and the bridge then ends: see
     /// `MobileControlSession.Event.unsupported`.
     static let flowCommand = "refresh-client -f ignore-size,pause-after=1"
+    /// The client's size counts from here on.
+    static let sizedFlowCommand = "refresh-client -f !ignore-size"
+
+    static let sizeCols = 20...300
+    static let sizeRows = 5...200
+
+    /// The size a phone asked for, brought inside the limits.
+    static func clamp(cols: Int, rows: Int) -> (cols: Int, rows: Int) {
+        (min(max(cols, sizeCols.lowerBound), sizeCols.upperBound),
+         min(max(rows, sizeRows.lowerBound), sizeRows.upperBound))
+    }
+
+    /// The phone's size frame: `{"type":"size","cols":n,"rows":n}` with two
+    /// whole numbers, and nothing else. The numbers come back clamped.
+    static func sizeFrame(_ data: Data) -> (cols: Int, rows: Int)? {
+        guard data.count <= 128,
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              object.count == 3, object["type"] as? String == "size",
+              let cols = whole(object["cols"]), let rows = whole(object["rows"])
+        else { return nil }
+        return clamp(cols: cols, rows: rows)
+    }
+
+    private static func whole(_ value: Any?) -> Int? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+              let exact = Int(exactly: number.doubleValue)
+        else { return nil }
+        return exact
+    }
+
+    /// The client's size: two integers inside the limits and fixed text.
+    static func sizeCommand(cols: Int, rows: Int) -> String {
+        let size = clamp(cols: cols, rows: rows)
+        return "refresh-client -C \(size.cols)x\(size.rows)"
+    }
+
+    /// Give the window the phone's size. With tmux's `window-size latest`
+    /// (its default) the window has the size of the client used last. A
+    /// control client counts as used when it is put on its session, so that
+    /// comes first; the size then takes effect. The Mac's own client takes
+    /// the window back at its next key press, and when this client ends.
+    static func sizeCommands(cols: Int, rows: Int, target: Target) -> [String] {
+        ["switch-client -t \(target.session)", sizeCommand(cols: cols, rows: rows)]
+    }
     /// Output older than this, in milliseconds, means the client is falling
     /// behind the pane: the bridge pauses the pane itself, well before tmux
     /// would.
@@ -185,11 +234,17 @@ enum MobileTerminal {
         var applicationCursor = false
         var regionTop = 0
         var regionBottom = 0
+        /// Mouse reports the pane's program asked for: clicks, drags, every
+        /// move, and the SGR form of them.
+        var mouseStandard = false
+        var mouseButton = false
+        var mouseAll = false
+        var mouseSGR = false
 
         /// The reply to `stateCommand`.
         init?(_ line: String) {
             let fields = line.split(separator: " ").map { Int($0) }
-            guard fields.count == 9, let cols = fields[0], let rows = fields[1],
+            guard (9...13).contains(fields.count), let cols = fields[0], let rows = fields[1],
                   (1...1000).contains(cols), (1...1000).contains(rows)
             else { return nil }
             self.cols = cols
@@ -201,6 +256,11 @@ enum MobileTerminal {
             applicationCursor = fields[6] == 1
             regionTop = min(max(fields[7] ?? 0, 0), rows - 1)
             regionBottom = min(max(fields[8] ?? rows - 1, regionTop), rows - 1)
+            let flag = { (index: Int) in index < fields.count && fields[index] == 1 }
+            mouseStandard = flag(9)
+            mouseButton = flag(10)
+            mouseAll = flag(11)
+            mouseSGR = flag(12)
         }
 
         init(cols: Int, rows: Int) {
@@ -226,6 +286,12 @@ enum MobileTerminal {
             escape("\(state.regionTop + 1);\(state.regionBottom + 1)r")
         }
         if state.applicationCursor { escape("?1h") }
+        // The mouse modes the program set before the phone came: the phone's
+        // terminal must know them to scroll the program with wheel reports.
+        if state.mouseStandard { escape("?1000h") }
+        if state.mouseButton { escape("?1002h") }
+        if state.mouseAll { escape("?1003h") }
+        if state.mouseSGR { escape("?1006h") }
         escape("\(state.cursorY + 1);\(state.cursorX + 1)H")
         if !state.cursorVisible { escape("?25l") }
         return out
@@ -265,6 +331,8 @@ struct MobileControlSession {
     private var ready = false
     private var paused = false
     private var over = false
+    /// The phone has said a size: the client's size counts.
+    private var sized = false
 
     init(target: MobileTerminal.Target) { self.target = target }
 
@@ -301,6 +369,16 @@ struct MobileControlSession {
         guard !over, !data.isEmpty else { return [] }
         let lines = MobileTerminal.keyCommands(data, target: target)
         awaited += lines.map { _ in .keys }
+        return lines
+    }
+
+    /// The size the phone's terminal has room for, as lines to write.
+    mutating func size(cols: Int, rows: Int) -> [String] {
+        guard !over else { return [] }
+        var lines = MobileTerminal.sizeCommands(cols: cols, rows: rows, target: target)
+        if !sized { lines.insert(MobileTerminal.sizedFlowCommand, at: 0) }
+        sized = true
+        awaited += lines.map { _ in .other }
         return lines
     }
 
@@ -687,6 +765,12 @@ final class MobileTerminalBridge {
     /// Bytes from the phone, for the pane.
     func input(_ data: Data) {
         engine.io.async { [engine] in engine.write(engine.session.keys(data)) }
+    }
+
+    /// The size the phone has room for. The pane's new size comes back as
+    /// a `size` event once tmux has given it.
+    func size(cols: Int, rows: Int) {
+        engine.io.async { [engine] in engine.write(engine.session.size(cols: cols, rows: rows)) }
     }
 
     /// There is room for more output.

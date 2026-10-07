@@ -112,6 +112,139 @@ struct DefaultsDigestStore: PhoneDigestStore {
     func save(_ digest: String) { defaults.set(digest, forKey: key) }
 }
 
+/// The ssh that forwards one port of another host to this Mac, while it runs.
+protocol PhoneForward: AnyObject {
+    var isRunning: Bool { get }
+    /// End it. Its exit is not reported after this.
+    func stop()
+}
+
+/// Starts `argv` (a program and its arguments) as a forward. `onExit` is
+/// called once, on any queue, when the program ends by itself. nil when it
+/// could not be started.
+typealias PhoneForwardLauncher = (_ argv: [String], _ onExit: @escaping () -> Void) -> PhoneForward?
+
+/// A child process that never outlives this app or its owner. It runs under
+/// `MobileTerminal.supervisor`, which ends it when its input closes: at
+/// `stop()`, when the last reference goes, and when this app dies in any way.
+final class SupervisedChild: PhoneForward {
+    private let process = Process()
+    private let lock = NSLock()
+    /// The supervisor's input. Closing it ends the child. Close-on-exec from
+    /// the start, so no other process this app starts holds a copy.
+    private var input: FileHandle?
+    private var output: FileHandle?
+    private var source: DispatchSourceProcess?
+    private var child: pid_t?
+
+    /// The child's process id while it runs.
+    var pid: pid_t? {
+        lock.lock()
+        defer { lock.unlock() }
+        return child
+    }
+
+    var isRunning: Bool { pid != nil }
+
+    private init() {}
+
+    static func launch(_ argv: [String], onExit: @escaping () -> Void) -> SupervisedChild? {
+        let child = SupervisedChild()
+        return child.start(argv, onExit: onExit) ? child : nil
+    }
+
+    private func start(_ argv: [String], onExit: @escaping () -> Void) -> Bool {
+        guard let stdin = MobileTerminal.pipe() else { return false }
+        let reading = FileHandle(fileDescriptor: stdin.read, closeOnDealloc: true)
+        input = FileHandle(fileDescriptor: stdin.write, closeOnDealloc: true)
+        guard let stdout = MobileTerminal.pipe() else { return false }
+        output = FileHandle(fileDescriptor: stdout.read, closeOnDealloc: true)
+        let writing = FileHandle(fileDescriptor: stdout.write, closeOnDealloc: true)
+        // The child says its process id and then becomes the program, with
+        // the same id: its exit can be seen, and `stop()` can end it at once.
+        let command = MobileTerminal.supervised(["/bin/sh", "-c", "echo $$; exec \"$@\"", "sh"] + argv)
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = Array(command.dropFirst())
+        process.environment = ProcessCommandRunner.childEnvironment
+        process.standardInput = reading
+        process.standardOutput = writing
+        process.standardError = FileHandle.nullDevice
+        do { try process.run() } catch { return false }
+        try? reading.close()
+        try? writing.close()
+        _ = fcntl(stdin.write, F_SETNOSIGPIPE, 1)
+        // One line. The read ends without it when the supervisor could not start the child.
+        var line = [UInt8]()
+        var byte: UInt8 = 0
+        while line.count < 16 {
+            let got = read(stdout.read, &byte, 1)
+            if got < 0 && errno == EINTR { continue }
+            guard got == 1, byte != UInt8(ascii: "\n") else { break }
+            line.append(byte)
+        }
+        guard let pid = pid_t(String(decoding: line, as: UTF8.self)), pid > 1 else {
+            stop()
+            return false
+        }
+        let source = DispatchSource.makeProcessSource(
+            identifier: pid, eventMask: .exit, queue: .global(qos: .utility))
+        source.setEventHandler { [weak self] in
+            // Not after `stop()`, and not twice.
+            guard let self, self.end(signal: false) else { return }
+            onExit()
+        }
+        lock.lock()
+        child = pid
+        self.source = source
+        lock.unlock()
+        source.resume()
+        return true
+    }
+
+    /// Forget the child and let the supervisor go. False when that was done before.
+    private func end(signal: Bool) -> Bool {
+        lock.lock()
+        let (pid, source, input) = (child, self.source, self.input)
+        child = nil
+        self.source = nil
+        self.input = nil
+        lock.unlock()
+        source?.cancel()
+        // At once, where the supervisor would wait a second first.
+        if signal, let pid { kill(pid, SIGTERM) }
+        try? input?.close()
+        return pid != nil
+    }
+
+    func stop() {
+        _ = end(signal: true)
+    }
+
+    deinit { stop() }
+}
+
+/// Whether something on this Mac listens on a port.
+enum LoopbackPort {
+    /// True when a connection to `port` on this Mac's loopback is accepted,
+    /// over IPv4 or IPv6. A server that listens on every address answers here too.
+    static func inUse(_ port: Int) -> Bool {
+        ["127.0.0.1", "::1"].contains { accepts($0, port) }
+    }
+
+    private static func accepts(_ address: String, _ port: Int) -> Bool {
+        var hints = addrinfo()
+        hints.ai_flags = AI_NUMERICHOST | AI_NUMERICSERV
+        hints.ai_socktype = SOCK_STREAM
+        var found: UnsafeMutablePointer<addrinfo>?
+        guard getaddrinfo(address, String(port), &hints, &found) == 0, let info = found else { return false }
+        defer { freeaddrinfo(found) }
+        let fd = socket(info.pointee.ai_family, info.pointee.ai_socktype, info.pointee.ai_protocol)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+        return connect(fd, info.pointee.ai_addr, info.pointee.ai_addrlen) == 0
+    }
+}
+
 /// What `mux phone on|off` leaves for the app: a file with one line, `on` or
 /// `off` and the time in seconds. The CLI cannot reach the switch itself, so
 /// someone away from the Mac asks this way and the app does it.
@@ -191,6 +324,10 @@ final class PhoneLink {
     private let now: () -> Date
     /// How long a Keychain read may take before the state says it is waiting.
     private let keychainNotice: TimeInterval
+    private let forward: PhoneForwardLauncher
+    private let portInUse: (Int) -> Bool
+    /// How long a new forward may take to listen.
+    private let forwardWait: TimeInterval
     private let queue = DispatchQueue(label: "is.rebar.muxmaestro.phone")
     /// Where `loadPairing` reads the Keychain: a read that waits for the
     /// dialog must not hold `queue`, which the running link works on.
@@ -211,6 +348,9 @@ final class PhoneLink {
     private var awake: NSObjectProtocol?
     /// The dev-server ports this app published, by port. Confined to `queue`.
     private var mapped: [Int: MobilePortMapping] = [:]
+    /// The ssh forward under each mapping of a remote port, by port. `id`
+    /// tells a forward from one that held the port before it. Confined to `queue`.
+    private var forwards: [Int: (id: UUID, host: String, child: PhoneForward)] = [:]
     /// The same, for readers on other queues. Guarded by `lock`.
     private var listed: [MobilePortMapping] = []
     /// The port the phone server is published on, for the same readers.
@@ -232,6 +372,9 @@ final class PhoneLink {
         digests: PhoneDigestStore = DefaultsDigestStore(),
         now: @escaping () -> Date = Date.init,
         keychainNotice: TimeInterval = 0.5,
+        forward: @escaping PhoneForwardLauncher = { SupervisedChild.launch($0, onExit: $1) },
+        portInUse: @escaping (Int) -> Bool = LoopbackPort.inUse,
+        forwardWait: TimeInterval = 10,
         notify: @escaping (@escaping () -> Void) -> Void = { DispatchQueue.main.async(execute: $0) }
     ) {
         self.server = server
@@ -244,6 +387,9 @@ final class PhoneLink {
         self.digests = digests
         self.now = now
         self.keychainNotice = keychainNotice
+        self.forward = forward
+        self.portInUse = portInUse
+        self.forwardWait = forwardWait
         self.notify = notify
     }
 
@@ -478,10 +624,16 @@ final class PhoneLink {
     /// `localhost`. The caller has checked that Running reports the port; the
     /// rules that hold for any port are checked here. Blocks until done.
     ///
+    /// With `host` (an ssh alias from Running) the port is on that host: an
+    /// ssh forward first brings it to the same port of this Mac's loopback,
+    /// and that is what is published. The forward lives as long as the mapping.
+    ///
     /// A mapped server answers every device on the tailnet, with no pairing
     /// token. That is why each mapping is opened by a tap, counted, and closed
     /// again by `sweepMappings`.
-    func openMapping(port: Int, https: Bool, thread: String, label: String) -> MobileServing.Opened {
+    func openMapping(
+        port: Int, https: Bool, thread: String, label: String, host: String? = nil
+    ) -> MobileServing.Opened {
         queue.sync {
             guard let served, let tailscale = tailscalePath() else {
                 return .unavailable("Phone access is off")
@@ -491,8 +643,9 @@ final class PhoneLink {
                 return .unavailable("Tailscale did not answer")
             }
             let holder = MobileServing.holder(serveStatusJSON: serving, port: port)
-            if let existing = mapped[port],
-               MobileServing.proxy(serveStatusJSON: serving, port: port) == existing.target {
+            if let existing = mapped[port], existing.host == host,
+               MobileServing.proxy(serveStatusJSON: serving, port: port) == existing.target,
+               host == nil || forwards[port]?.child.isRunning == true {
                 // Open already: the tap counts as use.
                 mapped[port]?.openedAt = now()
                 publishMappings()
@@ -504,18 +657,54 @@ final class PhoneLink {
             guard mapped.keys.filter({ $0 != port }).count < MobileServing.maxMappings else {
                 return .limit
             }
+            if let host, let refused = startForward(port: port, host: host) { return refused }
             // Stored first: a crash right after the command still leaves a record.
             var stored = ports.load()
-            stored[port] = MobileServing.target(port: port, https: https)
+            stored[port] = MobileServing.target(port: port, https: https, forwarded: host != nil)
             ports.save(stored)
             let (ok, text) = runner.runCapturing(
-                tailscale, MobileServing.serveOnArgv(port: port, https: https))
+                tailscale, MobileServing.serveOnArgv(port: port, https: https, forwarded: host != nil))
             mapped[port] = ok
-                ? MobilePortMapping(port: port, thread: thread, label: label, https: https, openedAt: now())
+                ? MobilePortMapping(
+                    port: port, thread: thread, label: label, https: https, openedAt: now(), host: host)
                 : nil
+            if !ok { forwards.removeValue(forKey: port)?.child.stop() }
             publishMappings(removing: ok ? [] : [port])
             return ok ? .ok : .unavailable(Self.reason(text) ?? "tailscale serve failed")
         }
+    }
+
+    /// Bring `port` of `host` to the same port of this Mac's loopback, and
+    /// wait until it listens. nil when it does; otherwise why not. The port
+    /// number is never changed: one that is in use here is `taken`.
+    private func startForward(port: Int, host: String) -> MobileServing.Opened? {
+        // A forward a lost mapping left behind would hold the port itself.
+        forwards.removeValue(forKey: port)?.child.stop()
+        guard !portInUse(port) else { return .taken }
+        let failed = MobileServing.Opened.unavailable("ssh did not forward port \(port)")
+        let id = UUID()
+        let argv = [Ssh.sshPath] + MobileServing.forwardArgv(port: port, host: host)
+        guard let child = forward(argv, { [weak self] in
+            self?.queue.async { self?.forwardEnded(port: port, id: id) }
+        }) else { return failed }
+        let deadline = Date().addingTimeInterval(forwardWait)
+        while !portInUse(port) {
+            guard child.isRunning, Date() < deadline else {
+                child.stop()
+                return failed
+            }
+            usleep(50_000)
+        }
+        forwards[port] = (id, host, child)
+        return nil
+    }
+
+    /// The ssh under a mapping ended by itself: the host is away, or it
+    /// closed the connection. Nothing answers on the port, so the mapping ends.
+    private func forwardEnded(port: Int, id: UUID) {
+        guard forwards[port]?.id == id else { return }
+        forwards[port] = nil
+        unmap([port])
     }
 
     /// Close a mapping this app made. False when it has none on `port`.
@@ -566,7 +755,10 @@ final class PhoneLink {
                 _ = runner.runCapturing(tailscale, MobileTailnet.serveOffArgv(port: port))
             }
         }
-        for port in closing { mapped[port] = nil }
+        for port in closing {
+            mapped[port] = nil
+            forwards.removeValue(forKey: port)?.child.stop()
+        }
         publishMappings(removing: closing)
     }
 
@@ -601,6 +793,9 @@ final class PhoneLink {
 
     private func teardown() {
         unmap(Array(mapped.keys))
+        // None is left without its mapping; were one, it would end here.
+        for forward in forwards.values { forward.child.stop() }
+        forwards = [:]
         server.stop()
         let port = served?.port
         served = nil

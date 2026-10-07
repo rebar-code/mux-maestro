@@ -1,7 +1,8 @@
 import Foundation
 
 // A thread's dev servers on the phone: the Running list as JSON, and the rules
-// for publishing one local port on the tailnet with `tailscale serve`. Pure:
+// for publishing one local port on the tailnet with `tailscale serve`. A port
+// on another host is first brought to this Mac by an ssh forward. Pure:
 // `PhoneLink` owns the mappings and runs the commands. Foundation only, so the
 // test target compiles it.
 
@@ -15,9 +16,12 @@ struct MobilePortMapping: Equatable {
     let https: Bool
     /// When the phone last asked for it. It closes `idleSeconds` after.
     var openedAt: Date
+    /// The ssh alias of the host the server runs on, which an ssh forward
+    /// brings to this Mac's loopback. nil when it runs on this Mac.
+    var host: String?
 
     /// What `tailscale serve` was told to proxy to: how the mapping is known again.
-    var target: String { MobileServing.target(port: port, https: https) }
+    var target: String { MobileServing.target(port: port, https: https, forwarded: host != nil) }
 }
 
 enum MobileServing {
@@ -31,7 +35,8 @@ enum MobileServing {
         case ok
         /// The phone server's own port, or a privileged one.
         case refused
-        /// `tailscale serve` already publishes the port for something else.
+        /// `tailscale serve` already publishes the port for something else,
+        /// or a remote port's number is in use on this Mac.
         case taken
         case limit
         case unavailable(String)
@@ -49,13 +54,30 @@ enum MobileServing {
     /// Where a mapping sends its requests. The host is this constant and the
     /// port is the one Running reported: nothing the phone sent is in it.
     /// `localhost`, not `127.0.0.1`: a dev server often listens on `::1` only.
-    static func target(port: Int, https: Bool) -> String {
-        "\(https ? "https+insecure" : "http")://localhost:\(port)"
+    /// A forwarded port is the other way round: the forward binds `127.0.0.1`
+    /// and nothing else, so `localhost` could reach another server on `::1`.
+    static func target(port: Int, https: Bool, forwarded: Bool = false) -> String {
+        "\(https ? "https+insecure" : "http")://\(forwarded ? "127.0.0.1" : "localhost"):\(port)"
     }
 
     /// Publish `port` on the tailnet, HTTPS, on the same port. Tailnet only.
-    static func serveOnArgv(port: Int, https: Bool) -> [String] {
-        ["serve", "--bg", "--https=\(port)", target(port: port, https: https)]
+    static func serveOnArgv(port: Int, https: Bool, forwarded: Bool = false) -> [String] {
+        ["serve", "--bg", "--https=\(port)", target(port: port, https: https, forwarded: forwarded)]
+    }
+
+    /// The ssh arguments that bring `port` of `host` to the same port of this
+    /// Mac's loopback, and run nothing there. An ssh of its own: the app's
+    /// control master goes away a minute after its last command, and a
+    /// forward on it would go with it. `ExitOnForwardFailure` ends the ssh
+    /// when the port cannot be bound; the keepalives end it when the host is
+    /// away. `host` and `port` come from Running, never from the phone.
+    static func forwardArgv(port: Int, host: String) -> [String] {
+        [
+            "-N", "-o", "ControlMaster=no", "-o", "ControlPath=none",
+            "-o", "ExitOnForwardFailure=yes", "-o", "BatchMode=yes", "-o", "ConnectTimeout=4",
+            "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3",
+            "-L", "127.0.0.1:\(port):localhost:\(port)", host,
+        ]
     }
 
     /// Where `tailscale serve` proxies `port`, when that is all it does with
@@ -178,27 +200,60 @@ enum MobileServing {
         let mappable: Bool
     }
 
+    /// Where a running thing is, for publishing it.
+    enum Place: Equatable {
+        case here
+        /// On the host with this ssh alias: an ssh forward reaches it.
+        case remote(String)
+        /// A host name ssh would read as an option, or none at all.
+        case nowhere
+
+        /// The ssh alias, when there is one.
+        var host: String? {
+            if case .remote(let host) = self { return host }
+            return nil
+        }
+    }
+
+    static func place(of resource: RunningResource) -> Place {
+        if resource.host == Running.localHostName { return .here }
+        return resource.host.isEmpty || resource.host.hasPrefix("-") ? .nowhere : .remote(resource.host)
+    }
+
     /// The addresses of `resource`. One is mappable only when it is a web page
-    /// on this Mac, on a port this app may publish.
+    /// on a port this app may publish, on this Mac or on a host ssh reaches.
     static func links(of resource: RunningResource, ownPort: Int?) -> [Link] {
-        let local = resource.host == Running.localHostName
-        return resource.links.compactMap { link in
+        let place = place(of: resource)
+        var out: [Link] = resource.links.compactMap { link in
             guard let parts = URLComponents(string: link.url), let port = parts.port else { return nil }
             let scheme = parts.scheme?.lowercased() ?? ""
             let open = link.action == .open && (scheme == "http" || scheme == "https")
             return Link(
                 label: link.label, port: port, open: open, https: scheme == "https",
-                mappable: local && open && allowed(port: port, ownPort: ownPort))
+                mappable: place != .nowhere && open && allowed(port: port, ownPort: ownPort))
         }
+        // A server bound to another host's loopback has no address this Mac
+        // can open, so Running gives it no link. The forward reaches it.
+        if case .remote = place, case .server(let port) = resource.kind,
+           !out.contains(where: { $0.port == port }) {
+            out.append(Link(
+                label: "", port: port, open: true, https: false,
+                mappable: allowed(port: port, ownPort: ownPort)))
+        }
+        return out
     }
 
     /// The ports of `set` the phone may ask to publish, with what each is.
-    static func mappable(in set: RunningSet, ownPort: Int?) -> [Int: (https: Bool, label: String)] {
-        var out: [Int: (https: Bool, label: String)] = [:]
+    /// `host` is nil for this Mac, or the ssh alias of the host it runs on.
+    static func mappable(
+        in set: RunningSet, ownPort: Int?
+    ) -> [Int: (https: Bool, label: String, host: String?)] {
+        var out: [Int: (https: Bool, label: String, host: String?)] = [:]
         for resource in set.resources {
+            let host = place(of: resource).host
             for link in links(of: resource, ownPort: ownPort) where link.mappable && out[link.port] == nil {
                 let label = link.label.isEmpty ? resource.label : "\(resource.label) \(link.label)"
-                out[link.port] = (link.https, label)
+                out[link.port] = (link.https, label, host)
             }
         }
         return out

@@ -54,6 +54,8 @@ struct MobilePaneIO {
     /// agent keeps it in its input box; a shell or a question under a dead
     /// agent's last frame has it. nil when it cannot be read.
     var cursorRow: () -> Int? = { nil }
+    /// The home folder on the pane's host. nil when it cannot be read.
+    var home: () -> String? = { nil }
     /// The pane's prompt counter, given what the pane shows now (`key` names
     /// the prompt's words; nil for no prompt). The server raises it each time
     /// the pane starts waiting, each time the words change, and after each
@@ -870,9 +872,23 @@ enum MobileReply {
     /// Where an upload is saved on this Mac until Settings names a folder:
     /// the user's temporary folder, so never a repository.
     static let defaultUploadFolder = (NSTemporaryDirectory() as NSString).appendingPathComponent("MuxMaestro")
-    /// Where an upload is saved on a remote host. The folder in Settings is
-    /// a path on this Mac, and a host may not have it.
+    /// Where an upload is saved on a remote host when the folder in Settings
+    /// has no place there: the host's own temp folder.
     static let remoteUploadFolder = "/tmp/MuxMaestro"
+
+    /// The folder from Settings, on a remote host. A folder under this Mac's
+    /// home is the same folder under the host's home: `~/Screenshots` here is
+    /// `~/Screenshots` there. Any other path is one the host may not have,
+    /// and a home that cannot be read names no folder: then the file goes to
+    /// `remoteUploadFolder`.
+    static func remoteUploadFolder(
+        for folder: String, home: String = NSHomeDirectory(), remoteHome: String?
+    ) -> String {
+        guard let remoteHome = remoteHome.flatMap({ uploadFolder($0) }),
+              folder.hasPrefix(home + "/")
+        else { return remoteUploadFolder }
+        return (remoteHome == "/" ? "" : remoteHome) + folder.dropFirst(home.count)
+    }
 
     /// The folder `raw` names, as an absolute path: a leading `~` is the
     /// home folder. nil when it is not an absolute path made of plain text.
@@ -946,8 +962,8 @@ enum MobileReply {
 
     /// Save `data` in the upload folder and paste its path into the pane, as
     /// a file drop on the Mac does. `folder` is the one from Settings, on this
-    /// Mac; a thread on a remote host gets `remoteUploadFolder` on that host.
-    /// It is never the thread's working directory. Nothing is overwritten, no
+    /// Mac; a thread on a remote host gets `remoteUploadFolder(for:)` on that
+    /// host. It is never the thread's working directory. Nothing is overwritten, no
     /// link is followed and nothing is submitted. The path is text like any
     /// other, so a pane that cannot take text is refused before anything is
     /// written.
@@ -958,10 +974,13 @@ enum MobileReply {
     /// state does not matter here; `text` is the path as it should be typed.
     static func upload(
         _ data: Data, name raw: String, thread: MobileThread, folder: String, io: MobilePaneIO,
-        limit: Int, paste typed: Bool = true, state: () -> MobilePaneState?
+        limit: Int, paste typed: Bool = true, home: String = NSHomeDirectory(),
+        state: () -> MobilePaneState?
     ) -> MobileResponse {
-        upload(
-            data, name: raw, folder: thread.host.isLocal ? folder : remoteUploadFolder,
+        let there = thread.host.isLocal
+            ? folder : remoteUploadFolder(for: folder, home: home, remoteHome: io.home())
+        return upload(
+            data, name: raw, folder: there,
             target: thread.pane, io: io, limit: limit, paste: typed, state: state)
     }
 
@@ -1030,6 +1049,8 @@ enum MobileCommands {
     static let headBytes = 4096
     /// How far up from the working directory a project's `.claude` is looked for.
     static let maxParents = 8
+    /// How many folders below `commands` a command is looked for.
+    static let maxDepth = 4
 
     static let claudeBuiltins: [(String, String)] = [
         ("clear", "Clear the conversation"), ("compact", "Compact the conversation"),
@@ -1048,15 +1069,35 @@ enum MobileCommands {
         ("mention", "Mention a file"),
     ]
 
+    /// How a thread's files are read: this Mac's disk, or what the thread's
+    /// host said of its own in one run.
+    struct Files {
+        /// Whether anything is at the path.
+        var exists: (String) -> Bool
+        /// The names in a folder; none when it is not one.
+        var list: (String) -> [String]
+        /// The first `headBytes` of a file, or nil when it cannot be read.
+        var head: (String) -> String?
+
+        static let local = Files(
+            exists: { FileManager.default.fileExists(atPath: $0) },
+            list: { (try? FileManager.default.contentsOfDirectory(atPath: $0)) ?? [] },
+            head: { path in
+                guard let handle = FileHandle(forReadingAtPath: path) else { return nil }
+                defer { try? handle.close() }
+                return String(decoding: (try? handle.read(upToCount: headBytes)) ?? Data(), as: UTF8.self)
+            })
+    }
+
     /// The list for one thread: the project's own, then the user's, then the
-    /// agent's built-ins. Only this Mac's disk is read, so a remote thread
-    /// gets the built-ins alone.
+    /// agent's built-ins. `home` and `files` are the thread's host's. With no
+    /// `files` (a host that did not answer) the list is the built-ins alone.
     static func list(
-        for thread: MobileThread, home: String = NSHomeDirectory(), files: FileManager = .default
+        for thread: MobileThread, home: String = NSHomeDirectory(), files: Files? = .local
     ) -> [Command] {
-        let codex = thread.codexSessionId != nil && thread.claudeSessionId == nil
+        let codex = isCodex(thread)
         var out: [Command] = []
-        if thread.host.isLocal {
+        if let files {
             if codex {
                 out += prompts(in: home + "/.codex/prompts", files: files)
             } else {
@@ -1073,49 +1114,217 @@ enum MobileCommands {
         return Array(out.filter { seen.insert($0.name).inserted }.prefix(maxCommands))
     }
 
-    /// The working directory and its parents that hold a `.claude` folder, up
-    /// to the repository root. The home folder is the user's own and is listed
-    /// apart.
-    static func projectRoots(cwd: String, home: String, files: FileManager) -> [String] {
+    /// The list as the server gives it: a thread of this Mac reads this Mac's
+    /// disk under `home`; a remote thread reads what `remote` brings from its
+    /// host, and never this Mac's disk.
+    static func list(
+        for thread: MobileThread, home: String, remote: (MobileThread) -> (home: String, files: Files)?
+    ) -> [Command] {
+        if thread.host.isLocal { return list(for: thread, home: home) }
+        let theirs = remote(thread)
+        return list(for: thread, home: theirs?.home ?? "", files: theirs?.files)
+    }
+
+    private static func isCodex(_ thread: MobileThread) -> Bool {
+        thread.codexSessionId != nil && thread.claudeSessionId == nil
+    }
+
+    /// The working directory and its parents, nearest first, below the home
+    /// folder. Worked out from the text of the path alone.
+    static func candidates(cwd: String, home: String) -> [String] {
         guard cwd.hasPrefix("/") else { return [] }
-        var roots: [String] = []
+        var dirs: [String] = []
         var dir = (cwd as NSString).standardizingPath
         for _ in 0...maxParents {
             guard dir != "/", dir != home else { break }
-            if files.fileExists(atPath: dir + "/.claude") { roots.append(dir) }
-            if files.fileExists(atPath: dir + "/.git") { break }
+            dirs.append(dir)
             dir = (dir as NSString).deletingLastPathComponent
+        }
+        return dirs
+    }
+
+    /// The working directory and its parents that hold a `.claude` folder, up
+    /// to the repository root. The home folder is the user's own and is listed
+    /// apart.
+    static func projectRoots(cwd: String, home: String, files: Files = .local) -> [String] {
+        var roots: [String] = []
+        for dir in candidates(cwd: cwd, home: home) {
+            if files.exists(dir + "/.claude") { roots.append(dir) }
+            if files.exists(dir + "/.git") { break }
         }
         return roots
     }
 
-    private static func skills(in dir: String, files: FileManager) -> [Command] {
-        let names = (try? files.contentsOfDirectory(atPath: dir)) ?? []
-        return names.sorted().compactMap { entry in
+    private static func skills(in dir: String, files: Files) -> [Command] {
+        files.list(dir).sorted().compactMap { entry in
             guard let name = commandName(entry),
-                  let head = head(of: "\(dir)/\(entry)/SKILL.md") else { return nil }
+                  let head = files.head("\(dir)/\(entry)/SKILL.md") else { return nil }
             return Command(name: name, description: description(in: head), source: .skill)
         }
     }
 
     /// `commands/git/tidy.md` is `/git:tidy`.
-    private static func commands(in dir: String, files: FileManager) -> [Command] {
-        let paths = (try? files.subpathsOfDirectory(atPath: dir)) ?? []
-        return paths.sorted().compactMap { path in
-            guard path.hasSuffix(".md"),
-                  let name = commandName(String(path.dropLast(3)).replacingOccurrences(of: "/", with: ":")),
-                  let head = head(of: "\(dir)/\(path)") else { return nil }
+    private static func commands(in dir: String, files: Files) -> [Command] {
+        markdown(in: dir, under: "", depth: 0, files: files).sorted().compactMap { path in
+            guard let name = commandName(String(path.dropLast(3)).replacingOccurrences(of: "/", with: ":")),
+                  let head = files.head("\(dir)/\(path)") else { return nil }
             return Command(name: name, description: description(in: head), source: .command)
         }
     }
 
-    private static func prompts(in dir: String, files: FileManager) -> [Command] {
-        let names = (try? files.contentsOfDirectory(atPath: dir)) ?? []
-        return names.sorted().compactMap { entry in
+    /// The `.md` files below a folder, as paths from it, `maxDepth` folders down.
+    private static func markdown(in dir: String, under rel: String, depth: Int, files: Files) -> [String] {
+        files.list(rel.isEmpty ? dir : "\(dir)/\(rel)").flatMap { entry -> [String] in
+            let path = rel.isEmpty ? entry : "\(rel)/\(entry)"
+            if entry.hasSuffix(".md") { return [path] }
+            return depth < maxDepth ? markdown(in: dir, under: path, depth: depth + 1, files: files) : []
+        }
+    }
+
+    private static func prompts(in dir: String, files: Files) -> [Command] {
+        files.list(dir).sorted().compactMap { entry in
             guard entry.hasSuffix(".md"), let name = commandName("prompts:" + String(entry.dropLast(3))),
-                  let head = head(of: "\(dir)/\(entry)") else { return nil }
+                  let head = files.head("\(dir)/\(entry)") else { return nil }
             return Command(name: name, description: description(in: head), source: .command)
         }
+    }
+
+    // MARK: A remote thread's files
+
+    /// One read asked of a remote host: `exists` (is anything there), `skills`
+    /// (a folder's names and each one's `SKILL.md`), `tree` (a folder's `.md`
+    /// files, `maxDepth` folders down).
+    typealias RemoteRequest = (op: String, path: String)
+
+    /// The most files one run reads the head of, on every root together.
+    static let maxRemoteFiles = 300
+    /// The most names one folder gives.
+    static let maxRemoteNames = 500
+    /// The most folders one run lists.
+    static let maxRemoteDirs = 200
+    /// The largest answer that is read at all.
+    static let maxRemoteBytes = 4 * 1024 * 1024
+
+    /// What `list` reads for the thread, as requests: the roots it scans on
+    /// this Mac, as paths on the thread's host.
+    static func remoteRequests(for thread: MobileThread, home: String) -> [RemoteRequest] {
+        if isCodex(thread) { return [("tree", home + "/.codex/prompts")] }
+        let dirs = candidates(cwd: thread.cwd, home: home)
+        return dirs.flatMap { [("exists", $0 + "/.claude"), ("exists", $0 + "/.git")] }
+            + (dirs + [home]).flatMap { [("skills", $0 + "/.claude/skills"), ("tree", $0 + "/.claude/commands")] }
+    }
+
+    /// The words after `python3`. The script is one fixed word; the caps and
+    /// each request follow as words of their own, so a path is only ever data.
+    static func remoteArgs(_ requests: [RemoteRequest]) -> [String] {
+        ["-I", "-c", remoteScript]
+            + [maxRemoteFiles, headBytes, maxRemoteNames, maxRemoteDirs, maxDepth].map(String.init)
+            + requests.flatMap { [$0.op, $0.path] }
+    }
+
+    /// Reads the roots on the host and prints one JSON item for each request,
+    /// in order. Nothing is put into this text: every path comes in `sys.argv`.
+    /// A name that is not UTF-8 is left out, a file that is not a plain file
+    /// is not opened, and no folder is listed past the caps.
+    static let remoteScript = """
+        import base64, json, os, sys
+        max_files, head_bytes, max_names, max_dirs, max_depth = (int(a) for a in sys.argv[1:6])
+        words = sys.argv[6:]
+        left = {"files": max_files, "dirs": max_dirs}
+
+        def text(name):
+            try:
+                name.encode("utf-8")
+                return True
+            except UnicodeError:
+                return False
+
+        def names(path):
+            if left["dirs"] <= 0:
+                return []
+            left["dirs"] -= 1
+            try:
+                return sorted(n for n in os.listdir(path) if text(n))[:max_names]
+            except OSError:
+                return []
+
+        def head(path):
+            if left["files"] <= 0:
+                return None
+            try:
+                if not os.path.isfile(path):
+                    return None
+                with open(path, "rb") as f:
+                    data = f.read(head_bytes)
+            except OSError:
+                return None
+            left["files"] -= 1
+            return base64.b64encode(data).decode("ascii")
+
+        out = []
+        for i in range(0, len(words) - 1, 2):
+            op, root = words[i], words[i + 1]
+            item = {"exists": os.path.lexists(root), "dirs": {}, "heads": {}}
+            if op == "skills":
+                item["dirs"][""] = names(root)
+                for n in item["dirs"][""]:
+                    h = head(os.path.join(root, n, "SKILL.md"))
+                    if h is not None:
+                        item["heads"][n + "/SKILL.md"] = h
+            elif op == "tree":
+                todo = [("", 0)]
+                while todo:
+                    rel, depth = todo.pop()
+                    here = names(os.path.join(root, rel) if rel else root)
+                    item["dirs"][rel] = here
+                    for n in here:
+                        sub = rel + "/" + n if rel else n
+                        if n.endswith(".md"):
+                            h = head(os.path.join(root, sub))
+                            if h is not None:
+                                item["heads"][sub] = h
+                        elif depth < max_depth and os.path.isdir(os.path.join(root, sub)):
+                            todo.append((sub, depth + 1))
+            out.append(item)
+        json.dump(out, sys.stdout)
+        """
+
+    /// The thread's files as its host has them, from one run of `python3`
+    /// there: `run` takes the words after `python3` and gives what it printed.
+    /// nil when the host did not answer, has no python3, or said something
+    /// else; the thread then lists the built-ins alone.
+    static func remoteFiles(
+        for thread: MobileThread, home: String, run: ([String]) -> Data?
+    ) -> Files? {
+        guard home.hasPrefix("/") else { return nil }
+        let requests = remoteRequests(for: thread, home: home)
+        guard let data = run(remoteArgs(requests)) else { return nil }
+        return files(remote: data, requests: requests)
+    }
+
+    /// The host's answer as a lister and a head reader. It is read as data and
+    /// held to the caps again here: the host is not trusted to keep them.
+    static func files(remote data: Data, requests: [RemoteRequest]) -> Files? {
+        guard data.count <= maxRemoteBytes,
+              let items = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]],
+              items.count == requests.count else { return nil }
+        var present = Set<String>()
+        var dirs: [String: [String]] = [:]
+        var heads: [String: String] = [:]
+        for (request, item) in zip(requests, items) {
+            if item["exists"] as? Bool == true { present.insert(request.path) }
+            let listed = item["dirs"] as? [String: Any] ?? [:]
+            for rel in listed.keys.sorted() where dirs.count < maxRemoteDirs {
+                guard let names = listed[rel] as? [String] else { continue }
+                dirs[rel.isEmpty ? request.path : "\(request.path)/\(rel)"] = Array(names.prefix(maxRemoteNames))
+            }
+            let read = item["heads"] as? [String: Any] ?? [:]
+            for rel in read.keys.sorted() where heads.count < maxRemoteFiles {
+                guard let coded = read[rel] as? String, let bytes = Data(base64Encoded: coded) else { continue }
+                heads["\(request.path)/\(rel)"] = String(decoding: bytes.prefix(headBytes), as: UTF8.self)
+            }
+        }
+        return Files(exists: { present.contains($0) }, list: { dirs[$0] ?? [] }, head: { heads[$0] })
     }
 
     /// A name the phone inserts into a prompt: no spaces, nothing a terminal
@@ -1125,12 +1334,6 @@ enum MobileCommands {
         guard !raw.isEmpty, !raw.hasPrefix("."), raw.count <= 80,
               raw.unicodeScalars.allSatisfy(allowed.contains) else { return nil }
         return raw
-    }
-
-    private static func head(of path: String) -> String? {
-        guard let handle = FileHandle(forReadingAtPath: path) else { return nil }
-        defer { try? handle.close() }
-        return String(decoding: (try? handle.read(upToCount: headBytes)) ?? Data(), as: UTF8.self)
     }
 
     /// The `description:` of a file's front matter, as one short line.

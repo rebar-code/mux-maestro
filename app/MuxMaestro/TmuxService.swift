@@ -2187,7 +2187,8 @@ final class TmuxService {
             cursorRow: { [self] in
                 tmux(["display-message", "-p", "-t", target, "#{cursor_y}"])
                     .flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
-            })
+            },
+            home: { [self] in resolveHome() })
     }
 
     /// The command that runs a tmux control client on this host for the
@@ -2202,6 +2203,18 @@ final class TmuxService {
         }
         return transport.command(forTmux: MobileTerminal.attachArgv(target))
             .map { .supervised(MobileTerminalBridge.Launch(path: $0.path, args: $0.args)) }
+    }
+
+    /// A remote thread's home folder and the files its `/` list reads, from
+    /// one `python3` run on this host (after the home folder is known, which
+    /// is asked once and kept). nil for this Mac, and when the host does not
+    /// answer or has no python3. Blocking; call off the main thread.
+    func phoneCommandFiles(for thread: MobileThread) -> (home: String, files: MobileCommands.Files)? {
+        guard !host.isLocal, let home = resolveHome(),
+              let files = MobileCommands.remoteFiles(
+                for: thread, home: home, run: { runHostData(remote: "python3", $0) })
+        else { return nil }
+        return (home, files)
     }
 
     /// One tmux call on this host, for the phone's session actions and find:
@@ -2900,6 +2913,14 @@ final class TmuxService {
             return runner.run(Ssh.sshPath, Ssh.opts(host: alias) + remoteCmd)
         }
         return runner.run(local, args)
+    }
+
+    /// One command on this host for the phone's directory list, each argument
+    /// its own word (quoted for the remote shell, like `runHostCommand`):
+    /// what it printed, or nil when it failed. Blocking; call off the main thread.
+    func phoneHostCommand(_ argv: [String]) -> String? {
+        guard let command = argv.first else { return nil }
+        return runHostCommand(local: command, remote: command, Array(argv.dropFirst()))
     }
 
     /// `runHostCommand`'s slow sibling — same local/ssh routing, run under

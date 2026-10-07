@@ -22,6 +22,10 @@ final class MobileServer {
         /// tmux on a host, for session actions and find. nil where there is
         /// none (the dev server): those routes then answer 503. May block.
         var tmux: (Host) -> MobileTmux? = { _ in nil }
+        /// A remote host's home and one command run there, for the
+        /// directory list. nil where there is none (the dev server): only
+        /// this Mac's directories are listed then. May block.
+        var shell: (Host) -> MobileActions.HostShell? = { _ in nil }
         /// Archive the thread's window the way the Mac's sidebar does. nil
         /// where no Mac does (the dev server): the route then answers 503.
         var archive: MobileActions.Archive? = nil
@@ -29,6 +33,10 @@ final class MobileServer {
         var changed: () -> Void = {}
         /// The home folder whose skills and commands the `/` list reads.
         var home = NSHomeDirectory()
+        /// A remote thread's home folder and its files, read on its host, for
+        /// the `/` list. nil when the host gives none (out of reach, no
+        /// python3): the list is then the built-ins. May block.
+        var remoteCommands: (MobileThread) -> (home: String, files: MobileCommands.Files)? = { _ in nil }
         /// What the thread's transcript says its agent made. nil where no
         /// transcript is read (the dev server): the artifact routes then
         /// answer 503. May block.
@@ -47,9 +55,12 @@ final class MobileServer {
 
     /// The local ports published on the tailnet, as `PhoneLink` keeps them.
     /// nil where there is no tailnet (the dev server): the server routes then
-    /// answer 503. Every call may block.
+    /// answer 503. Every call may block. `host` is nil for a port of this
+    /// Mac, or the ssh alias of the host the port is on.
     struct Serving {
-        var open: (_ port: Int, _ https: Bool, _ thread: String, _ label: String) -> MobileServing.Opened
+        var open: (
+            _ port: Int, _ https: Bool, _ thread: String, _ label: String, _ host: String?
+        ) -> MobileServing.Opened
         /// False when this app has no mapping on the port.
         var close: (_ port: Int) -> Bool
         var list: () -> [MobilePortMapping]
@@ -973,7 +984,8 @@ final class MobileServer {
                 return send(.error(404, "not_found"), to: client, head: head)
             }
             reply(to: client) { [sources] in
-                .json(["commands": MobileCommands.list(for: thread, home: sources.home).map(\.json)])
+                .json(["commands": MobileCommands.list(
+                    for: thread, home: sources.home, remote: sources.remoteCommands).map(\.json)])
             }
         case .upload(let id, let name, let paste):
             let limit = config.uploadLimit, folder = config.uploadFolder
@@ -988,18 +1000,21 @@ final class MobileServer {
             reply(to: client) { [sources, weak self] in
                 let response = MobileActions.perform(
                     action, body: request.body, snapshot: snapshot, home: sources.home,
-                    tmux: sources.tmux, archive: sources.archive)
+                    tmux: sources.tmux, archive: sources.archive,
+                    hostHome: { sources.shell($0)?.home() })
                 // Marked before the tree is read again, so the new thread
                 // has its chat in the first tree it is in.
                 if let thread = MobileActions.startedThread(response) { self?.agentStarted(in: thread) }
                 if response.status == 200 { sources.changed() }
                 return response
             }
-        case .dirs(let host):
-            guard let dirs = MobileActions.dirs(host: host, snapshot: snapshot) else {
-                return send(.error(404, "not_found"), to: client, head: head)
+        case .dirs(let host, let path):
+            // A remote host is asked over ssh: off the queue.
+            let snapshot = snapshot
+            reply(to: client) { [sources] in
+                MobileActions.browse(
+                    host: host, path: path, snapshot: snapshot, home: sources.home, shell: sources.shell)
             }
-            send(.json(["dirs": dirs]), to: client, head: head)
         case .find(let id, let raw):
             guard let query = MobileFind.query(raw) else {
                 return send(.error(400, "bad_query"), to: client, head: head)
@@ -1214,6 +1229,11 @@ final class MobileServer {
             // What the phone typed: bytes for the pane, and only that.
             socket.lastInput = Date()
             socket.bridge?.input(bytes)
+        case .text(let sent) where socket.paired:
+            // The one text message a paired phone sends: the size its
+            // terminal has room for. Two clamped integers reach the bridge.
+            guard let size = MobileTerminal.sizeFrame(sent) else { return close(client, .unsupported) }
+            socket.bridge?.size(cols: size.cols, rows: size.rows)
         case .text, .binary:
             close(client, socket.paired ? .unsupported : .unauthorized)
         }
@@ -1353,9 +1373,9 @@ final class MobileServer {
         }
     }
 
-    /// Publish one local port on the tailnet. The phone names a thread and a
-    /// port number, and the port must be one Running reports for that thread
-    /// now: what it is and where it listens come from the Mac, never the phone.
+    /// Publish one port on the tailnet. The phone names a thread and a port
+    /// number, and the port must be one Running reports for that thread now:
+    /// what it is and which host it listens on come from the Mac, never the phone.
     private func openServer(_ request: MobileRequest, client: Client) {
         guard let ask = MobileServing.openRequest(request.body) else {
             return send(.error(400, "bad_request"), to: client, head: false)
@@ -1373,7 +1393,7 @@ final class MobileServer {
         reply(to: client) {
             guard let found = running(thread).map({ MobileServing.mappable(in: $0, ownPort: ownPort) })?[ask.port]
             else { return .error(404, "not_running") }
-            let opened = serving.open(ask.port, found.https, thread.id, found.label)
+            let opened = serving.open(ask.port, found.https, thread.id, found.label, found.host)
             return MobileServing.response(opened, port: ask.port, identity: identity)
         }
     }
