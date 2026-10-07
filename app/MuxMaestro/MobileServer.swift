@@ -29,6 +29,10 @@ final class MobileServer {
         var changed: () -> Void = {}
         /// The home folder whose skills and commands the `/` list reads.
         var home = NSHomeDirectory()
+        /// A remote thread's home folder and its files, read on its host, for
+        /// the `/` list. nil when the host gives none (out of reach, no
+        /// python3): the list is then the built-ins. May block.
+        var remoteCommands: (MobileThread) -> (home: String, files: MobileCommands.Files)? = { _ in nil }
         /// What the thread's transcript says its agent made. nil where no
         /// transcript is read (the dev server): the artifact routes then
         /// answer 503. May block.
@@ -970,7 +974,8 @@ final class MobileServer {
                 return send(.error(404, "not_found"), to: client, head: head)
             }
             reply(to: client) { [sources] in
-                .json(["commands": MobileCommands.list(for: thread, home: sources.home).map(\.json)])
+                .json(["commands": MobileCommands.list(
+                    for: thread, home: sources.home, remote: sources.remoteCommands).map(\.json)])
             }
         case .upload(let id, let name, let paste):
             let limit = config.uploadLimit, folder = config.uploadFolder

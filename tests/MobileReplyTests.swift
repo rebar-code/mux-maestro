@@ -1818,10 +1818,323 @@ final class MobileReplyTests: XCTestCase {
         XCTAssertTrue(codex.contains { $0.name == "approvals" })
         XCTAssertFalse(codex.contains { $0.name == "deploy" })
 
-        // Only this Mac's disk is read: a remote thread gets the built-ins.
-        let remote = MobileCommands.list(
-            for: thread(host: Host(name: "devbox", sshAlias: "devbox"), cwd: home + "/acme-app"), home: home)
+        // A remote thread never reads this Mac's disk: with no answer from
+        // its host it gets the built-ins.
+        let there = thread(host: Self.devbox, cwd: home + "/acme-app")
+        let remote = MobileCommands.list(for: there, home: home, remote: { _ in nil })
         XCTAssertTrue(remote.allSatisfy { $0.source == .builtin })
+        // With an answer, the host's home and files are the ones read.
+        let theirs = MobileCommands.Files(
+            exists: { _ in false }, list: { $0 == "/home/me/.claude/skills" ? ["ship"] : [] },
+            head: { $0 == "/home/me/.claude/skills/ship/SKILL.md" ? "---\ndescription: Ship it\n---" : nil })
+        XCTAssertEqual(
+            MobileCommands.list(for: there, home: home, remote: { _ in ("/home/me", theirs) })
+                .filter { $0.source != .builtin },
+            [.init(name: "ship", description: "Ship it", source: .skill)])
+        // This Mac's own thread does not ask a host.
+        XCTAssertEqual(
+            MobileCommands.list(for: thread(cwd: home + "/acme-app/web/src"), home: home, remote: { _ in
+                XCTFail("asked a host")
+                return nil
+            }), list)
+        XCTAssertEqual(remote.count, MobileCommands.claudeBuiltins.count)
+    }
+
+    private static let devbox = Host(name: "devbox", sshAlias: "devbox")
+
+    /// A host's answer to the one run, as `MobileCommands.remoteScript` prints
+    /// it: one item per request, in order.
+    private func answer(_ items: [[String: Any]]) -> Data {
+        try! JSONSerialization.data(withJSONObject: items)
+    }
+
+    private func item(
+        exists: Bool = true, dirs: [String: [String]] = [:], heads: [String: String] = [:]
+    ) -> [String: Any] {
+        ["exists": exists, "dirs": dirs, "heads": heads.mapValues { Data($0.utf8).base64EncodedString() }]
+    }
+
+    func testTheListReadsItsFilesThroughAListerAndAHeadReader() {
+        let dirs = [
+            "/home/me/acme-app/.claude/skills": ["deploy", "two words"],
+            "/home/me/.claude/commands": ["git", "notes.txt"],
+            "/home/me/.claude/commands/git": ["tidy.md"],
+        ]
+        let heads = [
+            "/home/me/acme-app/.claude/skills/deploy/SKILL.md": "---\ndescription: Deploy to staging\n---\n",
+            "/home/me/acme-app/.claude/skills/two words/SKILL.md": "---\ndescription: no\n---\n",
+            "/home/me/.claude/commands/git/tidy.md": "---\ndescription: Tidy branches\n---\n",
+        ]
+        let present: Set = ["/home/me/acme-app/.claude", "/home/me/acme-app/.git"]
+        let files = MobileCommands.Files(
+            exists: { present.contains($0) }, list: { dirs[$0] ?? [] }, head: { heads[$0] })
+        let list = MobileCommands.list(
+            for: thread(host: Self.devbox, cwd: "/home/me/acme-app/web"), home: "/home/me", files: files)
+        XCTAssertEqual(Array(list.prefix(3)), [
+            .init(name: "deploy", description: "Deploy to staging", source: .skill),
+            .init(name: "git:tidy", description: "Tidy branches", source: .command),
+            .init(name: "clear", description: "Clear the conversation", source: .builtin),
+        ])
+    }
+
+    func testARemoteThreadsCommandsComeFromOneRunOnItsHost() throws {
+        var runs: [[String]] = []
+        let host = thread(host: Self.devbox, cwd: "/home/me/acme-app/web")
+        let requests = MobileCommands.remoteRequests(for: host, home: "/home/me")
+        XCTAssertEqual(requests.map(\.op), ["exists", "exists", "exists", "exists", "skills", "tree", "skills", "tree", "skills", "tree"])
+        XCTAssertEqual(requests.map(\.path), [
+            "/home/me/acme-app/web/.claude", "/home/me/acme-app/web/.git",
+            "/home/me/acme-app/.claude", "/home/me/acme-app/.git",
+            "/home/me/acme-app/web/.claude/skills", "/home/me/acme-app/web/.claude/commands",
+            "/home/me/acme-app/.claude/skills", "/home/me/acme-app/.claude/commands",
+            "/home/me/.claude/skills", "/home/me/.claude/commands",
+        ])
+        let canned = answer([
+            item(exists: false), item(exists: false), item(), item(),
+            item(exists: false), item(exists: false),
+            item(dirs: ["": ["deploy"]], heads: ["deploy/SKILL.md": "---\ndescription: Deploy to staging\n---\n"]),
+            item(dirs: ["": ["commit.md"]], heads: ["commit.md": "no front matter"]),
+            item(dirs: ["": ["commit"]], heads: ["commit/SKILL.md": "---\ndescription: Create a git commit\n---\n"]),
+            item(dirs: ["": ["git"], "git": ["tidy.md"]], heads: ["git/tidy.md": "---\ndescription: Tidy branches\n---\n"]),
+        ])
+        let files = try XCTUnwrap(MobileCommands.remoteFiles(for: host, home: "/home/me") {
+            runs.append($0)
+            return canned
+        })
+        let list = MobileCommands.list(for: host, home: "/home/me", files: files)
+        XCTAssertEqual(Array(list.prefix(4)), [
+            .init(name: "deploy", description: "Deploy to staging", source: .skill),
+            .init(name: "commit", description: "", source: .command),
+            .init(name: "git:tidy", description: "Tidy branches", source: .command),
+            .init(name: "clear", description: "Clear the conversation", source: .builtin),
+        ])
+        // One run: a fixed script, its caps, then each root as its own word.
+        XCTAssertEqual(runs.count, 1)
+        XCTAssertEqual(Array(runs[0].prefix(3)), ["-I", "-c", MobileCommands.remoteScript])
+        XCTAssertEqual(Array(runs[0].dropFirst(3).prefix(5)), [
+            MobileCommands.maxRemoteFiles, MobileCommands.headBytes, MobileCommands.maxRemoteNames,
+            MobileCommands.maxRemoteDirs, MobileCommands.maxDepth,
+        ].map(String.init))
+        XCTAssertEqual(Array(runs[0].dropFirst(8)), requests.flatMap { [$0.op, $0.path] })
+
+        // A Codex thread asks for its prompts alone.
+        let codex = thread(host: Self.devbox, cwd: "/home/me/acme-app", claude: nil, codex: "x1")
+        let prompts = try XCTUnwrap(MobileCommands.remoteFiles(for: codex, home: "/home/me") { args in
+            XCTAssertEqual(Array(args.suffix(2)), ["tree", "/home/me/.codex/prompts"])
+            return self.answer([self.item(
+                dirs: ["": ["triage.md"]], heads: ["triage.md": "---\ndescription: Triage issues\n---\n"])])
+        })
+        XCTAssertEqual(
+            MobileCommands.list(for: codex, home: "/home/me", files: prompts).first,
+            .init(name: "prompts:triage", description: "Triage issues", source: .command))
+    }
+
+    func testAHostileNameOnARemoteHostIsDataAndNeverACommand() throws {
+        // The folder's name has everything a shell reads: it is one word.
+        let cwd = "/srv/it's $(reboot);`id` &"
+        let host = thread(host: Self.devbox, cwd: cwd)
+        let requests = MobileCommands.remoteRequests(for: host, home: "/home/me")
+        let hostile = ["$(reboot)", "a;b", "two words", "x\u{1B}[2J", "../../etc", "`id`", "-rf", "ok"]
+        let canned = answer(requests.map { request in
+            switch request.op {
+            case "exists": return item(exists: request.path == cwd + "/.claude")
+            case "skills":
+                return item(
+                    dirs: ["": hostile],
+                    heads: Dictionary(uniqueKeysWithValues: hostile.map {
+                        ("\($0)/SKILL.md", "---\ndescription: $(reboot) \u{1B}[31m`id`\n---\n")
+                    }))
+            default: return item(dirs: ["": hostile.map { $0 + ".md" }], heads: [:])
+            }
+        })
+        var argv: [String] = []
+        let files = try XCTUnwrap(MobileCommands.remoteFiles(for: host, home: "/home/me") {
+            argv = $0
+            return canned
+        })
+        let own = MobileCommands.list(for: host, home: "/home/me", files: files)
+            .filter { $0.source != .builtin }
+        // `-rf` is a name the composer can insert; the others are refused.
+        XCTAssertEqual(own.map(\.name), ["-rf", "ok"])
+        // A description is text for a label: no escape survives.
+        XCTAssertEqual(own.first?.description, "$(reboot) [31m`id`")
+        // No path is part of the script, and each is a whole word.
+        XCTAssertFalse(MobileCommands.remoteScript.contains("/srv"))
+        XCTAssertTrue(argv.contains(cwd + "/.claude/skills"))
+        XCTAssertEqual(argv[2], MobileCommands.remoteScript)
+
+        // A working directory that is not a path, and a home that is not one,
+        // ask for nothing they name.
+        XCTAssertEqual(
+            MobileCommands.remoteRequests(for: thread(host: Self.devbox, cwd: "-c evil"), home: "/home/me")
+                .map(\.path),
+            ["/home/me/.claude/skills", "/home/me/.claude/commands"])
+        var ran = false
+        XCTAssertNil(MobileCommands.remoteFiles(for: host, home: "~evil") { _ in ran = true; return nil })
+        XCTAssertFalse(ran)
+    }
+
+    func testTheRemoteRunGoesOverSshWithEveryWordQuoted() throws {
+        let runner = CommandsRunner()
+        let cwd = "/srv/it's $(reboot)"
+        let host = thread(host: Self.devbox, cwd: cwd)
+        let requests = MobileCommands.remoteRequests(for: host, home: "/home/me")
+        runner.data = answer(requests.map { request in
+            request.path == "/home/me/.claude/skills"
+                ? item(dirs: ["": ["commit"]], heads: ["commit/SKILL.md": "---\ndescription: Create a git commit\n---\n"])
+                : item(exists: false)
+        })
+        let service = TmuxService(
+            host: Self.devbox, transport: SshTmuxTransport(host: "devbox"), runner: runner,
+            statusProvider: CommandsStatus())
+        let remote = try XCTUnwrap(service.phoneCommandFiles(for: host))
+        XCTAssertEqual(remote.home, "/home/me")
+        XCTAssertEqual(
+            MobileCommands.list(for: host, home: remote.home, files: remote.files).first,
+            .init(name: "commit", description: "Create a git commit", source: .skill))
+
+        // The home folder is asked for once and kept; the files take one run.
+        XCTAssertEqual(runner.calls.count, 2)
+        let call = try XCTUnwrap(runner.calls.last)
+        XCTAssertEqual(call.path, Ssh.sshPath)
+        let prefix = Ssh.opts(host: "devbox")
+        XCTAssertEqual(Array(call.args.prefix(prefix.count)), prefix)
+        let words = ["python3"] + MobileCommands.remoteArgs(requests)
+        XCTAssertEqual(Array(call.args.dropFirst(prefix.count)), words.map(Ssh.shellQuote))
+        XCTAssertTrue(call.args.contains("'/srv/it'\\''s $(reboot)/.claude/skills'"))
+        for word in call.args.dropFirst(prefix.count) {
+            XCTAssertTrue(word.hasPrefix("'") && word.hasSuffix("'"), word)
+        }
+        _ = service.phoneCommandFiles(for: host)
+        XCTAssertEqual(runner.calls.count, 3)
+    }
+
+    func testAHostWithoutPython3OrOutOfReachGivesTheBuiltInsAlone() {
+        let host = thread(host: Self.devbox, cwd: "/home/me/acme-app")
+        let count = MobileCommands.remoteRequests(for: host, home: "/home/me").count
+        let answers: [Data?] = [
+            nil, Data(), Data("sh: python3: command not found".utf8), Data("{}".utf8),
+            // An answer for another question.
+            answer(Array(repeating: item(), count: count - 1)),
+            Data([0xFF, 0xFE]),
+        ]
+        for data in answers {
+            let files = MobileCommands.remoteFiles(for: host, home: "/home/me") { _ in data }
+            XCTAssertNil(files.map { _ in true })
+            XCTAssertEqual(
+                MobileCommands.list(for: host, home: "/home/me", files: files).map(\.name),
+                MobileCommands.claudeBuiltins.map(\.0))
+        }
+
+        // The same through the host's service: nothing ran, or python3 is not there.
+        let runner = CommandsRunner()
+        let service = TmuxService(
+            host: Self.devbox, transport: SshTmuxTransport(host: "devbox"), runner: runner,
+            statusProvider: CommandsStatus())
+        XCTAssertNil(service.phoneCommandFiles(for: host).map { _ in true })
+        runner.home = nil
+        XCTAssertNil(service.phoneCommandFiles(for: host).map { _ in true })
+        // This Mac's own threads are not read this way.
+        XCTAssertNil(TmuxService(runner: runner, statusProvider: CommandsStatus(), tmuxPath: "/usr/bin/tmux")
+            .phoneCommandFiles(for: thread()).map { _ in true })
+    }
+
+    func testARemoteAnswerIsHeldToTheCaps() throws {
+        let host = thread(host: Self.devbox, cwd: "/home/me")
+        let requests = MobileCommands.remoteRequests(for: host, home: "/home/me")
+        XCTAssertEqual(requests.map(\.op), ["skills", "tree"])
+        let names = (0..<(MobileCommands.maxRemoteFiles + 50)).map { String(format: "s%04d", $0) }
+        let long = "---\n" + String(repeating: "x", count: MobileCommands.headBytes) + "\ndescription: late\n---\n"
+        var heads = Dictionary(uniqueKeysWithValues: names.map { ("\($0)/SKILL.md", "---\ndescription: d\n---\n") })
+        heads["s0000/SKILL.md"] = long
+        let files = try XCTUnwrap(MobileCommands.remoteFiles(for: host, home: "/home/me") { _ in
+            self.answer([self.item(dirs: ["": names], heads: heads), self.item(exists: false)])
+        })
+        let skills = MobileCommands.list(for: host, home: "/home/me", files: files).filter { $0.source == .skill }
+        // No more files than the cap, and no more of one than its head.
+        XCTAssertEqual(
+            names.filter { files.head("/home/me/.claude/skills/\($0)/SKILL.md") != nil }.count,
+            MobileCommands.maxRemoteFiles)
+        XCTAssertEqual(skills.count, MobileCommands.maxRemoteFiles)
+        XCTAssertEqual(skills.first, .init(name: "s0000", description: "", source: .skill))
+        XCTAssertEqual(skills.last?.description, "d")
+
+        // No more names of one folder than the cap, and no more folders.
+        let many = (0..<(MobileCommands.maxRemoteNames + 10)).map { String(format: "n%05d", $0) }
+        var dirs = ["": many]
+        for n in 0..<(MobileCommands.maxRemoteDirs + 10) { dirs["d\(n)"] = ["x.md"] }
+        let wide = try XCTUnwrap(MobileCommands.remoteFiles(for: host, home: "/home/me") { _ in
+            self.answer([self.item(exists: false), self.item(dirs: dirs)])
+        })
+        XCTAssertEqual(wide.list("/home/me/.claude/commands").count, MobileCommands.maxRemoteNames)
+        XCTAssertEqual(
+            (0..<(MobileCommands.maxRemoteDirs + 10))
+                .filter { !wide.list("/home/me/.claude/commands/d\($0)").isEmpty }.count
+                + 1,
+            MobileCommands.maxRemoteDirs)
+
+        // An answer too large to be one is no answer.
+        XCTAssertNil(MobileCommands.remoteFiles(for: host, home: "/home/me") { _ in
+            Data(count: MobileCommands.maxRemoteBytes + 1)
+        }.map { _ in true })
+
+        // The whole list keeps its own cap.
+        XCTAssertLessThanOrEqual(
+            MobileCommands.list(for: host, home: "/home/me", files: files).count, MobileCommands.maxCommands)
+    }
+
+    /// The script itself, run here on a folder made for it: what it reports
+    /// lists the same commands as reading that folder directly.
+    func testTheRemoteScriptReportsWhatReadingTheDiskFinds() throws {
+        guard FileManager.default.isExecutableFile(atPath: "/usr/bin/python3") else {
+            throw XCTSkip("no python3 on this Mac")
+        }
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mobile-commands-\(UUID().uuidString)").resolvingSymlinksInPath()
+        defer { try? FileManager.default.removeItem(at: root) }
+        func write(_ path: String, _ text: String) throws {
+            let url = root.appendingPathComponent(path)
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(text.utf8).write(to: url)
+        }
+        try write("home/.claude/skills/commit/SKILL.md", "---\nname: commit\ndescription: Create a git commit\n---\n")
+        try write("home/.claude/commands/git/tidy.md", "---\ndescription: \"Tidy branches\"\n---\nbody")
+        try write("home/.claude/skills/.hidden/SKILL.md", "---\ndescription: no\n---\n")
+        try write("home/.claude/skills/empty/notes.txt", "not a skill")
+        try write("home/.claude/skills/$(touch pwned)/SKILL.md", "---\ndescription: no\n---\n")
+        try write("home/it's an app/.git/HEAD", "ref")
+        try write("home/it's an app/.claude/skills/deploy/SKILL.md", "---\ndescription: Deploy to staging\n---\n")
+        try write("home/it's an app/.claude/commands/commit.md", "no front matter")
+        try write("home/it's an app/.claude/commands/big.md",
+                  "---\ndescription: Big\n---\n" + String(repeating: "x", count: 3 * MobileCommands.headBytes))
+        try write("home/it's an app/web/src/index.ts", "")
+        try write("home/.codex/prompts/triage.md", "---\ndescription: Triage issues\n---\n")
+        let home = root.appendingPathComponent("home").path
+
+        for (claude, codex) in [("c1", nil), (nil, "x1")] as [(String?, String?)] {
+            let here = thread(cwd: home + "/it's an app/web/src", claude: claude, codex: codex)
+            var size = 0
+            let files = try XCTUnwrap(MobileCommands.remoteFiles(for: here, home: home) { args in
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+                process.arguments = args
+                process.currentDirectoryURL = root
+                let pipe = Pipe()
+                process.standardOutput = pipe
+                guard (try? process.run()) != nil else { return nil }
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                process.waitUntilExit()
+                size = data.count
+                return process.terminationStatus == 0 ? data : nil
+            })
+            let remote = MobileCommands.list(for: here, home: home, files: files)
+            XCTAssertEqual(remote, MobileCommands.list(for: here, home: home))
+            XCTAssertTrue(remote.contains { $0.source != .builtin })
+            // One head of the large file, not the file.
+            XCTAssertLessThan(size, 3 * MobileCommands.headBytes)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("pwned").path))
     }
 
     func testACommandNameIsOneWordAndADescriptionOneLineOfText() {
@@ -1896,4 +2209,26 @@ final class MobileReplyTests: XCTestCase {
         // A pane that never started working is done after the grace.
         XCTAssertEqual(turn(.idle, timing: quick), .done(reply: ""))
     }
+}
+
+/// A host's runner for the `/` list: `pwd` answers the home folder, anything
+/// else the canned bytes.
+private final class CommandsRunner: CommandRunner {
+    private(set) var calls: [(path: String, args: [String])] = []
+    var home: String? = "/home/me\n"
+    var data: Data?
+
+    func run(_ path: String, _ args: [String], stdin: Data?) -> String? {
+        calls.append((path, args))
+        return args.last == "'pwd'" ? home : nil
+    }
+
+    func runData(_ path: String, _ args: [String], stdin: Data?) -> Data? {
+        calls.append((path, args))
+        return data
+    }
+}
+
+private struct CommandsStatus: AttentionStatusProvider {
+    func statuses() -> [String: AttentionStatus] { [:] }
 }

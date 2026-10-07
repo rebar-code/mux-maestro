@@ -663,6 +663,71 @@ final class TmuxServiceTests: XCTestCase {
             statusProvider: StaticStatusProvider())
     }
 
+    // MARK: bytes from a host
+
+    /// A runner that answers bytes, as a file's content comes.
+    private final class BytesRunner: CommandRunner {
+        private(set) var calls: [(path: String, args: [String])] = []
+        var bytes: Data?
+        init(_ bytes: Data?) { self.bytes = bytes }
+        func run(_ path: String, _ args: [String], stdin: Data?) -> String? {
+            runData(path, args, stdin: stdin).flatMap { String(data: $0, encoding: .utf8) }
+        }
+        func runData(_ path: String, _ args: [String], stdin: Data?) -> Data? {
+            calls.append((path, args))
+            return bytes
+        }
+    }
+
+    func testTheProcessRunnerKeepsBytesThatAreNotUTF8() {
+        // A tail that ends inside a character, and a byte no text holds.
+        let bytes = Data([0x61, 0x0A, 0xFF, 0x00, 0xC3])
+        let runner = ProcessCommandRunner()
+        XCTAssertEqual(runner.runData("/usr/bin/printf", [#"a\n\377\000\303"#], stdin: nil), bytes)
+        // As text the same output is lost whole: why the bytes are asked for.
+        XCTAssertNil(runner.run("/usr/bin/printf", [#"a\n\377\000\303"#]))
+        XCTAssertNil(runner.runData("/usr/bin/false", [], stdin: nil))
+        XCTAssertEqual(runner.runData("/bin/cat", [], stdin: bytes), bytes)
+    }
+
+    func testBytesFromARemoteHostComeOverSshWithEveryWordQuoted() {
+        let bytes = Data([0xE2, 0x82, 0x0A, 0xFF])
+        let runner = BytesRunner(bytes)
+        let service = TmuxService(
+            host: Host(name: "devbox", sshAlias: "devbox"), transport: SshTmuxTransport(host: "devbox"),
+            runner: runner, statusProvider: StaticStatusProvider())
+        let read = service.runHostData(
+            remote: "tail", ["-c", "+5", "--", "/Users/me/acme app/it's; rm -rf $HOME.jsonl"])
+        XCTAssertEqual(read, bytes)
+        let call = runner.calls[0]
+        XCTAssertEqual(call.path, "/usr/bin/ssh")
+        XCTAssertTrue(call.args.contains("devbox"))
+        XCTAssertEqual(Array(call.args.suffix(5)), [
+            "'tail'", "'-c'", "'+5'", "'--'", #"'/Users/me/acme app/it'\''s; rm -rf $HOME.jsonl'"#,
+        ])
+    }
+
+    func testBytesFromThisMacRunTheToolByNameAndASlowReadUsesTheSlowRunner() {
+        let quick = BytesRunner(Data("quick".utf8)), slow = BytesRunner(Data("slow".utf8))
+        let service = TmuxService(
+            host: .local, transport: LocalTmuxTransport(tmuxPath: "/opt/homebrew/bin/tmux"), runner: quick,
+            statusProvider: StaticStatusProvider(), slowRunner: slow)
+        XCTAssertEqual(service.runHostData(remote: "tail", ["-c", "4", "--", "/tmp/a b"]), Data("quick".utf8))
+        XCTAssertEqual(quick.calls[0].path, "/usr/bin/env")
+        XCTAssertEqual(quick.calls[0].args, ["tail", "-c", "4", "--", "/tmp/a b"])
+        XCTAssertEqual(service.runHostData(remote: "wc", ["-c"], slow: true), Data("slow".utf8))
+        XCTAssertEqual(slow.calls.count, 1)
+        // A failed run is nil, not empty: the caller tells the two apart.
+        quick.bytes = nil
+        XCTAssertNil(service.runHostData(remote: "tail", []))
+    }
+
+    func testAFakeThatOnlyAnswersTextStillAnswersBytes() {
+        let runner = FakeRunner()
+        runner.defaultResponse = "caf\u{e9}"
+        XCTAssertEqual(runner.runData("/bin/x", [], stdin: nil), Data("caf\u{e9}".utf8))
+    }
+
     func testRemoteSelectWindowSshPrefixesTheTmuxCall() {
         let runner = FakeRunner()
         // The zoom-flag probe runs over ssh too; reply "0" so no unzoom fires.
