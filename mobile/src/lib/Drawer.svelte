@@ -25,6 +25,15 @@
 	const openId = $derived(page.route.id === '/t/[id]' ? page.params.id : null);
 	const closed = $derived(ui.drawer === 0 && !ui.dragging);
 
+	let scroller = $state<HTMLElement>();
+
+	/** The filter changes the list's length: show all of it, from its top. */
+	const toggleFilter = (): void => {
+		live.toggleAwakeOnly();
+		if (live.awakeOnly) collapse.expandAll();
+		scroller?.scrollTo({ top: 0 });
+	};
+
 	const sessionTarget = (session: SessionGroup): MenuTarget => ({
 		kind: 'session',
 		host: session.host,
@@ -62,7 +71,12 @@
 		>
 	</div>
 
-	<div class="scroll" data-pull={PULL} {@attach pullToRefresh(PULL, live.refresh)}>
+	<div
+		class="scroll"
+		bind:this={scroller}
+		data-pull={PULL}
+		{@attach pullToRefresh(PULL, live.refresh)}
+	>
 		<PullIndicator key={PULL} />
 
 		{#if live.threads === null}
@@ -153,7 +167,7 @@
 			class:on={live.awakeOnly}
 			aria-label="Awake only"
 			aria-pressed={live.awakeOnly}
-			onclick={() => live.toggleAwakeOnly()}><Icon name="filter" /></button
+			onclick={toggleFilter}><Icon name="filter" /></button
 		>
 		<a
 			class="mrow"

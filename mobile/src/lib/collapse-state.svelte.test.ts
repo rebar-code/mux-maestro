@@ -62,6 +62,13 @@ describe('Collapse', () => {
 		expect(memory.getItem(KEY)).toBe('[]');
 	});
 
+	it('expanding all opens every session and stores it', () => {
+		const [collapse, memory] = make(THREADS, '["localhost/acme-app","devbox/billing"]');
+		collapse.expandAll();
+		expect(collapse.keys.size).toBe(0);
+		expect(memory.getItem(KEY)).toBe('[]');
+	});
+
 	it('saving drops sessions that no longer exist', () => {
 		const [collapse, memory] = make(THREADS, '["localhost/gone","buildbox/old","devbox/billing"]');
 		collapse.toggle('localhost/docs-site', false, DOCS);

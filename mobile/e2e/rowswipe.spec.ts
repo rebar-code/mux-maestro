@@ -154,6 +154,27 @@ test('a row shows the pull request of its window', async ({ page }) => {
 	await expect(row(page).locator('.pr')).toHaveCount(0);
 });
 
+test('the filter opens every session and shows the list from its top', async ({ page }) => {
+	const filter = page.getByRole('button', { name: 'Awake only' });
+	const folds = drawer(page).locator('.shead .fold');
+	const scroll = drawer(page).locator('.scroll');
+	await folds.first().click();
+	await expect(folds.first()).toHaveAttribute('aria-expanded', 'false');
+	// Down at the hosts, where the threads are out of view.
+	await scroll.evaluate((el) => el.scrollTo({ top: el.scrollHeight }));
+	expect(await scroll.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+
+	await filter.click();
+	await expect(filter).toHaveAttribute('aria-pressed', 'true');
+	await expect(drawer(page).locator('.fold[aria-expanded="false"]')).toHaveCount(0);
+	await expect.poll(() => scroll.evaluate((el) => el.scrollTop)).toBe(0);
+
+	// Off again: also from the top.
+	await scroll.evaluate((el) => el.scrollTo({ top: el.scrollHeight }));
+	await filter.click();
+	await expect.poll(() => scroll.evaluate((el) => el.scrollTop)).toBe(0);
+});
+
 test('the filter beside Maestro leaves the sleeping threads out', async ({ page }) => {
 	const filter = page.getByRole('button', { name: 'Awake only' });
 	const maestro = drawer(page).locator('[data-home]');
