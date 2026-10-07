@@ -150,6 +150,9 @@ struct MobileScreen: Equatable {
     static let maxBoxLines = 40
     /// Lines an agent draws under its input box: hints and a status line.
     static let maxFooterLines = 4
+    /// Rows of the list Claude Code draws under its footer while agents run
+    /// in the background: the session, then one row for each agent.
+    static let maxAgentRows = 24
 
     private static let frame = CharacterSet(charactersIn: "│┃|").union(.whitespaces)
     private static let cursors: Set<Character> = ["❯", "›", ">"]
@@ -295,9 +298,27 @@ struct MobileScreen: Equatable {
         let (top, bottom) = (rules[rules.count - 2], rules[rules.count - 1])
         guard bottom - top >= 2, bottom - top <= maxBoxLines + 1, hasCursor(lines[top + 1])
         else { return nil }
-        let below = raw[(bottom + 1)...].filter { !$0.allSatisfy(\.isWhitespace) }
+        var below = raw[(bottom + 1)...].filter { !$0.allSatisfy(\.isWhitespace) }
+        // The list of background agents is under the footer and is no menu:
+        // `◯` marks an agent there, not a choice. Without this a pane with an
+        // agent in the background showed "no input box".
+        if let list = below.firstIndex(where: { isAgentRow($0, mark: "⏺") }) {
+            let rows = below[list...]
+            guard rows.count <= maxAgentRows, rows.allSatisfy({ isAgentRow($0) }) else { return nil }
+            below = Array(below[..<list])
+        }
         guard below.count <= maxFooterLines, below.allSatisfy(isFooter) else { return nil }
         return Anchor(top: top, bottom: bottom)
+    }
+
+    /// `  ⏺ main`, `  ◯ general-purpose  Run the tests`: a row of the list of
+    /// background agents. `⏺` is the one on screen, and the list starts with
+    /// the session's own row. A row the human moved the list's cursor onto
+    /// starts with that cursor and is not one of these: Enter opens it.
+    private static func isAgentRow(_ line: Substring, mark: Character? = nil) -> Bool {
+        let row = line.dropFirst(2)
+        guard line.hasPrefix("  "), let first = row.first, row.dropFirst().first == " " else { return false }
+        return mark.map { $0 == first } ?? (first == "⏺" || first == "◯")
     }
 
     private static func bareBox(_ lines: [String], raw: [Substring]) -> Anchor? {

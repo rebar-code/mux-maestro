@@ -206,6 +206,25 @@ enum DemoPrompt {
           ⏵⏵ auto mode on (shift+tab to cycle) · ← 1 agent
         """
 
+    /// The same pane with agents in the background (v2.1.293): under the
+    /// footer Claude Code lists the session and each agent. `picked` is the
+    /// row the list's own cursor is on, once the human moved into the list.
+    static func claudeAgents(_ agents: [String] = ["Run the tests"], picked: Int? = nil) -> String {
+        let rows = ["⏺ main"] + agents.map { "◯ general-purpose  \($0)   14s · ↓ 31.4k tokens" }
+        let list = rows.enumerated().map { ($0.offset == picked ? "❯ " : "  ") + $0.element }
+        return """
+            ⏺ Done. 4 files changed, tests pass.
+
+            ────────────────────────────────────────────────────────────
+            ❯\u{A0}
+            ────────────────────────────────────────────────────────────
+              ➜ acme-app git:(main) · ctx 42%
+              \(picked == nil ? "⏵⏵ auto mode on · 1 shell · ← 1 agent" : "↑/↓ to select")
+
+            \(list.joined(separator: "\n"))
+            """
+    }
+
     /// An idle Codex pane as tmux captures it (v0.160.0), with demo names.
     /// The composer has no rules: its mark, a blank row, two footer rows.
     static let codexIdle = codexInput(["Ask Codex to do anything"])
@@ -1111,6 +1130,40 @@ final class MobileReplyTests: XCTestCase {
             ("› hello", "  a\n  b\n  c\n  d\n  e"),
         ] {
             XCTAssertFalse(seen(bare(rows, footer), cursor: .row(2)).inputBox, rows + " / " + footer)
+        }
+    }
+
+    /// The bug: a reply was refused with "Thread shows no input box" while
+    /// the pane showed one. Agents ran in the background, and Claude Code
+    /// lists them under its footer with a mark a menu also uses.
+    func testTheListOfBackgroundAgentsUnderTheFooterIsNotAMenu() {
+        XCTAssertTrue(seen(DemoPrompt.claudeAgents()).inputBox)
+        // The list grows by a row for each agent.
+        let many = (1...9).map { "Task \($0)" }
+        XCTAssertTrue(seen(DemoPrompt.claudeAgents(many)).inputBox)
+        // A busy pane with the list takes text to hold, and an idle one takes it.
+        for (status, queue) in [(AttentionStatus.busy, true), (.idle, false)] {
+            let pane = FakePane()
+            pane.screen = DemoPrompt.claudeAgents()
+            let response = MobileReply.send(
+                "go on", queue: queue, target: "%12", io: pane.io, state: { self.state(status) },
+                pause: { _ in })
+            XCTAssertEqual(response.status, 200, body(response))
+        }
+
+        // The human moved into the list: Enter would open an agent there. The
+        // cursor has left the box, and the list shows its own.
+        XCTAssertFalse(seen(DemoPrompt.claudeAgents(), cursor: .lastLine).inputBox)
+        XCTAssertFalse(seen(DemoPrompt.claudeAgents(picked: 0), cursor: .row(8)).inputBox)
+        XCTAssertFalse(seen(DemoPrompt.claudeAgents(picked: 1)).inputBox)
+        // Only that list: a menu's marks with no session row over them, and
+        // anything under the list, are still refused.
+        for under in [
+            "  ◯ Staging\n  ◯ Production", "  ◯ Staging\n  ⏺ Production",
+            "  ⏺ main\n  ◯ general-purpose  Run the tests\n  Overwrite? [y/N]",
+            "  ⏺ main\n  ◯ general-purpose  Run the tests\n$ ",
+        ] {
+            XCTAssertFalse(seen(DemoPrompt.idle + "\n\n" + under).inputBox, under)
         }
     }
 
