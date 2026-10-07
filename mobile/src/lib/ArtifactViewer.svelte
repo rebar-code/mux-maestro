@@ -2,8 +2,11 @@
 	import { fileSize, framedHtml, ICONS, isViewable, swipeStep, withoutTargets } from './artifacts';
 	import { share, type Artifacts } from './artifacts.svelte';
 	import { ui } from './gestures.svelte';
+	import Icon from './Icon.svelte';
+	import { can } from './live.svelte';
 	import { proseTaps } from './prose';
 	import type { ArtifactFile } from './types';
+	import { voice } from './voice.svelte';
 	import { Zoom } from './zoom.svelte';
 
 	const { file, artifacts }: { file: ArtifactFile; artifacts: Artifacts } = $props();
@@ -24,6 +27,13 @@
 	);
 
 	let sharing = $state(false);
+
+	/** The Mac reads words aloud: a markdown or a text file, not code or a page. */
+	const sayOn = $derived(
+		can('voice') && file.exists && (file.kind === 'markdown' || file.kind === 'text')
+	);
+	const saying = $derived(sayOn ? voice.sayingFile(artifacts.id, file.id) : 'idle');
+	const SAY = { idle: 'Play', loading: 'Stop, loading', playing: 'Stop' } as const;
 
 	/**
 	 * Attachment: one finger up or down the file steps to the next or the
@@ -97,6 +107,22 @@
 			<button class="chip grow" aria-label="Zoom" aria-pressed={zoom.zoomed} onclick={zoom.toggle}
 				>{zoom.zoomed ? '1×' : '2×'}</button
 			>
+		{/if}
+		{#if sayOn}
+			<!-- The chat's play button: a triangle, a turning ring, a square. -->
+			<button
+				class="chip say grow"
+				aria-label={SAY[saying]}
+				aria-busy={saying === 'loading'}
+				data-say={saying}
+				onclick={() => voice.sayFile(artifacts.id, file.id)}
+			>
+				{#if saying === 'loading'}
+					<i class="turning" aria-hidden="true"></i>
+				{:else}
+					<Icon name={saying === 'playing' ? 'stop' : 'play'} size={15} />
+				{/if}
+			</button>
 		{/if}
 		<button class="chip grow" disabled={!file.exists || sharing} onclick={send}>Share</button>
 	</div>
@@ -241,6 +267,20 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		font-size: 14px;
+	}
+
+	/* As tall as the chips beside it. */
+	.say {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 34px;
+		height: 24px;
+		padding: 0;
+	}
+
+	.say[data-say='playing'] {
+		color: var(--text);
 	}
 
 	.empty {

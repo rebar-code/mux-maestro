@@ -372,6 +372,38 @@ final class MobileArtifactsTests: XCTestCase {
         }
     }
 
+    func testSpeechIsTheWordsOfAMarkdownOrTextFileOfTheList() throws {
+        let plan = try write("# Plan\n\nShip on Friday.", to: project.appendingPathComponent("PLAN.md"))
+        let notes = try write("Two tests fail.", to: project.appendingPathComponent("notes.txt"))
+        let long = try write(String(repeating: "a", count: 13_000), to: project.appendingPathComponent("long.md"))
+        let code = try write("let a = 1", to: project.appendingPathComponent("main.swift"))
+        let page = try write("<p>Ship</p>", to: project.appendingPathComponent("report.html"))
+        let blank = try write(" \n", to: project.appendingPathComponent("blank.md"))
+        let secret = try write("# Key", to: project.appendingPathComponent("id_notes.md"))
+        let hidden = try write("TOKEN=1", to: project.appendingPathComponent(".notes.txt"))
+        let other = try write("other", to: outside.appendingPathComponent("notes.md"))
+        let bytes = project.appendingPathComponent("latin.txt")
+        try Data([0x63, 0x61, 0x66, 0xe9]).write(to: bytes)
+        let gone = project.appendingPathComponent("gone.md").path
+        let source: MobileArtifactSource = (
+            [plan, notes, long, code, page, blank, secret, hidden, other, bytes.path].map { artifact($0) }
+                + [artifact(gone, exists: false)], [])
+        func speech(_ id: String, host: Host = .local) -> String? {
+            MobileArtifacts.speech(id: id, thread: thread(host: host, cwd: project.path)) { _ in source }
+        }
+        XCTAssertEqual(speech(MobileArtifacts.id(path: plan)), "# Plan\n\nShip on Friday.")
+        XCTAssertEqual(speech(MobileArtifacts.id(path: notes)), "Two tests fail.")
+        XCTAssertEqual(speech(MobileArtifacts.id(path: long))?.count, 12_000)
+        XCTAssertEqual(MobileVoice.maxArtifactCharacters, 12_000)
+        // Code, a page, no words, a secret's name, a dotfile, another folder,
+        // bytes that are not UTF-8, and a file that is gone.
+        for path in [code, page, blank, secret, hidden, other, bytes.path, gone] {
+            XCTAssertNil(speech(MobileArtifacts.id(path: path)), path)
+        }
+        // An id is never a path.
+        XCTAssertNil(speech(plan))
+    }
+
     func testASymlinkIsNeverFollowedOutOfTheListedPath() throws {
         let fm = FileManager.default
         let target = try write("outside the project", to: outside.appendingPathComponent("notes.txt"))

@@ -256,6 +256,23 @@ enum MobileArtifacts {
         }
     }
 
+    /// The words of the one file `id` names, for the play button: a markdown
+    /// or text file only, found and read by the rules of `file`, cut to
+    /// `MobileVoice.maxArtifactCharacters`. nil when there is nothing to say.
+    static func speech(
+        id: String, thread: MobileThread, source: (MobileThread) -> MobileArtifactSource?
+    ) -> String? {
+        guard thread.host.isLocal,
+              let file = files(source(thread), cwd: thread.cwd, size: { _ in nil })
+                  .first(where: { $0.id == id }),
+              [.markdown, .text].contains(kind(of: file.artifact)),
+              case .data(let data) = read(path: file.artifact.path, cwd: thread.cwd, image: false),
+              let text = String(data: data, encoding: .utf8),
+              !text.allSatisfy(\.isWhitespace)
+        else { return nil }
+        return String(text.prefix(MobileVoice.maxArtifactCharacters))
+    }
+
     enum FileRead: Equatable {
         case data(Data)
         case tooLarge

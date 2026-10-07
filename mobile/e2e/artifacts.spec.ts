@@ -4,6 +4,7 @@ import {
 	dragStart,
 	expectDrawerClosed,
 	expectDrawerOpen,
+	fakeMic,
 	fresh,
 	threadPath,
 	touchDrag,
@@ -663,4 +664,79 @@ test('a swipe up on an open file shows the next one, and a swipe down the previo
 	expect(await shown()).toBe(ids[5]);
 	await down();
 	await expect.poll(shown).toBe(ids[4]);
+});
+
+test('Play on an open file reads it aloud; code and pictures have no button', async ({ page }) => {
+	const viewer = page.locator('[data-viewer]');
+	const play = viewer.locator('[data-say]');
+	const back = viewer.getByRole('button', { name: 'Back' });
+	const file = (name: string): Locator =>
+		pageOf(page, 'artifacts').locator('[data-file]', { hasText: name });
+	const said = async (): Promise<{ target: string; text: string; cached: boolean }[]> =>
+		((await (await page.request.post('/__fixture/voice-said')).json()) as { said: never[] }).said;
+	/** Screenshots are taken only when SHOTS names a directory outside the repo. */
+	const shot = async (name: string): Promise<void> => {
+		if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/${name}.png` });
+	};
+
+	await fakeMic(page);
+	await open(page, MAKER, ['artifacts', 'voice']);
+	await page.request.post('/__fixture/voice?delay=700');
+	await tab(page, 'artifacts').click();
+
+	// Words are read. Code and a picture are not.
+	for (const name of ['rotate-tokens.ts', 'settings-after.png']) {
+		await file(name).click();
+		await expect(viewer.getByRole('button', { name: 'Share' })).toBeVisible();
+		await expect(play).toHaveCount(0);
+		await back.click();
+		await expect(viewer).toHaveCount(0);
+	}
+
+	await file('PLAN.md').click();
+	await expect(play).toHaveAccessibleName('Play');
+	await expect(play.locator('[data-icon="play"]')).toBeVisible();
+	await page.waitForTimeout(300);
+	await shot('artifact-play-idle');
+
+	// A tap asks the Mac for the file by its id: the phone sends no text.
+	const asked = page.waitForRequest((request) => request.url().includes('/api/voice/say'));
+	await play.click();
+	const request = await asked;
+	expect(request.method()).toBe('POST');
+	expect(new URL(request.url()).search).toMatch(/^\?target=localhost%3A6&artifact=[0-9a-f]{32}$/);
+	expect(request.postData()).toBeNull();
+	await expect(play).toHaveAttribute('data-say', 'loading');
+	await expect(play).toHaveAttribute('aria-busy', 'true');
+	await expect(play).toHaveAccessibleName('Stop, loading');
+	await expect(play.locator('[data-icon]')).toHaveCount(0);
+	await shot('artifact-play-loading');
+
+	await expect(play).toHaveAttribute('data-say', 'playing');
+	await expect(play).toHaveAccessibleName('Stop');
+	await expect(play.locator('[data-icon="stop"]')).toBeVisible();
+	expect(await page.evaluate(() => window.__clips)).toBeGreaterThan(0);
+	await shot('artifact-play-playing');
+	const heard = await said();
+	expect(heard).toHaveLength(1);
+	expect(heard[0]).toMatchObject({ target: MAKER, cached: false });
+	expect(heard[0].text).toContain('Rotate push tokens that expired');
+
+	// Leaving the file does not stop it, and the button knows when it is back.
+	await back.click();
+	await expect(viewer).toHaveCount(0);
+	await file('PLAN.md').click();
+	await expect(play).toHaveAttribute('data-say', 'playing');
+	// A tap on the file that is read is its Stop: nothing new is asked for.
+	await play.click();
+	await expect(play).toHaveAttribute('data-say', 'idle');
+	await expect(play).toHaveAccessibleName('Play');
+	expect(await said()).toHaveLength(1);
+
+	// Voice switched off on the Mac takes the button away.
+	await page.request.post('/__fixture/capability?name=voice&on=0');
+	await page.request.post('/__fixture/drop');
+	await expect(play).toHaveCount(0);
+	await expect(viewer.getByRole('button', { name: 'Share' })).toBeVisible();
+	await shot('artifact-play-voice-off');
 });

@@ -104,6 +104,20 @@ export async function sayVoice(
 	);
 }
 
+/**
+ * Have one file of the thread `target` read aloud: the `artifact` id of its
+ * list. The Mac reads the file itself. The stream is `sayVoice`'s.
+ */
+export async function sayArtifactVoice(
+	target: string,
+	artifact: string,
+	handlers: VoiceHandlers,
+	signal?: AbortSignal
+): Promise<VoiceEnd> {
+	const query = `target=${encodeURIComponent(target)}&artifact=${encodeURIComponent(artifact)}`;
+	return follow(await postAudio(`/api/voice/say?${query}`, null, signal), handlers);
+}
+
 /** A take has started: the Mac loads its models while the human talks. */
 export async function warmVoice(speaker: boolean): Promise<void> {
 	try {

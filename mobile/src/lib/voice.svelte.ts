@@ -1,7 +1,14 @@
 import { blockReloadWhile } from './update';
 import { live } from './live.svelte';
 import type { VoiceEnd, VoiceMode } from './types';
-import { replayVoice, sayVoice, sendVoice, warmVoice, type VoiceHandlers } from './voice/api';
+import {
+	replayVoice,
+	sayArtifactVoice,
+	sayVoice,
+	sendVoice,
+	warmVoice,
+	type VoiceHandlers
+} from './voice/api';
 import { Capture } from './voice/capture';
 import { dropLabel, micFault, requestFault } from './voice/faults';
 import { voiceLabel, type VoiceStatus } from './voice/label';
@@ -746,17 +753,30 @@ class Voice {
 	 * whatever the speaker switch says. One message at a time: what is read or
 	 * on its way stops first, and a tap on the message that is read only stops it.
 	 */
-	say = (target: VoiceTarget, n: number): void => {
+	say = (target: VoiceTarget, n: number): void => this.read({ target, n });
+
+	/** What the play button of the file `artifact` of the thread `target` shows. */
+	sayingFile(target: VoiceTarget, artifact: string): SayState {
+		return sayState(this.saying, { target, n: 0, artifact }, this.status === 'speaking');
+	}
+
+	/** The play button of an open file: the same button, for the file's words. */
+	sayFile = (target: VoiceTarget, artifact: string): void => this.read({ target, n: 0, artifact });
+
+	private read(key: SayKey): void {
 		this.unlock();
-		const { start } = sayTap(this.saying, { target, n });
+		const { start } = sayTap(this.saying, key);
 		this.halt();
 		this.note = null;
 		if (!start) return this.rest();
 		this.saying = start;
+		const { target, n, artifact } = start;
 		void this.run(target, SILENT, true, (handlers, signal) =>
-			sayVoice(target, n, handlers, signal)
+			artifact === undefined
+				? sayVoice(target, n, handlers, signal)
+				: sayArtifactVoice(target, artifact, handlers, signal)
 		);
-	};
+	}
 
 	/** Auto opens the mic and listens; Manual waits for a tap. */
 	setMode = async (mode: VoiceMode, target: VoiceTarget, sink: VoiceSink): Promise<void> => {

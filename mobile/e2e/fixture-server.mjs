@@ -8,7 +8,7 @@
 // /__fixture/capability?name=&on=, /__fixture/manager-status?value=,
 // /__fixture/mac-turn?text=&reply=&spinner=&ms= (ms: the pause between words),
 // /__fixture/voice?mode=&speaker=&heard=&delay=&fail=, /__fixture/voice-takes,
-// /__fixture/voice-said (the messages the phone had read aloud, and which came from the cache),
+// /__fixture/voice-said (the messages and files the phone had read aloud, and which came from the cache),
 // /__fixture/replies, /__fixture/prompt?id=&pid=&kind=,
 // /__fixture/upload-max?value=, /__fixture/status?id=&value=,
 // /__fixture/panes?id=&value=, /__fixture/find-busy?value=,
@@ -1602,14 +1602,27 @@ function voiceApi(req, res, url, body) {
 			.forEach((text, seq) => event('audio', { seq, text, wav: clip(0.9) }));
 
 	if (path === '/api/voice/say') {
+		// A file of the thread, by its id, or a row of the chat, by its `n`.
+		const artifact = url.searchParams.get('artifact');
 		const n = Number(url.searchParams.get('n') ?? 'none');
-		if (!Number.isInteger(n) || n < 0) return send(res, 400, { error: 'bad_request' });
-		const row = (thread ? (chats[thread.id] ?? []) : manager.chat).find((one) => one.n === n);
+		let row;
+		if (artifact !== null) {
+			if (!thread) return send(res, 400, { error: 'bad_request' });
+			if (!capabilities.artifacts) return send(res, 403, { error: 'disabled' });
+			const file = thread.id === MAKER && FILES.find((one) => one.id === artifact);
+			const spoken = file && file.bytes && ['markdown', 'text'].includes(file.kind);
+			row = spoken ? { role: 'assistant', text: file.bytes.toString().slice(0, 12000) } : null;
+		} else {
+			if (!Number.isInteger(n) || n < 0) return send(res, 400, { error: 'bad_request' });
+			row = (thread ? (chats[thread.id] ?? []) : manager.chat).find((one) => one.n === n);
+		}
 		if (row?.role !== 'assistant')
 			return send(res, 404, { error: 'nothing', message: 'Nothing to replay' });
-		const key = `${target} ${n}`;
+		const key = artifact !== null ? `${target} file ${artifact}` : `${target} ${n}`;
 		const cached = voice.spoken.has(key);
-		voice.said.push({ target, n, cached });
+		voice.said.push(
+			artifact !== null ? { target, artifact, text: row.text, cached } : { target, n, cached }
+		);
 		stream();
 		const mine = voice;
 		// The first time the Mac has to synthesize; after that the clips are kept.
