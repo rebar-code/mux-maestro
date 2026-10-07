@@ -27,6 +27,32 @@ export function isViewable(file: ArtifactFile): boolean {
 	return file.size <= TEXT_MAX_BYTES;
 }
 
+/** A finger that moved this far up or down an open file steps to the next one. */
+const STEP_PX = 70;
+
+/**
+ * Which way a swipe on an open file steps: 1 to the next file (a swipe up),
+ * -1 to the previous (a swipe down), 0 for neither. A file that scrolls steps
+ * only from its end: `atTop` and `atEnd` are where it was when the finger landed.
+ */
+export function swipeStep(swipe: {
+	dx: number;
+	dy: number;
+	atTop: boolean;
+	atEnd: boolean;
+}): -1 | 0 | 1 {
+	const { dx, dy } = swipe;
+	if (Math.abs(dy) < STEP_PX || Math.abs(dy) < Math.abs(dx) * 1.5) return 0;
+	if (dy < 0) return swipe.atEnd ? 1 : 0;
+	return swipe.atTop ? -1 : 0;
+}
+
+/** The file `step` places from `id` in the list; null past either end. */
+export function neighbour(files: ArtifactFile[], id: string, step: number): ArtifactFile | null {
+	const index = files.findIndex((file) => file.id === id);
+	return index < 0 ? null : (files[index + step] ?? null);
+}
+
 const pathOf = (file: ArtifactFile): string => `${file.dir}/${file.name}`;
 
 /** Whether `text` names the file: by its whole path, a tail of it, or its name alone. */

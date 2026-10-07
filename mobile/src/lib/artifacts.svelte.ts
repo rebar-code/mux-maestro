@@ -1,6 +1,6 @@
 import { untrack } from 'svelte';
 import { ApiError, fetchArtifacts, fetchFile } from './api';
-import { imageUrl, savedBlob } from './artifacts';
+import { imageUrl, neighbour, savedBlob } from './artifacts';
 import { ui } from './gestures.svelte';
 import { live } from './live.svelte';
 import { ARTIFACTS } from './tabs';
@@ -16,6 +16,8 @@ export class Artifacts {
 	/** The file the viewer shows, and where it was opened from. */
 	open = $state.raw<ArtifactFile | null>(null);
 	from = $state<'chat' | 'list'>('list');
+	/** How the open file came in: from the side, or from below or above after a swipe. */
+	entered = $state<'side' | 'up' | 'down'>('side');
 
 	// Caches, not state: nothing is drawn from them.
 	// eslint-disable-next-line svelte/prefer-svelte-reactivity
@@ -86,7 +88,16 @@ export class Artifacts {
 	show(file: ArtifactFile, from: 'chat' | 'list'): void {
 		this.open = file;
 		this.from = from;
+		this.entered = 'side';
 		this.sync();
+	}
+
+	/** A swipe up or down on the open file: the next or the previous one of the list. */
+	step(by: -1 | 1): void {
+		const next = this.list && this.open ? neighbour(this.list.files, this.open.id, by) : null;
+		if (!next) return;
+		this.entered = by > 0 ? 'up' : 'down';
+		this.open = next;
 	}
 
 	close = (): void => {
