@@ -420,6 +420,8 @@ final class MobileReplyTests: XCTestCase {
         Settings.setPhoneUploadLimit(999_999_999, defaults: defaults)
         XCTAssertEqual(Settings.phoneUploadLimit(defaults: defaults), MobileReply.defaultUploadLimit)
 
+        // The folder is in no body the phone reads.
+        XCTAssertFalse(String(decoding: config.json(), as: UTF8.self).contains("MuxMaestro"))
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: config.json()) as? [String: Any])
         XCTAssertEqual((json["upload"] as? [String: Any])?["maxBytes"] as? Int, 5_242_880)
         XCTAssertEqual((json["capabilities"] as? [String: Any])?["keyBar"] as? Bool, true)
@@ -1391,6 +1393,39 @@ final class MobileReplyTests: XCTestCase {
         }
     }
 
+    func testTheUploadFolderIsATempFolderUntilSettingsNamesOne() throws {
+        let suite = "mobile-reply-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let fallback = MobileReply.defaultUploadFolder
+        XCTAssertTrue(fallback.hasPrefix(NSTemporaryDirectory()))
+        XCTAssertTrue(fallback.hasSuffix("/MuxMaestro"))
+        XCTAssertEqual(Settings.phoneUploadFolder(defaults: defaults), fallback)
+        XCTAssertEqual(Settings.phoneConfig(defaults: defaults).uploadFolder, fallback)
+
+        // Stored as typed; `~` is the home folder when it is read.
+        Settings.setPhoneUploadFolder(" ~/Screenshots/ ", defaults: defaults)
+        XCTAssertEqual(defaults.string(forKey: "phone.upload.folder"), "~/Screenshots/")
+        XCTAssertEqual(Settings.phoneUploadFolder(defaults: defaults), NSHomeDirectory() + "/Screenshots")
+        XCTAssertEqual(Settings.phoneConfig(defaults: defaults).uploadFolder, NSHomeDirectory() + "/Screenshots")
+        // Cleared, or not a path: the default again.
+        for raw in ["", "relative/dir", "/Users/me/a\u{1B}b"] {
+            Settings.setPhoneUploadFolder("/Users/me/uploads", defaults: defaults)
+            Settings.setPhoneUploadFolder(raw, defaults: defaults)
+            XCTAssertEqual(Settings.phoneUploadFolder(defaults: defaults), fallback, raw)
+        }
+
+        let cases: [(String, String?)] = [
+            ("/Users/me/uploads", "/Users/me/uploads"), ("/Users/me/uploads//", "/Users/me/uploads"),
+            ("~", "/Users/me"), ("~/shots", "/Users/me/shots"), ("/", "/"),
+            ("/Users/me/my uploads", "/Users/me/my uploads"),
+            ("", nil), ("shots", nil), ("~other/shots", nil), ("/Users/me/a\nb", nil),
+        ]
+        for (raw, expected) in cases {
+            XCTAssertEqual(MobileReply.uploadFolder(raw, home: "/Users/me"), expected, raw)
+        }
+    }
+
     // MARK: upload
 
     func testAFileNameIsOneSafeComponent() {
@@ -1432,22 +1467,47 @@ final class MobileReplyTests: XCTestCase {
         XCTAssertLessThanOrEqual(noExtension.utf8.count, MobileReply.maxFileNameBytes)
     }
 
-    func testAnUploadLandsInTheThreadsDirectoryAndItsPathIsPasted() {
+    private static let uploads = "/Users/me/uploads"
+
+    func testAnUploadLandsInTheUploadFolderAndItsPathIsPasted() {
         let pane = FakePane()
         let data = Data("demo".utf8)
         let response = MobileReply.upload(
-            data, name: "../../etc/photo 1.png", thread: thread(), io: pane.io, limit: 1024,
+            data, name: "../../etc/photo 1.png", thread: thread(), folder: Self.uploads, io: pane.io, limit: 1024,
             state: { self.state(.idle) })
         XCTAssertEqual(response.status, 200)
         XCTAssertEqual(
-            body(response), #"{"ok":true,"pasted":true,"path":"\/Users\/me\/acme-app\/photo-1.png"}"#)
-        XCTAssertEqual(pane.saves.map(\.path), ["/Users/me/acme-app/photo-1.png"])
+            body(response), #"{"ok":true,"pasted":true,"path":"\/Users\/me\/uploads\/photo-1.png"}"#)
+        XCTAssertEqual(pane.saves.map(\.path), ["/Users/me/uploads/photo-1.png"])
         XCTAssertEqual(pane.saves.first?.data, data)
         // The path is pasted, bracketed, and not submitted.
         XCTAssertEqual(pane.argv.map(\.first), ["copy-mode", "load-buffer", "paste-buffer"])
-        XCTAssertEqual(pane.calls[1].stdin, "/Users/me/acme-app/photo-1.png ")
+        XCTAssertEqual(pane.calls[1].stdin, "/Users/me/uploads/photo-1.png ")
         XCTAssertEqual(Array(pane.argv[2].prefix(4)), ["paste-buffer", "-p", "-r", "-d"])
         XCTAssertFalse(pane.argv.contains { $0.contains("Enter") })
+    }
+
+    func testAnUploadNeverLandsInTheThreadsDirectory() {
+        // On this Mac it is the folder from Settings, whatever the thread's directory is.
+        let local = FakePane()
+        let saved = MobileReply.upload(
+            Data("x".utf8), name: "IMG_0042.png", thread: thread(cwd: "/Users/me/acme-app"),
+            folder: Self.uploads, io: local.io, limit: 1024, paste: false, state: { self.state(.idle) })
+        XCTAssertEqual(
+            body(saved),
+            #"{"ok":true,"pasted":false,"path":"\/Users\/me\/uploads\/IMG_0042.png","text":"\/Users\/me\/uploads\/IMG_0042.png"}"#)
+        XCTAssertEqual(local.saves.map(\.path), ["/Users/me/uploads/IMG_0042.png"])
+
+        // The folder from Settings is a path on this Mac. On a remote host
+        // the file goes to that host's own temp folder, and the path the
+        // agent gets is absolute there.
+        let remote = FakePane()
+        _ = MobileReply.upload(
+            Data("x".utf8), name: "IMG_0042.png",
+            thread: thread(host: Host(name: "devbox", sshAlias: "devbox"), cwd: "/home/me/acme-app"),
+            folder: Self.uploads, io: remote.io, limit: 1024, state: { self.state(.idle) })
+        XCTAssertEqual(remote.saves.map(\.path), ["/tmp/MuxMaestro/IMG_0042.png"])
+        XCTAssertEqual(remote.calls[1].stdin, "/tmp/MuxMaestro/IMG_0042.png ")
     }
 
     func testAPathWithMoreThanPlainCharactersIsPastedQuoted() {
@@ -1457,7 +1517,7 @@ final class MobileReplyTests: XCTestCase {
         XCTAssertEqual(MobileReply.pasted(path: "/Users/me/$(x)/a.png"), "'/Users/me/$(x)/a.png'")
         let pane = FakePane()
         _ = MobileReply.upload(
-            Data("x".utf8), name: "a.png", thread: thread(cwd: "/Users/me/my app"), io: pane.io,
+            Data("x".utf8), name: "a.png", thread: thread(), folder: "/Users/me/my app", io: pane.io,
             limit: 1024, state: { self.state(.idle) })
         XCTAssertEqual(pane.calls[1].stdin, "'/Users/me/my app/a.png' ")
     }
@@ -1467,7 +1527,7 @@ final class MobileReplyTests: XCTestCase {
             let pane = FakePane()
             pane.screen = "$ "
             let response = MobileReply.upload(
-                Data("x".utf8), name: "a.png", thread: thread(cwd: "/Users/me/my app"), io: pane.io,
+                Data("x".utf8), name: "a.png", thread: thread(), folder: "/Users/me/my app", io: pane.io,
                 limit: 1024, paste: false, state: { self.state(status) })
             XCTAssertEqual(
                 body(response),
@@ -1479,25 +1539,25 @@ final class MobileReplyTests: XCTestCase {
         let pane = FakePane()
         XCTAssertEqual(
             MobileReply.upload(
-                Data("x".utf8), name: "a.png", thread: thread(), io: pane.io, limit: 1024, paste: false,
+                Data("x".utf8), name: "a.png", thread: thread(), folder: Self.uploads, io: pane.io, limit: 1024, paste: false,
                 state: { nil }).status, 404)
         XCTAssertEqual(pane.saves.count, 0)
     }
 
     func testAnUploadNeverOverwritesAFile() {
         let pane = FakePane()
-        pane.existing = ["/Users/me/acme-app/package.json", "/Users/me/acme-app/package-2.json"]
+        pane.existing = ["/Users/me/uploads/package.json", "/Users/me/uploads/package-2.json"]
         let response = MobileReply.upload(
-            Data("{}".utf8), name: "package.json", thread: thread(), io: pane.io, limit: 1024,
+            Data("{}".utf8), name: "package.json", thread: thread(), folder: Self.uploads, io: pane.io, limit: 1024,
             state: { self.state(.idle) })
         XCTAssertEqual(response.status, 200)
-        XCTAssertEqual(pane.saves.map(\.path), ["/Users/me/acme-app/package-3.json"])
+        XCTAssertEqual(pane.saves.map(\.path), ["/Users/me/uploads/package-3.json"])
 
         // A save that fails is an error: it is never read as "the name is free".
         let down = FakePane()
         down.failing = true
         let failed = MobileReply.upload(
-            Data("{}".utf8), name: "package.json", thread: thread(), io: down.io, limit: 1024,
+            Data("{}".utf8), name: "package.json", thread: thread(), folder: Self.uploads, io: down.io, limit: 1024,
             state: { self.state(.idle) })
         XCTAssertEqual(failed.status, 503)
         XCTAssertEqual(down.saves.count, 0)
@@ -1531,15 +1591,18 @@ final class MobileReplyTests: XCTestCase {
         XCTAssertEqual(FileTransfer.writeExclusive(data, to: path("link")), .exists)
         XCTAssertEqual(FileManager.default.contents(atPath: path("taken.txt")), Data("keep".utf8))
 
-        // No such folder is a failure, not a free name.
-        XCTAssertEqual(FileTransfer.writeExclusive(data, to: path("missing/a.txt")), .failed)
+        // A folder that is missing is made.
+        XCTAssertEqual(FileTransfer.writeExclusive(data, to: path("missing/deep/a.txt")), .saved)
+        XCTAssertEqual(FileManager.default.contents(atPath: path("missing/deep/a.txt")), data)
+        // A folder that cannot be made is a failure, not a free name.
+        XCTAssertEqual(FileTransfer.writeExclusive(data, to: path("new.txt/a.txt")), .failed)
 
         // The upload steps past the link to the next name.
         let pane = FakePane()
         var io = pane.io
         io.save = FileTransfer.writeExclusive
         let response = MobileReply.upload(
-            data, name: "dangling", thread: thread(cwd: root.path), io: io, limit: 1024,
+            data, name: "dangling", thread: thread(), folder: root.path, io: io, limit: 1024,
             state: { self.state(.idle) })
         XCTAssertEqual(response.status, 200)
         XCTAssertEqual(FileManager.default.contents(atPath: path("dangling-2")), data)
@@ -1597,7 +1660,20 @@ final class MobileReplyTests: XCTestCase {
             atPath: root.appendingPathComponent("dangling").path, withDestinationPath: target)
         XCTAssertEqual(try run("dangling"), .exists)
         XCTAssertFalse(FileManager.default.fileExists(atPath: target))
-        XCTAssertEqual(try run("missing/a.txt"), .failed)
+        // A folder that is missing is made, for this user alone.
+        XCTAssertEqual(try run("missing/deep/a.txt"), .saved)
+        let made = root.appendingPathComponent("missing/deep").path
+        XCTAssertEqual(
+            try FileManager.default.attributesOfItem(atPath: made)[.posixPermissions] as? Int, 0o700)
+        // A folder that cannot be made is a failure, not a free name.
+        XCTAssertEqual(try run("it's new.txt/a.txt"), .failed)
+        // A folder that is a link is not written through.
+        let elsewhere = root.appendingPathComponent("elsewhere").path
+        try FileManager.default.createDirectory(atPath: elsewhere, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            atPath: root.appendingPathComponent("linked").path, withDestinationPath: elsewhere)
+        XCTAssertEqual(try run("linked/a.txt"), .failed)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: elsewhere + "/a.txt"))
     }
 
     func testAnUploadIsRefusedBeforeAnythingIsWritten() {
@@ -1616,7 +1692,7 @@ final class MobileReplyTests: XCTestCase {
         for (data, name, status, cwd, expected) in cases {
             let pane = FakePane()
             let response = MobileReply.upload(
-                data, name: name, thread: thread(cwd: cwd), io: pane.io, limit: 1024,
+                data, name: name, thread: thread(), folder: cwd, io: pane.io, limit: 1024,
                 state: { status.map { self.state($0) } })
             XCTAssertEqual(response.status, expected, "\(name) \(String(describing: status)) \(cwd)")
             XCTAssertEqual(pane.saves.count, 0)
@@ -1627,13 +1703,13 @@ final class MobileReplyTests: XCTestCase {
         asking.screen = DemoPrompt.permission
         XCTAssertEqual(
             MobileReply.upload(
-                Data("x".utf8), name: "a.png", thread: thread(), io: asking.io, limit: 1024,
+                Data("x".utf8), name: "a.png", thread: thread(), folder: Self.uploads, io: asking.io, limit: 1024,
                 state: { self.state(.idle, remote: true) }).status, 409)
         XCTAssertEqual(asking.saves.count, 0)
         // Settings cannot raise the limit past what the server holds in memory.
         XCTAssertEqual(
             MobileReply.upload(
-                Data(count: MobileReply.maxUploadBytes + 1), name: "a.bin", thread: thread(),
+                Data(count: MobileReply.maxUploadBytes + 1), name: "a.bin", thread: thread(), folder: Self.uploads,
                 io: FakePane().io, limit: .max, state: { self.state(.idle) }).status, 413)
     }
 
@@ -1641,7 +1717,7 @@ final class MobileReplyTests: XCTestCase {
         let pane = FakePane()
         var asked = 0
         let response = MobileReply.upload(
-            Data("x".utf8), name: "a.png", thread: thread(), io: pane.io, limit: 1024,
+            Data("x".utf8), name: "a.png", thread: thread(), folder: Self.uploads, io: pane.io, limit: 1024,
             state: { asked += 1; return self.state(asked == 1 ? .idle : .waiting) })
         XCTAssertEqual(response.status, 200)
         XCTAssertTrue(body(response).contains(#""pasted":false"#))

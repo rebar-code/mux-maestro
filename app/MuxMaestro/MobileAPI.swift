@@ -211,7 +211,7 @@ enum MobileEndpoint: Equatable {
     case managerAnswer
     /// Press one whitelisted key in the manager's pane.
     case managerKey
-    /// Save a file in the manager's working directory. Its path is never
+    /// Save a file in the upload folder, for the manager. Its path is never
     /// pasted: the phone puts it in its text box, and it goes with the turn.
     case managerUpload(name: String)
     /// What the human asked for: the manager's list, as its file holds it.
@@ -236,7 +236,7 @@ enum MobileEndpoint: Equatable {
     case answer(id: String)
     /// The thread's skills and commands, for the `/` list.
     case commands(id: String)
-    /// Save a file in the thread's working directory. With `paste` its path
+    /// Save a file in the upload folder, for the thread. With `paste` its path
     /// is pasted into the pane; without, the phone puts it in its reply box.
     case upload(id: String, name: String, paste: Bool)
     /// One session action. The body names its target.
@@ -368,6 +368,8 @@ struct MobileConfig: Equatable {
     var voice = MobileVoiceDefaults()
     /// The largest file the phone may upload, in bytes.
     var uploadLimit = MobileReply.defaultUploadLimit
+    /// The folder on this Mac the phone's files are saved to.
+    var uploadFolder = MobileReply.defaultUploadFolder
 
     func allows(_ capability: MobileCapability) -> Bool {
         capability == .access || capabilities.contains(capability)

@@ -147,6 +147,17 @@ enum SettingsSelfTest {
             selectTab("Phone")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
                 self.check("Phone tab", self.window?.title == "Phone" && self.find(PhoneSettingsView.self) != nil)
+                let folder = self.window?.contentView.flatMap(self.all)?
+                    .first { $0 is NSTextField && $0.accessibilityLabel() == "Upload folder" } as? NSTextField
+                self.check("Upload folder starts as the temp folder",
+                           folder?.stringValue == MobileReply.defaultUploadFolder, folder?.stringValue ?? "no field")
+                if let folder {
+                    folder.stringValue = "~/Screenshots"
+                    folder.sendAction(folder.action, to: folder.target)
+                }
+                self.check("Upload folder is stored",
+                           Settings.phoneUploadFolder() == NSHomeDirectory() + "/Screenshots"
+                               && folder?.stringValue == "~/Screenshots", Settings.phoneUploadFolder())
                 self.shot("4-phone.png")
                 self.next(after: 0.2)
             }

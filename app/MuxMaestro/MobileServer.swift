@@ -878,15 +878,15 @@ final class MobileServer {
                     state: state)
             }
         case .managerUpload(let name):
-            let limit = config.uploadLimit
-            guard let cwd = manager?.cwd() else {
+            let limit = config.uploadLimit, folder = config.uploadFolder
+            guard manager?.cwd() != nil else {
                 return send(.error(503, "unavailable", message: MobileManager.offMessage),
                             to: client, head: head)
             }
             // Saved, never pasted: the path goes with the next turn's text.
             managerWrite(client) { target, io, state in
                 MobileReply.upload(
-                    request.body, name: name, cwd: cwd, target: target, io: io, limit: limit,
+                    request.body, name: name, folder: folder, target: target, io: io, limit: limit,
                     paste: false, state: { state })
             }
         case .requests:
@@ -969,11 +969,11 @@ final class MobileServer {
                 .json(["commands": MobileCommands.list(for: thread, home: sources.home).map(\.json)])
             }
         case .upload(let id, let name, let paste):
-            let limit = config.uploadLimit
+            let limit = config.uploadLimit, folder = config.uploadFolder
             write(to: id, client: client) { thread, io, state in
                 MobileReply.upload(
-                    request.body, name: name, thread: thread, io: io, limit: limit, paste: paste,
-                    state: state)
+                    request.body, name: name, thread: thread, folder: folder, io: io, limit: limit,
+                    paste: paste, state: state)
             }
         case .tmux(let action):
             // Checked against the tree as it is now; tmux runs off the queue.

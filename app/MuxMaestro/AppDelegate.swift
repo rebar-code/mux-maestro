@@ -1103,6 +1103,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 Settings.setPhoneUploadLimit(bytes)
                 self?.mobileServer.configure(Settings.phoneConfig())
             }
+            setup.phone.onUploadFolder = { [weak self] folder in
+                Settings.setPhoneUploadFolder(folder)
+                self?.mobileServer.configure(Settings.phoneConfig())
+            }
             setup.phone.onPush = { [weak self] options in
                 Settings.setPhonePush(options)
                 self?.pushCenter.configure(options)
