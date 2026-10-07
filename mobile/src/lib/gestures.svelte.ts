@@ -331,8 +331,11 @@ export function gestures(node: HTMLElement): () => void {
 		}
 		if (kind === null) {
 			// A drag over picked text, or after a long press, moves the selection:
-			// it is the browser's, and nothing follows it.
-			if (event.timeStamp - downT >= HOLD_MS || document.getSelection()?.isCollapsed === false) {
+			// it is the browser's, and nothing follows it. A mouse picks text as it
+			// drags, so only a finger's selection counts.
+			const picked =
+				event.pointerType !== 'mouse' && document.getSelection()?.isCollapsed === false;
+			if (picked || event.timeStamp - downT >= HOLD_MS) {
 				kind = 'none';
 				return;
 			}
