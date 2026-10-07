@@ -6,6 +6,7 @@ import {
 	expectDrawerOpen,
 	fresh,
 	threadPath,
+	touchDrag,
 	twoFingers,
 	WIDTH
 } from './helpers';
@@ -610,4 +611,56 @@ test('the Maestro home is not a thread: it has no Artifacts or Servers tab and a
 	await expect(tab(page, 'artifacts')).toHaveCount(0);
 	await expect(tab(page, 'servers')).toHaveCount(0);
 	expect(asked).toEqual([]);
+});
+
+test('a swipe up on an open file shows the next one, and a swipe down the previous', async ({
+	page
+}) => {
+	await open(page);
+	await tab(page, 'artifacts').click();
+	const list = pageOf(page, 'artifacts');
+	await expect(list.locator('[data-file]')).toHaveCount(6);
+	const ids = await list
+		.locator('[data-file]')
+		.evaluateAll((rows) => rows.map((row) => (row as HTMLElement).dataset.file ?? ''));
+	const viewer = page.locator('[data-viewer]');
+	const shown = (): Promise<string | null> => viewer.getAttribute('data-viewer');
+	/** Put a file that scrolls at its end or its top, so the swipe is not a scroll. */
+	const scrollTo = (end: boolean): Promise<void> =>
+		viewer.evaluate((el, toEnd) => {
+			const scroller = el.querySelector('.scroll');
+			if (scroller) scroller.scrollTop = toEnd ? scroller.scrollHeight : 0;
+		}, end);
+	const up = async (): Promise<void> => {
+		await scrollTo(true);
+		await touchDrag(page, [200, 600], [204, 380]);
+	};
+	const down = async (): Promise<void> => {
+		await scrollTo(false);
+		await touchDrag(page, [200, 380], [204, 600]);
+	};
+
+	await list.locator('[data-file]').nth(1).click();
+	await expect.poll(shown).toBe(ids[1]);
+	await up();
+	await expect.poll(shown).toBe(ids[2]);
+	// Still opened from the list: Back names it, and one file is open.
+	await expect(viewer.getByRole('button', { name: 'Back' })).toHaveText('‹ Artifacts');
+	await expect(viewer).toHaveCount(1);
+	await down();
+	await expect.poll(shown).toBe(ids[1]);
+
+	// A sideways move and a short one change nothing.
+	await touchDrag(page, [200, 500], [205, 460]);
+	expect(await shown()).toBe(ids[1]);
+
+	// Past the last file there is no next one.
+	await viewer.getByRole('button', { name: 'Back' }).click();
+	await list.locator('[data-file]').last().click();
+	await expect.poll(shown).toBe(ids[5]);
+	await up();
+	await page.waitForTimeout(200);
+	expect(await shown()).toBe(ids[5]);
+	await down();
+	await expect.poll(shown).toBe(ids[4]);
 });
