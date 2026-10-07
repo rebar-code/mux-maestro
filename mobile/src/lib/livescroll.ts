@@ -65,3 +65,75 @@ export function followTop(g: Geometry, cursorY: number): number {
 export function isFollowing(top: number, g: Geometry, cursorY: number): boolean {
 	return Math.abs(top - followTop(g, cursorY)) < Math.max(g.cell, 1);
 }
+
+/**
+ * A program on the alternate screen (an editor, an agent's own interface) has
+ * no scrollback here: it scrolls itself, when it is told to. A drag over it
+ * becomes steps for the program, one for each line the finger travels.
+ */
+export const MAX_STEPS = 40;
+
+export interface Steps {
+	/** Lines to scroll: more than 0 towards what is above. */
+	steps: number;
+	/** Travel, in pixels, that is not yet a line. */
+	rest: number;
+}
+
+/** The steps of a move of `moved` pixels (down is more than 0), with `rest` carried from the last. */
+export function wheelSteps(rest: number, moved: number, cell: number): Steps {
+	if (!(cell > 0)) return { steps: 0, rest: 0 };
+	const total = rest + moved;
+	const steps = Math.trunc(total / cell);
+	if (Math.abs(steps) > MAX_STEPS) return { steps: Math.sign(steps) * MAX_STEPS, rest: 0 };
+	return { steps, rest: total - steps * cell };
+}
+
+export interface WheelMode {
+	/** The program asked for mouse reports in the SGR form. */
+	mouse: boolean;
+	/** The program's cursor-key mode. */
+	application: boolean;
+}
+
+/**
+ * What `steps` type into the pane: wheel reports at the cell under the finger
+ * for a program that reads the mouse, arrow keys for one that does not.
+ */
+export function wheelText(
+	steps: number,
+	mode: WheelMode,
+	at: { col: number; row: number }
+): string {
+	const count = Math.min(Math.abs(Math.trunc(steps)), MAX_STEPS);
+	const up = steps > 0;
+	const cell = (n: number): number => Math.max(1, Math.floor(n));
+	const one = mode.mouse
+		? `\x1b[<${up ? 64 : 65};${cell(at.col)};${cell(at.row)}M`
+		: `\x1b${mode.application ? 'O' : '['}${up ? 'A' : 'B'}`;
+	return one.repeat(count);
+}
+
+/** The limits of the Mac for a size the phone asks for. */
+const COLS = [20, 300] as const;
+const ROWS = [5, 200] as const;
+
+export interface Size {
+	cols: number;
+	rows: number;
+}
+
+/** The cells of `cell` pixels that fit `view`, or null when either is not measured. */
+export function fit(
+	view: { width: number; height: number },
+	cell: { width: number; height: number }
+): Size | null {
+	if (!(cell.width > 0) || !(cell.height > 0) || !(view.width > 0) || !(view.height > 0))
+		return null;
+	const within = (n: number, [least, most]: readonly [number, number]): number =>
+		Math.min(Math.max(Math.floor(n), least), most);
+	return {
+		cols: within(view.width / cell.width, COLS),
+		rows: within(view.height / cell.height, ROWS)
+	};
+}

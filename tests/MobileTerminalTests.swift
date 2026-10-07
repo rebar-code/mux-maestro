@@ -86,10 +86,11 @@ final class MobileTerminalTests: XCTestCase {
             MobileTerminal.keyCommands(Data("hi\r".utf8), target: target), ["send-keys -t %12 -H 68 69 0d"])
     }
 
-    func testTheOnlyLinesEverWrittenAreTheThreeFixedCommands() {
+    func testTheOnlyLinesEverWrittenAreTheFixedCommands() {
         var session = MobileControlSession(target: target)
         var written = session.opening
         written += session.keys(Data("x\nkill-server\n".utf8))
+        written += session.size(cols: 60, rows: 20)
         written += session.pause()
         written += session.resync()
         for line in ["%begin 1 1 0", "%end 1 1 0", "%layout-change @1 abcd,80x24,0,0,1 abcd,80x24,0,0,1 *"] {
@@ -97,7 +98,8 @@ final class MobileTerminalTests: XCTestCase {
         }
         let fixed = [
             "refresh-client -f ignore-size,pause-after=1", "refresh-client -A '%12:pause'",
-            "refresh-client -A '%12:continue'",
+            "refresh-client -A '%12:continue'", "refresh-client -f !ignore-size", "switch-client -t $3",
+            "refresh-client -C 60x20",
         ]
         for line in written {
             XCTAssertFalse(line.contains("\n"))
@@ -105,7 +107,59 @@ final class MobileTerminalTests: XCTestCase {
                 fixed.contains(line) || line.hasPrefix("display-message -p -t %12 '")
                     || line.hasPrefix("capture-pane -p -e -S -") || line.hasPrefix("send-keys -t %12 -H "), line)
         }
-        XCTAssertEqual(written.count, 8)
+        XCTAssertEqual(written.count, 11)
+    }
+
+    // MARK: the phone's size
+
+    func testASizeIsTwoClampedIntegersInFixedText() {
+        XCTAssertEqual(MobileTerminal.sizeCommand(cols: 48, rows: 30), "refresh-client -C 48x30")
+        XCTAssertEqual(MobileTerminal.sizeCommand(cols: 1, rows: 1), "refresh-client -C 20x5")
+        XCTAssertEqual(MobileTerminal.sizeCommand(cols: 99_999, rows: -4), "refresh-client -C 300x5")
+        XCTAssertEqual(MobileTerminal.sizeCommand(cols: Int.max, rows: Int.max), "refresh-client -C 300x200")
+    }
+
+    func testTheSizeFrameHoldsTwoWholeNumbersAndNothingElse() throws {
+        let frame = { (text: String) in MobileTerminal.sizeFrame(Data(text.utf8)) }
+        let size = try XCTUnwrap(frame(#"{"type":"size","cols":48,"rows":30}"#))
+        XCTAssertEqual(size.cols, 48)
+        XCTAssertEqual(size.rows, 30)
+        let clamped = try XCTUnwrap(frame(#"{"type":"size","cols":5000,"rows":1}"#))
+        XCTAssertEqual(clamped.cols, 300)
+        XCTAssertEqual(clamped.rows, 5)
+        for bad in [
+            "resize 10 10", #"{"type":"size","cols":"48","rows":30}"#, #"{"type":"size","cols":48.5,"rows":30}"#,
+            #"{"type":"size","cols":true,"rows":30}"#, #"{"type":"size","cols":48}"#,
+            #"{"type":"resize","cols":48,"rows":30}"#,
+            #"{"type":"size","cols":48,"rows":30,"session":"$1; kill-server"}"#,
+            #"{"type":"size","cols":48,"rows":30}"# + String(repeating: " ", count: 200),
+        ] {
+            XCTAssertNil(frame(bad), bad)
+        }
+    }
+
+    func testTheFirstSizeMakesTheClientsSizeCountAndEachOneClaimsTheWindow() {
+        var session = MobileControlSession(target: target)
+        XCTAssertEqual(
+            session.size(cols: 48, rows: 30),
+            ["refresh-client -f !ignore-size", "switch-client -t $3", "refresh-client -C 48x30"])
+        // The claim is said each time: the Mac may have taken the window back.
+        XCTAssertEqual(session.size(cols: 48, rows: 30), ["switch-client -t $3", "refresh-client -C 48x30"])
+    }
+
+    func testTheRepliesToASizeAreNotTakenForAScreen() {
+        var session = MobileControlSession(target: target)
+        _ = run(&session, opening)
+        _ = session.size(cols: 48, rows: 30)
+        // The capture's reply, then the three of the size.
+        let events = run(&session, [
+            "%begin 100 3 1", "screen", "%end 100 3 1",
+            "%begin 100 4 1", "%end 100 4 1", "%begin 100 5 1", "%end 100 5 1", "%session-changed $3 acme-app",
+            "%begin 100 6 1", "%end 100 6 1", "%output %12 after",
+        ])
+        XCTAssertEqual(events.count, 2)
+        guard case .ready = events.first else { return XCTFail("\(events)") }
+        XCTAssertEqual(events.last, .output(Data("after".utf8)))
     }
 
     // MARK: control mode
@@ -181,6 +235,26 @@ final class MobileTerminalTests: XCTestCase {
         XCTAssertEqual(
             String(decoding: MobileTerminal.snapshot(state: state, capture: [Data("a".utf8)]), as: UTF8.self),
             "\u{1B}[?1049ha\u{1B}[0m\u{1B}[2;21r\u{1B}[?1h\u{1B}[10;5H\u{1B}[?25l")
+    }
+
+    func testSnapshotRestoresTheMouseModesSoThePhoneCanScrollTheProgram() throws {
+        // A program on the alternate screen that asked for every mouse move, in SGR form.
+        let state = try XCTUnwrap(MobileTerminal.State("80 24 0 0 1 1 0 0 23 0 0 1 1"))
+        XCTAssertEqual(
+            [state.mouseStandard, state.mouseButton, state.mouseAll, state.mouseSGR], [false, false, true, true])
+        XCTAssertEqual(
+            String(decoding: MobileTerminal.snapshot(state: state, capture: []), as: UTF8.self),
+            "\u{1B}[?1049h\u{1B}[0m\u{1B}[?1003h\u{1B}[?1006h\u{1B}[1;1H")
+        let clicks = try XCTUnwrap(MobileTerminal.State("80 24 0 0 0 1 0 0 23 1 1 0 0"))
+        XCTAssertEqual(
+            String(decoding: MobileTerminal.snapshot(state: clicks, capture: []), as: UTF8.self),
+            "\u{1B}[0m\u{1B}[?1000h\u{1B}[?1002h\u{1B}[1;1H")
+        // A tmux that knows no mouse flag leaves them out: no mouse mode.
+        let old = try XCTUnwrap(MobileTerminal.State("80 24 0 0 0 1 0 0 23"))
+        XCTAssertFalse(old.mouseAll || old.mouseSGR || old.mouseStandard || old.mouseButton)
+        XCTAssertTrue(MobileTerminal.stateFormat.hasSuffix(
+            "#{mouse_standard_flag} #{mouse_button_flag} #{mouse_all_flag} #{mouse_sgr_flag}"))
+        XCTAssertNil(MobileTerminal.State("80 24 0 0 0 1 0 0 23 0 0 1 1 1"))
     }
 
     func testAStateThatIsNotNineNumbersEndsTheBridge() {
@@ -410,6 +484,12 @@ final class MobileTerminalSocketTests: XCTestCase {
             clients.append((process, master, drain))
         }
 
+        /// A key press on the human's own client.
+        func type(_ text: String) {
+            guard let master = clients.last?.master else { return XCTFail("no client") }
+            _ = text.withCString { write(master, $0, strlen($0)) }
+        }
+
         func stop() {
             for client in clients {
                 client.drain.cancel()
@@ -551,6 +631,19 @@ final class MobileTerminalSocketTests: XCTestCase {
             lock.lock()
             defer { lock.unlock() }
             return closed
+        }
+
+        /// The size in the next `size` message, as `colsxrows`.
+        func size(_ timeout: TimeInterval = 5) -> String? {
+            let deadline = Date().addingTimeInterval(timeout)
+            while let frame = frame(max(0, deadline.timeIntervalSinceNow)) {
+                guard frame.opcode == 1,
+                      let message = try? JSONSerialization.jsonObject(with: frame.payload) as? [String: Any],
+                      message["type"] as? String == "size", let cols = message["cols"], let rows = message["rows"]
+                else { continue }
+                return "\(cols)x\(rows)"
+            }
+            return nil
         }
 
         /// Binary frames until their bytes hold `text`.
@@ -849,6 +942,39 @@ final class MobileTerminalSocketTests: XCTestCase {
         phone.send(2, Data(repeating: 65, count: MobileSocket.maxMessageBytes + 1))
         XCTAssertEqual(phone.closeCode(), 1009)
         XCTAssertFalse(tmux.screen(tmux.ids().pane).contains("AAAA"))
+    }
+
+    // MARK: the phone's size
+
+    func testThePhonesSizeDrivesTheWindowAndTheMacGetsItBack() throws {
+        tmux.attach(cols: 120, rows: 40)
+        XCTAssertTrue(eventually { tmux.windowSize == "120x39" }, tmux.windowSize)
+        let phone = live()
+        // Open, with no size said: the Mac's window is as it was.
+        XCTAssertEqual(tmux.windowSize, "120x39")
+
+        phone.send(1, Data(#"{"type":"size","cols":48,"rows":30}"#.utf8))
+        XCTAssertTrue(eventually { tmux.windowSize == "48x30" }, tmux.windowSize)
+        // The pane's new size comes back to the phone, which draws that many cells.
+        XCTAssertEqual(phone.size(), "48x30")
+
+        // A key on the Mac: its client was used last, and the window is the Mac's.
+        tmux.type(" ")
+        XCTAssertTrue(eventually { tmux.windowSize == "120x39" }, tmux.windowSize)
+        XCTAssertEqual(phone.size(), "120x39")
+
+        // The phone says its size again (a turn, the keyboard): it has the window again.
+        phone.send(1, Data(#"{"type":"size","cols":48,"rows":30}"#.utf8))
+        XCTAssertTrue(eventually { tmux.windowSize == "48x30" }, tmux.windowSize)
+
+        // Out of limits is clamped, never refused and never text for tmux.
+        phone.send(1, Data(#"{"type":"size","cols":2,"rows":9999}"#.utf8))
+        XCTAssertTrue(eventually { tmux.windowSize == "20x200" }, tmux.windowSize)
+
+        // The phone leaves while it holds the size: the Mac has its window back.
+        phone.hangUp()
+        XCTAssertTrue(eventually { tmux.clientCount == 1 })
+        XCTAssertTrue(eventually { tmux.windowSize == "120x39" }, tmux.windowSize)
     }
 
     func testATextMessageAfterPairingClosesTheSocket() {
@@ -1254,6 +1380,9 @@ final class MobileTerminalSocketTests: XCTestCase {
         limits.socketBacklog = 4096
         limits.socketStall = 60
         startServer(limits: limits)
+        // A first screen small enough to go out to a phone that reads nothing:
+        // the kernel's buffers take it whole.
+        tmux.run(["set-option", "-g", "history-limit", "1500"])
         tmux.run(["new-window", "-d", "-t", "acme-app", Self.flood])
         server.update(snapshot(windows: ["acme-app:0", "acme-app:1"]))
         let fd = unreadSocket(threadID("acme-app:1"))

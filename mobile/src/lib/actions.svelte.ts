@@ -7,6 +7,7 @@ import {
 	killed,
 	refusalText,
 	validName,
+	validPrompt,
 	type ItemKey,
 	type KillKind,
 	type MenuTarget,
@@ -16,7 +17,7 @@ import { ApiError, fetchDirs, tmuxAction } from './api';
 import { ui } from './gestures.svelte';
 import { live } from './live.svelte';
 
-export type Stage = 'menu' | 'rename' | 'kill' | 'dirs' | 'start';
+export type Stage = 'menu' | 'rename' | 'kill' | 'dirs' | 'agent' | 'prompt' | 'start';
 
 const APPEAR_TRIES = 8;
 const APPEAR_MS = 350;
@@ -30,10 +31,24 @@ class Menu {
 	name = $state('');
 	/** The directories the host offers; null until they are loaded. */
 	dirs = $state.raw<string[] | null>(null);
+	/** The folder `dirs` is the inside of; null on the list of where threads work. */
+	folder = $state.raw<{ path: string; parent: string | null } | null>(null);
+	/** The host's home directory, where browsing starts; null when the host does not say. */
+	home = $state<string | null>(null);
+	/** A list is on its way. */
+	loading = $state(false);
+	/** Where the new session starts; null for the host's home. */
+	dir = $state<string | null>(null);
+	/** The agent the prompt is for. */
+	agent = $state<'claude' | 'codex'>('claude');
+	prompt = $state('');
+	/** The last list asked for: an older answer is dropped. */
+	private asked = 0;
 	busy = $state(false);
 	error = $state<string | null>(null);
 
 	readonly nameOk: boolean = $derived(validName(this.name));
+	readonly promptOk: boolean = $derived(validPrompt(this.prompt));
 
 	open(target: MenuTarget): void {
 		this.target = target;
@@ -72,21 +87,67 @@ class Menu {
 		this.open({ kind: 'host', host });
 		this.stage = 'dirs';
 		this.dirs = null;
-		void fetchDirs(host).then(
-			(dirs) => {
-				if (this.target?.kind === 'host' && this.target.host === host) this.dirs = dirs;
-			},
-			(error: unknown) => this.fail(error)
-		);
+		this.folder = null;
+		this.home = null;
+		this.browse(null);
 	}
 
-	/** `dir`: one of the offered directories, or null for the host's home. */
-	async newSession(dir: string | null): Promise<void> {
+	/** List the inside of `path`, or with null where the host's threads work. */
+	browse = (path: string | null): void => {
 		const target = this.target;
 		if (target?.kind !== 'host') return;
+		const asked = (this.asked += 1);
+		const mine = (): boolean => asked === this.asked && this.target === target;
+		this.loading = true;
+		this.error = null;
+		void fetchDirs(target.host, path).then(
+			(list) => {
+				if (!mine()) return;
+				this.loading = false;
+				this.dirs = list.dirs;
+				this.home = list.home ?? this.home;
+				this.folder =
+					list.path === undefined ? null : { path: list.path, parent: list.parent ?? null };
+			},
+			(error: unknown) => {
+				if (!mine()) return;
+				this.loading = false;
+				this.fail(error);
+			}
+		);
+	};
+
+	/** One folder up; from the home directory, back to where the threads work. */
+	up = (): void => this.browse(this.folder?.parent ?? null);
+
+	/** `dir`: where the new session starts, or null for the host's home. Next: what runs in it. */
+	choose(dir: string | null): void {
+		if (this.busy) return;
+		this.dir = dir;
+		this.prompt = '';
+		this.error = null;
+		this.stage = 'agent';
+	}
+
+	/** A terminal starts at once; an agent can take a first prompt. */
+	pickAgent(kind: StartKind): void {
+		if (kind === 'terminal') return void this.newSession(kind);
+		this.agent = kind;
+		this.stage = 'prompt';
+	}
+
+	/** A session with an agent opens once the list has it. */
+	async newSession(kind: StartKind): Promise<void> {
+		const target = this.target;
+		if (target?.kind !== 'host' || (kind !== 'terminal' && !this.promptOk)) return;
+		const prompt = this.prompt.trim();
 		await this.run(async () => {
-			await tmuxAction('new-session', { host: target.host, ...(dir ? { dir } : {}) });
-			void live.refresh();
+			const { thread } = await tmuxAction('new-session', {
+				host: target.host,
+				...(this.dir ? { dir: this.dir } : {}),
+				...(kind === 'terminal' ? {} : { agent: kind, ...(prompt ? { prompt } : {}) })
+			});
+			await this.show(thread);
 		});
 	}
 
@@ -105,14 +166,19 @@ class Menu {
 				...to,
 				...(kind === 'terminal' ? {} : { agent: kind })
 			});
-			if (!thread) return void live.refresh();
-			for (let n = 0; n < APPEAR_TRIES && !live.byId(thread); n += 1) {
-				await live.refresh();
-				if (!live.byId(thread)) await new Promise((done) => setTimeout(done, APPEAR_MS));
-			}
-			ui.closeDrawer();
-			await goto(resolve('/t/[id]', { id: thread }));
+			await this.show(thread);
 		});
+	}
+
+	/** Open the thread an action made, once the list has it. Without one, the list is read again. */
+	private async show(thread: string | undefined): Promise<void> {
+		if (!thread) return void live.refresh();
+		for (let n = 0; n < APPEAR_TRIES && !live.byId(thread); n += 1) {
+			await live.refresh();
+			if (!live.byId(thread)) await new Promise((done) => setTimeout(done, APPEAR_MS));
+		}
+		ui.closeDrawer();
+		await goto(resolve('/t/[id]', { id: thread }));
 	}
 
 	async rename(): Promise<void> {

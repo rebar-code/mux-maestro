@@ -115,6 +115,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             tmux: { [registry] host in
                 { args in registry.service(for: host).phoneTmux(args) }
             },
+            shell: { [registry] host in
+                let service = registry.service(for: host)
+                return MobileActions.HostShell(
+                    home: { service.resolveHome() }, run: { service.phoneHostCommand($0) })
+            },
             archive: { [weak self] thread in
                 // The close flow belongs to the main thread and its kill runs
                 // on the host's queue: wait here for both.
@@ -136,6 +141,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             changed: { [weak self] in
                 // The sidebar loads the tree again, and the phone follows it.
                 DispatchQueue.main.async { self?.sidebarVC?.refresh() }
+            },
+            remoteCommands: { [registry] thread in
+                registry.service(for: thread.host).phoneCommandFiles(for: thread)
             },
             artifacts: { [artifactReader, registry, transcriptMirror] thread in
                 guard !thread.host.isLocal else {
@@ -217,8 +225,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 Task { try? await VoiceEngine.shared.loadIfNeeded(speaker ? .all : .whisper) }
             }),
         serving: MobileServer.Serving(
-            open: { [weak self] port, https, thread, label in
-                self?.phoneLink.openMapping(port: port, https: https, thread: thread, label: label)
+            open: { [weak self] port, https, thread, label, host in
+                self?.phoneLink.openMapping(
+                    port: port, https: https, thread: thread, label: label, host: host)
                     ?? .unavailable("Phone access is off")
             },
             close: { [weak self] port in self?.phoneLink.closeMapping(port: port) ?? false },

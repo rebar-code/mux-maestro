@@ -4,10 +4,13 @@ import {
 	killed,
 	menuItems,
 	menuTitle,
+	folderName,
+	PROMPT_MAX,
 	refusalText,
 	START_ITEMS,
 	startTitle,
 	validName,
+	validPrompt,
 	type MenuTarget
 } from './actions';
 import type { Thread } from './types';
@@ -121,6 +124,59 @@ describe('killed', () => {
 			thread: 'localhost:1'
 		};
 		expect(killed(session, 'kill-session', threads)).toHaveLength(3);
+	});
+});
+
+describe('validPrompt', () => {
+	it('takes text, new lines and tabs, and no prompt at all', () => {
+		for (const prompt of [
+			'',
+			'  ',
+			'fix the login test',
+			'it\'s $(id) `x`; \\ "q"',
+			'a\nb\tc',
+			'é 日本語 🌱'
+		])
+			expect(validPrompt(prompt), JSON.stringify(prompt)).toBe(true);
+	});
+
+	it('refuses a key press and a word the agent would read as an option', () => {
+		for (const prompt of [
+			'a\u001b[2J',
+			'a\u0003',
+			'a\u007f',
+			'a\u009b',
+			'a\rb',
+			'--help',
+			'  -p hi'
+		])
+			expect(validPrompt(prompt), JSON.stringify(prompt)).toBe(false);
+	});
+
+	it('counts the bytes of the quoted word, as the Mac does', () => {
+		expect(validPrompt('a'.repeat(PROMPT_MAX - 2))).toBe(true);
+		expect(validPrompt('a'.repeat(PROMPT_MAX - 1))).toBe(false);
+		// A quote is four bytes, and so is a backslash.
+		expect(validPrompt("'".repeat(224))).toBe(true);
+		expect(validPrompt("'".repeat(225))).toBe(false);
+		expect(validPrompt('\\'.repeat(225))).toBe(false);
+		expect(validPrompt('é'.repeat(449))).toBe(true);
+		expect(validPrompt('é'.repeat(450))).toBe(false);
+	});
+});
+
+describe('folderName', () => {
+	it('is the last step of a path', () => {
+		expect(folderName('/home/me/code/acme-app')).toBe('acme-app');
+		expect(folderName('/home/me')).toBe('me');
+		expect(folderName('/')).toBe('/');
+	});
+});
+
+describe('refusals of a spin-up', () => {
+	it('say what was wrong', () => {
+		expect(refusalText('bad_prompt', null)).toBe('Prompt not allowed');
+		expect(refusalText('too_large', null)).toBe('Prompt too long');
 	});
 });
 

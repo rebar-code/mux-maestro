@@ -475,14 +475,31 @@ export async function tmuxAction(
 		dir?: string;
 		confirm?: true;
 		agent?: 'claude' | 'codex';
+		/** The agent's first prompt. */
+		prompt?: string;
 	}
 ): Promise<ActionResult> {
 	return (await (await post(`/api/tmux/${action}`, body)).json()) as ActionResult;
 }
 
-/** The directories a host offers for a new session. */
-export async function fetchDirs(host: string): Promise<string[]> {
-	return (await get<{ dirs: string[] }>(`/api/hosts/${encodeURIComponent(host)}/dirs`)).dirs;
+/** One list of directories on a host. */
+export interface DirList {
+	dirs: string[];
+	/** The host's home directory, where browsing starts. Absent when the host does not say. */
+	home?: string;
+	/** The directory that was listed. Absent on the list of where threads work. */
+	path?: string;
+	/** The directory above `path`. Absent at the home directory. */
+	parent?: string;
+}
+
+/**
+ * The directories a host offers for a new session: where its threads work,
+ * or with `path` the sub-directories of one directory of its home tree.
+ */
+export function fetchDirs(host: string, path: string | null = null): Promise<DirList> {
+	const query = path === null ? '' : `?path=${encodeURIComponent(path)}`;
+	return get<DirList>(`/api/hosts/${encodeURIComponent(host)}/dirs${query}`);
 }
 
 /** Find `query` in the thread's scrollback. */

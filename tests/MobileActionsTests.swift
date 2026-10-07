@@ -152,7 +152,12 @@ final class MobileActionsTests: XCTestCase {
             .methodNotAllowed)
         XCTAssertEqual(
             MobileAPI.route(MobileRequest(method: "GET", path: "/api/hosts/devbox/dirs"), config: on),
-            .api(.dirs(host: "devbox")))
+            .api(.dirs(host: "devbox", path: nil)))
+        XCTAssertEqual(
+            MobileAPI.route(
+                MobileRequest(method: "GET", path: "/api/hosts/devbox/dirs", query: ["path": "/home/me/code"]),
+                config: on),
+            .api(.dirs(host: "devbox", path: "/home/me/code")))
         XCTAssertEqual(
             MobileAPI.route(
                 MobileRequest(method: "GET", path: "/api/threads/localhost%3A12/find", query: ["q": "tax"]),
@@ -374,7 +379,7 @@ final class MobileActionsTests: XCTestCase {
 
         let before = tmux.argv.count
         for dir in [
-            #""/etc""#, #""/Users/me""#, #""/Users/me/billing/..""#, #""/home/me/infra""#,
+            #""/etc""#, #""/Users/me/billing/..""#, #""/home/me/infra""#,
             #""~""#, #""""#, "7", #"["/Users/me/billing"]"#,
         ] {
             XCTAssertEqual(code(.newSession, #"{"host":"localhost","dir":\#(dir)}"#), "400 bad_dir", dir)
@@ -732,6 +737,431 @@ final class MobileActionsTests: XCTestCase {
         ])
         // A thread of another host with the same pane number is not this one.
         XCTAssertEqual(status(.killPane, ["thread": "localhost:3", "confirm": true], in: snapshot), "404 not_found")
+    }
+
+    // MARK: spin up on a host
+
+    private let format = "#{window_index}\t#{pane_id}"
+
+    /// `perform` with a home for the remote host, as its `resolveHome` gives.
+    private func spin(
+        _ action: MobileAction, _ fields: [String: Any], remoteHome: String? = "/home/me"
+    ) -> (status: Int, body: [String: Any]) {
+        let response = MobileActions.perform(
+            action, body: try! JSONSerialization.data(withJSONObject: fields), snapshot: snapshot(),
+            home: "/Users/me", tmux: tmux.source, hostHome: { _ in remoteHome })
+        let body = (try? JSONSerialization.jsonObject(with: response.body)) as? [String: Any]
+        return (response.status, body ?? [:])
+    }
+
+    private func refusal(_ action: MobileAction, _ fields: [String: Any], remoteHome: String? = "/home/me") -> String {
+        let result = spin(action, fields, remoteHome: remoteHome)
+        return "\(result.status) \(result.body["error"] as? String ?? "ok")"
+    }
+
+    /// What a POSIX shell makes of `script`: the arguments `claude` gets, when
+    /// the script calls it. nil when the shell did not exit 0.
+    private func claudeArguments(of script: String, shell: String = "/bin/sh") -> [String]? {
+        let process = Process(), out = Pipe()
+        process.executableURL = URL(fileURLWithPath: shell)
+        // The script is read from a file, as typed lines are: not from `-c`.
+        process.arguments = ["-c", "claude() { for a in \"$@\"; do printf '%s\\0' \"$a\"; done; }\n" + script]
+        process.standardOutput = out
+        process.standardError = Pipe()
+        guard (try? process.run()) != nil else { return nil }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { return nil }
+        return data.split(separator: 0, omittingEmptySubsequences: false).dropLast()
+            .map { String(decoding: $0, as: UTF8.self) }
+    }
+
+    func testANewSessionStartsAnAgentWithItsPromptInADirectoryOfTheHomeTree() {
+        tmux.output = "1\t%41\n"
+        let local = spin(.newSession, [
+            "host": "localhost", "dir": "/Users/me/code/acme-app", "agent": "claude", "prompt": "fix the login test",
+        ])
+        XCTAssertEqual(local.status, 200)
+        XCTAssertEqual(local.body["session"] as? String, "acme-app-2")
+        XCTAssertEqual(local.body["thread"] as? String, "localhost:41")
+        XCTAssertEqual(local.body["agent"] as? String, "claude")
+        let remote = spin(.newSession, [
+            "host": "devbox", "dir": "/home/me/code/acme app", "agent": "codex", "prompt": "it's broken",
+        ])
+        XCTAssertEqual(remote.status, 200)
+        XCTAssertEqual(remote.body["thread"] as? String, "devbox:41")
+        XCTAssertEqual(remote.body["agent"] as? String, "codex")
+        // An agent and no prompt: the bare command.
+        XCTAssertEqual(spin(.newSession, ["host": "devbox", "agent": "claude", "prompt": "  \n"]).status, 200)
+        // No agent: a shell, and tmux is not asked for the pane.
+        let shell = spin(.newSession, ["host": "devbox", "dir": "/home/me"])
+        XCTAssertNil(shell.body["thread"])
+        XCTAssertNil(shell.body["agent"])
+
+        XCTAssertEqual(tmux.argv, [
+            ["new-session", "-d", "-s", "acme-app-2", "-P", "-F", format, "-c", "/Users/me/code/acme-app"],
+            ["send-keys", "-t", "%41", "claude 'fix the login test'", "Enter"],
+            ["new-session", "-d", "-s", "acme app", "-P", "-F", format, "-c", "/home/me/code/acme app"],
+            ["send-keys", "-t", "%41", #"codex 'it'\''s broken'"#, "Enter"],
+            ["new-session", "-d", "-s", "session", "-P", "-F", format, "-c", "~"],
+            ["send-keys", "-t", "%41", "claude", "Enter"],
+            ["new-session", "-d", "-s", "me", "-c", "/home/me"],
+        ])
+        XCTAssertEqual(tmux.calls.map(\.host), [
+            "localhost", "localhost", "devbox", "devbox", "devbox", "devbox", "devbox",
+        ])
+        // The answer names the thread and the agent: the phone opens its chat.
+        let answer = MobileActions.perform(
+            .newSession, body: Data(#"{"host":"localhost","agent":"claude","prompt":"hi"}"#.utf8),
+            snapshot: snapshot(), home: "/Users/me", tmux: tmux.source)
+        XCTAssertEqual(MobileActions.startedThread(answer), "localhost:41")
+    }
+
+    func testANewWindowTakesAPromptToo() {
+        tmux.output = "3\t%41\n"
+        XCTAssertEqual(
+            spin(.newWindow, ["thread": "localhost:13", "agent": "claude", "prompt": "run the tests"]).status, 200)
+        XCTAssertEqual(tmux.argv.last, ["send-keys", "-t", "%41", "claude 'run the tests'", "Enter"])
+        XCTAssertEqual(refusal(.newWindow, ["thread": "localhost:13", "prompt": "run the tests"]), "400 bad_prompt")
+    }
+
+    func testASessionWhosePaneTmuxDidNotNameIsStillMade() {
+        tmux.output = ""
+        let made = spin(.newSession, ["host": "localhost", "agent": "claude", "prompt": "hi"])
+        XCTAssertEqual(made.status, 200)
+        XCTAssertEqual(made.body["session"] as? String, "session")
+        XCTAssertNil(made.body["agent"])
+        XCTAssertEqual(tmux.argv.count, 1)
+    }
+
+    /// Prompts a shell would run, were one of them ever read as a command.
+    private static let hostile = [
+        "$(touch /tmp/mm-pwned)", "`touch /tmp/mm-pwned`", "a; touch /tmp/mm-pwned", "a && b || c | d > /tmp/mm-pwned",
+        "it's", "'; touch /tmp/mm-pwned; '", "''''", #"say "hi" to $USER and ${HOME}"#, "line one\nline two\n\n$(id)",
+        #"back\slash \' \\ end\"#, #"\"#, #"'\''"#, "!! !$ !-1", "* ? [a-z] {a,b} ~ # comment", "caf\u{E9} 日本語 🌱",
+        "a\u{2028}b", "x = 1 < 2 & y",
+    ]
+
+    func testAPromptIsOneQuotedWordWhateverItHolds() throws {
+        XCTAssertEqual(MobileActions.shellWord("it's"), #"'it'\''s'"#)
+        // A backslash is never inside the quotes: fish reads one there.
+        XCTAssertEqual(MobileActions.shellWord(#"a\b"#), #"'a'\\'b'"#)
+        XCTAssertEqual(MobileActions.shellWord(""), "''")
+        for prompt in Self.hostile {
+            let word = MobileActions.shellWord(prompt)
+            for shell in ["/bin/sh", "/bin/bash", "/bin/zsh"] {
+                XCTAssertEqual(
+                    claudeArguments(of: "claude \(word)", shell: shell), [prompt], "\(shell) \(prompt.debugDescription)")
+            }
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: "/tmp/mm-pwned"))
+    }
+
+    func testAPromptStaysOneArgumentHereAndThroughSsh() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("mm-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        // A stand-in for the remote tmux: it prints the arguments it got.
+        let echo = folder.appendingPathComponent("argv").path
+        try "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\0' \"$a\"; done\n".write(
+            toFile: echo, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: echo)
+
+        for prompt in Self.hostile {
+            tmux.output = "1\t%41\n"
+            let fields: [String: Any] = [
+                "host": "devbox", "dir": "/home/me/code/it's $(here) `x`", "agent": "claude", "prompt": prompt,
+            ]
+            XCTAssertEqual(spin(.newSession, fields).status, 200, prompt.debugDescription)
+            let (create, start) = (tmux.argv[tmux.argv.count - 2], tmux.argv[tmux.argv.count - 1])
+            XCTAssertEqual(create.last, "/home/me/code/it's $(here) `x`")
+            XCTAssertEqual(start.count, 5)
+            // The pane's shell gives the agent the prompt as one argument.
+            XCTAssertEqual(claudeArguments(of: start[3]), [prompt], prompt.debugDescription)
+
+            // Over ssh: the remote login shell reads the joined words again,
+            // and tmux still gets each argument as it was.
+            for argv in [create, start] {
+                let transport = SshTmuxTransport(host: "devbox", remoteTmux: echo, moshPath: nil)
+                let sent = try XCTUnwrap(transport.command(forTmux: argv)).args
+                let remote = sent.suffix(argv.count + 1).joined(separator: " ")
+                let process = Process(), out = Pipe()
+                process.executableURL = URL(fileURLWithPath: "/bin/sh")
+                process.arguments = ["-c", remote]
+                process.standardOutput = out
+                try process.run()
+                let data = out.fileHandleForReading.readDataToEndOfFile()
+                process.waitUntilExit()
+                let got = data.split(separator: 0, omittingEmptySubsequences: false).dropLast()
+                    .map { String(decoding: $0, as: UTF8.self) }
+                XCTAssertEqual(got, argv, prompt.debugDescription)
+            }
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: "/tmp/mm-pwned"))
+    }
+
+    func testAPromptIsTextOfALengthTheNewPaneCanTake() {
+        tmux.output = "1\t%41\n"
+        let ask = { (prompt: Any) -> [String: Any] in ["host": "localhost", "agent": "claude", "prompt": prompt] }
+        for bad in ["a\u{1B}[2Jb", "a\u{03}", "a\u{7F}", "a\u{0}b", "a\u{9B}b", "a\rb", "a\u{8}"] {
+            XCTAssertEqual(refusal(.newSession, ask(bad)), "400 bad_prompt", bad.debugDescription)
+        }
+        // Not text at all, and a word the agent would read as an option.
+        for bad in [7, true, ["a"], ["a": "b"]] as [Any] {
+            XCTAssertEqual(refusal(.newSession, ask(bad)), "400 bad_prompt", "\(bad)")
+        }
+        XCTAssertEqual(refusal(.newSession, ask("--dangerously-skip-permissions")), "400 bad_prompt")
+        XCTAssertEqual(refusal(.newSession, ask("  -p hi")), "400 bad_prompt")
+        // A prompt needs an agent to read it.
+        XCTAssertEqual(refusal(.newSession, ["host": "localhost", "prompt": "hi"]), "400 bad_prompt")
+        XCTAssertEqual(tmux.argv.count, 0)
+
+        // The cap is on the typed word: a new pane's terminal holds 1024
+        // bytes before its shell reads, and drops the rest.
+        XCTAssertLessThanOrEqual("codex ".utf8.count + MobileActions.maxPromptBytes + 1, 1000)
+        let fits = String(repeating: "a", count: MobileActions.maxPromptBytes - 2)
+        XCTAssertEqual(refusal(.newSession, ask(fits)), "200 ok")
+        XCTAssertEqual(refusal(.newSession, ask(fits + "a")), "413 too_large")
+        // A quote is four bytes once it is quoted.
+        XCTAssertEqual(refusal(.newSession, ask(String(repeating: "'", count: 300))), "413 too_large")
+        XCTAssertEqual(tmux.argv.count, 2)
+
+        // A tab would ask the shell to complete a word: it is typed as a
+        // space. A Windows line end is a line end.
+        XCTAssertEqual(refusal(.newSession, ask("a\tb\r\nc")), "200 ok")
+        XCTAssertEqual(tmux.argv.last?[3], "claude 'a b\nc'")
+        XCTAssertEqual(refusal(.newSession, ask(NSNull())), "200 ok")
+        XCTAssertEqual(tmux.argv.last?[3], "claude")
+    }
+
+    func testANewSessionRefusesAnAgentItDoesNotKnow() {
+        for bad in ["vim", "Claude", "claude; date", "claude --help", "", 1, true, ["claude"]] as [Any] {
+            XCTAssertEqual(refusal(.newSession, ["host": "localhost", "agent": bad]), "400 bad_agent", "\(bad)")
+        }
+        XCTAssertTrue(tmux.argv.isEmpty)
+    }
+
+    func testADirectoryIsInTheHostsHomeTree() {
+        let home = "/home/me"
+        XCTAssertEqual(MobileActions.inHome("/home/me", home: home), "/home/me")
+        XCTAssertEqual(MobileActions.inHome("/home/me/", home: home), "/home/me")
+        XCTAssertEqual(MobileActions.inHome("/home/me/code//acme-app/", home: home), "/home/me/code/acme-app")
+        XCTAssertEqual(MobileActions.inHome("/home/me/it's $(x) `y` & z", home: home), "/home/me/it's $(x) `y` & z")
+        XCTAssertEqual(MobileActions.inHome("/home/me/code", home: "/home/me/"), "/home/me/code")
+        for bad in [
+            "/", "/home", "/etc", "/home/me2", "/home/me2/code", "/home/other/code", "code", "~", "~/code", "",
+            "/home/me/..", "/home/me/../other", "/home/me/code/../../other", "/home/me/code/..", "/home/me/./code",
+            "/home/me/.ssh", "/home/me/code/.git", "/home/me/code/.git/hooks", "/home/me/a\nb", "/home/me/a#b",
+            "/home/me/x;", "/home/me/a\u{1B}b", "/home/me/\u{0}",
+        ] {
+            XCTAssertNil(MobileActions.inHome(bad, home: home), bad.debugDescription)
+        }
+        // The same name in other bytes is another directory on the host.
+        XCTAssertNil(MobileActions.inHome("/home/cafe\u{301}/code", home: "/home/caf\u{E9}"))
+        // No home, or the whole disk as one: nothing is inside it.
+        for home in ["", "/", "home/me", "/home/me#"] {
+            XCTAssertNil(MobileActions.inHome("/home/me/code", home: home), home)
+        }
+    }
+
+    func testANewSessionStartsNowhereOutsideTheHomeTree() {
+        for dir in ["/etc", "/Users/other/code", "/Users/me/..", "/Users/me/code/../../other", "/Users/me/.ssh", "~/code"] {
+            XCTAssertEqual(refusal(.newSession, ["host": "localhost", "dir": dir]), "400 bad_dir", dir)
+        }
+        for dir in ["/etc", "/Users/me/code", "/home/me/../other", "/home/me/.ssh", "/home/me2"] {
+            XCTAssertEqual(refusal(.newSession, ["host": "devbox", "dir": dir]), "400 bad_dir", dir)
+        }
+        // A remote host that does not say where its home is offers its
+        // threads' directories and no other.
+        XCTAssertEqual(
+            refusal(.newSession, ["host": "devbox", "dir": "/home/me/code"], remoteHome: nil), "400 bad_dir")
+        XCTAssertEqual(tmux.argv.count, 0)
+        XCTAssertEqual(
+            refusal(.newSession, ["host": "devbox", "dir": "/home/me/infra"], remoteHome: nil), "200 ok")
+        // A thread works outside the home tree: its directory is still offered.
+        let outside = tree([("srv", "%7", "/srv/acme-app")])
+        XCTAssertEqual(status(.newSession, ["host": "localhost", "dir": "/srv/acme-app"], in: outside), "200 ok")
+    }
+
+    // MARK: the directory list
+
+    /// A remote host's shell, scripted: it records each command.
+    private final class FakeShell {
+        var home: String? = "/home/me"
+        var output: String?
+        private(set) var argv: [[String]] = []
+
+        var source: (Host) -> MobileActions.HostShell? {
+            { [self] host in
+                host.isLocal ? nil : MobileActions.HostShell(
+                    home: { [self] in home },
+                    run: { [self] in
+                        argv.append($0)
+                        return output
+                    })
+            }
+        }
+    }
+
+    private func browse(
+        _ host: String, _ path: String?, home: String = "/Users/me", shell: FakeShell = FakeShell()
+    ) -> (status: Int, body: [String: Any]) {
+        let response = MobileActions.browse(
+            host: host, path: path, snapshot: snapshot(), home: home, shell: shell.source)
+        let body = (try? JSONSerialization.jsonObject(with: response.body)) as? [String: Any]
+        return (response.status, body ?? [:])
+    }
+
+    func testWithNoPathTheListIsWhereThreadsWorkAndTheHome() {
+        let local = browse("localhost", nil)
+        XCTAssertEqual(local.status, 200)
+        XCTAssertEqual(
+            local.body["dirs"] as? [String], ["/Users/me/acme-app", "/Users/me/acme-app/web", "/Users/me/billing"])
+        XCTAssertEqual(local.body["home"] as? String, "/Users/me")
+        let shell = FakeShell()
+        let remote = browse("devbox", nil, shell: shell)
+        XCTAssertEqual(remote.body["dirs"] as? [String], ["/home/me/infra"])
+        XCTAssertEqual(remote.body["home"] as? String, "/home/me")
+        // Nothing is run for it.
+        XCTAssertTrue(shell.argv.isEmpty)
+        // A host that does not say where its home is still has its list.
+        shell.home = nil
+        let lost = browse("devbox", nil, shell: shell)
+        XCTAssertEqual(lost.status, 200)
+        XCTAssertEqual(lost.body["dirs"] as? [String], ["/home/me/infra"])
+        XCTAssertNil(lost.body["home"])
+        XCTAssertEqual(browse("buildbox", nil).status, 404)
+        XCTAssertEqual(browse("buildbox", "/home/me").status, 404)
+    }
+
+    func testARemoteListIsOneCommandWithThePathAsItsOwnWord() {
+        let shell = FakeShell()
+        shell.output = "/home/me\n/home/me/code\nacme-app/\nnotes.txt\nbilling/\n.cache/\nit's $(x)/\nlink@\nc#/\nweb\n"
+        let listed = browse("devbox", "/home/me/code/", shell: shell)
+        XCTAssertEqual(listed.status, 200)
+        XCTAssertEqual(listed.body["path"] as? String, "/home/me/code")
+        XCTAssertEqual(listed.body["parent"] as? String, "/home/me")
+        XCTAssertEqual(listed.body["home"] as? String, "/home/me")
+        // Directories only, no dot-directory, and none tmux could not take.
+        XCTAssertEqual(listed.body["dirs"] as? [String], [
+            "/home/me/code/acme-app", "/home/me/code/billing", "/home/me/code/it's $(x)",
+        ])
+        // The script is fixed. The path is the word after `--`: `$1`.
+        XCTAssertEqual(shell.argv, [["sh", "-c", MobileActions.listScript, "--", "/home/me/code"]])
+        XCTAssertFalse(MobileActions.listScript.contains("/home"))
+
+        let hostile = "/home/me/$(touch /tmp/mm-pwned); `id` 'x' \"y\""
+        _ = browse("devbox", hostile, shell: shell)
+        XCTAssertEqual(shell.argv.last, ["sh", "-c", MobileActions.listScript, "--", hostile])
+
+        // The home has no parent to go up to.
+        shell.output = "/home/me\n/home/me\ncode/\n"
+        let top = browse("devbox", "/home/me", shell: shell)
+        XCTAssertEqual(top.body["dirs"] as? [String], ["/home/me/code"])
+        XCTAssertNil(top.body["parent"])
+    }
+
+    func testARemoteListRefusesWhatIsNotInTheHomeTree() {
+        let shell = FakeShell()
+        shell.output = "/home/me\n/home/me/code\nacme-app/\n"
+        for bad in ["/etc", "/home/other", "/home/me/..", "/home/me/code/../..", "/home/me/.ssh", "code", "", "~"] {
+            let refused = browse("devbox", bad, shell: shell)
+            XCTAssertEqual(refused.status, 400, bad)
+            XCTAssertEqual(refused.body["error"] as? String, "bad_dir", bad)
+        }
+        XCTAssertTrue(shell.argv.isEmpty)
+        // A link in the home tree that leaves it: the host says where the
+        // directory really is, and that is not listed.
+        shell.output = "/home/me\n/etc\nssh/\nssl/\n"
+        XCTAssertEqual(browse("devbox", "/home/me/link", shell: shell).body["error"] as? String, "bad_dir")
+        shell.output = "/home/me\n/home/me2\ncode/\n"
+        XCTAssertEqual(browse("devbox", "/home/me/link", shell: shell).status, 400)
+        // The command failed: no such directory, or no way to the host.
+        shell.output = nil
+        XCTAssertEqual(browse("devbox", "/home/me/gone", shell: shell).status, 404)
+        shell.output = "/home/me\n"
+        XCTAssertEqual(browse("devbox", "/home/me/code", shell: shell).status, 404)
+        // No home is known: nothing is browsed.
+        shell.home = nil
+        let before = shell.argv.count
+        XCTAssertEqual(browse("devbox", "/home/me/code", shell: shell).status, 503)
+        XCTAssertEqual(shell.argv.count, before)
+    }
+
+    func testAListIsCapped() {
+        let shell = FakeShell()
+        let names = (0..<(MobileActions.maxListedDirs + 50)).map { String(format: "d%04d/", $0) }
+        shell.output = "/home/me\n/home/me\n" + names.joined(separator: "\n") + "\n"
+        let dirs = browse("devbox", "/home/me", shell: shell).body["dirs"] as? [String]
+        XCTAssertEqual(dirs?.count, MobileActions.maxListedDirs)
+        XCTAssertEqual(dirs?.first, "/home/me/d0000")
+    }
+
+    func testTheListScriptPrintsTheHomeThenTheDirectoryThenItsEntries() throws {
+        // The script itself, run here by `sh` with a home of its own.
+        let files = FileManager.default
+        let home = files.temporaryDirectory.appendingPathComponent("mm-\(UUID().uuidString)")
+            .resolvingSymlinksInPath()
+        try files.createDirectory(at: home.appendingPathComponent("code/acme-app"), withIntermediateDirectories: true)
+        try files.createDirectory(at: home.appendingPathComponent("code/.git"), withIntermediateDirectories: true)
+        try files.createDirectory(at: home.appendingPathComponent("code/-rf"), withIntermediateDirectories: true)
+        try "x".write(to: home.appendingPathComponent("code/notes.txt"), atomically: true, encoding: .utf8)
+        try files.createSymbolicLink(atPath: home.appendingPathComponent("code/etc").path, withDestinationPath: "/etc")
+        defer { try? files.removeItem(at: home) }
+
+        let run = { (path: String) -> String? in
+            let process = Process(), out = Pipe()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = MobileActions.listArgv(path)
+            process.environment = ["HOME": home.path, "PATH": "/usr/bin:/bin"]
+            process.standardOutput = out
+            process.standardError = Pipe()
+            guard (try? process.run()) != nil else { return nil }
+            let data = out.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            return process.terminationStatus == 0 ? String(decoding: data, as: UTF8.self) : nil
+        }
+        let code = home.appendingPathComponent("code").path
+        let printed = try XCTUnwrap(run(code))
+        XCTAssertEqual(
+            MobileActions.parseListing(printed, dir: code), [code + "/-rf", code + "/acme-app"])
+        // A path that starts with a dash is a path, and a link out of the
+        // home tree is seen where it really is.
+        XCTAssertEqual(MobileActions.parseListing(try XCTUnwrap(run(code + "/-rf")), dir: code + "/-rf"), [])
+        let linked = try XCTUnwrap(run(code + "/etc"))
+        XCTAssertNil(MobileActions.parseListing(linked, dir: code + "/etc"))
+        XCTAssertNil(run(code + "/gone"))
+    }
+
+    func testALocalListIsReadFromTheDiskAndStaysInTheHomeTree() throws {
+        let files = FileManager.default
+        let home = files.temporaryDirectory.appendingPathComponent("mm-\(UUID().uuidString)")
+        try files.createDirectory(at: home.appendingPathComponent("code/acme-app"), withIntermediateDirectories: true)
+        try files.createDirectory(at: home.appendingPathComponent("code/billing"), withIntermediateDirectories: true)
+        try files.createDirectory(at: home.appendingPathComponent("code/.git"), withIntermediateDirectories: true)
+        try "x".write(to: home.appendingPathComponent("code/notes.txt"), atomically: true, encoding: .utf8)
+        try files.createSymbolicLink(atPath: home.appendingPathComponent("code/etc").path, withDestinationPath: "/etc")
+        defer { try? files.removeItem(at: home) }
+
+        let shell = FakeShell()
+        let code = home.path + "/code"
+        let listed = browse("localhost", code, home: home.path, shell: shell)
+        XCTAssertEqual(listed.status, 200)
+        XCTAssertEqual(listed.body["path"] as? String, code)
+        XCTAssertEqual(listed.body["parent"] as? String, home.path)
+        // No file, no dot-directory, and no link: it may leave the home tree.
+        XCTAssertEqual(listed.body["dirs"] as? [String], [code + "/acme-app", code + "/billing"])
+        XCTAssertEqual(browse("localhost", home.path, home: home.path).body["dirs"] as? [String], [code])
+        XCTAssertNil(browse("localhost", home.path, home: home.path).body["parent"])
+
+        XCTAssertEqual(browse("localhost", code + "/etc", home: home.path).body["error"] as? String, "bad_dir")
+        XCTAssertEqual(browse("localhost", "/etc", home: home.path).body["error"] as? String, "bad_dir")
+        XCTAssertEqual(browse("localhost", code + "/..", home: home.path).body["error"] as? String, "bad_dir")
+        XCTAssertEqual(browse("localhost", code + "/.git", home: home.path).body["error"] as? String, "bad_dir")
+        XCTAssertEqual(browse("localhost", code + "/gone", home: home.path).status, 404)
+        XCTAssertEqual(browse("localhost", code + "/notes.txt", home: home.path).status, 404)
+        // This Mac's list runs no command.
+        XCTAssertTrue(shell.argv.isEmpty)
     }
 
     // MARK: find

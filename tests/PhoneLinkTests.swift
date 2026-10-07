@@ -47,6 +47,112 @@ private final class FakeTailscale: CommandRunner {
     }
 }
 
+/// The ssh forwards, faked: what was launched, and which ports of this Mac
+/// something listens on. A launched forward listens at once unless told not to.
+private final class FakeForwards {
+    final class Child: PhoneForward {
+        private let lock = NSLock()
+        private var running = true
+        private var stopCount = 0
+        let onExit: () -> Void
+        var onStop: (() -> Void)?
+
+        init(onExit: @escaping () -> Void) {
+            self.onExit = onExit
+        }
+
+        var isRunning: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return running
+        }
+        var stops: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return stopCount
+        }
+
+        func stop() {
+            lock.lock()
+            running = false
+            stopCount += 1
+            lock.unlock()
+            onStop?()
+        }
+
+        /// The ssh ended by itself: the host went away.
+        func die() {
+            lock.lock()
+            running = false
+            lock.unlock()
+            onStop?()
+            onExit()
+        }
+    }
+
+    private let lock = NSLock()
+    private var argvs: [[String]] = []
+    private var made: [Child] = []
+    private var used: Set<Int> = []
+    /// The launch gives no child at all.
+    var refuses = false
+    /// The child is gone as soon as it starts: the forward failed.
+    var deadOnArrival = false
+    /// The child runs and never listens.
+    var silent = false
+    /// Called at each launch, before the child exists.
+    var onLaunch: (() -> Void)?
+
+    var launched: [[String]] {
+        lock.lock()
+        defer { lock.unlock() }
+        return argvs
+    }
+    var children: [Child] {
+        lock.lock()
+        defer { lock.unlock() }
+        return made
+    }
+
+    func listen(_ port: Int) {
+        lock.lock()
+        used.insert(port)
+        lock.unlock()
+    }
+
+    private func free(_ port: Int) {
+        lock.lock()
+        used.remove(port)
+        lock.unlock()
+    }
+
+    func inUse(_ port: Int) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return used.contains(port)
+    }
+
+    func launch(_ argv: [String], onExit: @escaping () -> Void) -> PhoneForward? {
+        onLaunch?()
+        lock.lock()
+        defer { lock.unlock() }
+        argvs.append(argv)
+        guard !refuses else { return nil }
+        // "127.0.0.1:3000:localhost:3000"
+        let spec = argv.firstIndex(of: "-L").map { argv[$0 + 1] } ?? ""
+        let port = Int(spec.split(separator: ":").last ?? "") ?? 0
+        let child = Child(onExit: onExit)
+        made.append(child)
+        if deadOnArrival {
+            child.stop()
+        } else if !silent {
+            used.insert(port)
+        }
+        child.onStop = { [weak self] in self?.free(port) }
+        return child
+    }
+}
+
 /// The stored mappings (port and target), in memory.
 private final class MemoryPorts: PhonePortStore {
     var stored: [Int: String] = [:]
@@ -93,6 +199,7 @@ private final class MemoryTokens: PhoneTokenStore {
 final class PhoneLinkTests: XCTestCase {
     private var tokens: MemoryTokens!
     private var tailscale: FakeTailscale!
+    private var forwards: FakeForwards!
     private var ports: MemoryPorts!
     private var digests: MemoryDigests!
     /// The clock the link reads; a test moves it.
@@ -105,6 +212,7 @@ final class PhoneLinkTests: XCTestCase {
 
     override func setUp() {
         tailscale = FakeTailscale()
+        forwards = FakeForwards()
         tokens = MemoryTokens()
         ports = MemoryPorts()
         digests = MemoryDigests()
@@ -128,7 +236,10 @@ final class PhoneLinkTests: XCTestCase {
             server: server, runner: tailscale, tailscalePath: { tailscalePath },
             port: { port }, keepAwake: { keepAwake }, tokens: tokens, ports: ports,
             digests: digests,
-            now: { [unowned self] in self.clock }, keychainNotice: 0.05, notify: { $0() })
+            now: { [unowned self] in self.clock }, keychainNotice: 0.05,
+            forward: { [unowned self] in self.forwards.launch($0, onExit: $1) },
+            portInUse: { [unowned self] in self.forwards.inUse($0) }, forwardWait: 0.3,
+            notify: { $0() })
         link.onMappings = { [weak self] mappings in
             guard let self else { return }
             self.lock.lock()
@@ -793,6 +904,349 @@ final class PhoneLinkTests: XCTestCase {
         XCTAssertEqual(store.load(), [:])
     }
 
+    // MARK: a port on another host
+
+    private func openRemote(_ link: PhoneLink, _ port: Int, https: Bool = false) -> MobileServing.Opened {
+        link.openMapping(port: port, https: https, thread: "devbox:12", label: "acme-app", host: "devbox")
+    }
+
+    private static func forwardArgv(_ port: Int) -> [String] {
+        [
+            "/usr/bin/ssh", "-N", "-o", "ControlMaster=no", "-o", "ControlPath=none",
+            "-o", "ExitOnForwardFailure=yes", "-o", "BatchMode=yes", "-o", "ConnectTimeout=4",
+            "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3",
+            "-L", "127.0.0.1:\(port):localhost:\(port)", "devbox",
+        ]
+    }
+
+    /// Wait for what the link does on its own queue after a child ended.
+    private func eventually(
+        _ what: @autoclosure () -> Bool, file: StaticString = #filePath, line: UInt = #line
+    ) {
+        let deadline = Date().addingTimeInterval(5)
+        while !what(), Date() < deadline { usleep(10_000) }
+        XCTAssertTrue(what(), file: file, line: line)
+    }
+
+    func testARemotePortIsForwardedByADedicatedSshAndOnlyThenPublished() throws {
+        let (link, own) = try linkOn()
+        var servedAtLaunch: [[String]]?
+        forwards.onLaunch = { [unowned self] in servedAtLaunch = self.serves(own: own) }
+        XCTAssertEqual(openRemote(link, 3000), .ok)
+        // One ssh of its own: no control master, this Mac's loopback, the same port.
+        XCTAssertEqual(forwards.launched, [Self.forwardArgv(3000)])
+        XCTAssertFalse(forwards.launched[0].contains { $0.contains("ControlMaster=auto") || $0 == "-O" })
+        // Nothing was published before the forward was started.
+        XCTAssertEqual(servedAtLaunch, [])
+        // The proxy goes to the address the forward binds, never to `localhost`.
+        XCTAssertEqual(serves(own: own), [["serve", "--bg", "--https=3000", "http://127.0.0.1:3000"]])
+        XCTAssertEqual(link.mappings.map(\.port), [3000])
+        XCTAssertEqual(link.mappings.first?.host, "devbox")
+        XCTAssertEqual(link.mappings.first?.thread, "devbox:12")
+        XCTAssertEqual(ports.stored, [3000: "http://127.0.0.1:3000"])
+
+        forwards.onLaunch = nil
+        XCTAssertEqual(openRemote(link, 3443, https: true), .ok)
+        XCTAssertEqual(forwards.launched.last, Self.forwardArgv(3443))
+        XCTAssertEqual(
+            serves(own: own).last, ["serve", "--bg", "--https=3443", "https+insecure://127.0.0.1:3443"])
+
+        // A local port still starts no ssh.
+        XCTAssertEqual(open(link, 5173), .ok)
+        XCTAssertEqual(forwards.launched.count, 2)
+        link.shutdown()
+    }
+
+    func testAPortThisMacAlreadyUsesIsTakenAndNothingStarts() throws {
+        let (link, own) = try linkOn()
+        forwards.listen(3000)
+        XCTAssertEqual(openRemote(link, 3000), .taken)
+        // No ssh, no serve, and no other port in its place.
+        XCTAssertEqual(forwards.launched, [])
+        XCTAssertEqual(serves(own: own), [])
+        XCTAssertEqual(link.mappings, [])
+        XCTAssertEqual(ports.stored, [:])
+        link.shutdown()
+    }
+
+    func testTheSamePortAgainRenewsItAndAnotherHostsSamePortIsTaken() throws {
+        let (link, own) = try linkOn()
+        XCTAssertEqual(openRemote(link, 3000), .ok)
+        clock.addTimeInterval(600)
+        XCTAssertEqual(openRemote(link, 3000), .ok)
+        XCTAssertEqual(forwards.launched.count, 1)
+        XCTAssertEqual(serves(own: own).count, 1)
+        XCTAssertEqual(link.mappings.first?.openedAt, clock)
+        // The port is that forward's: not this Mac's own server, not another host's.
+        XCTAssertEqual(open(link, 3000), .taken)
+        XCTAssertEqual(
+            link.openMapping(port: 3000, https: false, thread: "buildbox:3", label: "x", host: "buildbox"),
+            .taken)
+        XCTAssertEqual(forwards.launched.count, 1)
+        XCTAssertEqual(forwards.children[0].stops, 0)
+        XCTAssertEqual(link.mappings.first?.host, "devbox")
+        // And a port this Mac published for itself is not a remote thread's.
+        XCTAssertEqual(open(link, 5173), .ok)
+        XCTAssertEqual(openRemote(link, 5173), .taken)
+        XCTAssertEqual(forwards.launched.count, 1)
+        link.shutdown()
+    }
+
+    func testClosingAMappingEndsItsForward() throws {
+        let (link, own) = try linkOn()
+        XCTAssertEqual(openRemote(link, 3000), .ok)
+        XCTAssertEqual(openRemote(link, 3001), .ok)
+        XCTAssertTrue(link.closeMapping(port: 3000))
+        XCTAssertEqual(forwards.children.map(\.stops), [1, 0])
+        XCTAssertEqual(serves(own: own).last, ["serve", "--https=3000", "off"])
+        XCTAssertEqual(link.mappings.map(\.port), [3001])
+        // The port is free again, and a new tap starts a new ssh.
+        XCTAssertEqual(openRemote(link, 3000), .ok)
+        XCTAssertEqual(forwards.launched.count, 3)
+
+        // Its server stopped, or nobody opened it for half an hour.
+        link.sweepMappings(gone: [3001])
+        eventually(link.mappings.map(\.port) == [3000])
+        XCTAssertEqual(forwards.children.map(\.stops), [1, 1, 0])
+        clock.addTimeInterval(MobileServing.idleSeconds)
+        link.sweepMappings()
+        eventually(link.mappings.isEmpty)
+        XCTAssertEqual(forwards.children.map(\.stops), [1, 1, 1])
+        XCTAssertFalse(forwards.children.contains(where: \.isRunning))
+        link.shutdown()
+    }
+
+    func testTurningOffQuittingAndTheSwitchGoingOffEndEveryForward() throws {
+        for how in ["off", "quit", "switch"] {
+            forwards = FakeForwards()
+            let (link, _) = try linkOn()
+            XCTAssertEqual(openRemote(link, 3000), .ok, how)
+            XCTAssertEqual(openRemote(link, 3001), .ok, how)
+            XCTAssertEqual(open(link, 5173), .ok, how)
+            switch how {
+            case "off":
+                link.turnOff()
+                while link.state != .off { usleep(10_000) }
+            case "quit":
+                link.shutdown()
+            default:
+                link.closeAllMappings()
+                eventually(link.mappings.isEmpty)
+            }
+            XCTAssertEqual(forwards.children.map(\.stops), [1, 1], how)
+            XCTAssertFalse(forwards.children.contains(where: \.isRunning), how)
+            XCTAssertEqual(link.mappings, [], how)
+            XCTAssertEqual(ports.stored, [:], how)
+            link.shutdown()
+        }
+    }
+
+    func testAForwardThatEndsByItselfEndsItsMapping() throws {
+        let (link, own) = try linkOn()
+        XCTAssertEqual(openRemote(link, 3000), .ok)
+        XCTAssertEqual(openRemote(link, 3001), .ok)
+        // The host went away.
+        forwards.children[0].die()
+        eventually(link.mappings.map(\.port) == [3001])
+        XCTAssertEqual(serves(own: own).last, ["serve", "--https=3000", "off"])
+        XCTAssertEqual(ports.stored, [3001: "http://127.0.0.1:3001"])
+        XCTAssertEqual(published.last, [3001])
+        XCTAssertTrue(forwards.children[1].isRunning)
+        // The exit of a forward that was replaced ends nothing of the new one.
+        XCTAssertEqual(openRemote(link, 3000), .ok)
+        forwards.children[0].onExit()
+        link.sweepMappings()
+        usleep(100_000)
+        XCTAssertEqual(link.mappings.map(\.port), [3000, 3001])
+        XCTAssertTrue(forwards.children[2].isRunning)
+        link.shutdown()
+    }
+
+    func testAForwardThatDoesNotComeUpPublishesNothing() throws {
+        let (link, own) = try linkOn()
+        let failed = MobileServing.Opened.unavailable("ssh did not forward port 3000")
+        // ssh ended at once: the host is away, or it refused the forward.
+        forwards.deadOnArrival = true
+        XCTAssertEqual(openRemote(link, 3000), failed)
+        forwards.deadOnArrival = false
+        // ssh runs and the port never listens.
+        forwards.silent = true
+        XCTAssertEqual(openRemote(link, 3000), failed)
+        XCTAssertEqual(forwards.children.last?.stops, 1)
+        forwards.silent = false
+        // ssh could not be started at all.
+        forwards.refuses = true
+        XCTAssertEqual(openRemote(link, 3000), failed)
+        forwards.refuses = false
+        XCTAssertEqual(serves(own: own), [])
+        XCTAssertEqual(link.mappings, [])
+        XCTAssertEqual(ports.stored, [:])
+        XCTAssertFalse(forwards.children.contains(where: \.isRunning))
+        // And the next tap works.
+        XCTAssertEqual(openRemote(link, 3000), .ok)
+        link.shutdown()
+    }
+
+    func testAFailedServeEndsTheForwardAndTheLimitComesBeforeAnySsh() throws {
+        let (link, _) = try linkOn()
+        tailscale.serveFails = true
+        XCTAssertEqual(openRemote(link, 3000), .unavailable("tailscale serve failed"))
+        XCTAssertEqual(forwards.children.map(\.stops), [1])
+        XCTAssertEqual(link.mappings, [])
+        XCTAssertEqual(ports.stored, [:])
+        tailscale.serveFails = false
+        for port in 4000..<4005 { XCTAssertEqual(open(link, port), .ok) }
+        XCTAssertEqual(openRemote(link, 3000), .limit)
+        XCTAssertEqual(forwards.launched.count, 1)
+        link.shutdown()
+    }
+
+    /// The whole path of one tap for a thread on another host: the host in the
+    /// ssh command is the one Running names, and the port is one it lists.
+    func testAnOpenRequestForARemoteThreadForwardsOnlyAPortRunningLists() throws {
+        tailscale.live = true
+        final class Box { var link: PhoneLink? }
+        let box = Box()
+        let running = RunningSet(
+            known: true,
+            resources: [RunningResource(
+                kind: .server(port: 3000), host: "devbox", paneID: "%12",
+                label: "acme-app", tooltip: "", url: nil, pid: 4242)],
+            unknowns: [])
+        server = MobileServer(
+            staticRoot: nil,
+            sources: MobileServer.Sources(
+                screen: { _, _ in nil }, transcript: { _ in nil }, running: { _ in running }),
+            serving: MobileServer.Serving(
+                open: { port, https, thread, label, host in
+                    box.link?.openMapping(port: port, https: https, thread: thread, label: label, host: host)
+                        ?? .unavailable("off")
+                },
+                close: { box.link?.closeMapping(port: $0) ?? false },
+                list: { box.link?.mappings ?? [] }))
+        let link = link()
+        box.link = link
+        link.turnOn()
+        settle(link)
+        guard case .on(let url, _) = link.state else { return XCTFail("\(link.state)") }
+        let own = try XCTUnwrap(URL(string: url)?.port)
+        server.configure(MobileConfig(capabilities: [.localServers]))
+        var agent = TmuxPane(id: "%12", index: 0, command: "claude", title: "", active: true)
+        agent.claudeSessionId = "c1"
+        server.update(MobileSnapshot.build([MobileHostInput(
+            host: .local, colorHex: "#3291ff", reachability: .reachable, stats: nil,
+            sessions: [TmuxSession(name: "acme-app", attached: true, windows: [
+                TmuxWindow(index: 1, name: "checkout-fix", active: true, panes: [agent]),
+            ])])]))
+
+        func post(_ path: String, _ json: String) -> String {
+            let raw = "POST \(path) HTTP/1.1\r\nHost: devmac.example.ts.net:\(own)\r\n"
+                + "Tailscale-User-Login: me@example.com\r\nOrigin: https://devmac.example.ts.net:\(own)\r\n"
+                + "X-MuxMaestro: 1\r\nX-MuxMaestro-Token: \(tokens.token ?? "")\r\n"
+                + "Content-Length: \(json.utf8.count)\r\nConnection: close\r\n\r\n" + json
+            let reply = LoopbackClient.exchange(
+                port: own, send: Data(raw.utf8), label: "phone-link-tests"
+            ) { String(decoding: $0, as: UTF8.self).hasSuffix("}") }
+            return String(decoding: reply, as: UTF8.self)
+        }
+
+        // Not in Running for this thread: no ssh, no serve.
+        for port in [3001, 5173, 22, own] {
+            let refused = post(
+                "/api/servers/open", #"{"thread":"localhost:12","port":\#(port),"host":"devbox"}"#)
+            XCTAssertTrue(refused.hasPrefix("HTTP/1.1 40"), refused)
+        }
+        XCTAssertEqual(forwards.launched, [])
+        XCTAssertEqual(serves(own: own), [])
+
+        let opened = post("/api/servers/open", """
+            {"thread":"localhost:12","port":3000,"host":"evil.example","bind":"0.0.0.0",
+            "target":"169.254.169.254:80","alias":"-oProxyCommand=id"}
+            """)
+        XCTAssertTrue(opened.hasPrefix("HTTP/1.1 200"), opened)
+        XCTAssertEqual(forwards.launched, [Self.forwardArgv(3000)])
+        XCTAssertEqual(serves(own: own), [["serve", "--bg", "--https=3000", "http://127.0.0.1:3000"]])
+
+        // The Mac's port is in use: the phone is told so.
+        XCTAssertTrue(post("/api/servers/close", #"{"port":3000}"#).hasPrefix("HTTP/1.1 200"))
+        XCTAssertEqual(forwards.children.map(\.stops), [1])
+        forwards.listen(3000)
+        let taken = post("/api/servers/open", #"{"thread":"localhost:12","port":3000}"#)
+        XCTAssertTrue(taken.hasPrefix("HTTP/1.1 409"), taken)
+        XCTAssertTrue(taken.hasSuffix(#"{"error":"taken"}"#), taken)
+        XCTAssertEqual(forwards.launched.count, 1)
+        link.shutdown()
+    }
+
+    // MARK: the real child and the real port check
+
+    /// Whether `pid` still runs. A child that ended and was not collected yet
+    /// keeps its number, and does not count.
+    private func alive(_ pid: pid_t) -> Bool {
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return false }
+        return info.pbi_status != UInt32(SZOMB)
+    }
+
+    func testASupervisedChildEndsWhenItIsStoppedOrLetGo() throws {
+        var child = try XCTUnwrap(SupervisedChild.launch(["/bin/sleep", "300"]) {})
+        var pid = try XCTUnwrap(child.pid)
+        XCTAssertTrue(child.isRunning)
+        XCTAssertTrue(alive(pid))
+        child.stop()
+        XCTAssertFalse(child.isRunning)
+        eventually(!alive(pid))
+
+        // Let go without `stop()`: the same end.
+        child = try XCTUnwrap(SupervisedChild.launch(["/bin/sleep", "300"]) {})
+        pid = try XCTUnwrap(child.pid)
+        XCTAssertTrue(alive(pid))
+        child = try XCTUnwrap(SupervisedChild.launch(["/bin/sleep", "300"]) {})
+        eventually(!alive(pid))
+        child.stop()
+    }
+
+    func testASupervisedChildThatEndsByItselfSaysSoOnce() throws {
+        let ended = expectation(description: "exit")
+        let child = try XCTUnwrap(SupervisedChild.launch(["/bin/sh", "-c", "sleep 0.2"]) { ended.fulfill() })
+        wait(for: [ended], timeout: 5)
+        XCTAssertFalse(child.isRunning)
+        XCTAssertNil(child.pid)
+        child.stop()
+
+        // One that is stopped does not also report an exit.
+        let silent = expectation(description: "no exit")
+        silent.isInverted = true
+        let stopped = try XCTUnwrap(SupervisedChild.launch(["/bin/sleep", "300"]) { silent.fulfill() })
+        stopped.stop()
+        wait(for: [silent], timeout: 0.5)
+        // A program that does not exist gives no running child.
+        let missing = SupervisedChild.launch(["/nonexistent/ssh", "-N"]) {}
+        eventually(missing?.isRunning != true)
+    }
+
+    func testAPortOfThisMacIsInUseOnlyWhileSomethingListensOnItsLoopback() throws {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        XCTAssertGreaterThanOrEqual(fd, 0)
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let bound = withUnsafeMutablePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { pointer -> Bool in
+                Darwin.bind(fd, pointer, length) == 0 && listen(fd, 4) == 0
+                    && getsockname(fd, pointer, &length) == 0
+            }
+        }
+        XCTAssertTrue(bound)
+        let port = Int(UInt16(bigEndian: address.sin_port))
+        XCTAssertTrue(LoopbackPort.inUse(port))
+        close(fd)
+        XCTAssertFalse(LoopbackPort.inUse(port))
+    }
+
     /// The whole path of one tap: the phone's request, the server's checks,
     /// the link, and the command Tailscale gets. Whatever else the body says,
     /// the command holds the port and the constant `localhost`.
@@ -811,8 +1265,8 @@ final class PhoneLinkTests: XCTestCase {
             sources: MobileServer.Sources(
                 screen: { _, _ in nil }, transcript: { _ in nil }, running: { _ in running }),
             serving: MobileServer.Serving(
-                open: { port, https, thread, label in
-                    box.link?.openMapping(port: port, https: https, thread: thread, label: label)
+                open: { port, https, thread, label, host in
+                    box.link?.openMapping(port: port, https: https, thread: thread, label: label, host: host)
                         ?? .unavailable("off")
                 },
                 close: { box.link?.closeMapping(port: $0) ?? false },

@@ -248,8 +248,9 @@ final class MobileServingTests: XCTestCase {
         let servers = try XCTUnwrap(json["servers"] as? [[String: Any]])
         XCTAssertEqual(servers.map { $0["port"] as? Int }, [5173, 6006, 7433, 80, 7000])
         XCTAssertEqual(servers.map { $0["https"] as? Bool }, [true, false, false, false, false])
-        // Not the phone server's own port, not a privileged one, not another host's.
-        XCTAssertEqual(servers.map { $0["mappable"] as? Bool }, [true, true, false, false, false])
+        // Not the phone server's own port and not a privileged one. A port on
+        // another host is: an ssh forward brings it to this Mac.
+        XCTAssertEqual(servers.map { $0["mappable"] as? Bool }, [true, true, false, false, true])
         XCTAssertEqual(servers[0]["key"] as? String, "localhost|server|5173")
         XCTAssertEqual(servers[0]["label"] as? String, "acme-app")
         XCTAssertEqual(servers[4]["local"] as? Bool, false)
@@ -263,7 +264,7 @@ final class MobileServingTests: XCTestCase {
         XCTAssertEqual(links.map { $0["open"] as? Bool }, [true, true, false])
         XCTAssertEqual(links.map { $0["mappable"] as? Bool }, [true, true, false])
         let remote = try XCTUnwrap(stacks[1]["links"] as? [[String: Any]])
-        XCTAssertEqual(remote.map { $0["mappable"] as? Bool }, [false, false, false])
+        XCTAssertEqual(remote.map { $0["mappable"] as? Bool }, [true, true, false])
 
         let containers = try XCTUnwrap(json["containers"] as? [[String: Any]])
         XCTAssertEqual(containers.count, 1)
@@ -272,10 +273,62 @@ final class MobileServingTests: XCTestCase {
 
         // What an open request is checked against: the same rule, one place.
         let mappable = MobileServing.mappable(in: set, ownPort: 7433)
-        XCTAssertEqual(mappable.keys.sorted(), [1025, 5173, 6006, 8025, 54321, 54323])
+        XCTAssertEqual(mappable.keys.sorted(), [1025, 5173, 6006, 7000, 8025, 54321, 54323])
+        // Where a port is comes from Running: nil is this Mac, or the ssh alias.
+        XCTAssertNil(mappable[5173]?.host)
+        XCTAssertEqual(mappable[7000]?.host, "devbox")
+        XCTAssertEqual(mappable[7000]?.https, false)
+        XCTAssertNil(mappable[54323]?.host)
         XCTAssertEqual(mappable[5173]?.https, true)
         XCTAssertEqual(mappable[6006]?.https, false)
         XCTAssertEqual(mappable[54323]?.label, "acme-app Studio")
+    }
+
+    func testAPortOnAnotherHostIsMappableByTheSameRules() {
+        let ports = { (resources: [RunningResource]) in
+            MobileServing.mappable(
+                in: RunningSet(known: true, resources: resources, unknowns: []), ownPort: 7433)
+        }
+        // A port another host shows this Mac, and one bound to its loopback only.
+        let open = ports([
+            server(3000, url: "https://devbox.example.ts.net:3000", host: "devbox"),
+            server(7000, url: nil, host: "devbox"), stack(host: "devbox"),
+        ])
+        XCTAssertEqual(open.keys.sorted(), [3000, 7000, 54321, 54323])
+        XCTAssertEqual(open.values.map(\.host), Array(repeating: "devbox", count: 4))
+        XCTAssertEqual(open[3000]?.https, true)
+        XCTAssertEqual(open[7000]?.label, "acme-app")
+        XCTAssertEqual(open[54323]?.label, "acme-app Studio")
+        // The phone server's own port and a privileged one stay closed there too.
+        XCTAssertEqual(ports([
+            server(7433, url: nil, host: "devbox"), server(80, url: nil, host: "devbox"),
+            server(443, url: "https://devbox.example.ts.net:443", host: "devbox"),
+        ]).count, 0)
+        // A host name ssh would read as an option, or none, is never forwarded to.
+        XCTAssertEqual(ports([
+            server(3000, url: nil, host: "-oProxyCommand=id"), server(3001, url: nil, host: ""),
+            server(3002, url: "http://devbox.example.ts.net:3002", host: "-F/tmp/config"),
+        ]).count, 0)
+    }
+
+    func testTheForwardIsADedicatedSshThatBindsThisMacsLoopback() {
+        XCTAssertEqual(MobileServing.forwardArgv(port: 3000, host: "devbox"), [
+            "-N", "-o", "ControlMaster=no", "-o", "ControlPath=none",
+            "-o", "ExitOnForwardFailure=yes", "-o", "BatchMode=yes", "-o", "ConnectTimeout=4",
+            "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3",
+            "-L", "127.0.0.1:3000:localhost:3000", "devbox",
+        ])
+        // A forwarded port is proxied to the address the forward binds, and to no other.
+        XCTAssertEqual(MobileServing.target(port: 3000, https: false, forwarded: true), "http://127.0.0.1:3000")
+        XCTAssertEqual(
+            MobileServing.target(port: 3000, https: true, forwarded: true), "https+insecure://127.0.0.1:3000")
+        XCTAssertEqual(
+            MobileServing.serveOnArgv(port: 3000, https: false, forwarded: true),
+            ["serve", "--bg", "--https=3000", "http://127.0.0.1:3000"])
+        let mapping = MobilePortMapping(
+            port: 3000, thread: "devbox:12", label: "acme-app", https: false,
+            openedAt: Date(timeIntervalSince1970: 0), host: "devbox")
+        XCTAssertEqual(mapping.target, "http://127.0.0.1:3000")
     }
 
     func testAMappingIsStaleOnceItsServerIsGoneOrNobodyOpenedItForHalfAnHour() {

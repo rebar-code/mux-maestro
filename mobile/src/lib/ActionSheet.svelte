@@ -1,5 +1,13 @@
 <script lang="ts">
-	import { killWarning, menuItems, menuTitle, NAME_MAX, START_ITEMS, startTitle } from './actions';
+	import {
+		folderName,
+		killWarning,
+		menuItems,
+		menuTitle,
+		NAME_MAX,
+		START_ITEMS,
+		startTitle
+	} from './actions';
 	import { menu } from './actions.svelte';
 	import { shortCwd } from './format';
 	import { can } from './live.svelte';
@@ -10,6 +18,9 @@
 	const target = $derived(menu.target);
 	const title = $derived(target ? menuTitle(target) : '');
 	const items = $derived(target ? menuItems(target, can('kill')) : []);
+	/** Where the new session starts, as the sheet names it. */
+	const place = $derived(menu.dir ? shortCwd(menu.dir) : 'Home');
+	const agentLabel = $derived(START_ITEMS.find((item) => item.kind === menu.agent)?.label ?? '');
 
 	/** How far a finger has pulled the sheet down. */
 	let pulled = $state(0);
@@ -20,7 +31,8 @@
 	function onpointerdown(event: PointerEvent): void {
 		moved = false;
 		// A list that scrolls keeps its own drags; so does the text box.
-		if (!event.isPrimary || (event.target as Element).closest('[data-own-drag], input')) return;
+		if (!event.isPrimary || (event.target as Element).closest('[data-own-drag], input, textarea'))
+			return;
 		start = { id: event.pointerId, y: event.clientY };
 	}
 
@@ -60,6 +72,11 @@
 	function submit(event: SubmitEvent): void {
 		event.preventDefault();
 		void menu.rename();
+	}
+
+	function startSession(event: SubmitEvent): void {
+		event.preventDefault();
+		void menu.newSession(menu.agent);
 	}
 </script>
 
@@ -131,25 +148,81 @@
 					onclick={() => menu.newWindow(item.kind)}>{item.label}</button
 				>
 			{/each}
+		{:else if menu.stage === 'agent'}
+			<div class="title">New session in {place}</div>
+			{#each START_ITEMS as item (item.kind)}
+				<button
+					class="item"
+					disabled={menu.busy}
+					data-start={item.kind}
+					onclick={() => menu.pickAgent(item.kind)}>{item.label}</button
+				>
+			{/each}
+		{:else if menu.stage === 'prompt'}
+			<div class="title">{agentLabel} in {place}</div>
+			<form onsubmit={startSession}>
+				<textarea
+					rows="3"
+					enterkeyhint="enter"
+					autocomplete="off"
+					autocapitalize="sentences"
+					placeholder="Prompt"
+					aria-label="Prompt"
+					aria-invalid={!menu.promptOk}
+					bind:value={menu.prompt}
+					{@attach (node) => node.focus()}></textarea>
+				<button class="item go" type="submit" disabled={menu.busy || !menu.promptOk}>Start</button>
+			</form>
+			<button class="item" onclick={menu.close}>Cancel</button>
 		{:else}
+			{@const folder = menu.folder}
 			<div class="title">New session on {title}</div>
+			{#if folder}
+				<div class="where mono" data-folder={folder.path}>{shortCwd(folder.path)}</div>
+			{/if}
 			<div class="list" data-own-drag>
 				{#if menu.dirs === null && !menu.error}
 					<div class="item"><span class="skel" style:width="60%" style:height="14px"></span></div>
+				{:else if folder}
+					<button class="item" disabled={menu.loading} data-up onclick={menu.up}>Up</button>
+					{#each menu.dirs ?? [] as dir (dir)}
+						<button
+							class="item mono"
+							disabled={menu.loading}
+							data-dir={dir}
+							onclick={() => menu.browse(dir)}>{folderName(dir)}</button
+						>
+					{/each}
 				{:else}
 					{#each menu.dirs ?? [] as dir (dir)}
 						<button
 							class="item mono"
-							disabled={menu.busy}
+							disabled={menu.loading}
 							data-dir={dir}
-							onclick={() => menu.newSession(dir)}>{shortCwd(dir)}</button
+							onclick={() => menu.choose(dir)}>{shortCwd(dir)}</button
 						>
 					{/each}
-					<button class="item" disabled={menu.busy} onclick={() => menu.newSession(null)}
+					{#if menu.home}
+						<button
+							class="item"
+							disabled={menu.loading}
+							data-browse
+							onclick={() => menu.browse(menu.home)}>Browse…</button
+						>
+					{/if}
+					<button class="item" disabled={menu.loading} onclick={() => menu.choose(null)}
 						>Home</button
 					>
 				{/if}
 			</div>
+			{#if folder}
+				<button
+					class="item go"
+					disabled={menu.loading}
+					data-use
+					onclick={() => menu.choose(folder.path)}>Use this folder</button
+				>
+			{/if}
 		{/if}
 
 		{#if menu.error}<div class="error" role="alert">{menu.error}</div>{/if}
@@ -302,7 +375,16 @@
 		flex-direction: column;
 	}
 
-	input {
+	.where {
+		padding: 0 16px 10px;
+		font-size: 14px;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	input,
+	textarea {
 		margin: 0 12px 12px;
 		height: 46px;
 		background: var(--bg);
@@ -316,11 +398,19 @@
 		outline: none;
 	}
 
-	input:focus {
+	textarea {
+		height: auto;
+		padding: 10px 12px;
+		resize: none;
+	}
+
+	input:focus,
+	textarea:focus {
 		border-color: var(--accent);
 	}
 
-	input[aria-invalid='true'] {
+	input[aria-invalid='true'],
+	textarea[aria-invalid='true'] {
 		border-color: var(--red);
 	}
 

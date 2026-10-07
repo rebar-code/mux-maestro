@@ -52,8 +52,13 @@ enum TmuxCommands {
     /// move-to-new-session paths derive the directory from a live pane, and an
     /// unreadable one must fall back to tmux's default rather than to a literal `~`,
     /// which tmux would `chdir` to verbatim and fail on.
-    static func newSession(name: String, dir: String?) -> [String] {
+    /// `printTarget` prints the first window's index and its pane id, for a
+    /// caller that types into the new pane.
+    static func newSession(name: String, dir: String?, printTarget: Bool = false) -> [String] {
         var argv = ["new-session", "-d", "-s", name]
+        if printTarget {
+            argv += ["-P", "-F", "#{window_index}\t#{pane_id}"]
+        }
         if let dir, !dir.isEmpty {
             argv += ["-c", dir]
         }
