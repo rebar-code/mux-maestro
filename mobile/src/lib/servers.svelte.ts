@@ -99,7 +99,7 @@ export class Servers {
 			// The row is a link from now on; this opens it at once where the browser lets it.
 			window.open(mapping.url, '_blank', 'noopener,noreferrer');
 		} catch (error) {
-			this.fail(error);
+			this.fail(error, port);
 		} finally {
 			this.busy = null;
 		}
@@ -119,9 +119,12 @@ export class Servers {
 		}
 	};
 
-	private fail(error: unknown): void {
+	/** `port` is the one that was to be opened. The Mac sends no sentence with "taken". */
+	private fail(error: unknown, port?: number): void {
 		live.fail(error);
-		this.note = error instanceof ApiError ? (error.detail ?? 'Not opened') : 'No connection';
+		if (!(error instanceof ApiError)) this.note = 'No connection';
+		else if (error.detail) this.note = error.detail;
+		else this.note = error.code === 'taken' && port ? `Port ${port} is taken` : 'Not opened';
 	}
 
 	landed(index: number): void {

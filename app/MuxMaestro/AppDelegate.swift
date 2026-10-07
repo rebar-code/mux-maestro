@@ -199,8 +199,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 Task { try? await VoiceEngine.shared.loadIfNeeded(speaker ? .all : .whisper) }
             }),
         serving: MobileServer.Serving(
-            open: { [weak self] port, https, thread, label in
-                self?.phoneLink.openMapping(port: port, https: https, thread: thread, label: label)
+            open: { [weak self] port, https, thread, label, host in
+                self?.phoneLink.openMapping(
+                    port: port, https: https, thread: thread, label: label, host: host)
                     ?? .unavailable("Phone access is off")
             },
             close: { [weak self] port in self?.phoneLink.closeMapping(port: port) ?? false },
