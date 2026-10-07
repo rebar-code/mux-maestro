@@ -1211,6 +1211,11 @@ final class MobileServer {
             // What the phone typed: bytes for the pane, and only that.
             socket.lastInput = Date()
             socket.bridge?.input(bytes)
+        case .text(let sent) where socket.paired:
+            // The one text message a paired phone sends: the size its
+            // terminal has room for. Two clamped integers reach the bridge.
+            guard let size = MobileTerminal.sizeFrame(sent) else { return close(client, .unsupported) }
+            socket.bridge?.size(cols: size.cols, rows: size.rows)
         case .text, .binary:
             close(client, socket.paired ? .unsupported : .unauthorized)
         }

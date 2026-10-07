@@ -31,6 +31,8 @@
 // `mux point --action` records it; `refuse` is the error a tap gets), /__fixture/acted (the taps that landed),
 // /__fixture/maestro-say?text= (the Maestro says something in its chat),
 // /__fixture/terminal (what the live terminal's sockets were sent, and how they were opened),
+// /__fixture/terminal-kind?kind=shell|agent|pager (the screen the next socket gets),
+// /__fixture/terminal-size?cols=&rows= (the pane's size changed on the Mac),
 // /__fixture/terminal-drop (cut every live socket), /__fixture/terminal-say?text=,
 // /__fixture/terminal-refuse?code= (close the next sockets with that code; 0 to stop)
 // /__fixture/requests (GET too: the request list as the Mac holds it),
@@ -693,7 +695,10 @@ const streams = new Set();
 // The live terminal: its open sockets, what they typed (as text), how each
 // was opened, and the close code the next ones get.
 const terminals = new Set();
-let terminalTyped, terminalOpens, terminalRefuse;
+// Also: the sizes they asked for, and the kind of screen the next one gets
+// ('shell', or 'agent': a program on the alternate screen that reads the mouse,
+// or 'pager': one on the alternate screen that does not).
+let terminalTyped, terminalOpens, terminalRefuse, terminalSizes, terminalKind;
 
 function reset() {
 	started = Math.floor(Date.now() / 1000);
@@ -719,6 +724,8 @@ function reset() {
 	terminalTyped = '';
 	terminalOpens = [];
 	terminalRefuse = 0;
+	terminalSizes = [];
+	terminalKind = 'shell';
 	pushSubs = [];
 	pushFocus = {};
 	pushLimit = false;
@@ -2321,8 +2328,21 @@ function hook(res, url) {
 			return send(res, 200, {
 				typed: terminalTyped,
 				opens: terminalOpens,
-				sockets: terminals.size
+				sockets: terminals.size,
+				sizes: terminalSizes
 			});
+		case '/__fixture/terminal-kind':
+			terminalKind = url.searchParams.get('kind') ?? 'shell';
+			return send(res, 200, { ok: true });
+		case '/__fixture/terminal-size': {
+			// The Mac's own client took the window back: the pane has its size.
+			const size = {
+				cols: Number(url.searchParams.get('cols')) || TERMINAL.cols,
+				rows: Number(url.searchParams.get('rows')) || TERMINAL.rows
+			};
+			for (const socket of terminals) socket.send(JSON.stringify({ type: 'size', ...size }));
+			return send(res, 200, { ok: true });
+		}
 		case '/__fixture/terminal-drop':
 			for (const socket of terminals) socket.terminate();
 			terminals.clear();
@@ -2574,7 +2594,11 @@ function terminalScreen() {
 			`${E}[${31 + (n % 6)}mbuild ${String(n).padStart(3, '0')}${E}[0m compiling acme-app`
 		);
 	}
-	return `${lines.join('\r\n')}\r\nme@devbox acme-app % `;
+	const shell = `${lines.join('\r\n')}\r\nme@devbox acme-app % `;
+	if (terminalKind === 'shell') return shell;
+	// A program that took the screen: no scrollback, and it scrolls itself.
+	const mouse = terminalKind === 'agent' ? `${E}[?1003h${E}[?1006h` : '';
+	return `${E}[?1049h${E}[H${lines.slice(0, 12).join('\r\n')}\r\n> ${mouse}`;
 }
 
 const sockets = new WebSocketServer({ noServer: true, maxPayload: 4096 });
@@ -2599,7 +2623,21 @@ function terminal(socket) {
 			socket.send(Buffer.from(terminalScreen()));
 			return;
 		}
-		if (!binary) return socket.close(1003);
+		if (!binary) {
+			// The one text message of a paired phone: the size it has room for.
+			let size;
+			try {
+				size = JSON.parse(String(data));
+			} catch {
+				return socket.close(1003);
+			}
+			const whole = (n) => Number.isInteger(n) && n >= 1 && n <= 1000;
+			if (size?.type !== 'size' || !whole(size.cols) || !whole(size.rows))
+				return socket.close(1003);
+			terminalSizes.push({ cols: size.cols, rows: size.rows });
+			// The pane took it, and says so.
+			return socket.send(JSON.stringify({ type: 'size', cols: size.cols, rows: size.rows }));
+		}
 		const text = String(data);
 		terminalTyped += text;
 		let skip = 0;

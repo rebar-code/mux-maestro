@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { followTop, isFollowing, maxScroll, place, totalHeight } from './livescroll';
+import {
+	fit,
+	followTop,
+	isFollowing,
+	maxScroll,
+	MAX_STEPS,
+	place,
+	totalHeight,
+	wheelSteps,
+	wheelText
+} from './livescroll';
 
 // 40 lines of 15 px (600 px of screen) seen through 300 px, with 100 lines above.
 const g = { base: 100, rows: 40, cell: 15, view: 300 };
@@ -80,5 +90,68 @@ describe('following', () => {
 		expect(isFollowing(1800, g, 39)).toBe(true);
 		expect(isFollowing(1790, g, 39)).toBe(true);
 		expect(isFollowing(1500, g, 39)).toBe(false);
+	});
+});
+
+describe('a drag on a program that scrolls itself', () => {
+	it('is one step for each line the finger travels', () => {
+		expect(wheelSteps(0, 45, 15)).toEqual({ steps: 3, rest: 0 });
+		expect(wheelSteps(0, -31, 15)).toEqual({ steps: -2, rest: -1 });
+	});
+
+	it('carries what is less than a line to the next move', () => {
+		const first = wheelSteps(0, 10, 15);
+		expect(first).toEqual({ steps: 0, rest: 10 });
+		expect(wheelSteps(first.rest, 10, 15)).toEqual({ steps: 1, rest: 5 });
+	});
+
+	it('is capped for one move, and nothing without a line height', () => {
+		expect(wheelSteps(0, 100000, 15)).toEqual({ steps: MAX_STEPS, rest: 0 });
+		expect(wheelSteps(0, -100000, 15)).toEqual({ steps: -MAX_STEPS, rest: 0 });
+		expect(wheelSteps(3, 40, 0)).toEqual({ steps: 0, rest: 0 });
+	});
+
+	it('is wheel reports when the program asked for the mouse: a finger going down scrolls up', () => {
+		const at = { col: 7, row: 3 };
+		expect(wheelText(2, { mouse: true, application: false }, at)).toBe(
+			'\x1b[<64;7;3M\x1b[<64;7;3M'
+		);
+		expect(wheelText(-1, { mouse: true, application: false }, at)).toBe('\x1b[<65;7;3M');
+	});
+
+	it('is arrow keys when it did not, in the form the program asked for', () => {
+		const at = { col: 1, row: 1 };
+		expect(wheelText(2, { mouse: false, application: false }, at)).toBe('\x1b[A\x1b[A');
+		expect(wheelText(-2, { mouse: false, application: true }, at)).toBe('\x1bOB\x1bOB');
+		expect(wheelText(0, { mouse: true, application: false }, at)).toBe('');
+	});
+
+	it('names a cell that is whole and on the screen', () => {
+		expect(wheelText(1, { mouse: true, application: false }, { col: 0, row: 2.7 })).toBe(
+			'\x1b[<64;1;2M'
+		);
+	});
+});
+
+describe('the size the phone has room for', () => {
+	it('is the cells that fit the view', () => {
+		expect(fit({ width: 366, height: 600 }, { width: 9, height: 18 })).toEqual({
+			cols: 40,
+			rows: 33
+		});
+	});
+
+	it('keeps to the limits the Mac allows', () => {
+		expect(fit({ width: 90, height: 40 }, { width: 9, height: 18 })).toEqual({ cols: 20, rows: 5 });
+		expect(fit({ width: 9000, height: 9000 }, { width: 2, height: 2 })).toEqual({
+			cols: 300,
+			rows: 200
+		});
+	});
+
+	it('is nothing before the terminal is measured', () => {
+		expect(fit({ width: 366, height: 600 }, { width: 0, height: 18 })).toBeNull();
+		expect(fit({ width: 0, height: 0 }, { width: 9, height: 18 })).toBeNull();
+		expect(fit({ width: 366, height: 600 }, { width: NaN, height: 18 })).toBeNull();
 	});
 });

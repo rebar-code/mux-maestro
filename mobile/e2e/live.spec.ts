@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import { fresh, threadPath, twoFingers } from './helpers';
+import { fresh, threadPath, touchDrag, twoFingers } from './helpers';
 
 // A remote pane: its first tab is the terminal.
 const PANE = 'buildbox:8';
@@ -15,6 +15,7 @@ interface Fixture {
 	typed: string;
 	opens: { url: string; token: string | null; protocol: string | null }[];
 	sockets: number;
+	sizes: { cols: number; rows: number }[];
 }
 
 async function fixture(page: Page): Promise<Fixture> {
@@ -86,18 +87,49 @@ test('live mode connects and draws the pane, with no policy violation', async ({
 	await page.screenshot({ path: 'test-results/shots/live-terminal.png' });
 });
 
-test('the terminal keeps the pane width and scrolls, sideways and into scrollback', async ({
+test('the phone says the size it has room for, and the pane takes it', async ({ page }) => {
+	await live(page);
+	// One size, said after the first screen: what fits 390 px, not the Mac's 100 columns.
+	await expect.poll(async () => (await fixture(page)).sizes.length).toBe(1);
+	const [size] = (await fixture(page)).sizes;
+	expect(size.cols).toBeGreaterThanOrEqual(20);
+	expect(size.cols).toBeLessThan(100);
+	expect(size.rows).toBeGreaterThanOrEqual(5);
+	// The terminal has the pane's new size: nothing to scroll sideways.
+	await expect(page.locator('[data-view="live"] .xterm-rows > div')).toHaveCount(size.rows);
+	const pin = page.locator('[data-pin]');
+	const { wide, view } = await pin.evaluate((el) => ({
+		wide: el.scrollWidth,
+		view: el.clientWidth
+	}));
+	expect(wide).toBeLessThanOrEqual(view);
+	await page.screenshot({ path: 'test-results/shots/live-terminal-fitted.png' });
+
+	// A turn of the phone: a new size, once.
+	await page.setViewportSize({ width: 844, height: 390 });
+	await expect.poll(async () => (await fixture(page)).sizes.length).toBe(2);
+	const turned = (await fixture(page)).sizes[1];
+	expect(turned.cols).toBeGreaterThan(size.cols);
+	expect(turned.rows).toBeLessThan(size.rows);
+});
+
+test('a pane the Mac took back keeps its width and scrolls, sideways and into scrollback', async ({
 	page
 }) => {
 	await live(page);
-	// 100 columns do not fit 390 px: the pane is not resized, the view scrolls.
+	await expect.poll(async () => (await fixture(page)).sizes.length).toBe(1);
+	// A key on the Mac: the window is the Mac's again, and the phone does not fight for it.
+	await page.request.post('/__fixture/terminal-size?cols=100&rows=30');
+	await expect(page.locator('[data-view="live"] .xterm-rows > div')).toHaveCount(30);
+	// 100 columns do not fit 390 px: the view scrolls.
 	const pin = page.locator('[data-pin]');
 	const { wide, view } = await pin.evaluate((el) => ({
 		wide: el.scrollWidth,
 		view: el.clientWidth
 	}));
 	expect(wide).toBeGreaterThan(view);
-	expect(await page.locator('[data-view="live"] .xterm-rows > div').count()).toBe(30);
+	await page.waitForTimeout(400);
+	expect((await fixture(page)).sizes).toHaveLength(1);
 
 	// The prompt's line is in view at the start.
 	const prompt = rows(page).locator('div', { hasText: 'me@devbox acme-app %' }).last();
@@ -116,6 +148,7 @@ test('a pinch changes the terminal text, and the size is kept', async ({ page })
 	await live(page);
 	const size = (): Promise<string> => rows(page).evaluate((el) => getComputedStyle(el).fontSize);
 	const before = parseFloat(await size());
+	await expect.poll(async () => (await fixture(page)).sizes.length).toBe(1);
 	// Fingers 100px apart move to 160px apart: the size times 1.6.
 	await twoFingers(
 		page,
@@ -132,8 +165,10 @@ test('a pinch changes the terminal text, and the size is kept', async ({ page })
 	const after = parseFloat(await size());
 	// The pinch typed nothing into the pane.
 	expect((await fixture(page)).typed).toBe('');
-	// The pane keeps its size: the text is larger, the rows are as many.
-	expect(await page.locator('[data-view="live"] .xterm-rows > div').count()).toBe(30);
+	// Larger text leaves room for fewer cells: the pane is asked to follow.
+	await expect.poll(async () => (await fixture(page)).sizes.length).toBe(2);
+	const [small, large] = (await fixture(page)).sizes;
+	expect(large.cols).toBeLessThan(small.cols);
 	// The size is the stored one: a new visit starts with it.
 	await page.reload();
 	await expect(chip(page)).toHaveAttribute('data-live', 'live');
@@ -297,4 +332,50 @@ test('the Mac switching live mode off closes the terminal', async ({ page }) => 
 	await page.request.post('/__fixture/reset');
 	await expect(chip(page)).toHaveCount(0);
 	await expect(liveView(page)).toHaveCount(0);
+});
+
+// A program on the alternate screen has no scrollback: it scrolls itself.
+/** What the pane was sent, with each escape byte as `ESC`. */
+async function typedKeys(page: Page): Promise<string> {
+	return (await fixture(page)).typed.replaceAll('\x1b', 'ESC');
+}
+
+async function liveKind(page: Page, kind: 'agent' | 'pager'): Promise<void> {
+	await open(page);
+	await page.request.post(`/__fixture/terminal-kind?kind=${kind}`);
+	await page.reload();
+	await expect(chip(page)).toHaveAttribute('data-live', 'live');
+	await expect(rows(page)).toContainText('build 012');
+	await expect.poll(async () => (await fixture(page)).sizes.length).toBeGreaterThan(0);
+}
+
+test('a drag over a program that reads the mouse scrolls it with wheel reports', async ({
+	page
+}) => {
+	await liveKind(page, 'agent');
+	// A finger going down the screen: the program scrolls towards what is above.
+	await touchDrag(page, [200, 200], [200, 380]);
+	await expect.poll(async () => await typedKeys(page)).toMatch(/^(ESC\[<64;\d+;\d+M){3,}$/);
+	const up = (await typedKeys(page)).length;
+	await touchDrag(page, [200, 380], [200, 200]);
+	await expect
+		.poll(async () => (await typedKeys(page)).slice(up))
+		.toMatch(/^(ESC\[<65;\d+;\d+M){3,}$/);
+	await page.screenshot({ path: 'test-results/shots/live-terminal-agent.png' });
+});
+
+test('a drag over a full-screen program that does not read the mouse types arrows', async ({
+	page
+}) => {
+	await liveKind(page, 'pager');
+	await touchDrag(page, [200, 200], [200, 380]);
+	await expect.poll(async () => await typedKeys(page)).toMatch(/^(ESC\[A){3,}$/);
+});
+
+test('a drag over a shell scrolls the page and types nothing', async ({ page }) => {
+	await live(page);
+	const top = await liveView(page).evaluate((el) => el.scrollTop);
+	await touchDrag(page, [200, 200], [200, 500]);
+	await expect.poll(() => liveView(page).evaluate((el) => el.scrollTop)).toBeLessThan(top);
+	expect(await typedKeys(page)).toBe('');
 });

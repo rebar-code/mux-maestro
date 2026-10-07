@@ -3,7 +3,16 @@ import { untrack } from 'svelte';
 import { openTerminal } from './api';
 import { barKeyText, messages, Pacer, typed } from './livekeys';
 import { isReport, silenceQueries } from './livequiet';
-import { followTop, isFollowing, place, totalHeight, type Geometry } from './livescroll';
+import {
+	fit,
+	followTop,
+	isFollowing,
+	place,
+	totalHeight,
+	wheelSteps,
+	wheelText,
+	type Geometry
+} from './livescroll';
 import { afterClose, closeLabel, serverMessage, type LiveState } from './livesocket';
 import type { BarKey, KeySink } from './reply';
 import { DEFAULT_SIZE } from './textsize';
@@ -11,6 +20,12 @@ import { DEFAULT_SIZE } from './textsize';
 const KEY = 'mm.live';
 const FONT = 'ui-monospace, SFMono-Regular, Menlo, monospace';
 const SCROLLBACK = 5000;
+/** The terminal's own padding, left and right together. */
+const PAD = 24;
+/** A drag is the terminal's once it has gone this far, more down than sideways. */
+const SLOP = 8;
+/** The wait after the view changed before the pane is asked to follow. */
+const FIT_MS = 150;
 
 function stored(): boolean {
 	try {
@@ -22,8 +37,9 @@ function stored(): boolean {
 
 /**
  * One thread's live terminal: xterm.js over a socket to the pane on the Mac.
- * What is typed goes straight to the pane. The terminal has the pane's own
- * size and is never fitted to the phone: the page scrolls over it instead.
+ * What is typed goes straight to the pane. The phone says the size it has room
+ * for and the pane takes it while this terminal is open; the terminal always
+ * has the pane's own size, and the page scrolls over what does not fit.
  */
 export class LiveTerm implements KeySink {
 	state = $state<LiveState>('off');
@@ -44,6 +60,7 @@ export class LiveTerm implements KeySink {
 	private socket: WebSocket | null = null;
 	private size = DEFAULT_SIZE;
 	private sync: ((follow?: boolean) => void) | null = null;
+	private fitSoon: (() => void) | null = null;
 
 	/** What is typed, on its way out: a long paste goes a lot at a time. */
 	private readonly pacer = new Pacer<Uint8Array<ArrayBuffer>>((message) => {
@@ -120,6 +137,7 @@ export class LiveTerm implements KeySink {
 				if (!this.term || this.term.options.fontSize === size) return;
 				this.term.options.fontSize = size;
 				this.sync?.();
+				this.fitSoon?.();
 			});
 	}
 
@@ -164,8 +182,87 @@ export class LiveTerm implements KeySink {
 			};
 			this.sync = sync;
 
+			// The size this view has room for, said to the Mac: the pane takes it.
+			let fitTimer: ReturnType<typeof setTimeout> | undefined;
+			let asked = '';
+			const cells = (term: Terminal): { width: number; height: number } => {
+				const screen = host.querySelector<HTMLElement>('.xterm-screen')?.getBoundingClientRect();
+				return {
+					width: (screen?.width ?? 0) / term.cols,
+					height: (screen?.height ?? 0) / term.rows
+				};
+			};
+			const sendSize = (): void => {
+				const term = this.term;
+				const socket = this.socket;
+				if (!term || !socket || socket.readyState !== WebSocket.OPEN) return;
+				if (this.state !== 'live') return;
+				// Asked once for each view and text size: the pane's answer changes
+				// neither, so the phone never asks twice or fights the Mac for it.
+				const view = { width: scroller.clientWidth - PAD, height: scroller.clientHeight };
+				const key = `${view.width}x${view.height}@${term.options.fontSize}`;
+				if (key === asked) return;
+				const size = fit(view, cells(term));
+				if (!size) return;
+				asked = key;
+				socket.send(JSON.stringify({ type: 'size', ...size }));
+			};
+			const fitSoon = (): void => {
+				clearTimeout(fitTimer);
+				fitTimer = setTimeout(sendSize, FIT_MS);
+			};
+			this.fitSoon = fitSoon;
+
+			// A program on the alternate screen scrolls itself: a drag up or
+			// down over it becomes wheel reports, or arrow keys, for the program.
+			let sgr = false;
+			let touch: { x: number; y: number; rest: number; mine: boolean | null } | null = null;
+			const onTouchStart = (event: TouchEvent): void => {
+				const first = event.touches[0];
+				touch =
+					event.touches.length === 1
+						? { x: first.clientX, y: first.clientY, rest: 0, mine: null }
+						: null;
+			};
+			const onTouchMove = (event: TouchEvent): void => {
+				const term = this.term;
+				if (!touch || !term || event.touches.length !== 1) return;
+				if (term.buffer.active.type !== 'alternate' || this.state !== 'live') return;
+				const { clientX, clientY } = event.touches[0];
+				if (touch.mine === null) {
+					const dx = Math.abs(clientX - touch.x);
+					const dy = Math.abs(clientY - touch.y);
+					if (Math.max(dx, dy) < SLOP) return;
+					touch.mine = dy > dx;
+					touch.y = clientY;
+				}
+				if (!touch.mine) return;
+				if (event.cancelable) event.preventDefault();
+				const cell = cells(term);
+				const { steps, rest } = wheelSteps(touch.rest, clientY - touch.y, cell.height);
+				touch.y = clientY;
+				touch.rest = rest;
+				if (steps === 0) return;
+				const screen = host.querySelector<HTMLElement>('.xterm-screen')?.getBoundingClientRect();
+				const at = {
+					col: Math.min(((clientX - (screen?.left ?? 0)) / cell.width || 0) + 1, term.cols),
+					row: Math.min(((clientY - (screen?.top ?? 0)) / cell.height || 0) + 1, term.rows)
+				};
+				const mode = {
+					mouse: sgr && term.modes.mouseTrackingMode !== 'none',
+					application: term.modes.applicationCursorKeysMode
+				};
+				const socket = this.socket;
+				if (socket && socket.readyState === WebSocket.OPEN)
+					this.pacer.push(messages(wheelText(steps, mode, at)));
+			};
+			const onTouchEnd = (): void => {
+				touch = null;
+			};
+
 			const stop = (): void => {
 				clearTimeout(timer);
+				clearTimeout(fitTimer);
 				const socket = this.socket;
 				this.socket = null;
 				this.pacer.clear();
@@ -190,6 +287,8 @@ export class LiveTerm implements KeySink {
 					if (!message) return;
 					if (message.type === 'ready') {
 						term.reset();
+						sgr = false;
+						asked = '';
 						ready = true;
 						tries = 0;
 						this.state = 'live';
@@ -198,6 +297,8 @@ export class LiveTerm implements KeySink {
 					}
 					term.resize(message.cols, message.rows);
 					sync();
+					// Not at once: the view is laid out anew when the first screen shows.
+					if (message.type === 'ready') fitSoon();
 				});
 				socket.addEventListener('close', (event: CloseEvent) => {
 					if (socket !== this.socket || disposed) return;
@@ -249,6 +350,14 @@ export class LiveTerm implements KeySink {
 				// Only the keyboard types. The terminal answers no question from
 				// the pane, so nothing the pane prints comes back as a key press.
 				silenceQueries(term.parser);
+				// Whether the program wants its mouse reports in the SGR form:
+				// the terminal does not say, so the mode is watched as it is set.
+				const watch = (on: boolean) => (params: (number | number[])[]) => {
+					if (params.includes(1006)) sgr = on;
+					return false;
+				};
+				term.parser.registerCsiHandler({ prefix: '?', final: 'h' }, watch(true));
+				term.parser.registerCsiHandler({ prefix: '?', final: 'l' }, watch(false));
 				term.onData((data) => {
 					if (!isReport(data)) this.type(data);
 				});
@@ -257,8 +366,16 @@ export class LiveTerm implements KeySink {
 				connect();
 			});
 
-			const resized = new ResizeObserver(() => sync());
+			// The view changed: a turn of the phone, or the keyboard coming or going.
+			const resized = new ResizeObserver(() => {
+				sync();
+				fitSoon();
+			});
 			resized.observe(scroller);
+			scroller.addEventListener('touchstart', onTouchStart, { passive: true });
+			scroller.addEventListener('touchmove', onTouchMove, { passive: false });
+			scroller.addEventListener('touchend', onTouchEnd, { passive: true });
+			scroller.addEventListener('touchcancel', onTouchEnd, { passive: true });
 			scroller.addEventListener('scroll', onScroll, { passive: true });
 			pin.addEventListener('scroll', onPinScroll, { passive: true });
 			document.addEventListener('visibilitychange', onVisibility);
@@ -268,11 +385,16 @@ export class LiveTerm implements KeySink {
 				stop();
 				resized.disconnect();
 				scroller.removeEventListener('scroll', onScroll);
+				scroller.removeEventListener('touchstart', onTouchStart);
+				scroller.removeEventListener('touchmove', onTouchMove);
+				scroller.removeEventListener('touchend', onTouchEnd);
+				scroller.removeEventListener('touchcancel', onTouchEnd);
 				pin.removeEventListener('scroll', onPinScroll);
 				document.removeEventListener('visibilitychange', onVisibility);
 				this.term?.dispose();
 				this.term = null;
 				this.sync = null;
+				this.fitSoon = null;
 				this.state = 'off';
 				this.shown = false;
 				this.ctrl = false;
