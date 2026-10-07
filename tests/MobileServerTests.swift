@@ -2356,7 +2356,8 @@ final class MobileServerTests: XCTestCase {
         XCTAssertEqual(files.map { $0["name"] as? String }, ["PLAN.md", "report.html", "drawing.svg"])
         XCTAssertEqual(files.map { $0["kind"] as? String }, ["markdown", "html", "image"])
         XCTAssertEqual((body["links"] as? [[String: Any]])?.first?["url"] as? String, "https://example.com/docs")
-        XCTAssertEqual(body["remote"] as? Bool, false)
+        // The list no longer says where the thread runs: any host has files.
+        XCTAssertNil(body["remote"])
 
         let types = [
             "text/plain; charset=utf-8", "text/html; charset=utf-8", "image/svg+xml",

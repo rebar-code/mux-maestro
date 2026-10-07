@@ -2845,6 +2845,14 @@ final class TmuxService {
         return run.runData("/usr/bin/env", [remote] + args, stdin: nil)
     }
 
+    /// This host's files as the phone's artifact rules ask about them: two
+    /// fixed `python3` programs, each path one quoted argument.
+    private(set) lazy var artifactFiles = RemoteArtifactFiles(
+        run: { [unowned self] script, args, slow in
+            runHostData(remote: "python3", ["-I", "-c", script] + args, slow: slow)
+        },
+        home: { [unowned self] in resolveHome() })
+
     /// This host's `$HOME`: `NSHomeDirectory()` locally, or the remote login dir
     /// for a remote — a bare `ssh <host> pwd` lands in `$HOME` and prints it, so no
     /// shell-variable expansion is needed (which the single-quoted transport

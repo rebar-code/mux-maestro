@@ -339,11 +339,28 @@ const FILES = [
 	bytes
 }));
 
+// A remote thread with a file: the Mac asks its host for it.
+const REMOTE_MAKER = 'devbox:5';
+const REMOTE_DIR = '/home/me/code/infra';
+const REMOTE_FILES = [
+	{
+		id: artifactId(`${REMOTE_DIR}/DEPLOY.md`),
+		name: 'DEPLOY.md',
+		dir: REMOTE_DIR,
+		kind: 'markdown',
+		mime: 'text/plain; charset=utf-8',
+		age: 90,
+		bytes: Buffer.from('# Deploy\n\nStaging times out at the health check.\n')
+	}
+];
+const filesOf = (thread) =>
+	thread.id === MAKER ? FILES : thread.id === REMOTE_MAKER ? REMOTE_FILES : null;
+
 const artifactsBody = (thread) =>
-	thread.id !== MAKER
-		? { files: [], links: [], remote: !thread.local }
+	!filesOf(thread)
+		? { files: [], links: [] }
 		: {
-				files: [...FILES]
+				files: [...filesOf(thread)]
 					.sort((a, b) => a.age - b.age)
 					.map(({ bytes, age, ...file }) => ({
 						...file,
@@ -351,15 +368,17 @@ const artifactsBody = (thread) =>
 						at: started - age,
 						exists: bytes !== null
 					})),
-				links: [
-					{
-						url: 'https://example.com/docs/push-tokens',
-						host: 'example.com',
-						path: '/docs/push-tokens',
-						at: started - 60
-					}
-				],
-				remote: false
+				links:
+					thread.id !== MAKER
+						? []
+						: [
+								{
+									url: 'https://example.com/docs/push-tokens',
+									host: 'example.com',
+									path: '/docs/push-tokens',
+									at: started - 60
+								}
+							]
 			};
 
 // What the thread runs: [port, mappable].
@@ -492,7 +511,7 @@ function serversApi(req, res, path, body) {
 }
 
 function fileApi(res, url, thread) {
-	const file = thread.id === MAKER && FILES.find((f) => f.id === url.searchParams.get('id'));
+	const file = filesOf(thread)?.find((f) => f.id === url.searchParams.get('id'));
 	if (!file || !file.bytes) return send(res, 404, { error: 'not_found' });
 	res.writeHead(200, {
 		'content-type': file.mime,
@@ -1614,7 +1633,7 @@ function voiceApi(req, res, url, body) {
 		if (artifact !== null) {
 			if (!thread) return send(res, 400, { error: 'bad_request' });
 			if (!capabilities.artifacts) return send(res, 403, { error: 'disabled' });
-			const file = thread.id === MAKER && FILES.find((one) => one.id === artifact);
+			const file = filesOf(thread)?.find((one) => one.id === artifact);
 			const spoken = file && file.bytes && ['markdown', 'text'].includes(file.kind);
 			row = spoken ? { role: 'assistant', text: file.bytes.toString().slice(0, 12000) } : null;
 		} else {

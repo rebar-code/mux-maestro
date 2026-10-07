@@ -137,8 +137,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // The sidebar loads the tree again, and the phone follows it.
                 DispatchQueue.main.async { self?.sidebarVC?.refresh() }
             },
-            artifacts: { [artifactReader] thread in
-                MobileArtifacts.scan(thread: thread, reader: artifactReader)
+            artifacts: { [artifactReader, registry, transcriptMirror] thread in
+                guard !thread.host.isLocal else {
+                    return MobileArtifacts.scan(thread: thread, reader: artifactReader)
+                }
+                // A remote Claude session: what its copied transcript mentions,
+                // as those files are on its host.
+                let service = registry.service(for: thread.host)
+                guard let id = thread.claudeSessionId,
+                      let copy = service.transcriptCopy(sessionId: id, in: transcriptMirror),
+                      let mentions = artifactReader.mentions(transcript: copy)
+                else { return nil }
+                return service.artifactFiles.source(mentions: mentions, cwd: thread.cwd)
+            },
+            artifactDisk: { [registry] thread in
+                registry.service(for: thread.host).artifactFiles.disk()
             },
             running: { [weak self] thread in
                 // The sidebar's scan caches belong to the main thread.

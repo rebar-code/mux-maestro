@@ -740,3 +740,31 @@ test('Play on an open file reads it aloud; code and pictures have no button', as
 	await expect(viewer.getByRole('button', { name: 'Share' })).toBeVisible();
 	await shot('artifact-play-voice-off');
 });
+
+/** A remote Claude session, with the artifacts tab on. */
+async function openRemote(page: Page, id: string): Promise<void> {
+	await fresh(page);
+	await page.request.post('/__fixture/capability?name=artifacts&on=1');
+	await page.request.post(`/__fixture/remote-agent?id=${encodeURIComponent(id)}`);
+	await page.goto(threadPath(id));
+	await expect(page.locator('.u').first()).toBeVisible();
+}
+
+test('a remote thread lists its files and opens one', async ({ page }) => {
+	await openRemote(page, 'devbox:5');
+	await tab(page, 'artifacts').click();
+	const list = pageOf(page, 'artifacts');
+	await expect(list.locator('[data-file]')).toHaveCount(1);
+	await expect(list.locator('[data-file]')).toContainText('DEPLOY.md');
+	await expect(list).not.toContainText('Local threads only');
+	await page.screenshot({ path: 'test-results/shots/remote-artifacts.png' });
+	await list.locator('[data-file]').click();
+	const viewer = page.locator('[data-viewer]');
+	await expect(viewer).toContainText('Staging times out at the health check.');
+});
+
+test('a remote thread with no files says so', async ({ page }) => {
+	await openRemote(page, 'devbox:2');
+	await tab(page, 'artifacts').click();
+	await expect(pageOf(page, 'artifacts').locator('.empty')).toHaveText('No artifacts');
+});

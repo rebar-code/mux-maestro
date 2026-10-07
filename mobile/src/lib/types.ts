@@ -277,8 +277,6 @@ export interface ArtifactLink {
 export interface ArtifactList {
 	files: ArtifactFile[];
 	links: ArtifactLink[];
-	/** The thread runs on another host: its files are not read. */
-	remote: boolean;
 }
 
 /** One port of something that runs. `mappable`: the Mac can publish it on the tailnet. */
