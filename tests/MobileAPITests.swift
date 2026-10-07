@@ -508,6 +508,53 @@ final class MobileAPITests: XCTestCase {
         XCTAssertEqual(threads[3]["chat"] as? Bool, false)
         XCTAssertEqual(threads[3]["local"] as? Bool, false)
         XCTAssertEqual(threads[3]["hostColor"] as? String, "#f5a623")
+        // Always an array: a window with no pull request has an empty one.
+        for thread in threads {
+            XCTAssertEqual((thread["prs"] as? [Any])?.count, 0)
+        }
+    }
+
+    func testAThreadCarriesItsWindowsPullRequestsInTheSidebarsOrder() throws {
+        let url = "https://github.com/acme/acme-app/pull/"
+        let prs = [
+            PullRequest(number: 14, title: "Fix checkout", url: url + "14", isDraft: false),
+            PullRequest(number: 15, title: "Try proration", url: url + "15", isDraft: true),
+            PullRequest(number: 12, title: "Add cart", url: url + "12", isDraft: false, state: .merged),
+            // A draft that was closed is closed.
+            PullRequest(number: 9, title: "", url: url + "9", isDraft: true, state: .closed),
+        ]
+        var asked: [String] = []
+        let snapshot = MobileSnapshot.build([MobileHostInput(
+            host: .local, colorHex: "#3291ff", reachability: .reachable, stats: nil,
+            sessions: [TmuxSession(name: "acme-app", attached: true, windows: [
+                TmuxWindow(index: 1, name: "checkout-fix", active: true, panes: [
+                    pane("%12", command: "claude", active: true, claude: "c1"),
+                    pane("%13", command: "claude", claude: "c2"),
+                ]),
+                TmuxWindow(index: 2, name: "shell", active: false, panes: [pane("%14", active: true)]),
+            ])],
+            prs: { session, window in
+                asked.append("\(session):\(window)")
+                return window == 1 ? prs : []
+            })])
+        XCTAssertEqual(asked, ["acme-app:1", "acme-app:2"])
+        XCTAssertEqual(snapshot.threads.map(\.prs), [prs, prs, []])
+
+        let body = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: snapshot.threadsJSON()) as? [String: Any])
+        let threads = try XCTUnwrap(body["threads"] as? [[String: Any]])
+        let first = try XCTUnwrap(threads[0]["prs"] as? [[String: Any]])
+        XCTAssertEqual(first.map { $0["number"] as? Int }, [14, 15, 12, 9])
+        XCTAssertEqual(first.map { $0["state"] as? String }, ["open", "draft", "merged", "closed"])
+        XCTAssertEqual(first.map { $0["url"] as? String }, prs.map(\.url))
+        XCTAssertEqual(first.map { $0["title"] as? String }, ["Fix checkout", "Try proration", "Add cart", ""])
+        XCTAssertEqual(first.map { Set($0.keys) }, Array(repeating: ["number", "state", "url", "title"], count: 4))
+        XCTAssertEqual((threads[2]["prs"] as? [Any])?.count, 0)
+
+        // A pull request that changed is a new tree for the phone.
+        var merged = snapshot
+        merged.threads[0].prs[0].state = .merged
+        XCTAssertNotEqual(merged.threadsJSON(), snapshot.threadsJSON())
     }
 
     func testHostsJSONShape() throws {

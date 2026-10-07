@@ -84,6 +84,11 @@ export function sections(threads: Thread[], grouping: Grouping): Section[] {
 	}));
 }
 
+/** The threads that are not asleep. */
+export function awake(threads: Thread[]): Thread[] {
+	return threads.filter((thread) => thread.idleStage !== 'dozing');
+}
+
 export function counts(threads: Thread[]): { waiting: number; busy: number; dozing: number } {
 	return {
 		waiting: threads.filter((thread) => thread.status === 'waiting').length,

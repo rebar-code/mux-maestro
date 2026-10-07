@@ -897,3 +897,21 @@ test('two fingers on the text box change its text size, never under 16px', async
 	);
 	expect(await size()).toBe(16);
 });
+
+test('on an iPhone whose keyboard bar floats over the page, the box stays above the bar', async ({
+	page
+}) => {
+	// An iPhone on iOS 26: a touch screen, and `navigator.standalone` is there.
+	await page.addInitScript(() => {
+		Object.defineProperty(Navigator.prototype, 'standalone', { get: () => false });
+	});
+	await open(page, threadPath(IDLE), ['replies', 'keyBar']);
+	await box(page).tap();
+	await keyboard(page, 500);
+	// 58px: the bar and the gap under it (`KEYBOARD_BAR`).
+	const area = await dock(page).boundingBox();
+	expect(Math.abs((area?.y ?? 0) + (area?.height ?? 0) - (500 - 58))).toBeLessThanOrEqual(1);
+	const field = await box(page).boundingBox();
+	expect((field?.y ?? 0) + (field?.height ?? 0)).toBeLessThanOrEqual(500 - 58);
+	await shot(page, 'keyboard-bar');
+});

@@ -765,6 +765,8 @@ struct MobileHostInput {
     var reachability: HostReachability
     var stats: HostStats?
     var sessions: [TmuxSession]
+    /// The pull requests the sidebar shows on a window's row, in its order.
+    var prs: (_ session: String, _ window: Int) -> [PullRequest] = { _, _ in [] }
 }
 
 /// One row of the phone's thread list: an agent pane, or a window's active pane
@@ -795,6 +797,8 @@ struct MobileThread: Equatable {
     let codexSessionId: String?
     /// The phone started an agent here and it has not reported its id yet.
     var startedAgent = false
+    /// The pull requests of the thread's window, as its sidebar row has them.
+    var prs: [PullRequest] = []
 
     /// Transcripts are read from this Mac's disk, so only a local agent has chat.
     var hasChat: Bool {
@@ -812,7 +816,23 @@ struct MobileThread: Equatable {
             "sessionActivity": sessionActivity, "chat": hasChat,
             // What a `muxmaestro://thread/<id>` link names: the phone finds the thread by it.
             "agent": claudeSessionId ?? codexSessionId ?? NSNull(),
+            "prs": prs.map(\.json),
         ]
+    }
+}
+
+extension PullRequest {
+    /// The lifecycle word the phone reads: `stateWord`, as a fixed API name.
+    var apiState: String {
+        switch state {
+        case .merged: return "merged"
+        case .closed: return "closed"
+        case .open: return isDraft ? "draft" : "open"
+        }
+    }
+
+    var json: [String: Any] {
+        ["number": number, "state": apiState, "url": url, "title": title]
     }
 }
 
@@ -942,6 +962,7 @@ struct MobileSnapshot: Equatable {
     ) -> [MobileThread] {
         var panes = window.panes.filter { $0.claudeSessionId != nil || $0.codexSessionId != nil }
         if panes.isEmpty, let pane = window.agentPane { panes = [pane] }
+        let prs = input.prs(session.name, window.index)
         return panes.map { pane in
             MobileThread(
                 id: threadID(host: input.host, pane: pane.id),
@@ -952,7 +973,8 @@ struct MobileSnapshot: Equatable {
                 status: pane.attention, since: pane.agentState?.since,
                 idleStage: pane.idleStage, lastPrompt: pane.lastPrompt,
                 lastActivityAt: pane.lastActivityAt, sessionActivity: session.activity,
-                claudeSessionId: pane.claudeSessionId, codexSessionId: pane.codexSessionId)
+                claudeSessionId: pane.claudeSessionId, codexSessionId: pane.codexSessionId,
+                prs: prs)
         }
     }
 

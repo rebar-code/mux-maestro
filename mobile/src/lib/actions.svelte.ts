@@ -60,6 +60,8 @@ class Menu {
 			if (target.kind === 'host') this.openDirs(target.host);
 		} else if (key === 'new-window') {
 			this.stage = 'start';
+		} else if (key === 'archive-window') {
+			void this.archive(target);
 		} else {
 			void this.zoom(target);
 		}
@@ -122,6 +124,19 @@ class Menu {
 				...to,
 				name: this.name.trim()
 			});
+			void live.refresh();
+		});
+	}
+
+	/** Archive a thread's window. Nothing asks first: the Mac keeps it and can undo. */
+	async archive(target: MenuTarget): Promise<void> {
+		const to = actionTarget(target);
+		if (target.kind !== 'thread' || !to) return;
+		const gone = killed(target, 'kill-window', live.threads ?? []);
+		await this.run(async () => {
+			await tmuxAction('archive-window', to);
+			ui.revealed = null;
+			if (gone.some((thread) => thread.id === page.params.id)) await goto(resolve('/'));
 			void live.refresh();
 		});
 	}

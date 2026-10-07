@@ -33,6 +33,11 @@
 		const standalone =
 			window.matchMedia('(display-mode: standalone)').matches ||
 			(navigator as { standalone?: boolean }).standalone === true;
+		// An iPhone on iOS 26 or later: its keyboard bar lies over the page.
+		const floatingBar =
+			'standalone' in navigator &&
+			navigator.maxTouchPoints > 0 &&
+			CSS.supports('anchor-name', '--a');
 		let lift = 0;
 		const fit = (): void => {
 			const sides = [window.screen.width, window.screen.height];
@@ -44,7 +49,8 @@
 				// A screen on its side: some browsers still name its sides as upright.
 				screen: window.innerWidth > window.innerHeight ? Math.min(...sides) : Math.max(...sides),
 				standalone,
-				safeTop: node.querySelector<HTMLElement>('[data-inset]')?.offsetHeight ?? 0
+				safeTop: node.querySelector<HTMLElement>('[data-inset]')?.offsetHeight ?? 0,
+				floatingBar
 			});
 			const inset = fitted.keyboard;
 			lift = fitted.lift;

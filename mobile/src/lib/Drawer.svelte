@@ -6,8 +6,9 @@
 	import { isCollapsed, sessionDomId, SUMMARY_LABEL, summaryStatus } from './collapse';
 	import { collapse } from './collapse.svelte';
 	import { pullToRefresh, ui } from './gestures.svelte';
-	import { counts, GROUPINGS, sections, type SessionGroup } from './group';
+	import { awake, counts, GROUPINGS, sections, type SessionGroup } from './group';
 	import HostCard from './HostCard.svelte';
+	import Icon from './Icon.svelte';
 	import { can, live } from './live.svelte';
 	import { longPress } from './longpress';
 	import NotifyRow from './NotifyRow.svelte';
@@ -16,7 +17,9 @@
 
 	const PULL = 'threads';
 
-	const groups = $derived(live.threads ? sections(live.threads, live.grouping) : []);
+	const groups = $derived(
+		live.threads ? sections(live.awakeOnly ? awake(live.threads) : live.threads, live.grouping) : []
+	);
 	const waiting = $derived(live.threads ? counts(live.threads).waiting : 0);
 	const onHome = $derived(page.route.id === '/');
 	const openId = $derived(page.route.id === '/t/[id]' ? page.params.id : null);
@@ -145,6 +148,13 @@
 
 	<!-- Always here, in reach of a thumb: the way back to the home, whatever is switched on. -->
 	<div class="dbar">
+		<button
+			class="tb filt"
+			class:on={live.awakeOnly}
+			aria-label="Awake only"
+			aria-pressed={live.awakeOnly}
+			onclick={() => live.toggleAwakeOnly()}><Icon name="filter" /></button
+		>
 		<a
 			class="mrow"
 			class:sel={onHome}
@@ -197,13 +207,29 @@
 
 	/* Fixed under the list: the list ends above it, and it clears the home indicator. */
 	.dbar {
+		display: flex;
+		align-items: center;
+		gap: 8px;
 		flex: none;
 		padding: 8px 14px calc(8px + env(safe-area-inset-bottom));
 		border-top: 1px solid var(--border);
 		background: var(--bar);
 	}
 
+	.filt {
+		border: 1px solid #2b2b3d;
+		border-radius: 10px;
+	}
+
+	.filt.on {
+		border-color: var(--accent);
+		background: #1b2333;
+		color: var(--accent);
+	}
+
 	.mrow {
+		flex: 1;
+		min-width: 0;
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
@@ -349,7 +375,7 @@
 		justify-content: center;
 		gap: 7px;
 		height: 56px;
-		padding: 0 14px 0 24px;
+		padding: 0 14px 0 20px;
 	}
 
 	.skcard {

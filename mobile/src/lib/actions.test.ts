@@ -43,10 +43,17 @@ describe('menuItems', () => {
 		expect(labels(row, true)).toEqual([
 			'New Window…',
 			'Rename Window…',
+			'Archive Window',
 			'Zoom Pane',
 			'Kill Window'
 		]);
-		expect(labels(row, false)).toEqual(['New Window…', 'Rename Window…', 'Zoom Pane']);
+		// Archive stays without the kill switch: the Mac can undo it.
+		expect(labels(row, false)).toEqual([
+			'New Window…',
+			'Rename Window…',
+			'Archive Window',
+			'Zoom Pane'
+		]);
 		const split: MenuTarget = { kind: 'thread', thread: thread('localhost:1', { panes: 2 }) };
 		expect(labels(split, true)).toContain('Kill Pane');
 		const session: MenuTarget = {

@@ -22,6 +22,9 @@ final class MobileServer {
         /// tmux on a host, for session actions and find. nil where there is
         /// none (the dev server): those routes then answer 503. May block.
         var tmux: (Host) -> MobileTmux? = { _ in nil }
+        /// Archive the thread's window the way the Mac's sidebar does. nil
+        /// where no Mac does (the dev server): the route then answers 503.
+        var archive: MobileActions.Archive? = nil
         /// A session action changed the tree: load it again now.
         var changed: () -> Void = {}
         /// The home folder whose skills and commands the `/` list reads.
@@ -978,7 +981,7 @@ final class MobileServer {
             reply(to: client) { [sources, weak self] in
                 let response = MobileActions.perform(
                     action, body: request.body, snapshot: snapshot, home: sources.home,
-                    tmux: sources.tmux)
+                    tmux: sources.tmux, archive: sources.archive)
                 // Marked before the tree is read again, so the new thread
                 // has its chat in the first tree it is in.
                 if let thread = MobileActions.startedThread(response) { self?.agentStarted(in: thread) }

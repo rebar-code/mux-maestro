@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { fileSize, framedHtml, ICONS, isViewable, withoutTargets } from './artifacts';
+	import { fileSize, framedHtml, ICONS, isViewable, swipeStep, withoutTargets } from './artifacts';
 	import { share, type Artifacts } from './artifacts.svelte';
 	import { ui } from './gestures.svelte';
 	import { proseTaps } from './prose';
@@ -25,6 +25,47 @@
 
 	let sharing = $state(false);
 
+	/**
+	 * Attachment: one finger up or down the file steps to the next or the
+	 * previous one. Touch Events, because they go on while the browser scrolls.
+	 */
+	function steps(node: HTMLElement): () => void {
+		let from: { x: number; y: number; atTop: boolean; atEnd: boolean } | null = null;
+		const start = (event: TouchEvent): void => {
+			// Two fingers scale, and a scaled image is moved by one.
+			if (event.touches.length !== 1 || zoom.holds) return void (from = null);
+			const scroller = node.querySelector<HTMLElement>('.scroll');
+			from = {
+				x: event.touches[0].clientX,
+				y: event.touches[0].clientY,
+				atTop: !scroller || scroller.scrollTop <= 0,
+				atEnd: !scroller || scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 1
+			};
+		};
+		const end = (event: TouchEvent): void => {
+			const began = from;
+			from = null;
+			if (!began || event.touches.length > 0 || zoom.holds) return;
+			const touch = event.changedTouches[0];
+			const by = swipeStep({
+				dx: touch.clientX - began.x,
+				dy: touch.clientY - began.y,
+				atTop: began.atTop,
+				atEnd: began.atEnd
+			});
+			if (by) artifacts.step(by);
+		};
+		const cancel = (): void => void (from = null);
+		node.addEventListener('touchstart', start, { passive: true });
+		node.addEventListener('touchend', end, { passive: true });
+		node.addEventListener('touchcancel', cancel, { passive: true });
+		return () => {
+			node.removeEventListener('touchstart', start);
+			node.removeEventListener('touchend', end);
+			node.removeEventListener('touchcancel', cancel);
+		};
+	}
+
 	async function send(): Promise<void> {
 		if (sharing) return;
 		sharing = true;
@@ -41,7 +82,10 @@
 <div
 	class="viewer"
 	class:anim={!ui.dragging}
+	class:up={artifacts.entered === 'up'}
+	class:down={artifacts.entered === 'down'}
 	data-viewer={file.id}
+	{@attach steps}
 	style:transform="translate3d({ui.backX}px, 0, 0)"
 >
 	<div class="aback">
@@ -144,6 +188,29 @@
 	@keyframes in {
 		from {
 			transform: translateX(40%);
+			opacity: 0.3;
+		}
+	}
+
+	/* After a swipe up or down the file comes from where the finger came. */
+	.viewer.up {
+		animation-name: up;
+	}
+
+	.viewer.down {
+		animation-name: down;
+	}
+
+	@keyframes up {
+		from {
+			transform: translateY(40%);
+			opacity: 0.3;
+		}
+	}
+
+	@keyframes down {
+		from {
+			transform: translateY(-40%);
 			opacity: 0.3;
 		}
 	}

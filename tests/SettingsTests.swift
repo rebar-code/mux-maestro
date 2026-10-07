@@ -280,6 +280,22 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(Settings.maestroAgent(defaults: defaults), .claude)
     }
 
+    func testTheMaestroResetThresholdsDefaultAndReadZeroAsOff() {
+        XCTAssertEqual(Settings.maestroResetAfterIdleMinutes(defaults: defaults), 30)
+        XCTAssertEqual(Settings.maestroResetAboveTokens(defaults: defaults), 80_000)
+        Settings.setMaestroResetAfterIdleMinutes(5, defaults: defaults)
+        Settings.setMaestroResetAboveTokens(120_000, defaults: defaults)
+        XCTAssertEqual(Settings.maestroResetAfterIdleMinutes(defaults: defaults), 5)
+        XCTAssertEqual(Settings.maestroResetAboveTokens(defaults: defaults), 120_000)
+        // 0 is a value, not "unset": it turns the rule off.
+        Settings.setMaestroResetAfterIdleMinutes(0, defaults: defaults)
+        Settings.setMaestroResetAboveTokens(0, defaults: defaults)
+        XCTAssertEqual(Settings.maestroResetAfterIdleMinutes(defaults: defaults), 0)
+        XCTAssertEqual(Settings.maestroResetAboveTokens(defaults: defaults), 0)
+        Settings.setMaestroResetAfterIdleMinutes(-3, defaults: defaults)
+        XCTAssertEqual(Settings.maestroResetAfterIdleMinutes(defaults: defaults), 0)
+    }
+
     func testEachMaestroAgentKeepsItsOwnModel() {
         Settings.setMaestroAgent(.codex, defaults: defaults)
         Settings.setMaestroModel(" gpt-5.5 ", agent: .codex, defaults: defaults)

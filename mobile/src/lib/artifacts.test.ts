@@ -8,7 +8,9 @@ import {
 	inlineArtifacts,
 	isViewable,
 	savedBlob,
-	SAVED_TYPE
+	SAVED_TYPE,
+	neighbour,
+	swipeStep
 } from './artifacts';
 import type { ArtifactFile, ChatMessage } from './types';
 
@@ -223,5 +225,36 @@ describe('no blob address for a type that can run script', () => {
 			expect(saved.type, type).toBe('application/octet-stream');
 			expect(await saved.text()).toBe('<script>1</script>');
 		}
+	});
+});
+
+describe('a swipe up or down on an open file', () => {
+	const still = { dx: 0, atTop: true, atEnd: true };
+
+	it('steps to the next file on a swipe up and the previous on a swipe down', () => {
+		expect(swipeStep({ ...still, dy: -120 })).toBe(1);
+		expect(swipeStep({ ...still, dy: 120 })).toBe(-1);
+	});
+
+	it('takes a short move or a sideways one for neither', () => {
+		expect(swipeStep({ ...still, dy: -40 })).toBe(0);
+		expect(swipeStep({ ...still, dy: -120, dx: 110 })).toBe(0);
+	});
+
+	it('lets a file that scrolls scroll first', () => {
+		expect(swipeStep({ ...still, dy: -120, atEnd: false })).toBe(0);
+		expect(swipeStep({ ...still, dy: 120, atTop: false })).toBe(0);
+		// From its end it goes on, and from its top it goes back.
+		expect(swipeStep({ ...still, dy: -120, atTop: false })).toBe(1);
+		expect(swipeStep({ ...still, dy: 120, atEnd: false })).toBe(-1);
+	});
+
+	it('finds the neighbour in the list, and none past its ends', () => {
+		const files = [file('a.md', 'markdown'), file('b.ts', 'code'), file('c.png', 'image')];
+		expect(neighbour(files, 'b.ts', 1)?.id).toBe('c.png');
+		expect(neighbour(files, 'b.ts', -1)?.id).toBe('a.md');
+		expect(neighbour(files, 'c.png', 1)).toBeNull();
+		expect(neighbour(files, 'a.md', -1)).toBeNull();
+		expect(neighbour(files, 'gone.txt', 1)).toBeNull();
 	});
 });

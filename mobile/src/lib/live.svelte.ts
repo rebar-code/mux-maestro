@@ -18,6 +18,7 @@ const THREADS_KEY = 'mm.threads';
 const HOSTS_KEY = 'mm.hosts';
 const CONFIG_KEY = 'mm.config';
 const GROUPING_KEY = 'mm.grouping';
+const AWAKE_KEY = 'mm.awake';
 
 function read<T>(key: string): T | null {
 	try {
@@ -58,11 +59,19 @@ class Live {
 	private picked = $state<Grouping | null>(read<Grouping>(GROUPING_KEY));
 	readonly grouping: Grouping = $derived(this.picked ?? this.config?.grouping ?? 'recent');
 
+	/** The sidebar leaves the sleeping threads out. */
+	awakeOnly = $state(read<boolean>(AWAKE_KEY) === true);
+
 	private listeners = new Set<() => void>();
 	private configListeners = new Set<() => void>();
 
 	byId(id: string): Thread | undefined {
 		return this.threads?.find((thread) => thread.id === id);
+	}
+
+	toggleAwakeOnly(): void {
+		this.awakeOnly = !this.awakeOnly;
+		write(AWAKE_KEY, this.awakeOnly);
 	}
 
 	setGrouping(grouping: Grouping): void {

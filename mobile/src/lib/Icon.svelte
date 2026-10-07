@@ -39,6 +39,16 @@
 		sendQueued: ['M12 14V3', 'm7 8 5-5 5 5', 'M6 18h12', 'M8 21.5h8'],
 		// The arrow over a stop square: stop the turn, then send.
 		interrupt: ['M7.5 12h9v9h-9z', 'M12 8V2', 'm9 5 3-3 3 3'],
+		// Three dots, one over the other: the row's menu.
+		more: [
+			'M12 4a1 1 0 1 0 0 2 1 1 0 1 0 0-2',
+			'M12 11a1 1 0 1 0 0 2 1 1 0 1 0 0-2',
+			'M12 18a1 1 0 1 0 0 2 1 1 0 1 0 0-2'
+		],
+		// Lucide `archive`.
+		archive: ['M3 4h18v4H3z', 'M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8', 'M10 12h4'],
+		// Lucide `list-filter`.
+		filter: ['M3 6h18', 'M7 12h10', 'M10 18h4'],
 		micOff: [
 			'M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z',
 			'M5 11a7 7 0 0 0 14 0',

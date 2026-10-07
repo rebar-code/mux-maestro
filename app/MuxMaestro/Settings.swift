@@ -290,6 +290,35 @@ enum Settings {
             forKey: "maestro.model.\(agent.rawValue)")
     }
 
+    private static let maestroResetAfterIdleKey = "maestro.resetAfterIdleMinutes"
+    private static let maestroResetAboveTokensKey = "maestro.resetAboveTokens"
+    static let maestroResetAfterIdleDefault = 30
+    static let maestroResetAboveTokensDefault = 80_000
+
+    /// Minutes the Maestro may sit idle before its conversation is cleared;
+    /// 0 never clears for idleness. No row in Settings:
+    /// `defaults write is.rebar.MuxMaestro maestro.resetAfterIdleMinutes <n>`.
+    static func maestroResetAfterIdleMinutes(defaults: UserDefaults = .standard) -> Int {
+        defaults.object(forKey: maestroResetAfterIdleKey) == nil
+            ? maestroResetAfterIdleDefault : max(0, defaults.integer(forKey: maestroResetAfterIdleKey))
+    }
+
+    static func setMaestroResetAfterIdleMinutes(_ minutes: Int, defaults: UserDefaults = .standard) {
+        defaults.set(minutes, forKey: maestroResetAfterIdleKey)
+    }
+
+    /// The context size, in tokens, past which an idle Maestro's conversation
+    /// is cleared; 0 never clears for size. No row in Settings:
+    /// `defaults write is.rebar.MuxMaestro maestro.resetAboveTokens <n>`.
+    static func maestroResetAboveTokens(defaults: UserDefaults = .standard) -> Int {
+        defaults.object(forKey: maestroResetAboveTokensKey) == nil
+            ? maestroResetAboveTokensDefault : max(0, defaults.integer(forKey: maestroResetAboveTokensKey))
+    }
+
+    static func setMaestroResetAboveTokens(_ tokens: Int, defaults: UserDefaults = .standard) {
+        defaults.set(tokens, forKey: maestroResetAboveTokensKey)
+    }
+
     // MARK: Phone
 
     private static let phoneEnabledKey = "phone.enabled"
