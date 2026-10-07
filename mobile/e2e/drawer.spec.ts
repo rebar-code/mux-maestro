@@ -7,6 +7,7 @@ import {
 	expectDrawerClosed,
 	expectDrawerOpen,
 	fresh,
+	threadPath,
 	touchDrag,
 	WIDTH
 } from './helpers';
@@ -43,6 +44,26 @@ test('a finger opens and closes the drawer over scrolling content', async ({ pag
 	await expectDrawerOpen(page);
 	// Starts on a row inside the scrolling list.
 	await touchDrag(page, [280, 300], [40, 304]);
+	await expectDrawerClosed(page);
+});
+
+test('a drag over picked text moves the selection, not the drawer', async ({ page }) => {
+	await fresh(page, threadPath('localhost:1'));
+	const message = page.locator('[data-view="chat"] .a').last();
+	await expect(message).toBeVisible();
+	await message.evaluate((el) => document.getSelection()?.selectAllChildren(el));
+	const box = (await message.boundingBox())!;
+	const y = box.y + box.height / 2;
+	await touchDrag(page, [40, y], [300, y + 6]);
+	await expectDrawerClosed(page);
+	// With nothing picked the same drag opens it.
+	await page.evaluate(() => document.getSelection()?.removeAllRanges());
+	await touchDrag(page, [40, y], [300, y + 6]);
+	await expectDrawerOpen(page);
+});
+
+test('a long press and then a drag picks text, and leaves the drawer shut', async ({ page }) => {
+	await touchDrag(page, [40, 500], [300, 506], 600);
 	await expectDrawerClosed(page);
 });
 
