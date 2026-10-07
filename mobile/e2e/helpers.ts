@@ -162,11 +162,15 @@ export async function drag(
 	await page.mouse.up();
 }
 
-/** A real touch drag (not a mouse), so the browser applies `touch-action`. */
+/**
+ * A real touch drag (not a mouse), so the browser applies `touch-action`.
+ * With `hold`, the finger rests that long before it moves: a long press.
+ */
 export async function touchDrag(
 	page: Page,
 	from: [number, number],
-	to: [number, number]
+	to: [number, number],
+	hold = 0
 ): Promise<void> {
 	const cdp = await page.context().newCDPSession(page);
 	const send = (
@@ -178,6 +182,7 @@ export async function touchDrag(
 			touchPoints: point ? [{ x: point[0], y: point[1] }] : []
 		});
 	await send('touchStart', from);
+	if (hold) await page.waitForTimeout(hold);
 	const steps = 12;
 	for (let i = 1; i <= steps; i += 1) {
 		await send('touchMove', [

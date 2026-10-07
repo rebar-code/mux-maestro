@@ -22,6 +22,8 @@ const SLOP = 10;
 /** Two taps this close in time and place are a double tap. */
 const TAP_MS = 300;
 const TAP_PX = 30;
+/** A finger that rests this long picks text: what it drags after is the selection. */
+const HOLD_MS = 480;
 const PULL_TRIGGER = 56;
 const PULL_MAX = 96;
 const PULL_HOLD = 44;
@@ -328,6 +330,15 @@ export function gestures(node: HTMLElement): () => void {
 			return;
 		}
 		if (kind === null) {
+			// A drag over picked text, or after a long press, moves the selection:
+			// it is the browser's, and nothing follows it. A mouse picks text as it
+			// drags, so only a finger's selection counts.
+			const picked =
+				event.pointerType !== 'mouse' && document.getSelection()?.isCollapsed === false;
+			if (picked || event.timeStamp - downT >= HOLD_MS) {
+				kind = 'none';
+				return;
+			}
 			// The Maestro panel lies over the page: a drag in it opens the sidebar
 			// or swipes a card, and never turns the page under it.
 			const over = origin?.closest('[data-maestro-panel]') != null;
