@@ -22,6 +22,10 @@ final class MobileServer {
         /// tmux on a host, for session actions and find. nil where there is
         /// none (the dev server): those routes then answer 503. May block.
         var tmux: (Host) -> MobileTmux? = { _ in nil }
+        /// A remote host's home and one command run there, for the
+        /// directory list. nil where there is none (the dev server): only
+        /// this Mac's directories are listed then. May block.
+        var shell: (Host) -> MobileActions.HostShell? = { _ in nil }
         /// Archive the thread's window the way the Mac's sidebar does. nil
         /// where no Mac does (the dev server): the route then answers 503.
         var archive: MobileActions.Archive? = nil
@@ -985,18 +989,21 @@ final class MobileServer {
             reply(to: client) { [sources, weak self] in
                 let response = MobileActions.perform(
                     action, body: request.body, snapshot: snapshot, home: sources.home,
-                    tmux: sources.tmux, archive: sources.archive)
+                    tmux: sources.tmux, archive: sources.archive,
+                    hostHome: { sources.shell($0)?.home() })
                 // Marked before the tree is read again, so the new thread
                 // has its chat in the first tree it is in.
                 if let thread = MobileActions.startedThread(response) { self?.agentStarted(in: thread) }
                 if response.status == 200 { sources.changed() }
                 return response
             }
-        case .dirs(let host):
-            guard let dirs = MobileActions.dirs(host: host, snapshot: snapshot) else {
-                return send(.error(404, "not_found"), to: client, head: head)
+        case .dirs(let host, let path):
+            // A remote host is asked over ssh: off the queue.
+            let snapshot = snapshot
+            reply(to: client) { [sources] in
+                MobileActions.browse(
+                    host: host, path: path, snapshot: snapshot, home: sources.home, shell: sources.shell)
             }
-            send(.json(["dirs": dirs]), to: client, head: head)
         case .find(let id, let raw):
             guard let query = MobileFind.query(raw) else {
                 return send(.error(400, "bad_query"), to: client, head: head)

@@ -55,6 +55,33 @@ export const START_ITEMS: { kind: StartKind; label: string }[] = [
 	{ kind: 'terminal', label: 'Terminal' }
 ];
 
+/** The Mac's cap on a first prompt: the bytes of the quoted word it types. */
+export const PROMPT_MAX = 900;
+
+/**
+ * Whether the Mac would take `raw` as an agent's first prompt. Empty is no
+ * prompt. The Mac checks again; this only saves a round trip.
+ */
+export function validPrompt(raw: string): boolean {
+	const text = raw.replace(/\r\n/g, '\n').trim();
+	if (text.startsWith('-')) return false;
+	let bytes = 2 + new TextEncoder().encode(text).length;
+	for (const char of text) {
+		const code = char.codePointAt(0) ?? 0;
+		// A control character is a key to a terminal; a new line and a tab are text.
+		if (code !== 0x0a && code !== 0x09 && (code < 0x20 || (code >= 0x7f && code <= 0x9f)))
+			return false;
+		// A quote and a backslash are four bytes each once they are quoted.
+		if (char === "'" || char === '\\') bytes += 3;
+	}
+	return bytes <= PROMPT_MAX;
+}
+
+/** The last step of a path: a folder's own name. */
+export function folderName(path: string): string {
+	return path.slice(path.lastIndexOf('/') + 1) || path;
+}
+
 /** The session a new window goes into. */
 export function startTitle(target: MenuTarget): string {
 	if (target.kind === 'thread') return target.thread.session;
@@ -142,5 +169,7 @@ export function refusalText(code: string | null, detail: string | null): string 
 	if (code === 'disabled') return 'Switched off on the Mac';
 	if (code === 'protected') return 'Not allowed';
 	if (code === 'bad_dir') return 'Directory not offered';
+	if (code === 'bad_prompt') return 'Prompt not allowed';
+	if (code === 'too_large') return 'Prompt too long';
 	return 'Failed';
 }

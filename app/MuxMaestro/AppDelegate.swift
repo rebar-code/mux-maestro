@@ -107,6 +107,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             tmux: { [registry] host in
                 { args in registry.service(for: host).phoneTmux(args) }
             },
+            shell: { [registry] host in
+                let service = registry.service(for: host)
+                return MobileActions.HostShell(
+                    home: { service.resolveHome() }, run: { service.phoneHostCommand($0) })
+            },
             archive: { [weak self] thread in
                 // The close flow belongs to the main thread and its kill runs
                 // on the host's queue: wait here for both.

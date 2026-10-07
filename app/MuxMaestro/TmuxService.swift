@@ -2778,6 +2778,14 @@ final class TmuxService {
         return runner.run(local, args)
     }
 
+    /// One command on this host for the phone's directory list, each argument
+    /// its own word (quoted for the remote shell, like `runHostCommand`):
+    /// what it printed, or nil when it failed. Blocking; call off the main thread.
+    func phoneHostCommand(_ argv: [String]) -> String? {
+        guard let command = argv.first else { return nil }
+        return runHostCommand(local: command, remote: command, Array(argv.dropFirst()))
+    }
+
     /// `runHostCommand`'s slow sibling — same local/ssh routing, run under
     /// `slow`'s 30s ceiling instead of the 4s/8s interactive one. For `docker ps`,
     /// which legitimately outlives that ceiling on this Mac.

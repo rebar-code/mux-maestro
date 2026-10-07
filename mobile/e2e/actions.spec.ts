@@ -331,11 +331,109 @@ test('the + on a host card starts a session in a directory the Mac offers', asyn
 	]);
 	await shot(page, 'new-session');
 	await sheet(page).locator('[data-dir="/home/me/code/infra"]').click();
+	// Nothing is made until what runs in it is picked.
+	await expect(sheet(page)).toHaveAttribute('data-action-sheet', 'agent');
+	await expect(sheet(page).locator('.title')).toHaveText('New session in ~/code/infra');
+	expect(await actions(page)).toEqual([]);
+	await start(page, 'terminal').click();
 	await expect(sheet(page)).toBeHidden();
 	await expect(session(page, 'devbox/infra-2')).toBeVisible();
 	expect(await actions(page)).toEqual([
 		{ action: 'new-session', host: 'devbox', dir: '/home/me/code/infra' }
 	]);
+});
+
+test('a new session browses into a folder and starts Claude with a first prompt', async ({
+	page
+}) => {
+	await allow(page, 'replies');
+	await page.getByRole('button', { name: 'New session on localhost' }).scrollIntoViewIfNeeded();
+	await page.getByRole('button', { name: 'New session on localhost' }).click();
+	const dirs = sheet(page).locator('[data-dir]');
+	const where = sheet(page).locator('[data-folder]');
+	const use = sheet(page).getByRole('button', { name: 'Use this folder' });
+	// Where the threads work is a place to start, not a folder to use.
+	await expect(use).toHaveCount(0);
+	await sheet(page).getByRole('button', { name: 'Browse…' }).click();
+	await expect(where).toHaveText('~');
+	await expect(dirs).toHaveText(['code', 'notes']);
+	await dirs.filter({ hasText: 'code' }).click();
+	await expect(where).toHaveText('~/code');
+	await expect(dirs).toHaveText(['acme-app', 'billing', 'docs-site', 'infra', 'reports']);
+	await shot(page, 'new-session-browse');
+	await dirs.filter({ hasText: 'billing' }).click();
+	// A folder with nothing in it can still be used, and left.
+	await expect(where).toHaveText('~/code/billing');
+	await expect(dirs).toHaveCount(0);
+	await sheet(page).getByRole('button', { name: 'Up' }).click();
+	await expect(where).toHaveText('~/code');
+	await dirs.filter({ hasText: 'acme-app' }).click();
+	await expect(where).toHaveText('~/code/acme-app');
+	await expect(dirs).toHaveText(['api', 'web']);
+	await use.click();
+
+	await expect(sheet(page)).toHaveAttribute('data-action-sheet', 'agent');
+	await expect(sheet(page).getByRole('button')).toHaveText(['Claude', 'Codex', 'Terminal']);
+	await start(page, 'claude').click();
+	await expect(sheet(page)).toHaveAttribute('data-action-sheet', 'prompt');
+	await expect(sheet(page).locator('.title')).toHaveText('Claude in ~/code/acme-app');
+	const prompt = sheet(page).getByRole('textbox', { name: 'Prompt' });
+	await expect(prompt).toBeFocused();
+	// A key press is not text: the Mac would refuse it, so it is not sent.
+	await prompt.fill('a\u001b[2J');
+	await expect(sheet(page).getByRole('button', { name: 'Start' })).toBeDisabled();
+	await prompt.fill("fix the login test; it's $(broken)\nand say why");
+	await shot(page, 'new-session-prompt');
+	expect(await actions(page)).toEqual([]);
+	await sheet(page).getByRole('button', { name: 'Start' }).click();
+
+	await expect(page).toHaveURL(/\/t\/localhost(:|%3A)\d+$/);
+	await expect(sheet(page)).toBeHidden();
+	await expect(page.locator('.tbar .title b')).toHaveText('acme-app-2 · zsh');
+	await expect(view(page)).toHaveAttribute('data-mode', 'chat');
+	expect(await actions(page)).toEqual([
+		{
+			action: 'new-session',
+			host: 'localhost',
+			dir: '/Users/me/code/acme-app',
+			agent: 'claude',
+			prompt: "fix the login test; it's $(broken)\nand say why"
+		}
+	]);
+});
+
+test('the prompt is optional, and Up from the home goes back to where the threads work', async ({
+	page
+}) => {
+	await page.getByRole('button', { name: 'New session on devbox' }).scrollIntoViewIfNeeded();
+	await page.getByRole('button', { name: 'New session on devbox' }).click();
+	await sheet(page).getByRole('button', { name: 'Browse…' }).click();
+	await expect(sheet(page).locator('[data-folder]')).toHaveText('~');
+	await sheet(page).getByRole('button', { name: 'Up' }).click();
+	await expect(sheet(page).locator('[data-folder]')).toHaveCount(0);
+	await expect(sheet(page).locator('[data-dir]')).toHaveCount(4);
+	await sheet(page).getByRole('button', { name: 'Home' }).click();
+	await expect(sheet(page).locator('.title')).toHaveText('New session in Home');
+	await start(page, 'codex').click();
+	await sheet(page).getByRole('button', { name: 'Start' }).click();
+	await expect(page).toHaveURL(/\/t\/devbox(:|%3A)\d+$/);
+	// No directory and no prompt are sent: the host's home, and the bare agent.
+	expect(await actions(page)).toEqual([{ action: 'new-session', host: 'devbox', agent: 'codex' }]);
+});
+
+test('the Mac lists the home tree only', async ({ page }) => {
+	const headers = { ...TOKEN_HEADER, 'x-muxmaestro': '1', origin: new URL(page.url()).origin };
+	const list = (path: string): ReturnType<typeof page.request.get> =>
+		page.request.get(`/api/hosts/devbox/dirs?path=${encodeURIComponent(path)}`, { headers });
+	expect((await list('/home/me/code')).status()).toBe(200);
+	for (const path of ['/etc', '/home/other', '/home/me/.ssh', '/home/me2'])
+		expect((await list(path)).status(), path).toBe(400);
+	const refused = await page.request.post('/api/tmux/new-session', {
+		headers,
+		data: { host: 'devbox', dir: '/etc', agent: 'claude' }
+	});
+	expect(refused.status()).toBe(400);
+	expect(await actions(page)).toEqual([]);
 });
 
 test('a swipe down closes the sheet, and a short one springs back', async ({ page }) => {
