@@ -61,6 +61,8 @@ export interface ChatPage {
 	messages: ChatMessage[];
 	next: number;
 	reset: boolean;
+	/** The agent session `next` belongs to. Absent before its first message. */
+	session?: string;
 }
 
 export const CAPABILITIES = [

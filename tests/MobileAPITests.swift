@@ -554,6 +554,33 @@ final class MobileAPITests: XCTestCase {
         XCTAssertEqual(page.next, size)
     }
 
+    func testASlashCommandIsTheUsersRowAndItsOutputIsNot() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mobile-chat-\(UUID().uuidString).jsonl")
+        defer { try? FileManager.default.removeItem(at: url) }
+        func user(_ content: String, extra: String = "") -> String {
+            #"{"type":"user"\#(extra),"message":{"role":"user","content":"\#(content)"}}"# + "\n"
+        }
+        let lines = [
+            // Claude Code 2.1 writes a slash command as three tags.
+            user(#"<command-message>review</command-message>\n<command-name>/review</command-name>\n"#
+                + #"<command-args>did we answer the email?\nSay which.</command-args>"#),
+            // The skill's text follows as a harness note.
+            user("Base directory for this skill: /Users/me/.claude/skills/review", extra: #","isMeta":true"#),
+            user(#"<command-name>/clear</command-name>\n<command-message>clear</command-message>\n"#
+                + "<command-args></command-args>"),
+            user("<local-command-stdout>Set model</local-command-stdout>"),
+            user(#"<task-notification>\n<task-id>b1</task-id>"#),
+            user("plain"),
+        ]
+        try Data(lines.joined().utf8).write(to: url)
+        let page = try XCTUnwrap(MobileChat.read(path: url.path, codex: false, after: nil))
+        XCTAssertEqual(page.messages.map(\.role), [.user, .user, .user])
+        XCTAssertEqual(
+            page.messages.map(\.text),
+            ["/review did we answer the email?\nSay which.", "/clear", "plain"])
+    }
+
     func testCodexRolloutBecomesChatRows() throws {
         let path = Self.fixtures.appendingPathComponent("codex.jsonl").path
         let page = try XCTUnwrap(MobileChat.read(path: path, codex: true, after: nil))

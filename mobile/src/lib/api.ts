@@ -275,8 +275,11 @@ export async function fetchHosts(): Promise<Host[]> {
 }
 
 /** `base`: `threadPath(id)` or `MANAGER_PATH`. */
-export function fetchChat(base: string, after?: number): Promise<ChatPage> {
-	return get<ChatPage>(`${base}/chat${after === undefined ? '' : `?after=${after}`}`);
+export function fetchChat(base: string, after?: number, session = ''): Promise<ChatPage> {
+	// `after` is a place in the transcript `session`: the server starts over
+	// when the pane's agent has begun another one.
+	const cursor = `?after=${after}&session=${encodeURIComponent(session)}`;
+	return get<ChatPage>(`${base}/chat${after === undefined ? '' : cursor}`);
 }
 
 export interface ScreenPage {

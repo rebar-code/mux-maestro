@@ -32,6 +32,8 @@ export class ThreadFeed {
 	gone = $state(false);
 
 	private next: number | undefined;
+	/** The transcript `next` is a place in. */
+	private session: string | undefined;
 	/** The chat has not been read from the server yet. */
 	private unread = true;
 	private scrollers: Partial<Record<Mode, HTMLElement>> = {};
@@ -151,10 +153,11 @@ export class ThreadFeed {
 	};
 
 	private async loadChat(): Promise<void> {
-		const page = await fetchChat(this.path, this.next);
+		const page = await fetchChat(this.path, this.next, this.session);
 		const first = this.unread;
 		this.unread = false;
 		this.next = page.next;
+		this.session = page.session;
 		if (!first && !page.reset && page.messages.length === 0) return;
 		await this.keepEnd('chat', first, () => {
 			this.messages =
