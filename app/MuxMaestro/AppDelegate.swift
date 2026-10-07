@@ -85,6 +85,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The Help window (feature docs + shortcuts), created on first open.
     private var helpWindowController: HelpWindowController?
     private var settingsWindowController: SettingsWindowController?
+    /// Copies of remote agents' transcripts, for the phone's chat and voice.
+    private let transcriptMirror = RemoteTranscriptMirror()
     /// The phone server and its "Phone" switch (Settings window). Off by default.
     private lazy var mobileServer = MobileServer(
         staticRoot: Bundle.main.resourceURL?.appendingPathComponent("mobile", isDirectory: true),
@@ -92,8 +94,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             screen: { [registry] thread, lines in
                 registry.service(for: thread.host).captureScrollback(target: thread.pane, lines: lines)
             },
-            transcript: { thread in
-                [thread.claudeSessionId, thread.codexSessionId].compactMap { $0 }
+            transcript: { [registry, transcriptMirror] thread in
+                guard thread.host.isLocal else {
+                    // A remote Claude session: its transcript as a copy here.
+                    return thread.claudeSessionId.flatMap {
+                        registry.service(for: thread.host).transcriptCopy(sessionId: $0, in: transcriptMirror)
+                    }.map { ($0, false) }
+                }
+                return [thread.claudeSessionId, thread.codexSessionId].compactMap { $0 }
                     .compactMap { TranscriptTailReader.shared.transcript(sessionId: $0) }.first
             },
             pane: { [registry, agentStates = AgentStateReader()] thread in
@@ -137,8 +145,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             remoteCommands: { [registry] thread in
                 registry.service(for: thread.host).phoneCommandFiles(for: thread)
             },
-            artifacts: { [artifactReader] thread in
-                MobileArtifacts.scan(thread: thread, reader: artifactReader)
+            artifacts: { [artifactReader, registry, transcriptMirror] thread in
+                guard !thread.host.isLocal else {
+                    return MobileArtifacts.scan(thread: thread, reader: artifactReader)
+                }
+                // A remote Claude session: what its copied transcript mentions,
+                // as those files are on its host.
+                let service = registry.service(for: thread.host)
+                guard let id = thread.claudeSessionId,
+                      let copy = service.transcriptCopy(sessionId: id, in: transcriptMirror),
+                      let mentions = artifactReader.mentions(transcript: copy)
+                else { return nil }
+                return service.artifactFiles.source(mentions: mentions, cwd: thread.cwd)
+            },
+            artifactDisk: { [registry] thread in
+                registry.service(for: thread.host).artifactFiles.disk()
             },
             running: { [weak self] thread in
                 // The sidebar's scan caches belong to the main thread.
@@ -340,6 +361,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             fatalError("Failed to initialize libghostty app")
         }
         self.ghostty = ghostty
+        // Copies of remote transcripts nobody opened for a week.
+        DispatchQueue.global(qos: .utility).async { [transcriptMirror] in transcriptMirror.purge() }
 
         // Match the system appearance for the terminal palette.
         let dark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua

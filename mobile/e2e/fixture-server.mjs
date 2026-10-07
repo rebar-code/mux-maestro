@@ -31,6 +31,7 @@
 // `mux point --action` records it; `refuse` is the error a tap gets), /__fixture/acted (the taps that landed),
 // /__fixture/maestro-say?text= (the Maestro says something in its chat),
 // /__fixture/terminal (what the live terminal's sockets were sent, and how they were opened),
+// /__fixture/remote-agent?id= (a remote pane runs Claude and has chat),
 // /__fixture/terminal-kind?kind=shell|agent|pager (the screen the next socket gets),
 // /__fixture/terminal-size?cols=&rows= (the pane's size changed on the Mac),
 // /__fixture/terminal-drop (cut every live socket), /__fixture/terminal-say?text=,
@@ -340,11 +341,28 @@ const FILES = [
 	bytes
 }));
 
+// A remote thread with a file: the Mac asks its host for it.
+const REMOTE_MAKER = 'devbox:5';
+const REMOTE_DIR = '/home/me/code/infra';
+const REMOTE_FILES = [
+	{
+		id: artifactId(`${REMOTE_DIR}/DEPLOY.md`),
+		name: 'DEPLOY.md',
+		dir: REMOTE_DIR,
+		kind: 'markdown',
+		mime: 'text/plain; charset=utf-8',
+		age: 90,
+		bytes: Buffer.from('# Deploy\n\nStaging times out at the health check.\n')
+	}
+];
+const filesOf = (thread) =>
+	thread.id === MAKER ? FILES : thread.id === REMOTE_MAKER ? REMOTE_FILES : null;
+
 const artifactsBody = (thread) =>
-	thread.id !== MAKER
-		? { files: [], links: [], remote: !thread.local }
+	!filesOf(thread)
+		? { files: [], links: [] }
 		: {
-				files: [...FILES]
+				files: [...filesOf(thread)]
 					.sort((a, b) => a.age - b.age)
 					.map(({ bytes, age, ...file }) => ({
 						...file,
@@ -352,15 +370,17 @@ const artifactsBody = (thread) =>
 						at: started - age,
 						exists: bytes !== null
 					})),
-				links: [
-					{
-						url: 'https://example.com/docs/push-tokens',
-						host: 'example.com',
-						path: '/docs/push-tokens',
-						at: started - 60
-					}
-				],
-				remote: false
+				links:
+					thread.id !== MAKER
+						? []
+						: [
+								{
+									url: 'https://example.com/docs/push-tokens',
+									host: 'example.com',
+									path: '/docs/push-tokens',
+									at: started - 60
+								}
+							]
 			};
 
 // What the thread runs: [port, mappable].
@@ -509,7 +529,7 @@ function serversApi(req, res, path, body) {
 }
 
 function fileApi(res, url, thread) {
-	const file = thread.id === MAKER && FILES.find((f) => f.id === url.searchParams.get('id'));
+	const file = filesOf(thread)?.find((f) => f.id === url.searchParams.get('id'));
 	if (!file || !file.bytes) return send(res, 404, { error: 'not_found' });
 	res.writeHead(200, {
 		'content-type': file.mime,
@@ -1636,7 +1656,7 @@ function voiceApi(req, res, url, body) {
 		if (artifact !== null) {
 			if (!thread) return send(res, 400, { error: 'bad_request' });
 			if (!capabilities.artifacts) return send(res, 403, { error: 'disabled' });
-			const file = thread.id === MAKER && FILES.find((one) => one.id === artifact);
+			const file = filesOf(thread)?.find((one) => one.id === artifact);
 			const spoken = file && file.bytes && ['markdown', 'text'].includes(file.kind);
 			row = spoken ? { role: 'assistant', text: file.bytes.toString().slice(0, 12000) } : null;
 		} else {
@@ -1924,8 +1944,8 @@ function tmuxApi(req, res, path, body) {
 		const base = name;
 		for (let n = 2; taken(name); n += 1) name = `${base}-${n}`;
 		const made = makeThread(next, name, 'zsh', host, 'idle', '', 0, 'awake');
-		// As for a new window: only a local agent has chat.
-		const chat = agent !== null && host === 'localhost';
+		// As for a new window: a local agent has chat, and a remote Claude.
+		const chat = agent !== null && (host === 'localhost' || agent === 'claude');
 		Object.assign(made, { command: agent ?? 'zsh', chat, cwd: dir ?? homeOf(host) });
 		if (chat) chats[made.id] = [];
 		threads.push(made);
@@ -1936,8 +1956,9 @@ function tmuxApi(req, res, path, body) {
 		if (agent !== null && agent !== 'claude' && agent !== 'codex')
 			return send(res, 400, { error: 'bad_agent' });
 		const made = makeThread(next, session, 'zsh', host, 'idle', '', 0, 'awake');
-		// As on the Mac: a transcript is read from its disk, so only a local agent has chat.
-		const chat = agent !== null && host === 'localhost';
+		// As on the Mac: a local agent's transcript is read from its disk and a remote
+		// Claude's is copied there. A remote Codex has none.
+		const chat = agent !== null && (host === 'localhost' || agent === 'claude');
 		Object.assign(made, { command: agent ?? 'zsh', chat, cwd: thread.cwd });
 		if (chat) chats[made.id] = [];
 		threads.push(made);
@@ -2246,6 +2267,15 @@ function hook(res, url) {
 		case '/__fixture/reset':
 			reset();
 			push('config', configBody());
+			break;
+		case '/__fixture/remote-agent':
+			// A Claude session in a remote pane: the Mac copies its transcript, so it has chat.
+			if (!thread || thread.local) return send(res, 404, { error: 'not_found' });
+			Object.assign(thread, { command: 'claude', chat: true });
+			chats[thread.id] = [
+				['user', thread.lastPrompt?.text ?? 'continue'],
+				['assistant', 'Done on devbox. 2 files changed, tests pass.']
+			].map(([role, text], n) => ({ n, role, text }));
 			break;
 		case '/__fixture/wait':
 			if (!thread) return send(res, 404, { error: 'not_found' });

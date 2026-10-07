@@ -31,8 +31,6 @@
 				>
 			</div>
 		{/each}
-	{:else if list.remote}
-		<div class="empty">Local threads only</div>
 	{:else if list.files.length === 0 && list.links.length === 0}
 		<div class="empty">No artifacts</div>
 	{:else}

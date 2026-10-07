@@ -41,6 +41,9 @@ final class MobileServer {
         /// transcript is read (the dev server): the artifact routes then
         /// answer 503. May block.
         var artifacts: ((MobileThread) -> MobileArtifactSource?)? = nil
+        /// The disk of a remote thread's host, for the artifact rules. nil,
+        /// or a nil answer: a remote thread lists no files.
+        var artifactDisk: ((MobileThread) -> MobileArtifactDisk?)? = nil
         /// What the thread's pane has running, or nil once the pane has gone.
         /// nil where nothing is scanned (the dev server): 503. May block.
         var running: ((MobileThread) -> RunningSet?)? = nil
@@ -1041,7 +1044,9 @@ final class MobileServer {
             guard let source = sources.artifacts else {
                 return send(.error(503, "unavailable"), to: client, head: head)
             }
-            reply(to: client) { MobileArtifacts.list(thread: thread, source: source) }
+            reply(to: client) { [sources] in
+                MobileArtifacts.list(thread: thread, source: source, disk: Self.disk(of: thread, sources))
+            }
         case .file(let id, let artifact):
             guard let thread = snapshot.thread(id: id) else {
                 return send(.error(404, "not_found"), to: client, head: head)
@@ -1050,7 +1055,10 @@ final class MobileServer {
                 return send(.error(503, "unavailable"), to: client, head: head)
             }
             // The id is looked up in the thread's own list; it is never a path.
-            reply(to: client) { MobileArtifacts.file(id: artifact, thread: thread, source: source) }
+            reply(to: client) { [sources] in
+                MobileArtifacts.file(
+                    id: artifact, thread: thread, source: source, disk: Self.disk(of: thread, sources))
+            }
         case .running(let id):
             guard let thread = snapshot.thread(id: id) else {
                 return send(.error(404, "not_found"), to: client, head: head)
@@ -1473,7 +1481,12 @@ final class MobileServer {
                 let file = follow && thread.hasChat ? sources.transcript(thread) : nil
                 let turn = file.map { file in
                     MobileThreadTurn(
-                        read: { MobileChat.read(path: file.path, codex: file.codex, after: $0) },
+                        read: { [sources] after in
+                            // A remote transcript is a copy on this Mac: asking
+                            // for it again brings the copy up to date.
+                            if !thread.host.isLocal { _ = sources.transcript(thread) }
+                            return MobileChat.read(path: file.path, codex: file.codex, after: after)
+                        },
                         status: { state()?.status })
                 }
                 turn?.mark()
@@ -1487,6 +1500,12 @@ final class MobileServer {
                 turn.follow(onDelta: onDelta, completion: completion)
             }
         }
+    }
+
+    /// The disk of a remote thread's host. nil for a local thread, whose
+    /// disk is this Mac's, and for a host that cannot be asked.
+    private static func disk(of thread: MobileThread, _ sources: Sources) -> MobileArtifactDisk? {
+        thread.host.isLocal ? nil : sources.artifactDisk?(thread)
     }
 
     /// A pane's text as the screen routes answer it; 503 when it could not be read.
@@ -1846,7 +1865,10 @@ final class MobileServer {
                 return send(.error(503, "unavailable"), to: client, head: false)
             }
             // The id is looked up in the thread's own list; it is never a path.
-            words = { MobileArtifacts.speech(id: artifact, thread: thread, source: source) }
+            words = { [sources] in
+                MobileArtifacts.speech(
+                    id: artifact, thread: thread, source: source, disk: Self.disk(of: thread, sources))
+            }
         case (.manager, nil, let n?):
             guard config.allows(.manager) else { return send(.error(403, "disabled"), to: client, head: false) }
             guard let manager else {

@@ -293,7 +293,7 @@ final class MobileArtifactsTests: XCTestCase {
         let source: MobileArtifactSource = ([artifact(plan), artifact(gone, exists: false)], [link])
 
         let body = try object(MobileArtifacts.list(thread: thread(cwd: project.path)) { _ in source })
-        XCTAssertEqual(body["remote"] as? Bool, false)
+        XCTAssertNil(body["remote"])
         let files = try XCTUnwrap(body["files"] as? [[String: Any]])
         XCTAssertEqual(files.count, 2)
         XCTAssertEqual(files[0]["id"] as? String, MobileArtifacts.id(path: plan))
@@ -314,14 +314,13 @@ final class MobileArtifactsTests: XCTestCase {
         let empty = try object(MobileArtifacts.list(thread: thread(cwd: project.path)) { _ in nil })
         XCTAssertEqual((empty["files"] as? [Any])?.count, 0)
 
-        // Another host: the source is not asked at all.
+        // Another host that cannot be asked: the source is not asked at all.
         let devbox = Host(name: "devbox", sshAlias: "devbox")
         var asked = 0
         let remote = try object(MobileArtifacts.list(thread: thread(host: devbox, cwd: "/home/me")) { _ in
             asked += 1
             return source
         })
-        XCTAssertEqual(remote["remote"] as? Bool, true)
         XCTAssertEqual((remote["files"] as? [Any])?.count, 0)
         XCTAssertEqual(
             MobileArtifacts.file(
@@ -474,4 +473,241 @@ final class MobileArtifactsTests: XCTestCase {
         XCTAssertEqual(refused.status, 413)
         XCTAssertEqual(String(decoding: refused.body, as: UTF8.self), #"{"error":"too_large"}"#)
     }
+}
+
+// MARK: - A remote host's files
+
+/// The two programs a remote host runs are run here, on folders of the
+/// test's own: the rules are then applied to what they answer, as for a host
+/// reached over ssh.
+final class RemoteArtifactFilesTests: XCTestCase {
+    private var root: URL!
+    private var home: URL { root.appendingPathComponent("home/me") }
+    private var project: URL { home.appendingPathComponent("acme-app") }
+    private var outside: URL { root.appendingPathComponent("outside") }
+    private var runs = 0
+    private var files: RemoteArtifactFiles!
+    private let devbox = Host(name: "devbox", sshAlias: "devbox")
+
+    override func setUpWithError() throws {
+        let made = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mm-remote-files-\(UUID().uuidString)")
+        for folder in ["home/me/acme-app/src", "home/me/.ssh", "outside"] {
+            try FileManager.default.createDirectory(
+                at: made.appendingPathComponent(folder), withIntermediateDirectories: true)
+        }
+        // As the system names it: the temp folder is behind a link.
+        root = URL(fileURLWithPath: try XCTUnwrap(MobileArtifacts.resolved(made.path)))
+        files = RemoteArtifactFiles(
+            run: { [unowned self] script, args, _ in
+                runs += 1
+                return ProcessCommandRunner(timeout: 20)
+                    .runData("/usr/bin/env", ["python3", "-I", "-c", script] + args, stdin: nil)
+            },
+            home: { [unowned self] in home.path })
+    }
+
+    override func tearDown() {
+        try? FileManager.default.removeItem(at: root)
+    }
+
+    private func write(_ text: String, to url: URL) throws -> String {
+        try Data(text.utf8).write(to: url)
+        return url.path
+    }
+
+    private func thread(cwd: String? = nil) -> MobileThread {
+        MobileThread(
+            id: "devbox:12", host: devbox, hostColor: "#f5a623", session: "acme-app", window: 1,
+            name: "checkout-fix", pane: "%12", command: "claude", cwd: cwd ?? project.path, status: .busy,
+            since: nil, idleStage: .awake, lastPrompt: nil, lastActivityAt: nil, sessionActivity: 0,
+            claudeSessionId: "c1", codexSessionId: nil)
+    }
+
+    private func source(_ paths: [String]) -> MobileArtifactSource {
+        var mentions = ArtifactMentions()
+        for path in paths { mentions.made[path] = Date(timeIntervalSince1970: 1_700_000_000) }
+        return files.source(mentions: mentions, cwd: project.path)
+    }
+
+    private func listed(_ paths: [String], cwd: String? = nil) throws -> [String] {
+        let found = source(paths)
+        let response = MobileArtifacts.list(thread: thread(cwd: cwd), source: { _ in found }, disk: files.disk())
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: response.body) as? [String: Any])
+        XCTAssertNil(body["remote"])
+        return try XCTUnwrap(body["files"] as? [[String: Any]])
+            .filter { $0["exists"] as? Bool == true }.compactMap { $0["name"] as? String }.sorted()
+    }
+
+    private func fetch(_ path: String, cwd: String? = nil) -> MobileResponse {
+        let found = source([path])
+        return MobileArtifacts.file(
+            id: MobileArtifacts.id(path: path), thread: thread(cwd: cwd), source: { _ in found },
+            disk: files.disk())
+    }
+
+    func testARemoteThreadsFilesAreListedAndReadByTheSameRules() throws {
+        let plan = try write("# Plan", to: project.appendingPathComponent("PLAN.md"))
+        let job = try write("export {}", to: project.appendingPathComponent("src/job.ts"))
+        XCTAssertEqual(try listed([plan, job, project.appendingPathComponent("gone.md").path]), ["PLAN.md", "job.ts"])
+
+        let found = source([plan])
+        let list = MobileArtifacts.files(found, cwd: project.path, disk: try XCTUnwrap(files.disk()))
+        XCTAssertEqual(list.first?.size, 6)
+
+        let response = fetch(plan)
+        XCTAssertEqual(response.status, 200)
+        XCTAssertEqual(response.body, Data("# Plan".utf8))
+        XCTAssertEqual(response.headers["Content-Type"], "text/plain; charset=utf-8")
+        XCTAssertEqual(response.headers["Content-Disposition"], "attachment")
+        // An id the list does not have is no path: nothing is opened for it.
+        XCTAssertEqual(
+            MobileArtifacts.file(
+                id: MobileArtifacts.id(path: "/etc/passwd"), thread: thread(), source: { _ in found },
+                disk: files.disk()
+            ).status, 404)
+        XCTAssertEqual(
+            MobileArtifacts.speech(
+                id: MobileArtifacts.id(path: plan), thread: thread(), source: { _ in found }, disk: files.disk()),
+            "# Plan")
+    }
+
+    func testOneRunAsksTheHostAboutEveryMentionedFile() throws {
+        let plan = try write("# Plan", to: project.appendingPathComponent("PLAN.md"))
+        let job = try write("export {}", to: project.appendingPathComponent("src/job.ts"))
+        XCTAssertEqual(try listed([plan, job]), ["PLAN.md", "job.ts"])
+        XCTAssertEqual(runs, 1)
+    }
+
+    func testALinkOutOfTheFolderIsNeitherListedNorRead() throws {
+        let secret = try write("token", to: outside.appendingPathComponent("notes.md"))
+        // A link to a file outside, and a path through a linked folder.
+        let link = project.appendingPathComponent("link.md").path
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: secret)
+        let folder = project.appendingPathComponent("vendor").path
+        try FileManager.default.createSymbolicLink(atPath: folder, withDestinationPath: outside.path)
+        let through = folder + "/notes.md"
+        XCTAssertEqual(try listed([link, through, secret]), [])
+        for path in [link, through, secret] { XCTAssertEqual(fetch(path).status, 404, path) }
+
+        let disk = try XCTUnwrap(files.disk())
+        // Asked for by name, past the list: the last link is not followed,
+        // and the real path of what was opened is what is judged.
+        XCTAssertEqual(MobileArtifacts.read(path: link, cwd: project.path, image: false, disk: disk), .missing)
+        XCTAssertEqual(MobileArtifacts.read(path: through, cwd: project.path, image: false, disk: disk), .missing)
+        // A link that stays inside is a link all the same.
+        let inside = try write("# In", to: project.appendingPathComponent("IN.md"))
+        let alias = project.appendingPathComponent("alias.md").path
+        try FileManager.default.createSymbolicLink(atPath: alias, withDestinationPath: inside)
+        XCTAssertEqual(MobileArtifacts.read(path: alias, cwd: project.path, image: false, disk: disk), .missing)
+        XCTAssertEqual(
+            MobileArtifacts.read(path: inside, cwd: project.path, image: false, disk: disk),
+            .data(Data("# In".utf8)))
+    }
+
+    func testSecretsDotPathsAndTheHomeFolderAreRefused() throws {
+        let key = try write("key", to: home.appendingPathComponent(".ssh/id_x"))
+        let named = try write("key", to: project.appendingPathComponent("id_deploy"))
+        let env = try write("A=1", to: project.appendingPathComponent(".env.md"))
+        let plan = try write("# Plan", to: project.appendingPathComponent("PLAN.md"))
+        let notes = try write("mine", to: home.appendingPathComponent("notes.md"))
+        XCTAssertEqual(try listed([key, named, env, plan, notes]), ["PLAN.md"])
+        for path in [key, named, env, notes] { XCTAssertEqual(fetch(path).status, 404, path) }
+
+        // A thread started in the home folder has no folder of its own.
+        XCTAssertEqual(try listed([plan, notes, key], cwd: home.path), [])
+        XCTAssertEqual(fetch(plan, cwd: home.path).status, 404)
+        XCTAssertEqual(fetch(notes, cwd: home.path).status, 404)
+        XCTAssertEqual(try listed([plan, notes], cwd: root.path), [])
+    }
+
+    func testAFileOverTheCapIsRefusedAndAFolderIsNoFile() throws {
+        let disk = try XCTUnwrap(files.disk())
+        let plan = try write("12345", to: project.appendingPathComponent("PLAN.md"))
+        XCTAssertEqual(
+            MobileArtifacts.read(path: plan, cwd: project.path, image: false, limit: 4, disk: disk), .tooLarge)
+        XCTAssertEqual(
+            MobileArtifacts.read(path: plan, cwd: project.path, image: false, limit: 5, disk: disk),
+            .data(Data("12345".utf8)))
+        XCTAssertEqual(
+            MobileArtifacts.read(path: project.appendingPathComponent("src").path, cwd: project.path,
+                                 image: false, disk: disk),
+            .missing)
+        // One byte over the real cap: 413, and nothing of the file.
+        let big = project.appendingPathComponent("big.log").path
+        FileManager.default.createFile(
+            atPath: big, contents: Data(count: MobileArtifacts.maxFileBytes + 1))
+        XCTAssertEqual(fetch(big).status, 413)
+        // Bytes that are no text come over as they are.
+        let bytes = Data([0x89, 0x50, 0x4E, 0x47, 0x0A, 0x00, 0xFF, 0x0A])
+        let image = project.appendingPathComponent("shot.png").path
+        FileManager.default.createFile(atPath: image, contents: bytes)
+        XCTAssertEqual(fetch(image).body, bytes)
+    }
+
+    func testAnImageInTheHostsTempFolderIsOfferedAndNothingElseThere() throws {
+        let name = "mm-remote-files-\(UUID().uuidString)"
+        let shot = "/tmp/\(name).png", text = "/tmp/\(name).md"
+        for path in [shot, text] { FileManager.default.createFile(atPath: path, contents: Data("x".utf8)) }
+        defer { for path in [shot, text] { try? FileManager.default.removeItem(atPath: path) } }
+        XCTAssertEqual(try listed([shot, text]), ["\(name).png"])
+        XCTAssertEqual(fetch(shot).status, 200)
+        XCTAssertEqual(fetch(text).status, 404)
+    }
+
+    func testOnlyAbsolutePathsAreAskedAboutAndAnAnswerThatLiesIsNotBelieved() {
+        var asked: [[String]] = []
+        let quiet = RemoteArtifactFiles(
+            run: { _, args, _ in
+                asked.append(args)
+                return Data(#"{"/home/me/a.md": {"real": "../../etc/passwd", "size": 1, "mtime": 1}}"#.utf8)
+            },
+            home: { "/home/me" })
+        quiet.learn(["-rf", "relative/a.md", "~/a.md", ""])
+        XCTAssertEqual(asked.count, 0)
+        quiet.learn(["/home/me/a.md", "--version"])
+        XCTAssertEqual(asked, [["/home/me/a.md"]])
+        // A real path that is not absolute is no answer.
+        XCTAssertNil(quiet.stat("/home/me/a.md"))
+
+        XCTAssertNil(RemoteArtifactFiles.parseRead(Data("{\"real\": \"etc/passwd\"}\nx".utf8), limit: 10))
+        XCTAssertNil(RemoteArtifactFiles.parseRead(Data("{\"error\": \"missing\"}\n".utf8), limit: 10))
+        XCTAssertNil(RemoteArtifactFiles.parseRead(Data("{\"real\": \"/a\"}\n12345".utf8), limit: 4))
+        XCTAssertEqual(
+            RemoteArtifactFiles.parseRead(Data("{\"real\": \"/a\"}\n1\n2".utf8), limit: 4)?.data, Data("1\n2".utf8))
+        // A host whose home is not known has no disk: nothing is listed for it.
+        XCTAssertNil(RemoteArtifactFiles(run: { _, _, _ in nil }, home: { nil }).disk())
+    }
+
+    func testTheProgramsRunOverSshWithEachPathOneQuotedWord() throws {
+        final class Recorder: CommandRunner {
+            var calls: [[String]] = []
+            func run(_ path: String, _ args: [String], stdin: Data?) -> String? {
+                calls.append(args)
+                return args.contains("'pwd'") ? "/home/me\n" : "{}"
+            }
+        }
+        let runner = Recorder()
+        let service = TmuxService(
+            host: devbox, transport: SshTmuxTransport(host: "devbox"), runner: runner,
+            statusProvider: StaticArtifactStatus())
+        let hostile = "/home/me/acme app/it's $(reboot);.md"
+        service.artifactFiles.learn([hostile])
+        let stat = try XCTUnwrap(runner.calls.last)
+        XCTAssertEqual(Array(stat.suffix(5)), [
+            "'python3'", "'-I'", "'-c'", Ssh.shellQuote(RemoteArtifactFiles.statScript), Ssh.shellQuote(hostile),
+        ])
+        _ = service.artifactFiles.disk()?.open(hostile, 9) { _ in true }
+        let read = try XCTUnwrap(runner.calls.last)
+        XCTAssertEqual(Array(read.suffix(6)), [
+            "'python3'", "'-I'", "'-c'", Ssh.shellQuote(RemoteArtifactFiles.readScript), Ssh.shellQuote(hostile),
+            "'9'",
+        ])
+        // The programs are fixed text: no path is ever part of one.
+        XCTAssertFalse(RemoteArtifactFiles.statScript.contains("acme"))
+    }
+}
+
+private struct StaticArtifactStatus: AttentionStatusProvider {
+    func statuses() -> [String: AttentionStatus] { [:] }
 }

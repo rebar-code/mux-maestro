@@ -470,6 +470,27 @@ final class MobileServerTests: XCTestCase {
         XCTAssertTrue(get("/api/config").body.contains(#""liveTerminal":true"#))
     }
 
+    func testARemoteClaudeThreadHasChatAndARemoteCodexHasNone() {
+        var claude = TmuxPane(id: "%3", index: 0, command: "claude", title: "", active: true)
+        claude.claudeSessionId = "r1"
+        var codex = TmuxPane(id: "%4", index: 0, command: "codex", title: "", active: true)
+        codex.codexSessionId = "x1"
+        server.update(MobileSnapshot.build([MobileHostInput(
+            host: Host(name: "devbox", sshAlias: "devbox"), colorHex: "#f5a623", reachability: .reachable,
+            stats: nil,
+            sessions: [TmuxSession(name: "infra", attached: false, id: "$1", windows: [
+                TmuxWindow(index: 0, name: "api", active: true, panes: [claude]),
+                TmuxWindow(index: 1, name: "worker", active: false, panes: [codex]),
+            ])])]))
+        // The source answers the copy of the remote transcript: read like a local one.
+        let chat = get("/api/threads/devbox%3A3/chat")
+        XCTAssertEqual(chat.status, 200)
+        XCTAssertTrue(chat.body.contains(#""text":"hello""#))
+        XCTAssertTrue(chat.body.contains(#""session":"c1""#))
+        XCTAssertEqual(get("/api/threads/devbox%3A4/chat").status, 404)
+        XCTAssertTrue(get("/api/threads").body.contains(#""chat":true"#))
+    }
+
     func testServesChatAndScreenAndA404ForAStaleId() {
         let chat = get("/api/threads/localhost%3A12/chat")
         XCTAssertEqual(chat.status, 200)
@@ -2362,7 +2383,8 @@ final class MobileServerTests: XCTestCase {
         XCTAssertEqual(files.map { $0["name"] as? String }, ["PLAN.md", "report.html", "drawing.svg"])
         XCTAssertEqual(files.map { $0["kind"] as? String }, ["markdown", "html", "image"])
         XCTAssertEqual((body["links"] as? [[String: Any]])?.first?["url"] as? String, "https://example.com/docs")
-        XCTAssertEqual(body["remote"] as? Bool, false)
+        // The list no longer says where the thread runs: any host has files.
+        XCTAssertNil(body["remote"])
 
         let types = [
             "text/plain; charset=utf-8", "text/html; charset=utf-8", "image/svg+xml",
