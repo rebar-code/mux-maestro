@@ -15,7 +15,12 @@ import Foundation
 // - tmux reads an argument that ends in `;` as the end of one command and the
 //   start of the next. No argument built here can end in one.
 // - A name passes `MobileActions.name`. It is one argv item of its own.
-// - A new session starts in a directory from `MobileActions.dirs`, or at home.
+// - A new session starts in a directory from `MobileActions.dirs`, in one of
+//   the host's home tree (`MobileActions.inHome`), or at home.
+// - A directory list is of the home tree only. On a remote host it is one
+//   fixed script; the path is an argument of it, never a part of it.
+// - An agent is one of two fixed words. Its first prompt is one quoted word
+//   after it (`MobileActions.shellWord`): data to the pane's shell.
 // - A kill needs `"confirm": true`, and names its session by a thread.
 // - An archive is not a tmux call of this file: the Mac archives the window
 //   the way its own sidebar does, so the archive can be undone there.
@@ -58,6 +63,12 @@ enum MobileActions {
     static let remoteHome = "~"
     /// The most directories a host offers for a new session.
     static let maxDirs = 50
+    /// The most sub-directories one list carries.
+    static let maxListedDirs = 200
+    /// The most bytes of a first prompt, counted as the quoted word that is
+    /// typed. A new pane's terminal holds 1024 bytes until its shell reads
+    /// them and drops what comes after: the whole line stays well under that.
+    static let maxPromptBytes = 900
     static let unreachable = "Could not reach tmux"
     /// The name of a session made in no directory, or in one whose own name
     /// is not a usable session name.
@@ -77,6 +88,8 @@ enum MobileActions {
         var made = Made.nothing
         /// The agent to start in the window the command makes.
         var agent: AgentHandoff.Agent?
+        /// The agent's first prompt, checked by `prompt`.
+        var prompt: String?
         /// The thread whose window the Mac archives. No tmux command then.
         var archive: MobileThread?
     }
@@ -155,6 +168,160 @@ enum MobileActions {
         return Array(Set(paths).sorted().prefix(maxDirs))
     }
 
+    // MARK: The home tree
+
+    /// What the directory list asks of a remote host.
+    struct HostShell {
+        /// The host's home directory. nil when the host does not say. May block.
+        let home: () -> String?
+        /// Run one command there, each argument its own word: what it
+        /// printed, or nil when it failed. Blocks.
+        let run: (_ argv: [String]) -> String?
+    }
+
+    /// `raw` as a directory of the tree under `home`, or nil: not absolute,
+    /// outside the tree, with a `.` or `..` step or a dot-directory in it, or
+    /// not a `path`. The tree is told by its bytes: two names that only
+    /// compare equal are two directories.
+    static func inHome(_ raw: String, home: String) -> String? {
+        let steps = { (path: String) in path.split(separator: "/", omittingEmptySubsequences: true) }
+        guard raw.hasPrefix("/"), home.hasPrefix("/") else { return nil }
+        let top = steps(home), asked = steps(raw)
+        guard !top.isEmpty, asked.count >= top.count,
+              zip(top, asked).allSatisfy({ $0.utf8.elementsEqual($1.utf8) }),
+              !asked[top.count...].contains(where: { $0.hasPrefix(".") })
+        else { return nil }
+        return path("/" + asked.joined(separator: "/"))
+    }
+
+    /// Lists a directory of a remote host: its home as the disk has it, the
+    /// directory as the disk has it, then the entries, a `/` after each
+    /// directory. The directory is `$1`.
+    static let listScript = #"(cd && pwd -P) && cd -- "$1" && pwd -P && ls -1p"#
+
+    static func listArgv(_ dir: String) -> [String] { ["sh", "-c", listScript, "--", dir] }
+
+    /// The sub-directories of `dir` in what `listScript` printed. nil when
+    /// the directory is not in the home tree on the disk (a link led out of
+    /// it), or the output is not the script's.
+    static func parseListing(_ output: String, dir: String) -> [String]? {
+        let lines = output.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        guard lines.count >= 2, inTree(lines[1], top: lines[0]) else { return nil }
+        let names = lines.dropFirst(2).filter { $0.hasSuffix("/") }.map { String($0.dropLast()) }
+        return listed(names, in: dir)
+    }
+
+    private static func inTree(_ path: String, top: String) -> Bool {
+        guard top.hasPrefix("/"), top.utf8.count > 1 else { return false }
+        return path.utf8.elementsEqual(top.utf8) || path.utf8.starts(with: (top + "/").utf8)
+    }
+
+    private static func listed(_ names: [String], in dir: String) -> [String] {
+        let paths = names.filter { !$0.isEmpty && !$0.hasPrefix(".") && !$0.contains("/") }
+            .compactMap { path(dir + "/" + $0) }
+        return Array(paths.sorted().prefix(maxListedDirs))
+    }
+
+    /// The sub-directories of `dir` on this Mac. A link is not one: it may
+    /// lead out of the home tree. nil when `dir` is not a directory, or is
+    /// not in the home tree on the disk.
+    static func localListing(_ dir: String, home: String, files: FileManager = .default) -> [String]? {
+        let real = { (path: String) in URL(fileURLWithPath: path).resolvingSymlinksInPath().path }
+        guard inTree(real(dir), top: real(home)),
+              let names = try? files.contentsOfDirectory(atPath: dir) else { return nil }
+        return listed(names.filter {
+            (try? files.attributesOfItem(atPath: dir + "/" + $0))?[.type] as? FileAttributeType == .typeDirectory
+        }, in: dir)
+    }
+
+    /// The answer to `GET /api/hosts/<host>/dirs`. With no `path`: where the
+    /// host's threads work, and its home, the place to start from. With one:
+    /// its sub-directories, and where it is in the home tree. `home` is this
+    /// Mac's home directory. Blocks on a remote host.
+    static func browse(
+        host name: String, path raw: String?, snapshot: MobileSnapshot, home: String = NSHomeDirectory(),
+        shell: (Host) -> HostShell?, files: FileManager = .default
+    ) -> MobileResponse {
+        guard let host = snapshot.hosts.first(where: { $0.host.name == name })?.host,
+              let offered = dirs(host: name, snapshot: snapshot) else { return .error(404, "not_found") }
+        let remote = host.isLocal ? nil : shell(host)
+        let top = (host.isLocal ? home : remote?.home()).flatMap { inHome($0, home: $0) }
+        guard let raw else {
+            var body: [String: Any] = ["dirs": offered]
+            if let top { body["home"] = top }
+            return .json(body)
+        }
+        guard let top else { return .error(503, "unavailable", message: unreachable) }
+        guard let dir = inHome(raw, home: top) else { return .error(400, "bad_dir") }
+        let found: [String]
+        if host.isLocal {
+            // In the tree by its name and not on the disk: a link led out.
+            var isDirectory: ObjCBool = false
+            guard files.fileExists(atPath: dir, isDirectory: &isDirectory), isDirectory.boolValue else {
+                return .error(404, "not_found")
+            }
+            guard let listed = localListing(dir, home: top, files: files) else { return .error(400, "bad_dir") }
+            found = listed
+        } else {
+            guard let printed = remote?.run(listArgv(dir)),
+                  printed.split(separator: "\n", omittingEmptySubsequences: false).count > 2
+            else { return .error(404, "not_found") }
+            guard let listed = parseListing(printed, dir: dir) else { return .error(400, "bad_dir") }
+            found = listed
+        }
+        var body: [String: Any] = ["dirs": found, "path": dir, "home": top]
+        if dir != top { body["parent"] = (dir as NSString).deletingLastPathComponent }
+        return .json(body)
+    }
+
+    // MARK: The first prompt
+
+    /// `text` as one word of a shell command: in single quotes, where a shell
+    /// reads nothing. A `'` and a `\` are written outside the quotes, each
+    /// after a `\`: fish reads a `\` inside them, and sh, bash and zsh do not.
+    static func shellWord(_ text: String) -> String {
+        var word = "'"
+        for scalar in text.unicodeScalars {
+            switch scalar {
+            case "'": word += #"'\''"#
+            case "\\": word += #"'\\'"#
+            default: word.unicodeScalars.append(scalar)
+            }
+        }
+        return word + "'"
+    }
+
+    /// The agent `fields` asks for, or nil for a bare shell. One of two
+    /// fixed words: nothing of the phone's is the command.
+    private static func agent(_ fields: [String: Any]) throws -> AgentHandoff.Agent? {
+        guard let raw = fields["agent"], !(raw is NSNull) else { return nil }
+        guard let asked = raw as? String,
+              let known = [AgentHandoff.Agent.claude, .codex].first(where: { $0.launchCommand == asked })
+        else { throw Refusal(400, "bad_agent") }
+        return known
+    }
+
+    /// The first prompt `fields` gives `agent`, or nil for none. Text only:
+    /// a control character is a key to the pane. A tab is a key to its shell
+    /// too (it completes a word), so it is typed as a space. It does not
+    /// start with `-`: the agent would read an option.
+    private static func prompt(_ fields: [String: Any], agent: AgentHandoff.Agent?) throws -> String? {
+        guard let raw = fields["prompt"], !(raw is NSNull) else { return nil }
+        guard let asked = raw as? String else { throw Refusal(400, "bad_prompt") }
+        let text = asked.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\t", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+        guard agent != nil, !text.hasPrefix("-"), text.unicodeScalars.allSatisfy(MobileManager.isText)
+        else { throw Refusal(400, "bad_prompt") }
+        guard shellWord(text).utf8.count <= maxPromptBytes else { throw Refusal(413, "too_large") }
+        return text
+    }
+
+    /// What is typed into the new pane to start `agent`.
+    static func launch(_ agent: AgentHandoff.Agent, prompt: String?) -> String {
+        prompt.map { agent.launchCommand + " " + shellWord($0) } ?? agent.launchCommand
+    }
+
     private static func isManager(_ host: Host, _ session: String) -> Bool {
         host.isLocal && session == ManagerHome.sessionName
     }
@@ -223,23 +390,31 @@ enum MobileActions {
     // MARK: Actions
 
     /// Check `action` against the live tree and build its tmux command.
-    /// `home` is this Mac's home directory.
+    /// `home` is this Mac's home directory, and `hostHome` gives a remote
+    /// host's. It is asked only for a directory no thread works in.
     static func plan(
         _ action: MobileAction, fields: [String: Any], snapshot: MobileSnapshot,
-        home: String = NSHomeDirectory()
+        home: String = NSHomeDirectory(), hostHome: (Host) -> String? = { _ in nil }
     ) throws -> Call {
         switch action {
         case .newSession:
             let host = try host(fields, snapshot: snapshot)
             var dir: String?
             if let raw = fields["dir"], !(raw is NSNull) {
-                // Only a directory this server offered, and in the server's
-                // own bytes: two strings that compare equal can differ in theirs.
-                guard let asked = raw as? String,
-                      let offered = dirs(host: host.name, snapshot: snapshot)?.first(where: { $0 == asked })
-                else { throw Refusal(400, "bad_dir") }
-                dir = offered
+                // A directory this server offered, in the server's own
+                // bytes: two strings that compare equal can differ in theirs.
+                // Or one of the host's home tree.
+                guard let asked = raw as? String else { throw Refusal(400, "bad_dir") }
+                if let offered = dirs(host: host.name, snapshot: snapshot)?.first(where: { $0 == asked }) {
+                    dir = offered
+                } else if let top = host.isLocal ? home : hostHome(host), let inside = inHome(asked, home: top) {
+                    dir = inside
+                } else {
+                    throw Refusal(400, "bad_dir")
+                }
             }
+            let agent = try agent(fields)
+            let prompt = try prompt(fields, agent: agent)
             let wanted: String
             if let raw = fields["name"], !(raw is NSNull) {
                 guard let asked = name(raw) else { throw Refusal(400, "bad_name") }
@@ -253,24 +428,19 @@ enum MobileActions {
             // No directory is the home directory. Without `-c`, tmux starts
             // the session where its server was started.
             let start = dir ?? (host.isLocal ? path(home) : remoteHome)
+            // The pane is asked for only when something is typed into it.
             return Call(
-                host: host, argv: TmuxCommands.newSession(name: unique, dir: start), made: .session(unique))
+                host: host, argv: TmuxCommands.newSession(name: unique, dir: start, printTarget: agent != nil),
+                made: .session(unique), agent: agent, prompt: prompt)
         case .newWindow:
             let target = try session(fields, snapshot: snapshot)
-            var agent: AgentHandoff.Agent?
-            if let raw = fields["agent"], !(raw is NSNull) {
-                // One of two fixed words: nothing of the phone's is typed
-                // into the pane.
-                guard let asked = raw as? String,
-                      let known = [AgentHandoff.Agent.claude, .codex].first(where: { $0.launchCommand == asked })
-                else { throw Refusal(400, "bad_agent") }
-                agent = known
-            }
+            let agent = try agent(fields)
+            let prompt = try prompt(fields, agent: agent)
             return Call(
                 host: target.host,
                 argv: TmuxCommands.newWindow(
                     session: target.sessionId, cwd: path(target.cwd), printTarget: true),
-                made: .window, agent: agent)
+                made: .window, agent: agent, prompt: prompt)
         case .renameSession:
             let target = try session(fields, snapshot: snapshot)
             guard let new = name(fields["name"]) else { throw Refusal(400, "bad_name") }
@@ -314,14 +484,14 @@ enum MobileActions {
     /// tmux call.
     static func perform(
         _ action: MobileAction, body: Data, snapshot: MobileSnapshot, home: String = NSHomeDirectory(),
-        tmux: (Host) -> MobileTmux?, archive: Archive? = nil
+        tmux: (Host) -> MobileTmux?, archive: Archive? = nil, hostHome: (Host) -> String? = { _ in nil }
     ) -> MobileResponse {
         guard let fields = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] else {
             return .error(400, "bad_request")
         }
         let call: Call
         do {
-            call = try plan(action, fields: fields, snapshot: snapshot, home: home)
+            call = try plan(action, fields: fields, snapshot: snapshot, home: home, hostHome: hostHome)
         } catch let refusal as Refusal {
             return refusal.response
         } catch {
@@ -347,19 +517,25 @@ enum MobileActions {
         }
         switch call.made {
         case .nothing:
-            break
+            return .json(result)
         case .window:
-            if let created = TmuxCommands.parseCreatedPane(ran.output) {
-                result["thread"] = MobileSnapshot.threadID(host: call.host, pane: created.pane)
-                // The window is made either way; without `agent` in the
-                // answer the phone opens it as the shell it is.
-                if let agent = call.agent,
-                   run(TmuxCommands.startAgent(target: created.pane, command: agent.launchCommand))?.ok == true {
-                    result["agent"] = agent.launchCommand
-                }
-            }
+            break
         case .session(let name):
             result["session"] = name
+            // A session with no agent prints nothing: the phone finds it by its name.
+            guard call.agent != nil else { return .json(result) }
+        }
+        if let created = TmuxCommands.parseCreatedPane(ran.output) {
+            result["thread"] = MobileSnapshot.threadID(host: call.host, pane: created.pane)
+            // The window is made either way; without `agent` in the
+            // answer the phone opens it as the shell it is. The prompt is
+            // typed with the command, as one word of it: nothing is pasted
+            // later into an agent that may not be up yet.
+            if let agent = call.agent,
+               run(TmuxCommands.startAgent(
+                   target: created.pane, command: launch(agent, prompt: call.prompt)))?.ok == true {
+                result["agent"] = agent.launchCommand
+            }
         }
         return .json(result)
     }

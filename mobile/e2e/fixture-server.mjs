@@ -1835,6 +1835,20 @@ function nameOf(raw) {
 
 const dirsOf = (host) =>
 	[...new Set(threads.filter((t) => t.host === host).map((t) => t.cwd))].sort();
+const homeOf = (host) => (host === 'localhost' ? '/Users/me' : '/home/me');
+/** The folders under every home, for the directory browser. Any other folder is empty. */
+const FOLDERS = {
+	'': ['code', 'notes'],
+	'/code': ['acme-app', 'billing', 'docs-site', 'infra', 'reports'],
+	'/code/acme-app': ['api', 'web']
+};
+/** `path` below the host's home, or null: outside the home tree, or through a dot-directory. */
+function folderOf(host, path) {
+	const home = homeOf(host);
+	if (typeof path !== 'string' || !(path === home || path.startsWith(`${home}/`))) return null;
+	const rest = path.slice(home.length);
+	return rest.split('/').some((step) => step.startsWith('.')) ? null : rest;
+}
 
 /** One session action, checked the way the Mac checks it. */
 function tmuxApi(req, res, path, body) {
@@ -1891,9 +1905,16 @@ function tmuxApi(req, res, path, body) {
 	if (action === 'new-session') {
 		let dir = null;
 		if (fields.dir !== undefined && fields.dir !== null) {
-			if (!dirsOf(host).includes(fields.dir)) return send(res, 400, { error: 'bad_dir' });
+			if (!dirsOf(host).includes(fields.dir) && folderOf(host, fields.dir) === null)
+				return send(res, 400, { error: 'bad_dir' });
 			dir = fields.dir;
 		}
+		const agent = fields.agent ?? null;
+		if (agent !== null && agent !== 'claude' && agent !== 'codex')
+			return send(res, 400, { error: 'bad_agent' });
+		const prompt = fields.prompt ?? null;
+		if (prompt !== null && (typeof prompt !== 'string' || agent === null))
+			return send(res, 400, { error: 'bad_prompt' });
 		let name = dir ? nameOf(dir.split('/').at(-1).replace(/[.:]/g, '_')) : null;
 		if (fields.name !== undefined && fields.name !== null) {
 			name = nameOf(fields.name);
@@ -1903,10 +1924,13 @@ function tmuxApi(req, res, path, body) {
 		const base = name;
 		for (let n = 2; taken(name); n += 1) name = `${base}-${n}`;
 		const made = makeThread(next, name, 'zsh', host, 'idle', '', 0, 'awake');
-		const home = host === 'localhost' ? '/Users/me' : '/home/me';
-		Object.assign(made, { command: 'zsh', chat: false, cwd: dir ?? home });
+		// As for a new window: only a local agent has chat.
+		const chat = agent !== null && host === 'localhost';
+		Object.assign(made, { command: agent ?? 'zsh', chat, cwd: dir ?? homeOf(host) });
+		if (chat) chats[made.id] = [];
 		threads.push(made);
 		result.session = name;
+		if (agent) Object.assign(result, { thread: made.id, agent });
 	} else if (action === 'new-window') {
 		const agent = fields.agent ?? null;
 		if (agent !== null && agent !== 'claude' && agent !== 'codex')
@@ -2156,7 +2180,16 @@ function api(req, res, url, body) {
 		if (!capabilities.sessionActions) return send(res, 403, { error: 'disabled' });
 		const host = decodeURIComponent(dirs[1]);
 		if (!HOSTS.some((h) => h.name === host)) return send(res, 404, { error: 'not_found' });
-		return send(res, 200, { dirs: dirsOf(host) });
+		const asked = url.searchParams.get('path');
+		if (asked === null) return send(res, 200, { dirs: dirsOf(host), home: homeOf(host) });
+		const rest = folderOf(host, asked);
+		if (rest === null) return send(res, 400, { error: 'bad_dir' });
+		return send(res, 200, {
+			dirs: (FOLDERS[rest] ?? []).map((name) => `${asked}/${name}`),
+			path: asked,
+			home: homeOf(host),
+			...(rest ? { parent: asked.slice(0, asked.lastIndexOf('/')) } : {})
+		});
 	}
 	const match =
 		/^\/api\/threads\/([^/]+)\/(chat|screen|text|key|prompt|answer|commands|upload|find)$/.exec(

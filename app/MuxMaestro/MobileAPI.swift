@@ -242,7 +242,7 @@ enum MobileEndpoint: Equatable {
     /// One session action. The body names its target.
     case tmux(MobileAction)
     /// The directories a host offers for a new session.
-    case dirs(host: String)
+    case dirs(host: String, path: String?)
     /// Find `query` in the thread's scrollback.
     case find(id: String, query: String)
     /// What the thread's agent made: files and links.
@@ -513,7 +513,7 @@ enum MobileAPI {
         case 3 where segments[1] == "push" && segments[2] == "focus": endpoint = .pushFocus
         case 3 where segments[1] == "terminal": endpoint = .terminal(id: segments[2])
         case 4 where segments[1] == "hosts" && segments[3] == "dirs":
-            endpoint = .dirs(host: segments[2])
+            endpoint = .dirs(host: segments[2], path: request.query["path"])
         case 3 where segments[1] == "tmux":
             // A fixed list: any other word is refused, whatever its method.
             guard let action = MobileAction(rawValue: segments[2]) else { return .unknownAction }

@@ -2030,7 +2030,34 @@ final class MobileServerTests: XCTestCase {
             "new-window", "-a", "-t", "$1:", "-P", "-F", "#{window_index}\t#{pane_id}",
             "-c", "/Users/me/acme-app",
         ])
-        XCTAssertEqual(get(Self.dirs).body, #"{"dirs":["\/Users\/me\/acme-app"]}"#)
+        // Where the threads work, and the home to start browsing from.
+        let offered = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(get(Self.dirs).body.utf8)) as? [String: Any])
+        XCTAssertEqual(offered["dirs"] as? [String], ["/Users/me/acme-app"])
+        XCTAssertEqual(offered["home"] as? String, home.path)
+        // A directory of the home tree is listed from the disk.
+        try FileManager.default.createDirectory(
+            at: home.appendingPathComponent("code/acme app"), withIntermediateDirectories: true)
+        let asked = home.path.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
+        let listed = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(get(Self.dirs + "?path=\(asked)%2Fcode").body.utf8))
+                as? [String: Any])
+        XCTAssertEqual(listed["dirs"] as? [String], [home.path + "/code/acme app"])
+        XCTAssertEqual(listed["parent"] as? String, home.path)
+        XCTAssertEqual(get(Self.dirs + "?path=%2Fetc").body, #"{"error":"bad_dir"}"#)
+        XCTAssertEqual(get(Self.dirs + "?path=\(asked)%2Fcode%2F..%2F..").status, 400)
+        // And a session starts in one, with an agent and its first prompt.
+        let spun = post(
+            "/api/tmux/new-session",
+            json: #"{"host":"localhost","dir":"\#(home.path)/code/acme app","agent":"claude","prompt":"it's $(id)"}"#)
+        XCTAssertEqual(spun.status, 200)
+        XCTAssertTrue(spun.body.contains(#""thread":"localhost:41""#), spun.body)
+        XCTAssertTrue(spun.body.contains(#""agent":"claude""#), spun.body)
+        XCTAssertEqual(tmux.argv.suffix(2), [
+            ["new-session", "-d", "-s", "acme app", "-P", "-F", "#{window_index}\t#{pane_id}",
+             "-c", home.path + "/code/acme app"],
+            ["send-keys", "-t", "%41", #"claude 'it'\''s $(id)'"#, "Enter"],
+        ])
         // A directory the server did not offer starts nothing.
         let before = tmux.argv.count
         let refused = post("/api/tmux/new-session", json: #"{"host":"localhost","dir":"/etc"}"#)
