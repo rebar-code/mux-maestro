@@ -2093,6 +2093,18 @@ final class TmuxService {
             .map { .supervised(MobileTerminalBridge.Launch(path: $0.path, args: $0.args)) }
     }
 
+    /// A remote thread's home folder and the files its `/` list reads, from
+    /// one `python3` run on this host (after the home folder is known, which
+    /// is asked once and kept). nil for this Mac, and when the host does not
+    /// answer or has no python3. Blocking; call off the main thread.
+    func phoneCommandFiles(for thread: MobileThread) -> (home: String, files: MobileCommands.Files)? {
+        guard !host.isLocal, let home = resolveHome(),
+              let files = MobileCommands.remoteFiles(
+                for: thread, home: home, run: { runHostData(remote: "python3", $0) })
+        else { return nil }
+        return (home, files)
+    }
+
     /// One tmux call on this host, for the phone's session actions and find:
     /// whether it exited 0, and its output with its errors, so a target that
     /// is already gone can be told from a host that did not answer. nil when
