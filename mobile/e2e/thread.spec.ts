@@ -123,6 +123,15 @@ test('chat: new messages arrive without a reload', async ({ page }) => {
 	await expect(page.locator('.a').last()).toHaveText('The spec passes now.');
 });
 
+test('chat: a new agent session in the pane replaces the old conversation', async ({ page }) => {
+	await fresh(page, threadPath(LOCAL));
+	await expect(page.locator('.a')).toHaveCount(3);
+	await page.request.post(`/__fixture/new-session?id=${LOCAL}`);
+	await page.request.post(`/__fixture/say?id=${LOCAL}&text=A+new+conversation.`);
+	await expect(page.locator('.a')).toHaveCount(1);
+	await expect(page.locator('.a')).toHaveText('A new conversation.');
+});
+
 test('a thread the server no longer has says so', async ({ page }) => {
 	await fresh(page, threadPath('localhost:999'));
 	await expect(page.locator('.empty')).toHaveText('Closed');
