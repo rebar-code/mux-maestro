@@ -1437,7 +1437,8 @@ final class MobileServerTests: XCTestCase {
     // MARK: replies
 
     private func repliesOn() {
-        server.configure(MobileConfig(capabilities: [.replies, .keyBar, .upload], uploadLimit: 64))
+        server.configure(MobileConfig(
+            capabilities: [.replies, .keyBar, .upload], uploadLimit: 64, uploadFolder: "/Users/me/uploads"))
         pane.status = .idle
     }
 
@@ -1752,14 +1753,15 @@ final class MobileServerTests: XCTestCase {
         XCTAssertEqual(pane.argv.count, 1)
     }
 
-    func testAnUploadIsSavedInTheThreadsDirectoryUnderASafeName() {
+    func testAnUploadIsSavedInTheUploadFolderUnderASafeName() {
+        // The folder is the one in Settings, never the thread's directory.
         repliesOn()
         let saved = post(Self.thread + "/upload?name=..%2F..%2F.ssh%2Fauthorized_keys", json: "demo key")
         XCTAssertEqual(saved.status, 200)
-        XCTAssertEqual(saved.body, #"{"ok":true,"pasted":true,"path":"\/Users\/me\/acme-app\/authorized_keys"}"#)
-        XCTAssertEqual(pane.saves.map(\.path), ["/Users/me/acme-app/authorized_keys"])
+        XCTAssertEqual(saved.body, #"{"ok":true,"pasted":true,"path":"\/Users\/me\/uploads\/authorized_keys"}"#)
+        XCTAssertEqual(pane.saves.map(\.path), ["/Users/me/uploads/authorized_keys"])
         XCTAssertEqual(pane.saves.first?.data, Data("demo key".utf8))
-        XCTAssertEqual(pane.calls[1].stdin, "/Users/me/acme-app/authorized_keys ")
+        XCTAssertEqual(pane.calls[1].stdin, "/Users/me/uploads/authorized_keys ")
         XCTAssertFalse(pane.argv.contains { $0.contains("Enter") })
     }
 
@@ -3063,7 +3065,7 @@ final class MobileServerTests: XCTestCase {
 
     // MARK: uploads for the reply box
 
-    func testAnUploadForTheManagerIsSavedInItsDirectoryAndTypesNothing() {
+    func testAnUploadForTheManagerIsSavedInTheUploadFolderAndTypesNothing() {
         let upload = "/api/manager/upload"
         // The Manager switch alone is not enough: a file needs the Upload switch too.
         managerOn()
@@ -3071,21 +3073,21 @@ final class MobileServerTests: XCTestCase {
         server.configure(MobileConfig(capabilities: [.upload], uploadLimit: 64))
         XCTAssertEqual(post(upload + "?name=shot.png", json: "demo").status, 403)
 
-        server.configure(MobileConfig(capabilities: [.manager, .upload], uploadLimit: 64))
+        let home = "/Users/me/my uploads"
+        server.configure(MobileConfig(capabilities: [.manager, .upload], uploadLimit: 64, uploadFolder: home))
         // The manager at work can still be given a file: nothing goes to its pane.
         for status in [MobileManagerStatus.idle, .busy, .waiting] {
             manager.status = status
             XCTAssertEqual(post(upload + "?name=shot.png", json: "demo").status, 200, "\(status)")
         }
         XCTAssertEqual(manager.pane.argv.count, 0)
-        let home = "/Users/me/Library/Application Support/MuxMaestro/manager"
         XCTAssertEqual(manager.pane.saves.map(\.path), [
             "\(home)/shot.png", "\(home)/shot-2.png", "\(home)/shot-3.png",
         ])
         // The path comes back as it should be typed: quoted, since it holds a space.
         let named = post(upload + "?name=..%2Fa.png", json: "demo")
         XCTAssertTrue(named.body.contains(#""pasted":false"#), named.body)
-        XCTAssertTrue(named.body.contains(#""text":"'\/Users\/me\/Library\/Application Support"#), named.body)
+        XCTAssertTrue(named.body.contains(#""text":"'\/Users\/me\/my uploads\/a.png'""#), named.body)
         XCTAssertEqual(manager.pane.saves.last?.path, "\(home)/a.png")
 
         // Every other rule of an upload holds: the size cap and the name.
@@ -3112,13 +3114,13 @@ final class MobileServerTests: XCTestCase {
         XCTAssertEqual(pane.argv.count, 0)
         // Never over a file that is there: each one gets its own name.
         XCTAssertEqual(pane.saves.map(\.path), [
-            "/Users/me/acme-app/shot.png", "/Users/me/acme-app/shot-2.png", "/Users/me/acme-app/shot-3.png",
+            "/Users/me/uploads/shot.png", "/Users/me/uploads/shot-2.png", "/Users/me/uploads/shot-3.png",
         ])
         // The path comes back as it should be typed: quoted when it needs it.
         let first = post(Self.thread + "/upload?name=a.png&paste=0", json: "demo")
         XCTAssertEqual(
             first.body,
-            #"{"ok":true,"pasted":false,"path":"\/Users\/me\/acme-app\/a.png","text":"\/Users\/me\/acme-app\/a.png"}"#)
+            #"{"ok":true,"pasted":false,"path":"\/Users\/me\/uploads\/a.png","text":"\/Users\/me\/uploads\/a.png"}"#)
 
         // Every other rule holds: the switch, the size cap, the name, the thread.
         XCTAssertEqual(post(Self.thread + "/upload?name=..&paste=0", json: "demo").status, 400)

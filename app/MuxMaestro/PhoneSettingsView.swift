@@ -14,6 +14,7 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
     var onCapability: ((MobileCapability, Bool) -> Void)?
     var onVoice: ((MobileVoiceDefaults) -> Void)?
     var onUploadLimit: ((Int) -> Void)?
+    var onUploadFolder: ((String) -> Void)?
     var onPush: ((MobilePushOptions) -> Void)?
     /// "Send Test Notification" was clicked.
     var onTestPush: (() -> Void)?
@@ -38,6 +39,7 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
     private let keyBar = NSSwitch()
     private let upload = NSSwitch()
     private let uploadLimit = NSPopUpButton()
+    private let uploadFolder = NSTextField(string: "")
     private let sessionActions = NSSwitch()
     private let kill = NSSwitch()
     private let find = NSSwitch()
@@ -188,6 +190,14 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
         uploadLimit.addItems(withTitles: Self.uploadLimits.map(\.1))
         uploadLimit.target = self
         uploadLimit.action = #selector(uploadLimitPicked)
+        uploadFolder.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        uploadFolder.controlSize = .small
+        uploadFolder.delegate = self
+        uploadFolder.target = self
+        uploadFolder.action = #selector(uploadFolderCommitted)
+        uploadFolder.lineBreakMode = .byTruncatingMiddle
+        uploadFolder.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        uploadFolder.setAccessibilityLabel("Upload folder")
 
         let grid = NSGridView()
         grid.rowSpacing = 8
@@ -206,6 +216,7 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
             ("Key bar", NSGridCell.emptyContentView, keyBar),
             ("File upload", NSGridCell.emptyContentView, upload),
             ("Upload limit", NSGridCell.emptyContentView, uploadLimit),
+            ("Upload folder", NSGridCell.emptyContentView, uploadFolder),
             ("Session actions", NSGridCell.emptyContentView, sessionActions),
             ("Kill", NSGridCell.emptyContentView, kill),
             ("Find", NSGridCell.emptyContentView, find),
@@ -232,6 +243,17 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
         for (row, entry) in rows.enumerated() where entry.2 is NSSwitch {
             grid.row(at: row).rowAlignment = .none
             grid.row(at: row).yPlacement = .center
+        }
+
+        // A path is wider than the control column: it takes the status column's room too.
+        if let row = rows.firstIndex(where: { $0.2 === uploadFolder }) {
+            // A merged cell shows the content of its first cell.
+            grid.cell(atColumnIndex: 2, rowIndex: row).contentView = nil
+            grid.mergeCells(
+                inHorizontalRange: NSRange(location: 1, length: 2), verticalRange: NSRange(location: row, length: 1))
+            let cell = grid.cell(atColumnIndex: 1, rowIndex: row)
+            cell.contentView = uploadFolder
+            cell.xPlacement = .fill
         }
 
         url.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
@@ -320,6 +342,7 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
         pushSubject.stringValue = push.subject
         let limit = Settings.phoneUploadLimit()
         uploadLimit.selectItem(at: Self.uploadLimits.firstIndex { $0.0 == limit } ?? 0)
+        uploadFolder.stringValue = (Settings.phoneUploadFolder() as NSString).abbreviatingWithTildeInPath
     }
 
     func render(_ state: PhoneLink.State) {
@@ -496,6 +519,15 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
         onUploadLimit?(Self.uploadLimits[index].0)
     }
 
+    /// Return or a focus change commits the folder. Cleared, or not a path,
+    /// it goes back to the default.
+    @objc private func uploadFolderCommitted() {
+        let before = Settings.phoneUploadFolder()
+        let typed = MobileReply.uploadFolder(uploadFolder.stringValue)
+        if typed != before { onUploadFolder?(typed == nil ? "" : uploadFolder.stringValue) }
+        uploadFolder.stringValue = (Settings.phoneUploadFolder() as NSString).abbreviatingWithTildeInPath
+    }
+
     @objc private func voicePicked() {
         let mode = voiceMode.indexOfSelectedItem, speaker = voiceSpeaker.indexOfSelectedItem
         guard Self.voiceModes.indices.contains(mode), Self.voiceSpeakers.indices.contains(speaker)
@@ -521,7 +553,11 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
     }
 
     func controlTextDidEndEditing(_ notification: Notification) {
-        if notification.object as? NSTextField === pushSubject { pushPicked() } else { portCommitted() }
+        switch notification.object as? NSTextField {
+        case pushSubject: pushPicked()
+        case uploadFolder: uploadFolderCommitted()
+        default: portCommitted()
+        }
     }
 
     @objc private func copyURL() {

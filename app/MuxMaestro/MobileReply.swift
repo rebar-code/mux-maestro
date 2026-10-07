@@ -47,8 +47,8 @@ struct MobilePaneIO {
     /// The pane's state now, given its row in the latest tree: the hook state
     /// is read again, so it is newer than the tree.
     var state: (MobileThread) -> MobilePaneState
-    /// Create `path` on the pane's host with `data`. It never overwrites and
-    /// never follows a link.
+    /// Create `path` on the pane's host with `data`, and its folder when that
+    /// is missing. It never overwrites and never follows a link.
     var save: (_ data: Data, _ path: String) -> FileTransfer.Saved
     /// The row of the pane's screen the terminal cursor is on, from 0. An
     /// agent keeps it in its input box; a shell or a question under a dead
@@ -867,6 +867,28 @@ enum MobileReply {
     static let maxUploadBytes = 26_214_400
     static let uploadLimits = [5_242_880, 10_485_760, maxUploadBytes]
     static let defaultUploadLimit = 10_485_760
+    /// Where an upload is saved on this Mac until Settings names a folder:
+    /// the user's temporary folder, so never a repository.
+    static let defaultUploadFolder = (NSTemporaryDirectory() as NSString).appendingPathComponent("MuxMaestro")
+    /// Where an upload is saved on a remote host. The folder in Settings is
+    /// a path on this Mac, and a host may not have it.
+    static let remoteUploadFolder = "/tmp/MuxMaestro"
+
+    /// The folder `raw` names, as an absolute path: a leading `~` is the
+    /// home folder. nil when it is not an absolute path made of plain text.
+    static func uploadFolder(_ raw: String, home: String = NSHomeDirectory()) -> String? {
+        var path = raw.trimmingCharacters(in: .whitespaces)
+        if path == "~" {
+            path = home
+        } else if path.hasPrefix("~/") {
+            path = home + path.dropFirst()
+        }
+        guard path.hasPrefix("/"), path.unicodeScalars.allSatisfy(MobileManager.isText),
+              !path.contains("\n")
+        else { return nil }
+        while path.count > 1, path.hasSuffix("/") { path.removeLast() }
+        return path
+    }
     /// A file name is at most 255 bytes on the disks this writes to. The rest
     /// is room for the number a taken name gets.
     static let maxFileNameBytes = 240
@@ -922,8 +944,10 @@ enum MobileReply {
         return path.unicodeScalars.allSatisfy(plain.contains) ? path : Ssh.shellQuote(path)
     }
 
-    /// Save `data` in the thread's working directory and paste its path into
-    /// the pane, as a file drop on the Mac does. Nothing is overwritten, no
+    /// Save `data` in the upload folder and paste its path into the pane, as
+    /// a file drop on the Mac does. `folder` is the one from Settings, on this
+    /// Mac; a thread on a remote host gets `remoteUploadFolder` on that host.
+    /// It is never the thread's working directory. Nothing is overwritten, no
     /// link is followed and nothing is submitted. The path is text like any
     /// other, so a pane that cannot take text is refused before anything is
     /// written.
@@ -933,26 +957,25 @@ enum MobileReply {
     /// as part of a reply, under every rule a reply is held to. So the pane's
     /// state does not matter here; `text` is the path as it should be typed.
     static func upload(
-        _ data: Data, name raw: String, thread: MobileThread, io: MobilePaneIO, limit: Int,
-        paste typed: Bool = true, state: () -> MobilePaneState?
+        _ data: Data, name raw: String, thread: MobileThread, folder: String, io: MobilePaneIO,
+        limit: Int, paste typed: Bool = true, state: () -> MobilePaneState?
     ) -> MobileResponse {
         upload(
-            data, name: raw, cwd: thread.cwd, target: thread.pane, io: io, limit: limit, paste: typed,
-            state: state)
+            data, name: raw, folder: thread.host.isLocal ? folder : remoteUploadFolder,
+            target: thread.pane, io: io, limit: limit, paste: typed, state: state)
     }
 
-    /// The same for any pane: `cwd` is its working directory and `target`
-    /// its tmux target. The manager's pane is not a thread of the tree, and
-    /// its files are saved this way, never pasted.
+    /// The same for any pane: `folder` is where the file goes on the pane's
+    /// host and `target` its tmux target. The manager's pane is not a thread
+    /// of the tree, and its files are saved this way, never pasted.
     static func upload(
-        _ data: Data, name raw: String, cwd: String, target: String, io: MobilePaneIO, limit: Int,
+        _ data: Data, name raw: String, folder: String, target: String, io: MobilePaneIO, limit: Int,
         paste typed: Bool = true, state: () -> MobilePaneState?
     ) -> MobileResponse {
         guard data.count <= min(limit, maxUploadBytes) else { return .error(413, "too_large") }
         guard !data.isEmpty, let name = fileName(raw) else { return .error(400, "bad_request") }
-        // The directory comes from the Mac, never from the phone.
-        guard cwd.hasPrefix("/"), cwd.unicodeScalars.allSatisfy(MobileManager.isText),
-              !cwd.contains("\n")
+        // The folder comes from the Mac, never from the phone.
+        guard let folder = uploadFolder(folder)
         else { return .error(503, "unavailable", message: unreachable) }
         if typed {
             if let refusal = refusal(state: state(), io: io) { return refusal }
@@ -962,7 +985,7 @@ enum MobileReply {
 
         // The create is exclusive, so a name that is taken (a file, or a link
         // to anywhere) is never written through: the next name is tried.
-        var path = FileTransfer.dropDestination(cwd: cwd, fileName: name)
+        var path = FileTransfer.dropDestination(cwd: folder, fileName: name)
         var n = 2
         save: while true {
             switch io.save(data, path) {
@@ -970,7 +993,7 @@ enum MobileReply {
             case .failed: return .error(503, "unavailable", message: unreachable)
             case .exists:
                 guard n <= 99 else { return .error(409, "exists") }
-                path = FileTransfer.dropDestination(cwd: cwd, fileName: numbered(name, n))
+                path = FileTransfer.dropDestination(cwd: folder, fileName: numbered(name, n))
                 n += 1
             }
         }

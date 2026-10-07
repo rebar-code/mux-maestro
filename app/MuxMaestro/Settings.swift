@@ -413,6 +413,24 @@ enum Settings {
         defaults.set(bytes, forKey: "phone.upload.maxBytes")
     }
 
+    /// The folder on this Mac the phone's files are saved to, as an absolute
+    /// path. Unset, or not a path, is `MobileReply.defaultUploadFolder`.
+    static func phoneUploadFolder(defaults: UserDefaults = .standard) -> String {
+        defaults.string(forKey: "phone.upload.folder").flatMap { MobileReply.uploadFolder($0) }
+            ?? MobileReply.defaultUploadFolder
+    }
+
+    /// Stored as typed, so `~` stays the home folder. Anything that is not a
+    /// path puts the default back.
+    static func setPhoneUploadFolder(_ raw: String, defaults: UserDefaults = .standard) {
+        let typed = raw.trimmingCharacters(in: .whitespaces)
+        if MobileReply.uploadFolder(typed) == nil {
+            defaults.removeObject(forKey: "phone.upload.folder")
+        } else {
+            defaults.set(typed, forKey: "phone.upload.folder")
+        }
+    }
+
     /// Which events notify the phone, what the text says, and the VAPID
     /// contact. Both events are on and the text is generic until changed.
     static func phonePush(defaults: UserDefaults = .standard) -> MobilePushOptions {
@@ -438,6 +456,7 @@ enum Settings {
             capabilities: Set(MobileCapability.allCases.filter { phoneCapability($0, defaults: defaults) }),
             grouping: phoneGrouping(defaults: defaults),
             voice: phoneVoice(defaults: defaults),
-            uploadLimit: phoneUploadLimit(defaults: defaults))
+            uploadLimit: phoneUploadLimit(defaults: defaults),
+            uploadFolder: phoneUploadFolder(defaults: defaults))
     }
 }

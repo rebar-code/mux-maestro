@@ -98,10 +98,13 @@ enum FileTransfer {
         case failed
     }
 
-    /// Create `path` on this Mac with `data`. It fails when anything has that
-    /// name already and it never follows a link, a dangling one included, so
-    /// it cannot write over or through anything.
+    /// Create `path` on this Mac with `data`, and its folder when that is
+    /// missing. It fails when anything has that name already and it never
+    /// follows a link, a dangling one included, so it cannot write over or
+    /// through anything.
     static func writeExclusive(_ data: Data, to path: String) -> Saved {
+        try? FileManager.default.createDirectory(
+            atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
         let fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o644)
         guard fd >= 0 else { return errno == EEXIST || errno == ELOOP ? .exists : .failed }
         let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
@@ -118,10 +121,13 @@ enum FileTransfer {
     /// The same create on a remote host: `ssh <host> sh -c <script>`, with the
     /// file's bytes on stdin. `set -C` makes the shell's `>` an exclusive
     /// create. The script prints one word, so a failed ssh (no output) is
-    /// never read as "no such file".
+    /// never read as "no such file". The folder may be in a shared `/tmp`, so
+    /// it is made private, and one that is a link or another user's is refused.
     static func exclusiveWriteArgv(alias: String, path: String) -> (path: String, args: [String]) {
-        let script = "p=\(Ssh.shellQuote(path)); "
-            + "if ( set -C; : > \"$p\" ) 2>/dev/null; then "
+        let script = "p=\(Ssh.shellQuote(path)); d=${p%/*}; "
+            + "mkdir -p -m 700 \"$d\" 2>/dev/null; "
+            + "if [ -L \"$d\" ] || [ ! -O \"$d\" ]; then echo failed; "
+            + "elif ( set -C; : > \"$p\" ) 2>/dev/null; then "
             + "if cat > \"$p\"; then echo saved; else rm -f \"$p\"; echo failed; fi; "
             + "elif [ -e \"$p\" ] || [ -L \"$p\" ]; then echo exists; else echo failed; fi"
         return (Ssh.sshPath, Ssh.opts(host: alias) + ["sh -c " + Ssh.shellQuote(script)])
