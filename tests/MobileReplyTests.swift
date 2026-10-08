@@ -206,6 +206,20 @@ enum DemoPrompt {
           ⏵⏵ auto mode on (shift+tab to cycle) · ← 1 agent
         """
 
+    /// The same pane in a named session (v2.1.294): Claude Code writes the
+    /// session's name into the box's top rule.
+    static func claudeNamed(_ name: String = "fix-login-form") -> String {
+        """
+        ⏺ Done. 4 files changed, tests pass.
+
+        ──────────────────────────────────────────── \(name) ─
+        ❯\u{A0}
+        ────────────────────────────────────────────────────────────
+          ➜ acme-app git:(main) · ctx 42%
+          ⏵⏵ auto mode on (shift+tab to cycle) · ← 1 agent
+        """
+    }
+
     /// The same pane with agents in the background (v2.1.293): under the
     /// footer Claude Code lists the session and each agent. `picked` is the
     /// row the list's own cursor is on, once the human moved into the list.
@@ -1132,6 +1146,36 @@ final class MobileReplyTests: XCTestCase {
             ("› hello", "  a\n  b\n  c\n  d\n  e"),
         ] {
             XCTAssertFalse(seen(bare(rows, footer), cursor: .row(2)).inputBox, rows + " / " + footer)
+        }
+    }
+
+    /// The bug: every reply to a named session was refused with "Thread
+    /// shows no input box". Claude Code writes the session's name into the
+    /// box's top rule, and a rule with words in it was not taken for a rule.
+    func testAnInputBoxWithTheSessionNameInItsTopRuleTakesText() {
+        XCTAssertTrue(seen(DemoPrompt.claudeNamed(), cursor: .row(3)).inputBox)
+        XCTAssertEqual(
+            seen(DemoPrompt.claudeNamed(), cursor: .row(3)).anchor, MobileScreen.Anchor(top: 2, bottom: 4))
+        XCTAssertTrue(seen(DemoPrompt.claudeNamed("a b"), cursor: .row(3)).inputBox)
+        for (status, queue) in [(AttentionStatus.busy, true), (.idle, false)] {
+            let pane = FakePane()
+            pane.screen = DemoPrompt.claudeNamed()
+            pane.cursor = .row(3)
+            let response = MobileReply.send(
+                "go on", queue: queue, target: "%12", io: pane.io, state: { self.state(status) },
+                pause: { _ in })
+            XCTAssertEqual(response.status, 200, body(response))
+        }
+
+        // The cursor is still the main check.
+        XCTAssertFalse(seen(DemoPrompt.claudeNamed(), cursor: .lastLine).inputBox)
+        // Only the top rule has a name, and only in that shape: words between
+        // dashes in an agent's answer are no rule.
+        let box = { (top: String, bottom: String) in "⏺ Done.\n\n\(top)\n❯\u{A0}\n\(bottom)\n  ? for shortcuts" }
+        XCTAssertTrue(seen(box("──────── fix-login-form ─", "──────────"), cursor: .row(3)).inputBox)
+        XCTAssertFalse(seen(box("──────────", "──────── fix-login-form ─"), cursor: .row(3)).inputBox)
+        for top in ["── fix-login-form ─", "──────── fix-login-form", "────────fix-login-form ─", "-------- fix-login-form -"] {
+            XCTAssertFalse(seen(box(top, "──────────"), cursor: .row(3)).inputBox, top)
         }
     }
 

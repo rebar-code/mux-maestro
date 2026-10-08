@@ -295,9 +295,10 @@ struct MobileScreen: Equatable {
     }
 
     private static func ruledBox(_ lines: [String], raw: [Substring]) -> Anchor? {
-        let rules = lines.indices.filter { isRule(lines[$0]) }
-        guard rules.count >= 2 else { return nil }
-        let (top, bottom) = (rules[rules.count - 2], rules[rules.count - 1])
+        // The top rule may hold the session's name; the bottom one never does.
+        guard let bottom = lines.lastIndex(where: isRule),
+              let top = lines[..<bottom].lastIndex(where: { isRule($0) || ManagerScreen.isTitledRule($0) })
+        else { return nil }
         guard bottom - top >= 2, bottom - top <= maxBoxLines + 1, hasCursor(lines[top + 1])
         else { return nil }
         var below = raw[(bottom + 1)...].filter { !$0.allSatisfy(\.isWhitespace) }

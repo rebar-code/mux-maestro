@@ -390,6 +390,21 @@ enum ManagerScreen {
         line.count >= 3 && line.unicodeScalars.allSatisfy { (0x2500...0x257F).contains($0.value) }
     }
 
+    /// `──────── fix-login-form ─`: an input box's top edge in a named
+    /// session. Claude Code writes the session's name into the rule.
+    static func isTitledRule(_ line: String) -> Bool {
+        let lead = line.prefix { $0 == "─" }
+        let rest = line.dropFirst(lead.count)
+        let name = rest.dropLast(rest.reversed().prefix { $0 == "─" }.count)
+        return lead.count >= 3 && name.count < rest.count && name.count >= 3
+            && name.first == " " && name.last == " "
+    }
+
+    /// The top edge of an input box: a rule, with or without a name in it.
+    static func isBoxTop(_ line: String) -> Bool {
+        isRule(line) || isTitledRule(line)
+    }
+
     /// The line starts with the mark an input box or a list of choices shows.
     private static func hasCursor(_ line: String) -> Bool {
         guard let first = line.first, cursors.contains(first) else { return false }
@@ -414,7 +429,7 @@ enum ManagerScreen {
         guard let cursorRow, let bottom = lines.lastIndex(where: isRule) else { return false }
         let footer = lines[(bottom + 1)...].filter { !$0.isEmpty }
         guard footer.count <= maxFooterLines, !footer.contains(where: isChoice),
-              let top = lines[..<bottom].lastIndex(where: isRule),
+              let top = lines[..<bottom].lastIndex(where: isBoxTop),
               (2...maxBoxLines).contains(bottom - top)
         else { return false }
         let inside = lines[(top + 1)..<bottom]
