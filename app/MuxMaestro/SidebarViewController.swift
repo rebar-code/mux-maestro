@@ -1042,7 +1042,7 @@ final class HoverTintButton: NSButton {
     override func mouseExited(with event: NSEvent) { contentTintColor = SidebarPalette.muted }
 }
 
-/// The sidebar header's filter. A click on the left part turns Sleepy on, or
+/// The ACTIVE header's filter. A click on the left part turns "1 hour" on, or
 /// any mode off; the arrow lists the modes.
 final class SidebarFilterControl: NSStackView {
     var onChange: ((SidebarFilter) -> Void)?
@@ -1146,6 +1146,9 @@ final class RowCell: NSTableCellView {
     let subtitle = NSTextField(labelWithString: "")
     /// Right of line 2: how long since the thread was last written ("4m", "2h").
     let age = NSTextField(labelWithString: "")
+    private let accessories = NSStackView()
+    /// The view `setTrailingControl` last put in `accessories`.
+    private weak var trailingControl: NSView?
 
     /// Height of a row that shows `subtitle`.
     static let twoLineHeight: CGFloat = 38
@@ -1202,7 +1205,7 @@ final class RowCell: NSTableCellView {
         label.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
         // Trailing accessories in a stack so a hidden chip collapses cleanly.
-        let accessories = NSStackView(views: [prChips, addButton, trashButton])
+        for view in [prChips, addButton, trashButton] { accessories.addArrangedSubview(view) }
         accessories.orientation = .horizontal
         accessories.alignment = .centerY
         accessories.spacing = 6
@@ -1261,6 +1264,20 @@ final class RowCell: NSTableCellView {
         trashButton.alphaValue = visible ? 1 : 0
         // An invisible button must not take clicks meant for the row.
         trashButton.isEnabled = visible
+    }
+
+    /// Put `view` at the row's right edge, or take the last one out for nil.
+    /// One view moves between pooled cells, so every configure calls this.
+    func setTrailingControl(_ view: NSView?) {
+        if let view, view === trailingControl, view.superview === accessories { return }
+        if let old = trailingControl, old.superview === accessories {
+            accessories.removeArrangedSubview(old)
+            old.removeFromSuperview()
+        }
+        trailingControl = view
+        guard let view else { return }
+        view.removeFromSuperview()
+        accessories.addArrangedSubview(view)
     }
 
     /// "now", "4m", "2h", "3d" since `at` (epoch seconds); nil for nil.
@@ -1927,7 +1944,6 @@ final class SidebarViewController: NSViewController {
 
         filterControl.filter = filter
         filterControl.onChange = { [weak self] in self?.setFilter($0) }
-        container.addSubview(filterControl)
 
         let column = NSTableColumn(identifier: .init("main"))
         column.resizingMask = .autoresizingMask
@@ -1981,12 +1997,6 @@ final class SidebarViewController: NSViewController {
             header.topAnchor.constraint(
                 equalTo: container.safeAreaLayoutGuide.topAnchor, constant: 8),
             header.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
-            // Beside the label, on its line: the list under them does not move.
-            filterControl.leadingAnchor.constraint(equalTo: header.trailingAnchor, constant: 8),
-            filterControl.centerYAnchor.constraint(equalTo: header.centerYAnchor),
-            filterControl.trailingAnchor.constraint(
-                lessThanOrEqualTo: container.trailingAnchor, constant: -14),
-
             scroll.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 6),
             scroll.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: container.trailingAnchor),
@@ -5309,6 +5319,12 @@ extension SidebarViewController: NSOutlineViewDelegate {
             cell.addButton.action = #selector(refreshServersClicked(_:))
         default:
             cell.addButton.isHidden = true
+        }
+        // The filter sits at the right edge of the ACTIVE header.
+        if case .activeGroup = node.kind {
+            cell.setTrailingControl(filterControl)
+        } else {
+            cell.setTrailingControl(nil)
         }
         if case .herdr(let available) = node.kind {
             // herdr source row: bold like a host; greyed when not installed.
