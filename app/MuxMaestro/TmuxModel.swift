@@ -203,7 +203,7 @@ enum SidebarFilter: String, CaseIterable {
     var title: String {
         switch self {
         case .off: return ""
-        case .sleepy: return "Sleepy"
+        case .sleepy: return "1 hour"
         case .twoHours: return "2 hours"
         case .today: return "Today"
         }
