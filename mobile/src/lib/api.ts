@@ -555,6 +555,11 @@ export async function unsubscribePush(endpoint: string): Promise<void> {
 	await post('/api/push/unsubscribe', { endpoint });
 }
 
+/** Say this phone has the thread on screen: its dot goes from done to viewed. */
+export async function markViewed(id: string): Promise<void> {
+	await post(`${threadPath(id)}/viewed`, {});
+}
+
 /** Say which thread this phone shows (`null`: none), so it sends no push here. */
 export async function focusPush(endpoint: string, thread: string | null): Promise<void> {
 	await post('/api/push/focus', { endpoint, thread });

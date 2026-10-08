@@ -429,6 +429,7 @@
 	{@attach !embedded && pages(tabs, landed)}
 	{@attach feed.watch(mode)}
 	{@attach listed && push.watching(id)}
+	{@attach listed && live.viewing(id)}
 	{@attach artifactsOn && artifacts.watch}
 	{@attach serversOn && servers.watch}
 	{@attach !listed && asks && (repliesOn || keysOn) && reply.watch}

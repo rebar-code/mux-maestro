@@ -154,6 +154,36 @@ test('grouping: the server default applies until this phone picks one', async ({
 	);
 });
 
+test('a finished thread is solid green until it is opened, then a ring', async ({ page }) => {
+	const id = 'localhost:3';
+	const dot = drawer(page).locator(`[data-thread="${id}"] .dot`);
+	await page.getByRole('button', { name: 'Menu' }).click();
+	// At work: a ring with an arc that turns.
+	await expect(dot).toHaveClass(/busy/);
+	expect(await dot.evaluate((el) => getComputedStyle(el, '::after').animationName)).toBe(
+		'dot-turn'
+	);
+	// One that finished before this visit is a ring already.
+	await expect(drawer(page).locator('[data-thread="localhost:7"] .dot')).toHaveClass(/viewed/);
+
+	await page.request.post(`/__fixture/status?id=${encodeURIComponent(id)}&value=idle`);
+	await expect(dot).toHaveClass(/unviewed/);
+	await expect(dot).toHaveCSS('background-color', 'rgb(69, 212, 131)');
+
+	// Opening it is viewing it: the Mac is told, and the dot follows the Mac.
+	await drawer(page).locator(`[data-thread="${id}"]`).click();
+	await expect(page).toHaveURL(/\/t\/localhost(:|%3A)3$/);
+	await expect(dot).toHaveClass(/viewed/);
+	await expect(dot).not.toHaveClass(/unviewed/);
+
+	// A turn that ends while the thread is on screen never shows as new.
+	await page.request.post(`/__fixture/status?id=${encodeURIComponent(id)}&value=busy`);
+	await expect(dot).toHaveClass(/busy/);
+	await page.request.post(`/__fixture/status?id=${encodeURIComponent(id)}&value=idle`);
+	await expect(dot).toHaveClass(/viewed/);
+	await expect(dot).not.toHaveClass(/unviewed/);
+});
+
 test('rows show status, sleep and yawn tags, last prompt, age and host colour', async ({
 	page
 }) => {

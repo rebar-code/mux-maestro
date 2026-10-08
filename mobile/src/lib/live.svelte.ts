@@ -5,6 +5,7 @@ import {
 	fetchHosts,
 	fetchThreads,
 	hasToken,
+	markViewed,
 	readEvents,
 	setToken
 } from './api';
@@ -95,7 +96,39 @@ class Live {
 	setThreads(threads: Thread[]): void {
 		this.threads = threads;
 		write(THREADS_KEY, threads);
+		this.tellViewed();
 		for (const listener of this.listeners) listener();
+	}
+
+	/** The thread on screen, and the ones whose "viewed" is on its way to the Mac. */
+	private shown: string | null = null;
+	private telling = new Set<string>();
+
+	/** Tell the Mac the thread on screen was seen, when its dot says it was not. */
+	private tellViewed(): void {
+		const id = this.shown;
+		if (id === null || this.telling.has(id)) return;
+		if (typeof document === 'undefined' || document.visibilityState !== 'visible') return;
+		if (this.byId(id)?.indicator !== 'unviewed') return;
+		this.telling.add(id);
+		// A failure needs no word: the next list that says "not viewed" asks again.
+		void markViewed(id)
+			.catch(() => {})
+			.finally(() => this.telling.delete(id));
+	}
+
+	/** Attachment for an open thread: it counts as viewed while mounted and visible. */
+	viewing(id: string): () => () => void {
+		return () => {
+			this.shown = id;
+			this.tellViewed();
+			const onVisibility = (): void => this.tellViewed();
+			document.addEventListener('visibilitychange', onVisibility);
+			return () => {
+				if (this.shown === id) this.shown = null;
+				document.removeEventListener('visibilitychange', onVisibility);
+			};
+		};
 	}
 
 	setHosts(hosts: Host[]): void {

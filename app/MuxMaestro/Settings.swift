@@ -47,6 +47,21 @@ enum Settings {
         defaults.set(names, forKey: recentSortKey(host))
     }
 
+    private static let viewedThreadsKey = "viewedThreads"
+
+    /// When each thread was last open. A first read starts the store at `now`
+    /// and keeps that, so its baseline does not move.
+    static func viewedThreads(now: Int, defaults: UserDefaults = .standard) -> ViewedThreads {
+        let stored = defaults.dictionary(forKey: viewedThreadsKey)
+        let store = ViewedThreads(json: stored, now: now)
+        if stored == nil { setViewedThreads(store, defaults: defaults) }
+        return store
+    }
+
+    static func setViewedThreads(_ store: ViewedThreads, defaults: UserDefaults = .standard) {
+        defaults.set(store.json, forKey: viewedThreadsKey)
+    }
+
     private static let pinnedDirsKey = "pinnedDirs"
 
     /// Directories pinned in the sidebar's `Group ▸ By Directory` mode, as

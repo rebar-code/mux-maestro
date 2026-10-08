@@ -44,6 +44,98 @@ enum AttentionStatus: String {
     }
 }
 
+/// What a thread's status dot draws. Solid means "look at it", a ring means
+/// nothing to do, motion means the agent is at work.
+enum StatusIndicator: String {
+    /// Needs the human. Solid red.
+    case needsYou
+    /// The agent finished and the thread was not opened since. Solid green.
+    case unviewed
+    /// A turn is running. Grey ring with a circling arc.
+    case working
+    /// The agent finished and the thread was opened since. Green ring.
+    case viewed
+    /// An agent with no turn yet. Grey ring.
+    case idle
+    /// No agent. Small grey dot.
+    case none
+
+    /// Lower is more urgent: what a window, session or host shows for its panes.
+    var rank: Int {
+        switch self {
+        case .needsYou: return 0
+        case .unviewed: return 1
+        case .working: return 2
+        case .viewed: return 3
+        case .idle: return 4
+        case .none: return 5
+        }
+    }
+
+    /// The dot for a status alone, where no pane says whether it was viewed.
+    init(_ attention: AttentionStatus) {
+        switch attention {
+        case .waiting: self = .needsYou
+        case .busy: self = .working
+        case .idle: self = .viewed
+        case .unknown: self = .none
+        }
+    }
+
+    static func rollup(_ indicators: some Sequence<StatusIndicator>) -> StatusIndicator {
+        indicators.min { $0.rank < $1.rank } ?? .none
+    }
+}
+
+/// When the user last had each thread open, by thread id (`MobileSnapshot.threadID`).
+/// One store for the Mac sidebar and the phone, so a thread opened on either
+/// shows as viewed on both.
+struct ViewedThreads: Equatable {
+    /// A thread never opened counts as opened at this time: the store's first
+    /// run. Without it, every thread that finished before this build would show
+    /// as not viewed.
+    var baseline: Int
+    var viewedAt: [String: Int] = [:]
+
+    /// Whether the thread was opened after it finished. A thread with no known
+    /// finish time is viewed: there is nothing new to look at.
+    func isViewed(_ id: String, finishedAt: Int?) -> Bool {
+        guard let finishedAt else { return true }
+        return (viewedAt[id] ?? baseline) >= finishedAt
+    }
+
+    /// Record that the thread is open now. `finishedAt` may be ahead of `now`
+    /// (a remote host's clock), so the later of the two is kept. False when
+    /// nothing changed.
+    @discardableResult
+    mutating func mark(_ id: String, finishedAt: Int?, now: Int) -> Bool {
+        guard !isViewed(id, finishedAt: finishedAt) else { return false }
+        viewedAt[id] = max(now, finishedAt ?? now)
+        return true
+    }
+
+    /// Drop the threads of `host` that are gone. A tmux pane id is not given
+    /// out twice while its server runs, so a dropped id does not come back.
+    mutating func prune(host: String, live: Set<String>) {
+        let prefix = host + ":"
+        viewedAt = viewedAt.filter { !$0.key.hasPrefix(prefix) || live.contains($0.key) }
+    }
+
+    var json: [String: Any] { ["baseline": baseline, "viewedAt": viewedAt] }
+
+    init(baseline: Int, viewedAt: [String: Int] = [:]) {
+        self.baseline = baseline
+        self.viewedAt = viewedAt
+    }
+
+    /// The stored value, or a new store that starts now.
+    init(json: Any?, now: Int) {
+        let object = json as? [String: Any]
+        baseline = (object?["baseline"] as? NSNumber)?.intValue ?? now
+        viewedAt = (object?["viewedAt"] as? [String: NSNumber])?.mapValues(\.intValue) ?? [:]
+    }
+}
+
 /// A tmux pane.
 struct TmuxPane: Equatable {
     /// Pane id, e.g. "%12".
@@ -99,6 +191,24 @@ struct TmuxPane: Equatable {
     /// Epoch seconds the pane's Claude or Codex thread was last written: the
     /// age on the right of line 2. nil for a pane with no readable thread.
     var lastActivityAt: Int? = nil
+    /// Epoch seconds the pane's agent finished its last turn. nil while it
+    /// runs or waits, before its first turn, and for a pane with no agent.
+    var finishedAt: Int? = nil
+    /// Whether the user opened the thread after `finishedAt` (`ViewedThreads`).
+    /// Stamped on the main thread when a tree lands, not by the poll.
+    var viewed = true
+
+    /// What the pane's status dot draws.
+    var indicator: StatusIndicator {
+        switch attention {
+        case .waiting: return .needsYou
+        case .busy: return .working
+        case .unknown: return .none
+        case .idle:
+            if agentState?.state == .idle { return .idle }
+            return viewed ? .viewed : .unviewed
+        }
+    }
 }
 
 /// A tmux window, containing panes.
@@ -187,6 +297,9 @@ struct TmuxWindow: Equatable {
     var attention: AttentionStatus {
         panes.map(\.attention).min { $0.sortRank < $1.sortRank } ?? .unknown
     }
+
+    /// The window's dot: the most urgent of its panes' dots.
+    var indicator: StatusIndicator { StatusIndicator.rollup(panes.map(\.indicator)) }
 }
 
 /// What the sidebar leaves out. Each mode after `sleepy` is wider: it keeps
@@ -273,6 +386,29 @@ struct TmuxSession: Equatable {
         guard let window else { return "" }
         let pane = window.panes.first(where: { $0.active }) ?? window.panes.first
         return pane?.path ?? ""
+    }
+
+    /// The session's dot: the most urgent of its panes' dots. When no pane has
+    /// a status (a host whose scan gives none per pane), the session's own.
+    var indicator: StatusIndicator {
+        let panes = StatusIndicator.rollup(windows.map(\.indicator))
+        return panes == .none ? StatusIndicator(attention) : panes
+    }
+
+    /// The session with each pane's `viewed` set from `store`. `threadID` gives
+    /// a pane's id in the store.
+    func stamped(_ store: ViewedThreads, threadID: (String) -> String) -> TmuxSession {
+        var s = self
+        s.windows = windows.map { window in
+            var w = window
+            w.panes = window.panes.map { pane in
+                var p = pane
+                p.viewed = store.isViewed(threadID(pane.id), finishedAt: pane.finishedAt)
+                return p
+            }
+            return w
+        }
+        return s
     }
 }
 
@@ -630,6 +766,9 @@ enum TmuxModel {
                             statusSince: p.agentState?.since ?? paneStatusSince[pane.id],
                             now: now,
                             fallbackTTL: p.codexSessionId == nil ? claudeTTL : AgentState.dozeSeconds)
+                        p.finishedAt = AgentState.finishedAt(
+                            attention: p.attention, hook: p.agentState,
+                            scanSince: paneStatusSince[pane.id])
                         p.lastPrompt = [p.claudeSessionId, p.codexSessionId]
                             .compactMap { $0.flatMap { lastPrompts[$0] } }.first
                         p.lastActivityAt = [p.claudeSessionId, p.codexSessionId]

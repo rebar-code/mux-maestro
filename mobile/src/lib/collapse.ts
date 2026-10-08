@@ -1,8 +1,11 @@
-import { dotClass } from './format';
+import { dotClass, type Dot } from './format';
 import type { Thread } from './types';
 
 /** What a collapsed session shows for all of its windows. */
-export type SummaryStatus = 'waiting' | 'busy' | 'idle';
+export type SummaryStatus = Dot;
+
+/** Most urgent first. */
+const ORDER: Dot[] = ['waiting', 'unviewed', 'busy', 'viewed', 'idle', 'none'];
 
 /** A session on a host: the key its collapsed state is stored under. */
 export function sessionKey(host: string, session: string): string {
@@ -10,24 +13,26 @@ export function sessionKey(host: string, session: string): string {
 }
 
 /**
- * The strongest status among a session's threads, read the way each row's dot
- * is drawn (`dotClass`): one that needs you wins, then one that is running,
- * then idle. A sleeping thread's dot is grey whatever its status says, so it
- * counts as idle here too; unknown also reads as idle. A collapsed session
- * must never hide a thread that needs the user.
+ * The strongest dot among a session's threads, read the way each row's dot
+ * is drawn (`dotClass`): one that needs you wins, then one that finished and
+ * was not opened, then one that is running, then the quiet ones. A collapsed
+ * session must never hide a thread that needs the user.
  */
-export function summaryStatus(threads: Pick<Thread, 'status' | 'idleStage'>[]): SummaryStatus {
-	const shown = threads.map((thread) => dotClass(thread));
-	if (shown.includes('waiting')) return 'waiting';
-	if (shown.includes('busy')) return 'busy';
-	return 'idle';
+export function summaryStatus(
+	threads: Pick<Thread, 'status' | 'idleStage' | 'indicator'>[]
+): SummaryStatus {
+	const shown = new Set(threads.map((thread) => dotClass(thread)));
+	return ORDER.find((dot) => shown.has(dot)) ?? 'none';
 }
 
 /** What a screen reader hears for the summary dot. */
 export const SUMMARY_LABEL: Record<SummaryStatus, string> = {
 	waiting: 'needs you',
+	unviewed: 'done',
 	busy: 'running',
-	idle: 'idle'
+	viewed: 'idle',
+	idle: 'idle',
+	none: 'idle'
 };
 
 /**

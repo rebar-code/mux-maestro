@@ -1,4 +1,6 @@
 export type Status = 'waiting' | 'busy' | 'idle' | 'unknown';
+/** What a thread's dot draws, as the Mac sidebar draws it. */
+export type Indicator = 'needsYou' | 'unviewed' | 'working' | 'viewed' | 'idle' | 'none';
 export type IdleStage = 'awake' | 'yawning' | 'dozing';
 export type Reachability = 'reachable' | 'unreachable' | 'tmuxMissing' | 'unknown';
 
@@ -20,6 +22,8 @@ export interface Thread {
 	command: string;
 	cwd: string;
 	status: Status;
+	/** Absent from a Mac whose build does not send it. */
+	indicator?: Indicator;
 	since: number | null;
 	idleStage: IdleStage;
 	lastPrompt: LastPrompt | null;

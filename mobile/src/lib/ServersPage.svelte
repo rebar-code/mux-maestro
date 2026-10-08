@@ -63,7 +63,7 @@
 			{#each servers.mappings as mapping (mapping.port)}
 				<div class="row" data-mapping={mapping.port}>
 					<a class="grow" href={mapping.url} target="_blank" rel="noopener noreferrer">
-						<span class="dot busy"></span>
+						<span class="dot unviewed"></span>
 						<span class="main">
 							<span class="name">{mapping.label || `:${mapping.port}`}</span>
 							<span class="sub mono">🔒 {shown(mapping.url)}</span>
@@ -86,7 +86,7 @@
 				{@const mapping = servers.mapping(server.port)}
 				{@const address = `${server.local ? 'localhost' : server.host}:${server.port}`}
 				{#snippet body()}
-					<span class="dot busy"></span>
+					<span class="dot unviewed"></span>
 					<span class="main">
 						<span class="name">{server.label}</span>
 						<span class="sub mono">{address}</span>
@@ -121,7 +121,7 @@
 			<div class="sect">Supabase · {running.stacks.length}</div>
 			{#each running.stacks as stack (stack.key)}
 				<div class="row wrap" data-stack={stack.key}>
-					<span class="dot busy"></span>
+					<span class="dot unviewed"></span>
 					<span class="main">
 						<span class="l1">
 							<span class="name">{stack.label}</span>
@@ -139,7 +139,7 @@
 			<div class="sect">Docker · {running.containers.length}</div>
 			{#each running.containers as container (container.key)}
 				<div class="row wrap" data-container={container.key}>
-					<span class="dot busy"></span>
+					<span class="dot unviewed"></span>
 					<span class="main">
 						<span class="l1">
 							<span class="name">{container.label}</span>
