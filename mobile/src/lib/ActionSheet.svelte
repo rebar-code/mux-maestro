@@ -17,7 +17,7 @@
 
 	const target = $derived(menu.target);
 	const title = $derived(target ? menuTitle(target) : '');
-	const items = $derived(target ? menuItems(target, can('kill')) : []);
+	const items = $derived(target ? menuItems(target, can('kill'), can('sessionActions')) : []);
 	/** Where the new session starts, as the sheet names it. */
 	const place = $derived(menu.dir ? shortCwd(menu.dir) : 'Home');
 	const agentLabel = $derived(START_ITEMS.find((item) => item.kind === menu.agent)?.label ?? '');

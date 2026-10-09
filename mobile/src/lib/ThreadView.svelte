@@ -19,8 +19,10 @@
 	import KeyBar from './KeyBar.svelte';
 	import { can, live, OFF_LABEL } from './live.svelte';
 	import LiveTerminal from './LiveTerminal.svelte';
+	import { longPress } from './longpress';
 	import { LiveTerm } from './liveterm.svelte';
 	import { maestro } from './maestro.svelte';
+	import { menu as actions } from './actions.svelte';
 	import { manager } from './manager.svelte';
 	import MaestroBack from './MaestroBack.svelte';
 	import Marked from './Marked.svelte';
@@ -198,6 +200,11 @@
 	// svelte-ignore state_referenced_locally
 	const asks = listed || givenReply !== undefined;
 
+	/** A long press on the header: the thread's menu, as on its row in the drawer. */
+	function openMenu(): void {
+		if (thread) actions.open({ kind: 'thread', thread });
+	}
+
 	// svelte-ignore state_referenced_locally
 	const picker = new ModelPicker(id, {
 		open: openModelMenu,
@@ -369,7 +376,7 @@
 		<button class="tb" aria-label="Menu" onclick={() => ui.openDrawer()}>☰</button>
 		{#if thread}
 			<span class="dot {dotClass(thread)}"></span>
-			<div class="title">
+			<div class="title" {@attach longPress(openMenu)}>
 				<b>{thread.session} · {thread.name}</b>
 				<span
 					><i class="hchip" style:background={color}>{thread.host}</i> {statusLabel(thread)}</span

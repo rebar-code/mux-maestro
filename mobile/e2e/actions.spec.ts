@@ -58,6 +58,9 @@ test('a long press opens the row menu and does not tap the row', async ({ page }
 		'Rename Window…',
 		'Archive Window',
 		'Zoom Pane',
+		'Copy Session ID',
+		'Copy tmux Window',
+		'Copy tmux Pane',
 		'Kill Window'
 	]);
 	// The press did not open the thread, and the sidebar stayed.

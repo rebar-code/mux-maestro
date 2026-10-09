@@ -910,6 +910,8 @@ function reset() {
 			lastActivityAt: started - ageSeconds,
 			sessionActivity: started - ageSeconds,
 			chat: local,
+			// The agent's session id, as a `muxmaestro://thread/` link names it.
+			agent: local ? `0a1b2c3d-0000-4000-8000-${String(n).padStart(12, '0')}` : null,
 			prs: []
 		};
 	};
