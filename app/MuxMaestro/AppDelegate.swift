@@ -142,6 +142,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // The sidebar loads the tree again, and the phone follows it.
                 DispatchQueue.main.async { self?.sidebarVC?.refresh() }
             },
+            viewed: { [weak self] thread in
+                DispatchQueue.main.async { self?.sidebarVC?.markViewed(threadID: thread) }
+            },
             remoteCommands: { [registry] thread in
                 registry.service(for: thread.host).phoneCommandFiles(for: thread)
             },

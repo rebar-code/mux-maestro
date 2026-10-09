@@ -736,8 +736,11 @@ const terminals = new Set();
 // or 'pager': one on the alternate screen that does not).
 let terminalTyped, terminalOpens, terminalRefuse, terminalSizes, terminalKind;
 
+let viewedAt = {};
+
 function reset() {
 	started = Math.floor(Date.now() / 1000);
+	viewedAt = {};
 	grouping = 'recent';
 	deny = false;
 	token = DEMO_TOKEN;
@@ -970,7 +973,15 @@ const hostsBody = () => ({
 		}
 	}))
 });
-const threadsBody = () => ({ threads });
+// The dot, as the Mac's sidebar has it. A thread that finished before the
+// fixture started counts as viewed, like one from before the Mac's first run.
+// POST /api/threads/<id>/viewed marks one as opened.
+const indicatorOf = (t) =>
+	({ waiting: 'needsYou', busy: 'working', unknown: 'none' })[t.status] ??
+	((viewedAt[t.id] ?? started - 1) >= (t.since ?? 0) ? 'viewed' : 'unviewed');
+const threadsBody = () => ({
+	threads: threads.map((t) => ({ ...t, indicator: indicatorOf(t) }))
+});
 const configBody = () => ({
 	capabilities: {
 		access: true,
@@ -2151,6 +2162,15 @@ function api(req, res, url, body) {
 	if (req.method !== 'GET' && !sameOriginWrite(req)) return send(res, 403, { error: 'forbidden' });
 	const path = url.pathname;
 	if (path === '/api/threads') return send(res, 200, threadsBody());
+	const viewedThread = /^\/api\/threads\/([^/]+)\/viewed$/.exec(path);
+	if (viewedThread) {
+		if (req.method !== 'POST') return send(res, 405, { error: 'method' });
+		const id = decodeURIComponent(viewedThread[1]);
+		if (!threads.some((t) => t.id === id)) return send(res, 404, { error: 'not_found' });
+		viewedAt[id] = Math.max(nowSeconds(), threads.find((t) => t.id === id).since ?? 0);
+		push('threads', threadsBody());
+		return send(res, 200, { ok: true });
+	}
 	if (path === '/api/hosts') return send(res, 200, hostsBody());
 	if (path === '/api/config') return send(res, 200, configBody());
 	if (path === '/api/manager/upload') return managerUpload(req, res, url, body);

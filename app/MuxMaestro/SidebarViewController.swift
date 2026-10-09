@@ -324,17 +324,18 @@ final class SidebarNode {
 extension SidebarNode: DiffableTreeNode {
     var diffIdentity: String { identity }
     /// The shown `display` stays clean for window/pane rows (the dot is a drawn
-    /// view, not text), so fold their attention in here — diff-only — so a pane
-    /// going running→idle (and its window's rolled-up dot) reloads the row.
+    /// view, not text), so fold their dot in here — diff-only — so a pane
+    /// going running→done or done→viewed (and its window's rolled-up dot)
+    /// reloads the row.
     var diffDisplay: String {
         switch kind {
         // Line 2 is folded in too, so a new prompt reloads the row (and its height),
         // and so does its age, so the age ticks over as the poll runs.
         case .window(_, _, let w):
-            return "\(display)\u{1}\(w.attention.rawValue)\u{1}\(w.lastPrompt?.text ?? "")"
+            return "\(display)\u{1}\(w.indicator.rawValue)\u{1}\(w.lastPrompt?.text ?? "")"
                 + "\u{1}\(RowCell.ageLabel(w.lastActivityAt) ?? "")"
         case .pane(_, _, _, let p):
-            return "\(display)\u{1}\(p.attention.rawValue)\u{1}\(p.lastPrompt?.text ?? "")"
+            return "\(display)\u{1}\(p.indicator.rawValue)\u{1}\(p.lastPrompt?.text ?? "")"
                 + "\u{1}\(RowCell.ageLabel(p.lastActivityAt) ?? "")"
         case .session(let host, let s):
             // Fold the host's tint in so re-coloring a server reloads its session
@@ -342,6 +343,7 @@ extension SidebarNode: DiffableTreeNode {
             // sort mode too, so the header's sort button repaints.
             return "\(display)\u{1}\(Settings.colorHex(host: host))"
                 + "\u{1}\(Settings.sortsByRecent(session: s.name, host: host))"
+                + "\u{1}\(s.indicator.rawValue)"
         case .directory(_, _, let pinned):
             // Diff-only, like the session tint: the pin renders as a glyph, so
             // folding it in here repaints the row without putting a marker in the
@@ -353,27 +355,175 @@ extension SidebarNode: DiffableTreeNode {
     var diffChildren: [SidebarNode] { children }
 }
 
-/// A small drawn circle showing a session's attention state. Crisper than an
-/// emoji and tints correctly in light/dark mode.
+/// A small drawn circle showing a thread's state (`StatusIndicator`). Crisper
+/// than an emoji and tints correctly in light/dark mode.
+///
+/// The still part is drawn once per state change. The two moving parts (the
+/// working arc, the needs-you pulse) are Core Animation layers, so a frame of
+/// them costs this process no drawing.
 final class AttentionDotView: NSView {
-    var status: AttentionStatus = .unknown { didSet { needsDisplay = true } }
+    var indicator: StatusIndicator = .none {
+        didSet {
+            guard indicator != oldValue else { return }
+            needsDisplay = true
+            syncMotion()
+        }
+    }
+
+    /// For a row that has a status and no thread to have viewed: idle is a grey ring.
+    var status: AttentionStatus = .unknown {
+        didSet { indicator = status == .idle ? .idle : StatusIndicator(status) }
+    }
+
+    /// Off in the harness that takes still pictures of the view.
+    var animates = true { didSet { syncMotion() } }
+
+    static let diameter: CGFloat = 9
+    static let ringWidth: CGFloat = 1.5
+    static let spinSeconds: CFTimeInterval = 1.6
+
+    private var motion: CALayer?
 
     override var isFlipped: Bool { true }
 
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        wantsLayer = true
+    }
+
+    private var dotRect: NSRect {
+        let d = Self.diameter
+        return NSRect(x: (bounds.width - d) / 2, y: (bounds.height - d) / 2, width: d, height: d)
+    }
+
     override func draw(_ dirtyRect: NSRect) {
-        let d: CGFloat = 9
-        let rect = NSRect(
-            x: (bounds.width - d) / 2, y: (bounds.height - d) / 2, width: d, height: d)
-        let path = NSBezierPath(ovalIn: rect)
-        let color: NSColor
-        switch status {
-        case .waiting: color = SidebarPalette.red
-        case .busy: color = SidebarPalette.green
-        case .idle, .unknown: color = SidebarPalette.muted
-        }
+        let rect = dotRect
         // Flat, Geist-style status dot — no glow.
+        switch indicator {
+        case .needsYou: fill(rect, SidebarPalette.red)
+        case .unviewed: fill(rect, SidebarPalette.green)
+        case .viewed: ring(rect, SidebarPalette.green)
+        case .working: ring(rect, SidebarPalette.muted.withAlphaComponent(0.45))
+        case .idle: ring(rect, SidebarPalette.muted.withAlphaComponent(0.8))
+        case .none: fill(rect.insetBy(dx: 2.5, dy: 2.5), SidebarPalette.muted.withAlphaComponent(0.7))
+        }
+    }
+
+    private func fill(_ rect: NSRect, _ color: NSColor) {
         color.setFill()
-        path.fill()
+        NSBezierPath(ovalIn: rect).fill()
+    }
+
+    private func ring(_ rect: NSRect, _ color: NSColor) {
+        let w = Self.ringWidth
+        let path = NSBezierPath(ovalIn: rect.insetBy(dx: w / 2, dy: w / 2))
+        path.lineWidth = w
+        color.setStroke()
+        path.stroke()
+    }
+
+    override func layout() {
+        super.layout()
+        motion?.frame = dotRect
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        // A layer loses its animations when its view leaves the window.
+        syncMotion()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        syncMotion()
+    }
+
+    /// Put up the moving layer the state needs, or take it down.
+    private func syncMotion() {
+        motion?.removeFromSuperlayer()
+        motion = nil
+        guard window != nil || !animates else { return }
+        let made: CALayer
+        switch indicator {
+        case .working: made = arcLayer()
+        case .needsYou where animates && !Self.reducesMotion: made = pulseLayer()
+        default: return
+        }
+        made.frame = dotRect
+        layer?.addSublayer(made)
+        motion = made
+    }
+
+    private static var reducesMotion: Bool {
+        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    }
+
+    /// A lighter slice of the ring with a faded tail, turning. A conic gradient
+    /// cut to the ring by a mask; the turn is one transform animation.
+    private func arcLayer() -> CALayer {
+        let size = CGSize(width: Self.diameter, height: Self.diameter)
+        let arc = CAGradientLayer()
+        arc.type = .conic
+        arc.startPoint = CGPoint(x: 0.5, y: 0.5)
+        arc.endPoint = CGPoint(x: 0.5, y: 0)
+        var head = CGColor.clear
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            head = SidebarPalette.text.withAlphaComponent(0.9).cgColor
+        }
+        arc.colors = [CGColor.clear, CGColor.clear, head, CGColor.clear]
+        arc.locations = [0, 0.4, 0.94, 1]
+        let band = CAShapeLayer()
+        band.frame = CGRect(origin: .zero, size: size)
+        let w = Self.ringWidth
+        band.path = CGPath(
+            ellipseIn: band.frame.insetBy(dx: w / 2, dy: w / 2), transform: nil)
+        band.fillColor = nil
+        band.strokeColor = CGColor.black
+        band.lineWidth = w
+        arc.mask = band
+        if animates, !Self.reducesMotion {
+            let spin = CABasicAnimation(keyPath: "transform.rotation.z")
+            spin.fromValue = 0
+            spin.toValue = Self.spinTurn
+            spin.duration = Self.spinSeconds
+            spin.repeatCount = .infinity
+            spin.isRemovedOnCompletion = false
+            arc.add(spin, forKey: "spin")
+        }
+        return arc
+    }
+
+    /// One turn in the direction the gradient's bright end points, so the
+    /// bright end leads and the fade trails.
+    static let spinTurn = 2 * Double.pi
+
+    /// A red halo that grows out of the dot and fades.
+    private func pulseLayer() -> CALayer {
+        let halo = CALayer()
+        var red = CGColor.clear
+        effectiveAppearance.performAsCurrentDrawingAppearance { red = SidebarPalette.red.cgColor }
+        halo.backgroundColor = red
+        halo.cornerRadius = Self.diameter / 2
+        halo.opacity = 0
+        let grow = CABasicAnimation(keyPath: "transform.scale")
+        grow.fromValue = 1
+        grow.toValue = 2.2
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 0.5
+        fade.toValue = 0
+        let pulse = CAAnimationGroup()
+        pulse.animations = [grow, fade]
+        pulse.duration = 1.6
+        pulse.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        pulse.repeatCount = .infinity
+        pulse.isRemovedOnCompletion = false
+        halo.add(pulse, forKey: "pulse")
+        return halo
     }
 }
 
@@ -993,7 +1143,7 @@ final class SessionCellView: NSTableCellView {
             typeIcon.image = nil
             typeIcon.toolTip = nil
         }
-        dot.status = session.attention
+        dot.indicator = session.indicator
         nameField.stringValue = session.name
         // Remote-host sessions read a step dimmer than local so the two are
         // distinguishable at a glance (defaults to local when host is unknown).
@@ -1365,7 +1515,7 @@ final class HostCellView: NSTableCellView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
 
-    func configure(host: Host, reach: HostReachability, attention: AttentionStatus?, watched: Bool) {
+    func configure(host: Host, reach: HostReachability, indicator: StatusIndicator?, watched: Bool) {
         nameField.stringValue =
             "\(host.name)\(reach == .unreachable ? " (unreachable)" : "")"
         nameField.textColor = reach == .unreachable ? SidebarPalette.muted : SidebarPalette.text
@@ -1376,7 +1526,7 @@ final class HostCellView: NSTableCellView {
         typeIcon.contentTintColor = reach == .unreachable
             ? SidebarPalette.muted : SidebarPalette.text
         dot.isHidden = false
-        dot.status = attention ?? .unknown
+        dot.indicator = indicator ?? .none
         eye.isHidden = !watched
         // New sessions start from the Servers buttons now, so host rows carry no "+".
         addButton.isHidden = true
@@ -2860,7 +3010,10 @@ final class SidebarViewController: NSViewController {
                 if reach[host.name] == .reachable { self.scanner.recordSuccess(host.name, now: now) }
                 else { self.scanner.recordFailure(host.name, now: now) }
             }
-            for (k, v) in sessions { self.sessionsByHost[k] = v }
+            for host in candidates {
+                guard let tree = sessions[host.name] else { continue }
+                self.sessionsByHost[host.name] = self.stampViewed(tree, host: host)
+            }
             for (k, v) in reach { self.reachabilityByHost[k] = v }
             self.isColdScanning = false
             // Re-render the header explicitly. `refresh()` can't do it: `mergeInPlace`
@@ -3093,7 +3246,7 @@ final class SidebarViewController: NSViewController {
     private func applyHostResult(host: Host, tree: [TmuxSession]?, reach: HostReachability) {
         // Keep the prior tree on a transient load failure (nil); update on success
         // (including a genuine empty []).
-        if let tree { sessionsByHost[host.name] = tree }
+        if let tree { sessionsByHost[host.name] = stampViewed(tree, host: host) }
         reachabilityByHost[host.name] = reach
         // A hot poll is also a scan. Without this, a remote whose last session ends
         // drops out of the hot tier and — never having been "scanned" — is
@@ -3157,6 +3310,58 @@ final class SidebarViewController: NSViewController {
                         seen: (window.name, window.nameBase, window.nameTags))
                 }
             }
+        }
+    }
+
+    // MARK: viewed threads
+
+    private lazy var viewedThreads = Settings.viewedThreads(now: Int(Date().timeIntervalSince1970))
+
+    /// A host's fresh tree with each pane's `viewed` set. The threads of the
+    /// window on screen are marked first, so an agent that finishes while the
+    /// user looks at it never shows as not viewed.
+    private func stampViewed(_ tree: [TmuxSession], host: Host) -> [TmuxSession] {
+        let now = Int(Date().timeIntervalSince1970)
+        let onScreen = NSApp.isActive && view.window?.isVisible == true && !isHoverPreviewing
+            && selectedHost?.name == host.name
+        let open = onScreen ? selectedSessionName : nil
+        let before = viewedThreads
+        var live = Set<String>()
+        for session in tree {
+            for window in session.windows {
+                for pane in window.panes {
+                    let id = MobileSnapshot.threadID(host: host, pane: pane.id)
+                    live.insert(id)
+                    if session.name == open, window.active {
+                        viewedThreads.mark(id, finishedAt: pane.finishedAt, now: now)
+                    }
+                }
+            }
+        }
+        viewedThreads.prune(host: host.name, live: live)
+        if viewedThreads != before { Settings.setViewedThreads(viewedThreads) }
+        return tree.map { session in
+            session.stamped(viewedThreads) { MobileSnapshot.threadID(host: host, pane: $0) }
+        }
+    }
+
+    /// The phone has thread `id` on screen: it is viewed here too.
+    func markViewed(threadID id: String) {
+        for host in hosts {
+            guard let tree = sessionsByHost[host.name] else { continue }
+            let pane = tree.lazy.flatMap(\.windows).flatMap(\.panes)
+                .first { MobileSnapshot.threadID(host: host, pane: $0.id) == id }
+            guard let pane else { continue }
+            guard viewedThreads.mark(
+                id, finishedAt: pane.finishedAt, now: Int(Date().timeIntervalSince1970))
+            else { return }
+            Settings.setViewedThreads(viewedThreads)
+            sessionsByHost[host.name] = tree.map { session in
+                session.stamped(viewedThreads) { MobileSnapshot.threadID(host: host, pane: $0) }
+            }
+            applyRefresh(buildHostNodes())
+            onRefreshed?()
+            return
         }
     }
 
@@ -5208,7 +5413,8 @@ extension SidebarViewController: NSOutlineViewDelegate {
             let cell = outlineView.makeView(withIdentifier: id, owner: self) as? HostCellView
                 ?? { let c = HostCellView(); c.identifier = id; return c }()
             cell.configure(
-                host: h, reach: reach, attention: node.hostAttention, watched: node.watched)
+                host: h, reach: reach, indicator: node.hostAttention.map(StatusIndicator.init),
+                watched: node.watched)
             cell.addButton.target = self
             cell.addButton.action = #selector(addOnRow(_:))
             return cell
@@ -5268,20 +5474,16 @@ extension SidebarViewController: NSOutlineViewDelegate {
         } else {
             cell.pin.isHidden = true
         }
-        // Leading status dot on window/pane rows — only for the states that matter
-        // (running / needs-you), so idle rows stay clean. Rolled up for windows.
-        let rowAttention: AttentionStatus?
+        // Leading status dot on window/pane rows that run an agent, so a plain
+        // shell's row stays clean. Rolled up for windows.
+        let rowIndicator: StatusIndicator
         switch node.kind {
-        case .window(_, _, let w): rowAttention = w.attention
-        case .pane(_, _, _, let p): rowAttention = p.attention
-        default: rowAttention = nil
+        case .window(_, _, let w): rowIndicator = w.indicator
+        case .pane(_, _, _, let p): rowIndicator = p.indicator
+        default: rowIndicator = .none
         }
-        if let a = rowAttention, a == .busy || a == .waiting {
-            cell.dot.status = a
-            cell.dot.isHidden = false
-        } else {
-            cell.dot.isHidden = true
-        }
+        cell.dot.indicator = rowIndicator
+        cell.dot.isHidden = rowIndicator == .none
         // Hover trash on a window, "+" on a directory, "rescan" on the SERVERS
         // header; hidden elsewhere. (Host rows render their own "+" via
         // HostCellView and never reach here.) The cell is pooled across every row kind, so the symbol, enabled

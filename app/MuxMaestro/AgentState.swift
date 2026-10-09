@@ -117,6 +117,18 @@ enum AgentState {
         return row.state != .busy || age <= busySeconds
     }
 
+    /// When an idle pane's agent finished its last turn: what its dot is
+    /// compared with to tell "viewed" from "not viewed". The hook's `since` when
+    /// the hook state is trusted, else the scan's status time. nil for a pane
+    /// that is not idle, and for a hook `idle`: started, no turn yet.
+    static func finishedAt(
+        attention: AttentionStatus, hook: AgentPaneState?, scanSince: Int?
+    ) -> Int? {
+        guard attention == .idle else { return nil }
+        if let hook { return hook.state == .idle ? nil : hook.since }
+        return scanSince
+    }
+
     /// The sidebar dot for a hook state.
     static func attention(_ state: AgentStateRow.State) -> AttentionStatus {
         switch state {

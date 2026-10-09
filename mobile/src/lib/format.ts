@@ -1,4 +1,4 @@
-import type { Host, Thread } from './types';
+import type { Host, Indicator, Status, Thread } from './types';
 
 /** "40s", "2m", "3h", "5d" between two epoch-second times. */
 export function age(at: number | null | undefined, now: number): string {
@@ -65,7 +65,31 @@ export function stageTag(thread: Thread): string {
 	return '';
 }
 
-/** The dot colour class: a sleeping thread is grey whatever its status. */
-export function dotClass(thread: Pick<Thread, 'status' | 'idleStage'>): string {
-	return thread.idleStage === 'dozing' ? 'idle' : thread.status;
+/** A dot's class. Solid: look at it. Ring: nothing to do. `busy` turns. */
+export type Dot = 'waiting' | 'unviewed' | 'busy' | 'viewed' | 'idle' | 'none';
+
+const DOT: Record<Indicator, Dot> = {
+	needsYou: 'waiting',
+	unviewed: 'unviewed',
+	working: 'busy',
+	viewed: 'viewed',
+	idle: 'idle',
+	none: 'none'
+};
+
+/** The dot of a Mac that sends no `indicator`: it cannot say what was viewed. */
+const FROM_STATUS: Record<Status, Dot> = {
+	waiting: 'waiting',
+	busy: 'busy',
+	idle: 'viewed',
+	unknown: 'none'
+};
+
+/**
+ * The dot class. A sleeping thread is a grey ring whatever its status, but
+ * one that finished and was never opened stays solid green.
+ */
+export function dotClass(thread: Pick<Thread, 'status' | 'idleStage' | 'indicator'>): Dot {
+	const dot = thread.indicator ? DOT[thread.indicator] : FROM_STATUS[thread.status];
+	return thread.idleStage === 'dozing' && dot !== 'unviewed' ? 'idle' : dot;
 }

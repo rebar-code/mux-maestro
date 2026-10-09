@@ -31,6 +31,8 @@ final class MobileServer {
         var archive: MobileActions.Archive? = nil
         /// A session action changed the tree: load it again now.
         var changed: () -> Void = {}
+        /// A phone has this thread on screen. Called on the server's queue.
+        var viewed: (_ thread: String) -> Void = { _ in }
         /// The home folder whose skills and commands the `/` list reads.
         var home = NSHomeDirectory()
         /// A remote thread's home folder and its files, read on its host, for
@@ -979,6 +981,12 @@ final class MobileServer {
                     prompt: answer.prompt, option: answer.option, target: thread.pane, io: io,
                     state: state())
             }
+        case .viewed(let id):
+            guard snapshot.thread(id: id) != nil else {
+                return send(.error(404, "not_found"), to: client, head: head)
+            }
+            sources.viewed(id)
+            send(.json(["ok": true]), to: client, head: head)
         case .commands(let id):
             guard let thread = snapshot.thread(id: id) else {
                 return send(.error(404, "not_found"), to: client, head: head)

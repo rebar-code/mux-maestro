@@ -16,11 +16,13 @@ import { dotClass } from './format';
 type Row = {
 	status: 'waiting' | 'busy' | 'idle' | 'unknown';
 	idleStage: 'awake' | 'yawning' | 'dozing';
+	indicator?: 'needsYou' | 'unviewed' | 'working' | 'viewed' | 'idle' | 'none';
 };
-const t = (status: Row['status'], idleStage: Row['idleStage'] = 'awake'): Row => ({
-	status,
-	idleStage
-});
+const t = (
+	status: Row['status'],
+	idleStage: Row['idleStage'] = 'awake',
+	indicator?: Row['indicator']
+): Row => ({ status, idleStage, indicator });
 
 describe('summaryStatus', () => {
 	it('needs-you wins over everything', () => {
@@ -32,24 +34,62 @@ describe('summaryStatus', () => {
 		expect(summaryStatus([t('idle'), t('busy'), t('unknown')])).toBe('busy');
 	});
 
-	it('idle, sleeping and unknown all read as idle', () => {
-		expect(summaryStatus([t('idle'), t('unknown')])).toBe('idle');
-		expect(summaryStatus([t('idle', 'dozing')])).toBe('idle');
-		expect(summaryStatus([t('unknown')])).toBe('idle');
-		expect(summaryStatus([])).toBe('idle');
+	it('done and not opened wins over running, and loses to needs-you', () => {
+		const done = t('idle', 'awake', 'unviewed');
+		expect(summaryStatus([t('busy'), done, t('idle')])).toBe('unviewed');
+		expect(summaryStatus([t('waiting'), done])).toBe('waiting');
+	});
+
+	it('the quiet dots: viewed, then sleeping, then no agent', () => {
+		expect(summaryStatus([t('idle'), t('unknown')])).toBe('viewed');
+		expect(summaryStatus([t('idle', 'dozing'), t('unknown')])).toBe('idle');
+		expect(summaryStatus([t('unknown')])).toBe('none');
+		expect(summaryStatus([])).toBe('none');
 	});
 
 	it('matches the row dots: a sleeping thread is grey whatever its status says', () => {
-		const rows = [t('busy', 'dozing'), t('waiting', 'dozing'), t('idle')];
-		// Every row's dot is grey, so the summary is too.
+		const rows = [t('busy', 'dozing'), t('waiting', 'dozing'), t('idle', 'dozing')];
+		// Every row's dot is a grey ring, so the summary is too.
 		expect(rows.map(dotClass)).toEqual(['idle', 'idle', 'idle']);
 		expect(summaryStatus(rows)).toBe('idle');
-		// One awake running row is green, and so is the summary.
+		// One awake running row turns, and so does the summary.
 		expect(summaryStatus([...rows, t('busy', 'yawning')])).toBe('busy');
 	});
 
+	it('a sleeping thread that was never opened stays solid green', () => {
+		expect(dotClass(t('idle', 'dozing', 'unviewed'))).toBe('unviewed');
+		expect(dotClass(t('idle', 'dozing', 'viewed'))).toBe('idle');
+	});
+
 	it('has a spoken label for each status', () => {
-		expect(SUMMARY_LABEL).toEqual({ waiting: 'needs you', busy: 'running', idle: 'idle' });
+		expect(SUMMARY_LABEL).toEqual({
+			waiting: 'needs you',
+			unviewed: 'done',
+			busy: 'running',
+			viewed: 'idle',
+			idle: 'idle',
+			none: 'idle'
+		});
+	});
+});
+
+describe('dotClass', () => {
+	it('draws what the Mac says', () => {
+		expect(dotClass(t('waiting', 'awake', 'needsYou'))).toBe('waiting');
+		expect(dotClass(t('idle', 'awake', 'unviewed'))).toBe('unviewed');
+		expect(dotClass(t('busy', 'awake', 'working'))).toBe('busy');
+		expect(dotClass(t('idle', 'awake', 'viewed'))).toBe('viewed');
+		expect(dotClass(t('idle', 'awake', 'idle'))).toBe('idle');
+		expect(dotClass(t('unknown', 'awake', 'none'))).toBe('none');
+	});
+
+	it('reads the status of a Mac that sends no indicator', () => {
+		expect([t('waiting'), t('busy'), t('idle'), t('unknown')].map(dotClass)).toEqual([
+			'waiting',
+			'busy',
+			'viewed',
+			'none'
+		]);
 	});
 });
 
