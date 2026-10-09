@@ -102,3 +102,18 @@ test('a tap on the header opens nothing', async ({ page }) => {
 	await hold(page, 150);
 	await expect(sheet(page)).toHaveCount(0);
 });
+
+test('on a short screen the menu scrolls to its last item', async ({ page }) => {
+	await page.setViewportSize({ width: 375, height: 560 });
+	await open(page, 'sessionActions', 'kill');
+	await hold(page);
+	const kill = sheet(page).getByRole('button', { name: 'Kill Window' });
+	const rows = sheet(page).locator('.rows');
+	await expect(rows).toHaveAttribute('data-own-drag', '');
+	expect(await rows.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
+	await kill.scrollIntoViewIfNeeded();
+	await expect(kill).toBeInViewport({ ratio: 1 });
+	await shot(page, 'header-menu-short');
+	await kill.click();
+	await expect(sheet(page)).toHaveAttribute('data-action-sheet', 'kill');
+});

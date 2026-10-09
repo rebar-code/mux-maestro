@@ -65,6 +65,17 @@
 		event.stopPropagation();
 	}
 
+	/**
+	 * A menu taller than the sheet scrolls, and then a drag on it is its own.
+	 * One that fits keeps the pull that closes the sheet.
+	 */
+	function ownDragWhenTall(node: HTMLElement): void {
+		node.toggleAttribute(
+			'data-own-drag',
+			items.length > 0 && node.scrollHeight > node.clientHeight
+		);
+	}
+
 	function onkeydown(event: KeyboardEvent): void {
 		if (target && event.key === 'Escape') menu.close();
 	}
@@ -103,14 +114,16 @@
 
 		{#if menu.stage === 'menu'}
 			<div class="title">{title}</div>
-			{#each items as item (item.key)}
-				<button
-					class="item"
-					class:danger={item.danger}
-					disabled={menu.busy}
-					onclick={() => menu.pick(item.key)}>{item.label}</button
-				>
-			{/each}
+			<div class="rows" {@attach ownDragWhenTall}>
+				{#each items as item (item.key)}
+					<button
+						class="item"
+						class:danger={item.danger}
+						disabled={menu.busy}
+						onclick={() => menu.pick(item.key)}>{item.label}</button
+					>
+				{/each}
+			</div>
 		{:else if menu.stage === 'rename'}
 			<div class="title">Rename {title}</div>
 			<form onsubmit={submit}>
@@ -269,7 +282,10 @@
 	}
 
 	.sheet .list,
-	.sheet .list :global(*) {
+	.sheet .list :global(*),
+	/* The attribute is set by `ownDragWhenTall`. */
+	.sheet :global(.rows[data-own-drag]),
+	.sheet :global(.rows[data-own-drag] *) {
 		touch-action: pan-y !important;
 	}
 
@@ -335,7 +351,8 @@
 		color: var(--muted);
 	}
 
-	.list {
+	.list,
+	.rows {
 		overflow-y: auto;
 		overscroll-behavior: contain;
 		min-height: 0;
