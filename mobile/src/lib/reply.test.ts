@@ -11,12 +11,15 @@ import {
 	liveLines,
 	needsPrompt,
 	nextWaiting,
+	pollsPrompt,
 	queuedLines,
 	queueKey,
 	refusalLabel,
 	sendReduce,
 	slashQuery,
 	slashToken,
+	SUGGESTION_POLLS,
+	suggestionPolls,
 	textRefusal,
 	type QueuedKey,
 	type Refusal,
@@ -424,5 +427,28 @@ describe('queuedLines', () => {
 		];
 		expect(queuedLines([], queued)).toEqual(['one', 'two']);
 		expect(queuedLines([row(52, 'user', 'one')], queued)).toEqual(['two']);
+	});
+});
+
+describe('the poll for a suggestion', () => {
+	const quiet = { waiting: false, prompt: false, suggestion: false, left: 0 };
+
+	it('gives a pane that stopped its polls, and one that works or waits none', () => {
+		expect(suggestionPolls('idle')).toBe(SUGGESTION_POLLS);
+		expect(suggestionPolls('unknown')).toBe(SUGGESTION_POLLS);
+		expect(suggestionPolls(undefined)).toBe(SUGGESTION_POLLS);
+		expect(suggestionPolls('busy')).toBe(0);
+		expect(suggestionPolls('waiting')).toBe(0);
+	});
+
+	it('asks again while polls remain, then leaves a quiet pane alone', () => {
+		expect(pollsPrompt({ ...quiet, left: 1 })).toBe(true);
+		expect(pollsPrompt(quiet)).toBe(false);
+	});
+
+	it('asks again while a suggestion or a prompt shows, to see it go', () => {
+		expect(pollsPrompt({ ...quiet, suggestion: true })).toBe(true);
+		expect(pollsPrompt({ ...quiet, prompt: true })).toBe(true);
+		expect(pollsPrompt({ ...quiet, waiting: true })).toBe(true);
 	});
 });

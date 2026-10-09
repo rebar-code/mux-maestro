@@ -271,6 +271,31 @@ export function needsPrompt(refusal: Refusal | null): boolean {
 }
 
 /**
+ * How many times the prompt is asked for again after a pane's status changed.
+ * Claude Code draws its suggestion 1 to 3 s after the turn ends.
+ */
+export const SUGGESTION_POLLS = 5;
+
+/** The polls a pane in `state` gets for its suggestion. One that works or waits shows none. */
+export function suggestionPolls(state: string | undefined): number {
+	return state === 'busy' || state === 'waiting' ? 0 : SUGGESTION_POLLS;
+}
+
+/**
+ * Whether a tick of the poll asks for the prompt again. A prompt or a
+ * suggestion that shows is asked for again, to see it go; `left` is the polls
+ * that remain for a suggestion to come.
+ */
+export function pollsPrompt(now: {
+	waiting: boolean;
+	prompt: boolean;
+	suggestion: boolean;
+	left: number;
+}): boolean {
+	return now.waiting || now.prompt || now.suggestion || now.left > 0;
+}
+
+/**
  * What a refused reply leaves on the phone. A text the Mac pasted and could
  * not take out again is still in the pane: the box is emptied, so Send cannot
  * submit it twice. Every other refusal keeps the draft, to send again.

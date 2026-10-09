@@ -63,7 +63,7 @@ let store = value("--manager-db").flatMap { try? ManagerStore(dbPath: $0) }
 let manager = store.map { store in
     MobileServer.Manager(
         pane: { (.idle, nil) },
-        send: { _, _, completion in completion(.refused("The dev server has no Maestro pane")) },
+        send: { _, _, _, completion in completion(.refused("The dev server has no Maestro pane")) },
         dismiss: { key in try? store.dismiss(key: key) },
         answered: { key, label, at in try? store.recordAnswer(key: key, label: label, at: at) },
         screen: { _ in nil })
