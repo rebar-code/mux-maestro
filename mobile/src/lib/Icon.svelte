@@ -50,6 +50,7 @@
 		// Lucide `list-filter`.
 		filter: ['M3 6h18', 'M7 12h10', 'M10 18h4'],
 		chevronDown: ['m6 9 6 6 6-6'],
+		search: ['M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14z', 'm20 20-4-4'],
 		micOff: [
 			'M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z',
 			'M5 11a7 7 0 0 0 14 0',

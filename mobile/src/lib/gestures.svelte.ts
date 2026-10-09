@@ -36,6 +36,8 @@ class Ui {
 	drawer = $state(0);
 	/** A finger is moving the drawer or the pager, so nothing animates. */
 	dragging = $state(false);
+	/** What the sidebar's search box holds. The sidebar closes: it is emptied. */
+	search = $state('');
 	/** The drawer row whose buttons show: the value of its `data-reveal`. */
 	revealed = $state<string | null>(null);
 	/** The pages of the current view, left to right. Empty on a view with none. */
@@ -100,6 +102,7 @@ class Ui {
 	closeDrawer(): void {
 		this.drawer = 0;
 		this.revealed = null;
+		this.search = '';
 	}
 
 	setPages(pages: string[], landed: ((index: number) => void) | null = null): void {
@@ -422,7 +425,7 @@ export function gestures(node: HTMLElement): () => void {
 		const speed = still ? 0 : vx;
 		if (kind === 'drawer-open' || kind === 'drawer-close') {
 			ui.drawer = settleDrawer(ui.drawer, speed, kind === 'drawer-close') ? 1 : 0;
-			if (ui.drawer === 0) ui.revealed = null;
+			if (ui.drawer === 0) ui.closeDrawer();
 		} else if (kind === 'reveal' && row) {
 			const width = revealWidth(row);
 			const shown = settleReveal(clamp(rowStart + moved, 0, width), speed, width);
