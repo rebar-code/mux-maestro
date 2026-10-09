@@ -152,6 +152,27 @@ export interface Command {
 	source: 'skill' | 'command' | 'builtin';
 }
 
+/** A row of the agent's own `/model` menu, as the Mac reads it from the pane. */
+export interface ModelOption {
+	/** The row's number in the menu. */
+	n: number;
+	label: string;
+	/** What the session runs now. */
+	current: boolean;
+}
+
+/** An effort level of one model. `current`: the level the menu starts on. */
+export interface EffortOption {
+	label: string;
+	current: boolean;
+}
+
+/** The answer of opening the model menu. */
+export interface ModelMenu {
+	agent: 'claude' | 'codex';
+	models: ModelOption[];
+}
+
 export type VoiceMode = 'auto' | 'manual';
 
 export interface VoiceDefaults {

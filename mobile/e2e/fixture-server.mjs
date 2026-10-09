@@ -23,6 +23,8 @@
 // /__fixture/prompt-delay?ms=,
 // /__fixture/manager-prompt?kind=&bare=&scrolled=&pid=&quiet=, /__fixture/prompt-delay?ms=, /__fixture/upload-slow?chunk=&answer=,
 // /__fixture/upload-fail?status=&error=&message=, /__fixture/build?tag=, /__fixture/text-slow?ms=,
+// /__fixture/model-agent?id=&agent=codex|claude (the agent whose `/model` menu the pane has),
+// /__fixture/model-fail?error=&message= (the next menu step is refused), /__fixture/model-now?id=,
 // /__fixture/append?count= (adds lines to pane buildbox:8),
 // /__fixture/screen?default=&max= (the screen endpoint's default and cap)
 // /__fixture/point?key=&thread=&title=&reason= (the Maestro points at a session; no thread: one that is gone),
@@ -723,6 +725,9 @@ let phoneLogs;
 let saved, uploadLocks, uploadSlow, uploadFail;
 // The texts each busy thread's agent holds until its turn ends.
 let held;
+// The agents' own `/model` menus: which threads run Codex, what each session
+// runs now, the menus that are open in a pane, and a refusal for the next step.
+let modelAgents, modelNow, modelOpen, modelFail;
 // Set: the server holds a newer build than the one a phone may have cached.
 let buildTag = null;
 // How long a reply's answer takes to come back.
@@ -797,6 +802,10 @@ function reset() {
 	phoneLogs = [];
 	uploadMax = 10485760;
 	held = {};
+	modelAgents = {};
+	modelNow = {};
+	modelOpen = {};
+	modelFail = null;
 	replies = {
 		texts: [],
 		interrupts: [],
@@ -807,6 +816,8 @@ function reset() {
 		left: [],
 		actions: [],
 		commandFetches: 0,
+		// Each step of a model menu, and what a session was set to.
+		model: [],
 		// What the phone wrote to the manager pane's prompt, and how often it asked for it.
 		manager: { keys: [], answers: [], cancels: [], promptFetches: 0 }
 	};
@@ -1077,6 +1088,92 @@ function refusedBy(thread, queue = false) {
 	return null;
 }
 
+// The two agents' model menus, as their `/model` draws them.
+const CLAUDE_LEVELS = ['Low', 'Medium', 'High', 'xHigh', 'Max'];
+const MODEL_MENUS = {
+	claude: {
+		start: { model: 'Opus 5.5', effort: 'High' },
+		models: [
+			['Default (recommended)', CLAUDE_LEVELS],
+			['Opus 5.5', CLAUDE_LEVELS],
+			['Fable 5.1', CLAUDE_LEVELS],
+			['Sonnet 5.5', CLAUDE_LEVELS],
+			['Haiku 5.5', CLAUDE_LEVELS],
+			// A model without effort levels.
+			['Haiku 4.5', []]
+		]
+	},
+	codex: {
+		start: { model: 'GPT-6-Luna', effort: 'Medium' },
+		models: ['GPT-6.1-Sol', 'GPT-6-Astra', 'GPT-6-Sol', 'GPT-6-Luna'].map((label) => [
+			label,
+			['Low', 'Medium', 'High', 'Extra high']
+		])
+	}
+};
+
+/**
+ * `POST /api/threads/<id>/model`: one step of the agent's model menu. The
+ * pick is for the session only; the fixture has no default to save.
+ */
+function modelApi(res, thread, json) {
+	const agent = modelAgents[thread.id] ?? 'claude';
+	const menu = MODEL_MENUS[agent];
+	const now = (modelNow[thread.id] ??= { ...menu.start });
+	const step = json.step;
+	const refuse = (error, message) => {
+		delete modelOpen[thread.id];
+		return send(res, 409, { error, message });
+	};
+	if (!['open', 'model', 'apply', 'cancel'].includes(step))
+		return send(res, 400, { error: 'bad_request' });
+	replies.model.push({ thread: thread.id, ...json });
+	if (modelFail) {
+		const failure = modelFail;
+		modelFail = null;
+		return refuse(failure.error, failure.message);
+	}
+	if (step === 'cancel') {
+		delete modelOpen[thread.id];
+		return send(res, 200, { ok: true });
+	}
+	if (step === 'open') {
+		const refused = refusedBy(thread);
+		if (refused) return send(res, 409, refused);
+		modelOpen[thread.id] = { model: null };
+		return send(res, 200, {
+			agent,
+			models: menu.models.map(([label], index) => ({
+				n: index + 1,
+				label,
+				description: '',
+				current: label === now.model
+			}))
+		});
+	}
+	const open = modelOpen[thread.id];
+	if (!open)
+		return send(res, 409, { error: 'no_menu', message: 'The agent did not open its model menu' });
+	if (step === 'model') {
+		const row = menu.models[json.n - 1];
+		if (!row || row[0] !== json.label) return refuse('changed', 'The model menu changed');
+		open.model = row;
+		const marked = row[0] === now.model ? now.effort : row[1][Math.min(1, row[1].length - 1)];
+		return send(res, 200, {
+			efforts: row[1].map((label) => ({ label, description: '', current: label === marked }))
+		});
+	}
+	// apply
+	if (!open.model || open.model[0] !== json.model)
+		return refuse('changed', 'The model menu changed');
+	const effort = json.effort ?? null;
+	if (effort === null ? open.model[1].length > 0 : !open.model[1].includes(effort))
+		return refuse('no_effort', 'The model does not have this effort level');
+	modelNow[thread.id] = { model: json.model, effort };
+	delete modelOpen[thread.id];
+	return send(res, 200, { ok: true });
+}
+
 const threadReply = (text) => `Done: ${text}. 2 files changed, tests pass.`;
 
 /** One turn of a demo thread: busy, the reply word by word, then idle. */
@@ -1326,6 +1423,7 @@ function replyApi(req, res, url, thread, route, body) {
 			// Answered: the pane works on. Cancelled: it is back at its input box.
 			done: (cancelled) => setStatus(thread, cancelled ? 'idle' : 'busy')
 		});
+	if (route === 'model') return modelApi(res, thread, json);
 	// text
 	const text = typeof json.text === 'string' ? json.text.trim() : '';
 	const mode = json.mode ?? 'idle';
@@ -2253,7 +2351,7 @@ function api(req, res, url, body) {
 		});
 	}
 	const match =
-		/^\/api\/threads\/([^/]+)\/(chat|screen|text|key|prompt|answer|commands|upload|find)$/.exec(
+		/^\/api\/threads\/([^/]+)\/(chat|screen|text|key|prompt|answer|commands|model|upload|find)$/.exec(
 			path
 		);
 	const thread = match && threads.find((t) => t.id === decodeURIComponent(match[1]));
@@ -2409,6 +2507,24 @@ function hook(res, url) {
 			return send(res, 200, { ok: true });
 		case '/__fixture/replies':
 			return send(res, 200, replies);
+		case '/__fixture/model-agent':
+			// The pane runs Codex (or Claude Code again).
+			if (!thread) return send(res, 404, { error: 'not_found' });
+			modelAgents[thread.id] = url.searchParams.get('agent') === 'codex' ? 'codex' : 'claude';
+			delete modelNow[thread.id];
+			return send(res, 200, { ok: true });
+		case '/__fixture/model-fail':
+			// The next step of a model menu is refused, and the menu closed.
+			modelFail = {
+				error: url.searchParams.get('error') ?? 'changed',
+				message: url.searchParams.get('message') ?? 'The model menu changed'
+			};
+			return send(res, 200, { ok: true });
+		case '/__fixture/model-now':
+			return send(res, 200, {
+				now: (thread && modelNow[thread.id]) ?? null,
+				open: Boolean(thread && modelOpen[thread.id])
+			});
 		case '/__fixture/logs':
 			return send(res, 200, { batches: phoneLogs });
 		case '/__fixture/say':

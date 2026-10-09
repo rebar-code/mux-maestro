@@ -236,6 +236,8 @@ enum MobileEndpoint: Equatable {
     case answer(id: String)
     /// The thread's skills and commands, for the `/` list.
     case commands(id: String)
+    /// Drive the agent's own `/model` menu: list, pick, apply for this session.
+    case model(id: String)
     /// The phone has the thread on screen: its dot goes from done to viewed.
     case viewed(id: String)
     /// Put the user's flag on the thread (`on`) or take it off.
@@ -278,7 +280,7 @@ enum MobileEndpoint: Equatable {
              .managerPrompt, .managerAnswer, .managerKey, .managerUpload, .requests, .requestState:
             return .manager
         case .voice, .voiceReplay, .voiceSay, .voiceWarm: return .voice
-        case .text, .prompt, .answer, .commands: return .replies
+        case .text, .prompt, .answer, .commands, .model: return .replies
         case .key: return .keyBar
         case .upload: return .upload
         case .tmux(let action): return action.isKill ? .kill : .sessionActions
@@ -301,7 +303,7 @@ enum MobileEndpoint: Equatable {
             return "GET"
         case .log, .managerText, .managerDismiss, .managerAct, .managerAnswer, .managerKey, .requestState,
              .voice, .voiceReplay, .voiceSay,
-             .voiceWarm, .text, .key, .answer, .viewed, .flag, .upload, .tmux, .serverOpen, .serverClose,
+             .voiceWarm, .text, .key, .answer, .model, .viewed, .flag, .upload, .tmux, .serverOpen, .serverClose,
              .pushSubscribe, .pushUnsubscribe, .pushFocus, .managerUpload:
             return "POST"
         }
@@ -425,7 +427,7 @@ enum MobileAPI {
         case "hosts" where segments.count >= 3: return .sessionActions
         case "threads" where segments.count >= 4:
             switch segments[3] {
-            case "text", "prompt", "answer", "commands": return .replies
+            case "text", "prompt", "answer", "commands", "model": return .replies
             case "key": return .keyBar
             case "upload": return .upload
             case "artifacts", "file": return .artifacts
@@ -497,6 +499,8 @@ enum MobileAPI {
             endpoint = .answer(id: segments[2])
         case 4 where segments[1] == "threads" && segments[3] == "commands":
             endpoint = .commands(id: segments[2])
+        case 4 where segments[1] == "threads" && segments[3] == "model":
+            endpoint = .model(id: segments[2])
         case 4 where segments[1] == "threads" && segments[3] == "viewed":
             endpoint = .viewed(id: segments[2])
         case 4 where segments[1] == "threads" && segments[3] == "flag":
