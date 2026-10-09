@@ -653,6 +653,10 @@ final class ManagerPaneDriverTests: XCTestCase {
         // The older, boxed input.
         let boxed = "⏺ Done.\n\n╭──────────────╮\n│ >            │\n╰──────────────╯\n  ? for shortcuts\n"
         XCTAssertTrue(ManagerScreen.showsIdleInputBox(boxed, cursorRow: 3))
+        // A named session: its name is in the box's top rule (v2.1.294).
+        let named = "⏺ Done.\n\n──────────── fix-login-form ─\n❯\u{A0}\n──────────\n  ? for shortcuts"
+        XCTAssertTrue(ManagerScreen.showsIdleInputBox(named, cursorRow: 3))
+        XCTAssertFalse(ManagerScreen.showsIdleInputBox(named, cursorRow: 5))
         // Text typed into the box, over several lines, is still an idle box.
         let typing = "──────────\n❯ first line\n  second line\n──────────\n  ? for shortcuts"
         XCTAssertTrue(ManagerScreen.showsIdleInputBox(typing, cursorRow: 2))
