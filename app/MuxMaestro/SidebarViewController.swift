@@ -407,9 +407,9 @@ final class AttentionDotView: NSView {
         switch indicator {
         case .needsYou: fill(rect, SidebarPalette.red)
         case .unviewed: fill(rect, SidebarPalette.green)
-        case .viewed: ring(rect, SidebarPalette.green)
+        case .flagged: ring(rect, SidebarPalette.green)
         case .working: ring(rect, SidebarPalette.muted.withAlphaComponent(0.45))
-        case .idle: ring(rect, SidebarPalette.muted.withAlphaComponent(0.8))
+        case .viewed, .idle: ring(rect, SidebarPalette.muted.withAlphaComponent(0.8))
         case .none: fill(rect.insetBy(dx: 2.5, dy: 2.5), SidebarPalette.muted.withAlphaComponent(0.7))
         }
     }
@@ -2374,6 +2374,13 @@ final class SidebarViewController: NSViewController {
         }
     }
 
+    @objc private func contextToggleFlag(_ sender: NSMenuItem) {
+        guard let node = sender.representedObject as? SidebarNode,
+              let pane = targetPane(for: node) else { return }
+        setFlagged(
+            threadID: MobileSnapshot.threadID(host: node.host, pane: pane.id), !pane.flagged)
+    }
+
     /// Put the **full** agent session UUID on the clipboard (the menu title shows
     /// an abbreviation, the clipboard gets the whole thing) so it can be pasted
     /// straight into `claude --resume <uuid>`.
@@ -3347,14 +3354,24 @@ final class SidebarViewController: NSViewController {
 
     /// The phone has thread `id` on screen: it is viewed here too.
     func markViewed(threadID id: String) {
+        changeThread(id) { store, pane in
+            store.mark(id, finishedAt: pane.finishedAt, now: Int(Date().timeIntervalSince1970))
+        }
+    }
+
+    /// Put the flag on thread `id` or take it off: the sidebar menu and the phone.
+    func setFlagged(threadID id: String, _ on: Bool) {
+        changeThread(id) { store, _ in store.setFlagged(id, on) }
+    }
+
+    /// Change the store for one live thread, then save it and draw the dots again.
+    private func changeThread(_ id: String, _ change: (inout ViewedThreads, TmuxPane) -> Bool) {
         for host in hosts {
             guard let tree = sessionsByHost[host.name] else { continue }
             let pane = tree.lazy.flatMap(\.windows).flatMap(\.panes)
                 .first { MobileSnapshot.threadID(host: host, pane: $0.id) == id }
             guard let pane else { continue }
-            guard viewedThreads.mark(
-                id, finishedAt: pane.finishedAt, now: Int(Date().timeIntervalSince1970))
-            else { return }
+            guard change(&viewedThreads, pane) else { return }
             Settings.setViewedThreads(viewedThreads)
             sessionsByHost[host.name] = tree.map { session in
                 session.stamped(viewedThreads) { MobileSnapshot.threadID(host: host, pane: $0) }
@@ -5727,8 +5744,16 @@ extension SidebarViewController: NSMenuDelegate {
             }
         }
 
+        // The flag is on the row's target pane, as the agent ids are.
+        func addFlagItem() {
+            guard let node, let pane = targetPane(for: node) else { return }
+            menu.addItem(item(pane.flagged ? "Unflag" : "Flag", #selector(contextToggleFlag(_:))))
+            menu.addItem(.separator())
+        }
+
         switch node?.kind {
         case .session(_, let s):
+            addFlagItem()
             menu.addItem(item("Rename “\(s.name)”…", #selector(contextRename(_:))))
             // Kills the session's active window outright. No ⌘W chord shown any
             // more: ⌘W closes only the focused *pane* of a multi-pane window, so
@@ -5741,6 +5766,7 @@ extension SidebarViewController: NSMenuDelegate {
             copyAgentIdItems(into: menu)
             menu.addItem(.separator())
         case .window(_, let owner, let w):
+            addFlagItem()
             menu.addItem(item("New Window", #selector(contextNewWindow(_:))))
             menu.addItem(item("Rename Window “\(w.name)”…", #selector(contextRenameWindow(_:))))
             menu.addItem(item("Archive Window", #selector(contextKillWindow(_:))))
@@ -5753,6 +5779,7 @@ extension SidebarViewController: NSMenuDelegate {
             copyAgentIdItems(into: menu)
             menu.addItem(.separator())
         case .pane(_, let owner, let ownerWindow, let p):
+            addFlagItem()
             menu.addItem(item("Split Horizontally", #selector(contextSplitHorizontal(_:))))
             menu.addItem(item("Split Vertically", #selector(contextSplitVertical(_:))))
             menu.addItem(.separator())

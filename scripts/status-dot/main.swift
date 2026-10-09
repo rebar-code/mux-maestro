@@ -8,8 +8,8 @@ let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 
 let states: [(StatusIndicator, String)] = [
-    (.needsYou, "needs you"), (.unviewed, "done"), (.viewed, "viewed"),
-    (.working, "working"), (.idle, "no turn yet"), (.none, "no agent"),
+    (.needsYou, "needs you"), (.unviewed, "done"), (.flagged, "flagged"),
+    (.working, "working"), (.viewed, "viewed"), (.idle, "no turn yet"), (.none, "no agent"),
 ]
 let scale: CGFloat = 16
 let side: CGFloat = 12
@@ -61,6 +61,13 @@ func ink(_ rep: NSBitmapImageRep, dx: CGFloat, dy: CGFloat, bg: NSColor) -> CGFl
         + abs(c.blueComponent - b.blueComponent)
 }
 
+/// Whether that pixel is green: only a new thread and a flagged one are.
+func green(_ rep: NSBitmapImageRep, dx: CGFloat, dy: CGFloat) -> Bool {
+    let x = Int((side / 2 + dx) * scale), y = Int((side / 2 + dy) * scale)
+    guard let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { return false }
+    return c.greenComponent > c.redComponent + 0.15 && c.greenComponent > c.blueComponent + 0.15
+}
+
 let themes: [(Theme, String)] = [(.dark, "dark")]
 let cell = Int(side * scale)
 let sheet = NSImage(size: NSSize(width: cell * states.count, height: cell * themes.count))
@@ -77,8 +84,13 @@ for (row, (theme, themeName)) in themes.enumerated() {
         switch state {
         case .needsYou, .unviewed, .none:
             check(centre > 0.3, "\(name) is solid")
-        case .viewed, .idle, .working:
+        case .flagged, .viewed, .idle, .working:
             check(centre < 0.05 && band > 0.1, "\(name) is a ring")
+        }
+        let bandX = -(AttentionDotView.diameter - AttentionDotView.ringWidth) / 2
+        switch state {
+        case .unviewed, .flagged: check(green(rep, dx: bandX, dy: 0), "\(name) is green")
+        default: check(!green(rep, dx: bandX, dy: 0), "\(name) is not green")
         }
     }
     // The arc's brightest point, before and after a small turn the way the

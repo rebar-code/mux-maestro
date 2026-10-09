@@ -65,13 +65,14 @@ export function stageTag(thread: Thread): string {
 	return '';
 }
 
-/** A dot's class. Solid: look at it. Ring: nothing to do. `busy` turns. */
-export type Dot = 'waiting' | 'unviewed' | 'busy' | 'viewed' | 'idle' | 'none';
+/** A dot's class. Solid: look at it. Grey ring: nothing to do. Green ring: flagged. `busy` turns. */
+export type Dot = 'waiting' | 'unviewed' | 'busy' | 'flagged' | 'viewed' | 'idle' | 'none';
 
 const DOT: Record<Indicator, Dot> = {
 	needsYou: 'waiting',
 	unviewed: 'unviewed',
 	working: 'busy',
+	flagged: 'flagged',
 	viewed: 'viewed',
 	idle: 'idle',
 	none: 'none'
@@ -87,9 +88,10 @@ const FROM_STATUS: Record<Status, Dot> = {
 
 /**
  * The dot class. A sleeping thread is a grey ring whatever its status, but
- * one that finished and was never opened stays solid green.
+ * one that finished and was never opened stays solid green, and a flagged
+ * one keeps its green ring.
  */
 export function dotClass(thread: Pick<Thread, 'status' | 'idleStage' | 'indicator'>): Dot {
 	const dot = thread.indicator ? DOT[thread.indicator] : FROM_STATUS[thread.status];
-	return thread.idleStage === 'dozing' && dot !== 'unviewed' ? 'idle' : dot;
+	return thread.idleStage === 'dozing' && dot !== 'unviewed' && dot !== 'flagged' ? 'idle' : dot;
 }

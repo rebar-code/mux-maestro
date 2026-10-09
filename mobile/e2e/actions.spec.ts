@@ -53,6 +53,7 @@ test('a long press opens the row menu and does not tap the row', async ({ page }
 	await expect(sheet(page)).toBeVisible();
 	await expect(sheet(page).locator('.title')).toHaveText('docs-site · search');
 	await expect(sheet(page).getByRole('button')).toHaveText([
+		'Flag',
 		'New Window…',
 		'Rename Window…',
 		'Archive Window',
@@ -575,4 +576,21 @@ test.describe('find', () => {
 		expect((await page.request.get(`${path}?q=tax`, { headers: TOKEN_HEADER })).status()).toBe(403);
 		await expect(page.getByRole('button', { name: 'Find' })).toBeDisabled();
 	});
+});
+
+test('Flag gives a thread a green ring until Unflag takes it off', async ({ page }) => {
+	const dot = row(page, 'localhost:7').locator('.dot');
+	await expect(dot).toHaveClass(/viewed/);
+
+	await longPress(page, row(page, 'localhost:7'));
+	await sheet(page).getByRole('button', { name: 'Flag', exact: true }).click();
+	await expect(sheet(page)).toBeHidden();
+	await expect(dot).toHaveClass(/flagged/);
+	await expect(dot).toHaveCSS('border-top-color', 'rgb(69, 212, 131)');
+	await shot(page, 'flagged');
+
+	await longPress(page, row(page, 'localhost:7'));
+	await sheet(page).getByRole('button', { name: 'Unflag', exact: true }).click();
+	await expect(dot).toHaveClass(/viewed/);
+	await expect(dot).toHaveCSS('border-top-color', 'rgb(85, 85, 85)');
 });

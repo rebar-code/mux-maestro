@@ -9,6 +9,7 @@ export type MenuTarget =
 	| { kind: 'host'; host: string };
 
 export type ItemKey =
+	| 'flag'
 	| 'new-window'
 	| 'new-session'
 	| 'rename'
@@ -35,6 +36,7 @@ export function menuItems(target: MenuTarget, canKill: boolean): MenuItem[] {
 		];
 	}
 	return [
+		{ key: 'flag', label: target.thread.flagged ? 'Unflag' : 'Flag' },
 		{ key: 'new-window', label: 'New Window…' },
 		{ key: 'rename', label: 'Rename Window…' },
 		{ key: 'archive-window', label: 'Archive Window' },

@@ -560,6 +560,11 @@ export async function markViewed(id: string): Promise<void> {
 	await post(`${threadPath(id)}/viewed`, {});
 }
 
+/** Put the user's flag on the thread or take it off: its dot becomes a green ring. */
+export async function setFlagged(id: string, on: boolean): Promise<void> {
+	await post(`${threadPath(id)}/flag?on=${on ? 1 : 0}`, {});
+}
+
 /** Say which thread this phone shows (`null`: none), so it sends no push here. */
 export async function focusPush(endpoint: string, thread: string | null): Promise<void> {
 	await post('/api/push/focus', { endpoint, thread });

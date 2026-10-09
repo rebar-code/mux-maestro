@@ -145,6 +145,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             viewed: { [weak self] thread in
                 DispatchQueue.main.async { self?.sidebarVC?.markViewed(threadID: thread) }
             },
+            flag: { [weak self] thread, on in
+                DispatchQueue.main.async { self?.sidebarVC?.setFlagged(threadID: thread, on) }
+            },
             remoteCommands: { [registry] thread in
                 registry.service(for: thread.host).phoneCommandFiles(for: thread)
             },

@@ -16,7 +16,7 @@ import { dotClass } from './format';
 type Row = {
 	status: 'waiting' | 'busy' | 'idle' | 'unknown';
 	idleStage: 'awake' | 'yawning' | 'dozing';
-	indicator?: 'needsYou' | 'unviewed' | 'working' | 'viewed' | 'idle' | 'none';
+	indicator?: 'needsYou' | 'unviewed' | 'working' | 'flagged' | 'viewed' | 'idle' | 'none';
 };
 const t = (
 	status: Row['status'],
@@ -38,6 +38,13 @@ describe('summaryStatus', () => {
 		const done = t('idle', 'awake', 'unviewed');
 		expect(summaryStatus([t('busy'), done, t('idle')])).toBe('unviewed');
 		expect(summaryStatus([t('waiting'), done])).toBe('waiting');
+	});
+
+	it('a flagged thread wins over the quiet ones, and loses to a running one', () => {
+		const kept = t('idle', 'awake', 'flagged');
+		expect(summaryStatus([t('idle'), kept, t('unknown')])).toBe('flagged');
+		expect(summaryStatus([t('busy'), kept])).toBe('busy');
+		expect(dotClass(t('idle', 'dozing', 'flagged'))).toBe('flagged');
 	});
 
 	it('the quiet dots: viewed, then sleeping, then no agent', () => {
@@ -66,6 +73,7 @@ describe('summaryStatus', () => {
 			waiting: 'needs you',
 			unviewed: 'done',
 			busy: 'running',
+			flagged: 'flagged',
 			viewed: 'idle',
 			idle: 'idle',
 			none: 'idle'
@@ -78,6 +86,7 @@ describe('dotClass', () => {
 		expect(dotClass(t('waiting', 'awake', 'needsYou'))).toBe('waiting');
 		expect(dotClass(t('idle', 'awake', 'unviewed'))).toBe('unviewed');
 		expect(dotClass(t('busy', 'awake', 'working'))).toBe('busy');
+		expect(dotClass(t('idle', 'awake', 'flagged'))).toBe('flagged');
 		expect(dotClass(t('idle', 'awake', 'viewed'))).toBe('viewed');
 		expect(dotClass(t('idle', 'awake', 'idle'))).toBe('idle');
 		expect(dotClass(t('unknown', 'awake', 'none'))).toBe('none');

@@ -5,13 +5,14 @@ import XCTest
 final class StatusIndicatorTests: XCTestCase {
     private func pane(
         _ id: String, _ attention: AttentionStatus, hook: AgentStateRow.State? = nil,
-        finishedAt: Int? = nil, viewed: Bool = true
+        finishedAt: Int? = nil, viewed: Bool = true, flagged: Bool = false
     ) -> TmuxPane {
         var p = TmuxPane(id: id, index: 0, command: "claude", title: "", active: true)
         p.attention = attention
         p.agentState = hook.map { AgentPaneState(sessionId: "s", state: $0, since: finishedAt ?? 0) }
         p.finishedAt = finishedAt
         p.viewed = viewed
+        p.flagged = flagged
         return p
     }
 
@@ -104,13 +105,16 @@ final class StatusIndicatorTests: XCTestCase {
 
     func testPruneDropsOnlyTheGoneThreadsOfThatHost() {
         var store = ViewedThreads(
-            baseline: 0, viewedAt: ["devbox:1": 5, "devbox:2": 6, "localhost:1": 7])
+            baseline: 0, viewedAt: ["devbox:1": 5, "devbox:2": 6, "localhost:1": 7],
+            flagged: ["devbox:1", "devbox:2", "localhost:1"])
         store.prune(host: "devbox", live: ["devbox:2"])
         XCTAssertEqual(store.viewedAt, ["devbox:2": 6, "localhost:1": 7])
+        XCTAssertEqual(store.flagged, ["devbox:2", "localhost:1"])
     }
 
     func testTheStoreSurvivesItsStoredForm() throws {
-        let store = ViewedThreads(baseline: 1000, viewedAt: ["devbox:1": 1500])
+        let store = ViewedThreads(
+            baseline: 1000, viewedAt: ["devbox:1": 1500], flagged: ["devbox:2"])
         let data = try JSONSerialization.data(withJSONObject: store.json)
         let back = ViewedThreads(json: try JSONSerialization.jsonObject(with: data), now: 9)
         XCTAssertEqual(back, store)
@@ -118,21 +122,64 @@ final class StatusIndicatorTests: XCTestCase {
     }
 
     func testStampedSetsEachPaneFromTheStore() {
-        let store = ViewedThreads(baseline: 0, viewedAt: ["devbox:1": 150])
+        let store = ViewedThreads(
+            baseline: 0, viewedAt: ["devbox:1": 150, "devbox:3": 150], flagged: ["devbox:3"])
         let stamped = session([
             pane("%1", .idle, hook: .done, finishedAt: 100),
             pane("%2", .idle, hook: .done, finishedAt: 100),
+            pane("%3", .idle, hook: .done, finishedAt: 100),
         ]).stamped(store) { "devbox:" + $0.dropFirst() }
-        XCTAssertEqual(stamped.windows[0].panes.map(\.indicator), [.viewed, .unviewed])
+        XCTAssertEqual(stamped.windows[0].panes.map(\.indicator), [.viewed, .unviewed, .flagged])
+    }
+
+    // MARK: flagged
+
+    func testAFlagShowsOnlyWhenNothingMoreUrgentDoes() {
+        XCTAssertEqual(pane("%1", .idle, hook: .done, finishedAt: 100, flagged: true).indicator, .flagged)
+        XCTAssertEqual(pane("%1", .idle, hook: .idle, flagged: true).indicator, .flagged)
+        XCTAssertEqual(pane("%1", .unknown, flagged: true).indicator, .flagged)
+        XCTAssertEqual(
+            pane("%1", .idle, hook: .done, finishedAt: 100, viewed: false, flagged: true).indicator,
+            .unviewed)
+        XCTAssertEqual(pane("%1", .busy, flagged: true).indicator, .working)
+        XCTAssertEqual(pane("%1", .waiting, flagged: true).indicator, .needsYou)
+    }
+
+    func testAFlagGoesOnAndComesOff() {
+        var store = ViewedThreads(baseline: 0)
+        XCTAssertTrue(store.setFlagged("devbox:1", true))
+        XCTAssertFalse(store.setFlagged("devbox:1", true))
+        XCTAssertEqual(store.flagged, ["devbox:1"])
+        XCTAssertTrue(store.setFlagged("devbox:1", false))
+        XCTAssertFalse(store.setFlagged("devbox:1", false))
+        XCTAssertEqual(store.flagged, [])
+    }
+
+    func testThePhoneFlagRouteReadsOnAndOff() {
+        let path = "/api/threads/localhost%3A12/flag"
+        XCTAssertEqual(
+            MobileAPI.route(MobileRequest(method: "POST", path: path)),
+            .api(.flag(id: "localhost:12", on: true)))
+        XCTAssertEqual(
+            MobileAPI.route(MobileRequest(method: "POST", path: path, query: ["on": "0"])),
+            .api(.flag(id: "localhost:12", on: false)))
+        XCTAssertEqual(MobileAPI.route(MobileRequest(method: "GET", path: path)), .methodNotAllowed)
+    }
+
+    func testAStoreFromBeforeFlagsHasNone() {
+        let old: [String: Any] = ["baseline": 5, "viewedAt": ["devbox:1": 7]]
+        XCTAssertEqual(
+            ViewedThreads(json: old, now: 9), ViewedThreads(baseline: 5, viewedAt: ["devbox:1": 7]))
     }
 
     // MARK: rollup
 
     func testTheMostUrgentDotWins() {
-        let order: [StatusIndicator] = [.needsYou, .unviewed, .working, .viewed, .idle, .none]
+        let order: [StatusIndicator] = [.needsYou, .unviewed, .working, .flagged, .viewed, .idle, .none]
         XCTAssertEqual(order.map(\.rank), order.map(\.rank).sorted())
         XCTAssertEqual(StatusIndicator.rollup([.viewed, .working, .unviewed]), .unviewed)
         XCTAssertEqual(StatusIndicator.rollup([.working, .needsYou, .unviewed]), .needsYou)
+        XCTAssertEqual(StatusIndicator.rollup([.viewed, .flagged, .idle]), .flagged)
         XCTAssertEqual(StatusIndicator.rollup([]), StatusIndicator.none)
     }
 

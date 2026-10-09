@@ -44,8 +44,9 @@ enum AttentionStatus: String {
     }
 }
 
-/// What a thread's status dot draws. Solid means "look at it", a ring means
-/// nothing to do, motion means the agent is at work.
+/// What a thread's status dot draws. Solid means "look at it", a grey ring
+/// means nothing to do, motion means the agent is at work. Green is only for
+/// a thread that is new to the user, or one the user flagged.
 enum StatusIndicator: String {
     /// Needs the human. Solid red.
     case needsYou
@@ -53,7 +54,9 @@ enum StatusIndicator: String {
     case unviewed
     /// A turn is running. Grey ring with a circling arc.
     case working
-    /// The agent finished and the thread was opened since. Green ring.
+    /// The user flagged the thread to come back to. Green ring.
+    case flagged
+    /// The agent finished and the thread was opened since. Grey ring.
     case viewed
     /// An agent with no turn yet. Grey ring.
     case idle
@@ -66,9 +69,10 @@ enum StatusIndicator: String {
         case .needsYou: return 0
         case .unviewed: return 1
         case .working: return 2
-        case .viewed: return 3
-        case .idle: return 4
-        case .none: return 5
+        case .flagged: return 3
+        case .viewed: return 4
+        case .idle: return 5
+        case .none: return 6
         }
     }
 
@@ -96,6 +100,8 @@ struct ViewedThreads: Equatable {
     /// as not viewed.
     var baseline: Int
     var viewedAt: [String: Int] = [:]
+    /// The threads the user flagged. A flag stays until the user takes it off.
+    var flagged: Set<String> = []
 
     /// Whether the thread was opened after it finished. A thread with no known
     /// finish time is viewed: there is nothing new to look at.
@@ -119,13 +125,25 @@ struct ViewedThreads: Equatable {
     mutating func prune(host: String, live: Set<String>) {
         let prefix = host + ":"
         viewedAt = viewedAt.filter { !$0.key.hasPrefix(prefix) || live.contains($0.key) }
+        flagged = flagged.filter { !$0.hasPrefix(prefix) || live.contains($0) }
     }
 
-    var json: [String: Any] { ["baseline": baseline, "viewedAt": viewedAt] }
+    /// Put the flag on the thread or take it off. False when nothing changed.
+    @discardableResult
+    mutating func setFlagged(_ id: String, _ on: Bool) -> Bool {
+        guard flagged.contains(id) != on else { return false }
+        if on { flagged.insert(id) } else { flagged.remove(id) }
+        return true
+    }
 
-    init(baseline: Int, viewedAt: [String: Int] = [:]) {
+    var json: [String: Any] {
+        ["baseline": baseline, "viewedAt": viewedAt, "flagged": flagged.sorted()]
+    }
+
+    init(baseline: Int, viewedAt: [String: Int] = [:], flagged: Set<String> = []) {
         self.baseline = baseline
         self.viewedAt = viewedAt
+        self.flagged = flagged
     }
 
     /// The stored value, or a new store that starts now.
@@ -133,6 +151,7 @@ struct ViewedThreads: Equatable {
         let object = json as? [String: Any]
         baseline = (object?["baseline"] as? NSNumber)?.intValue ?? now
         viewedAt = (object?["viewedAt"] as? [String: NSNumber])?.mapValues(\.intValue) ?? [:]
+        flagged = Set(object?["flagged"] as? [String] ?? [])
     }
 }
 
@@ -197,16 +216,19 @@ struct TmuxPane: Equatable {
     /// Whether the user opened the thread after `finishedAt` (`ViewedThreads`).
     /// Stamped on the main thread when a tree lands, not by the poll.
     var viewed = true
+    /// Whether the user flagged the thread (`ViewedThreads.flagged`).
+    var flagged = false
 
     /// What the pane's status dot draws.
     var indicator: StatusIndicator {
         switch attention {
         case .waiting: return .needsYou
         case .busy: return .working
-        case .unknown: return .none
+        case .unknown: return flagged ? .flagged : .none
         case .idle:
-            if agentState?.state == .idle { return .idle }
-            return viewed ? .viewed : .unviewed
+            if agentState?.state == .idle { return flagged ? .flagged : .idle }
+            if !viewed { return .unviewed }
+            return flagged ? .flagged : .viewed
         }
     }
 }
@@ -395,7 +417,7 @@ struct TmuxSession: Equatable {
         return panes == .none ? StatusIndicator(attention) : panes
     }
 
-    /// The session with each pane's `viewed` set from `store`. `threadID` gives
+    /// The session with each pane's `viewed` and `flagged` set from `store`. `threadID` gives
     /// a pane's id in the store.
     func stamped(_ store: ViewedThreads, threadID: (String) -> String) -> TmuxSession {
         var s = self
@@ -403,7 +425,9 @@ struct TmuxSession: Equatable {
             var w = window
             w.panes = window.panes.map { pane in
                 var p = pane
-                p.viewed = store.isViewed(threadID(pane.id), finishedAt: pane.finishedAt)
+                let id = threadID(pane.id)
+                p.viewed = store.isViewed(id, finishedAt: pane.finishedAt)
+                p.flagged = store.flagged.contains(id)
                 return p
             }
             return w

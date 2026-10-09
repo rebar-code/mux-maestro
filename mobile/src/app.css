@@ -284,6 +284,7 @@ button:disabled {
 	background: var(--green);
 }
 
+.dot.flagged,
 .dot.viewed,
 .dot.idle,
 .dot.busy {
@@ -291,6 +292,7 @@ button:disabled {
 	border: 2px solid var(--green);
 }
 
+.dot.viewed,
 .dot.idle {
 	border-color: #555;
 }

@@ -13,7 +13,7 @@ import {
 	type MenuTarget,
 	type StartKind
 } from './actions';
-import { ApiError, fetchDirs, tmuxAction } from './api';
+import { ApiError, fetchDirs, setFlagged, tmuxAction } from './api';
 import { ui } from './gestures.svelte';
 import { live } from './live.svelte';
 
@@ -77,6 +77,8 @@ class Menu {
 			this.stage = 'start';
 		} else if (key === 'archive-window') {
 			void this.archive(target);
+		} else if (key === 'flag') {
+			void this.flag(target);
 		} else {
 			void this.zoom(target);
 		}
@@ -216,6 +218,15 @@ class Menu {
 		await this.run(async () => {
 			await tmuxAction(this.killKind, { ...to, confirm: true });
 			if (gone.some((thread) => thread.id === page.params.id)) await goto(resolve('/'));
+			void live.refresh();
+		});
+	}
+
+	private async flag(target: MenuTarget): Promise<void> {
+		if (target.kind !== 'thread') return;
+		const { id, flagged } = target.thread;
+		await this.run(async () => {
+			await setFlagged(id, !flagged);
 			void live.refresh();
 		});
 	}

@@ -5,7 +5,7 @@ import type { Thread } from './types';
 export type SummaryStatus = Dot;
 
 /** Most urgent first. */
-const ORDER: Dot[] = ['waiting', 'unviewed', 'busy', 'viewed', 'idle', 'none'];
+const ORDER: Dot[] = ['waiting', 'unviewed', 'busy', 'flagged', 'viewed', 'idle', 'none'];
 
 /** A session on a host: the key its collapsed state is stored under. */
 export function sessionKey(host: string, session: string): string {
@@ -15,7 +15,7 @@ export function sessionKey(host: string, session: string): string {
 /**
  * The strongest dot among a session's threads, read the way each row's dot
  * is drawn (`dotClass`): one that needs you wins, then one that finished and
- * was not opened, then one that is running, then the quiet ones. A collapsed
+ * was not opened, then one that is running, then a flagged one, then the quiet ones. A collapsed
  * session must never hide a thread that needs the user.
  */
 export function summaryStatus(
@@ -30,6 +30,7 @@ export const SUMMARY_LABEL: Record<SummaryStatus, string> = {
 	waiting: 'needs you',
 	unviewed: 'done',
 	busy: 'running',
+	flagged: 'flagged',
 	viewed: 'idle',
 	idle: 'idle',
 	none: 'idle'
