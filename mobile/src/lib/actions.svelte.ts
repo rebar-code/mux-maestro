@@ -3,7 +3,9 @@ import { resolve } from '$app/paths';
 import { page } from '$app/state';
 import {
 	actionTarget,
+	copyValue,
 	currentName,
+	isCopyKey,
 	killed,
 	refusalText,
 	validName,
@@ -65,7 +67,9 @@ class Menu {
 		const target = this.target;
 		if (!target || this.busy) return;
 		this.error = null;
-		if (key === 'rename') {
+		if (isCopyKey(key)) {
+			if (target.kind === 'thread') void this.copy(copyValue(key, target.thread));
+		} else if (key === 'rename') {
 			this.name = currentName(target);
 			this.stage = 'rename';
 		} else if (key === 'kill-pane' || key === 'kill-window' || key === 'kill-session') {
@@ -81,6 +85,17 @@ class Menu {
 			void this.flag(target);
 		} else {
 			void this.zoom(target);
+		}
+	}
+
+	/** Put `text` on the clipboard and close; the sheet stays, with the reason, when it cannot. */
+	private async copy(text: string | null): Promise<void> {
+		try {
+			if (text === null) throw new Error('nothing to copy');
+			await navigator.clipboard.writeText(text);
+			this.close();
+		} catch {
+			this.error = 'Could not copy';
 		}
 	}
 

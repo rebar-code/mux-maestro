@@ -15,6 +15,9 @@ export type ItemKey =
 	| 'rename'
 	| 'archive-window'
 	| 'zoom-pane'
+	| 'copy-session-id'
+	| 'copy-window'
+	| 'copy-pane'
 	| 'kill-pane'
 	| 'kill-window'
 	| 'kill-session';
@@ -25,23 +28,54 @@ export interface MenuItem {
 	danger?: boolean;
 }
 
-/** The menu of a row: what the Mac shows on a right click, less what the phone cannot do. */
-export function menuItems(target: MenuTarget, canKill: boolean): MenuItem[] {
-	if (target.kind === 'host') return [{ key: 'new-session', label: 'New Session…' }];
-	if (target.kind === 'session') {
-		return [
-			{ key: 'new-window', label: 'New Window…' },
-			{ key: 'rename', label: 'Rename…' },
-			...(canKill ? [{ key: 'kill-session', label: 'Kill Session', danger: true } as const] : [])
-		];
+export type CopyKey = 'copy-session-id' | 'copy-window' | 'copy-pane';
+
+/** What a copy item puts on the clipboard; null when the thread has none. */
+export function copyValue(key: CopyKey, thread: Thread): string | null {
+	if (key === 'copy-session-id') return thread.agent || null;
+	// As tmux takes a target: `-t acme-app:3`, `-t %12`.
+	if (key === 'copy-window') return `${thread.session}:${thread.window}`;
+	return thread.pane || null;
+}
+
+const COPY_ITEMS: { key: CopyKey; label: string }[] = [
+	{ key: 'copy-session-id', label: 'Copy Session ID' },
+	{ key: 'copy-window', label: 'Copy tmux Window' },
+	{ key: 'copy-pane', label: 'Copy tmux Pane' }
+];
+
+export function isCopyKey(key: ItemKey): key is CopyKey {
+	return COPY_ITEMS.some((item) => item.key === key);
+}
+
+/**
+ * The menu of a row: what the Mac shows on a right click, less what the phone
+ * cannot do. Without `canAct` (session actions are off) a thread keeps its
+ * copy items, which change nothing.
+ */
+export function menuItems(target: MenuTarget, canKill: boolean, canAct = true): MenuItem[] {
+	if (target.kind === 'thread') {
+		const copies = COPY_ITEMS.filter((item) => copyValue(item.key, target.thread) !== null);
+		return canAct ? threadItems(target.thread, canKill, copies) : copies;
 	}
+	if (!canAct) return [];
+	if (target.kind === 'host') return [{ key: 'new-session', label: 'New Session…' }];
 	return [
-		{ key: 'flag', label: target.thread.flagged ? 'Unflag' : 'Flag' },
+		{ key: 'new-window', label: 'New Window…' },
+		{ key: 'rename', label: 'Rename…' },
+		...(canKill ? [{ key: 'kill-session', label: 'Kill Session', danger: true } as const] : [])
+	];
+}
+
+function threadItems(thread: Thread, canKill: boolean, copies: MenuItem[]): MenuItem[] {
+	return [
+		{ key: 'flag', label: thread.flagged ? 'Unflag' : 'Flag' },
 		{ key: 'new-window', label: 'New Window…' },
 		{ key: 'rename', label: 'Rename Window…' },
 		{ key: 'archive-window', label: 'Archive Window' },
 		{ key: 'zoom-pane', label: 'Zoom Pane' },
-		...(canKill && target.thread.panes > 1
+		...copies,
+		...(canKill && thread.panes > 1
 			? [{ key: 'kill-pane', label: 'Kill Pane', danger: true } as const]
 			: []),
 		...(canKill ? [{ key: 'kill-window', label: 'Kill Window', danger: true } as const] : [])
