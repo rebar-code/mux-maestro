@@ -238,6 +238,8 @@ enum MobileEndpoint: Equatable {
     case commands(id: String)
     /// The phone has the thread on screen: its dot goes from done to viewed.
     case viewed(id: String)
+    /// Put the user's flag on the thread (`on`) or take it off.
+    case flag(id: String, on: Bool)
     /// Save a file in the upload folder, for the thread. With `paste` its path
     /// is pasted into the pane; without, the phone puts it in its reply box.
     case upload(id: String, name: String, paste: Bool)
@@ -271,7 +273,7 @@ enum MobileEndpoint: Equatable {
 
     var capability: MobileCapability {
         switch self {
-        case .config, .threads, .hosts, .events, .log, .chat, .screen, .viewed: return .access
+        case .config, .threads, .hosts, .events, .log, .chat, .screen, .viewed, .flag: return .access
         case .manager, .managerText, .managerDismiss, .managerAct, .managerChat, .managerScreen,
              .managerPrompt, .managerAnswer, .managerKey, .managerUpload, .requests, .requestState:
             return .manager
@@ -299,7 +301,7 @@ enum MobileEndpoint: Equatable {
             return "GET"
         case .log, .managerText, .managerDismiss, .managerAct, .managerAnswer, .managerKey, .requestState,
              .voice, .voiceReplay, .voiceSay,
-             .voiceWarm, .text, .key, .answer, .viewed, .upload, .tmux, .serverOpen, .serverClose,
+             .voiceWarm, .text, .key, .answer, .viewed, .flag, .upload, .tmux, .serverOpen, .serverClose,
              .pushSubscribe, .pushUnsubscribe, .pushFocus, .managerUpload:
             return "POST"
         }
@@ -497,6 +499,8 @@ enum MobileAPI {
             endpoint = .commands(id: segments[2])
         case 4 where segments[1] == "threads" && segments[3] == "viewed":
             endpoint = .viewed(id: segments[2])
+        case 4 where segments[1] == "threads" && segments[3] == "flag":
+            endpoint = .flag(id: segments[2], on: request.query["on"] != "0")
         case 4 where segments[1] == "threads" && segments[3] == "upload":
             endpoint = .upload(
                 id: segments[2], name: request.query["name"] ?? "", paste: request.query["paste"] != "0")
@@ -796,6 +800,7 @@ struct MobileThread: Equatable {
     let status: AttentionStatus
     /// What the thread's dot draws, as the Mac sidebar draws it.
     var indicator = StatusIndicator.none
+    var flagged = false
     let since: Int?
     let idleStage: IdleStage
     let lastPrompt: LastPrompt?
@@ -820,6 +825,7 @@ struct MobileThread: Equatable {
             "session": session, "window": window, "name": name, "pane": pane, "panes": panes,
             "command": command, "cwd": cwd, "status": status.rawValue,
             "indicator": indicator.rawValue,
+            "flagged": flagged,
             "since": since ?? NSNull(), "idleStage": idleStage.apiName,
             "lastPrompt": lastPrompt.map { ["text": $0.text, "at": $0.at] as [String: Any] } ?? NSNull(),
             "lastActivityAt": lastActivityAt ?? NSNull(),
@@ -980,7 +986,7 @@ struct MobileSnapshot: Equatable {
                 session: session.name, window: window.index, name: windowName(window),
                 pane: pane.id, panes: panes.count, sessionId: session.id, command: pane.command,
                 cwd: pane.path.isEmpty ? window.cwd : pane.path,
-                status: pane.attention, indicator: pane.indicator, since: pane.agentState?.since,
+                status: pane.attention, indicator: pane.indicator, flagged: pane.flagged, since: pane.agentState?.since,
                 idleStage: pane.idleStage, lastPrompt: pane.lastPrompt,
                 lastActivityAt: pane.lastActivityAt, sessionActivity: session.activity,
                 claudeSessionId: pane.claudeSessionId, codexSessionId: pane.codexSessionId,

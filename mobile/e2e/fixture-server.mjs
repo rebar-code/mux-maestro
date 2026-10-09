@@ -737,10 +737,12 @@ const terminals = new Set();
 let terminalTyped, terminalOpens, terminalRefuse, terminalSizes, terminalKind;
 
 let viewedAt = {};
+let flagged = new Set();
 
 function reset() {
 	started = Math.floor(Date.now() / 1000);
 	viewedAt = {};
+	flagged = new Set();
 	grouping = 'recent';
 	deny = false;
 	token = DEMO_TOKEN;
@@ -976,11 +978,19 @@ const hostsBody = () => ({
 // The dot, as the Mac's sidebar has it. A thread that finished before the
 // fixture started counts as viewed, like one from before the Mac's first run.
 // POST /api/threads/<id>/viewed marks one as opened.
+// POST /api/threads/<id>/flag?on=1|0 puts the user's flag on or takes it off.
+const quietOf = (t) => (flagged.has(t.id) ? 'flagged' : 'viewed');
 const indicatorOf = (t) =>
-	({ waiting: 'needsYou', busy: 'working', unknown: 'none' })[t.status] ??
-	((viewedAt[t.id] ?? started - 1) >= (t.since ?? 0) ? 'viewed' : 'unviewed');
+	({ waiting: 'needsYou', busy: 'working' })[t.status] ??
+	(t.status === 'unknown'
+		? flagged.has(t.id)
+			? 'flagged'
+			: 'none'
+		: (viewedAt[t.id] ?? started - 1) >= (t.since ?? 0)
+			? quietOf(t)
+			: 'unviewed');
 const threadsBody = () => ({
-	threads: threads.map((t) => ({ ...t, indicator: indicatorOf(t) }))
+	threads: threads.map((t) => ({ ...t, indicator: indicatorOf(t), flagged: flagged.has(t.id) }))
 });
 const configBody = () => ({
 	capabilities: {
@@ -2168,6 +2178,16 @@ function api(req, res, url, body) {
 		const id = decodeURIComponent(viewedThread[1]);
 		if (!threads.some((t) => t.id === id)) return send(res, 404, { error: 'not_found' });
 		viewedAt[id] = Math.max(nowSeconds(), threads.find((t) => t.id === id).since ?? 0);
+		push('threads', threadsBody());
+		return send(res, 200, { ok: true });
+	}
+	const flagThread = /^\/api\/threads\/([^/]+)\/flag$/.exec(path);
+	if (flagThread) {
+		if (req.method !== 'POST') return send(res, 405, { error: 'method' });
+		const id = decodeURIComponent(flagThread[1]);
+		if (!threads.some((t) => t.id === id)) return send(res, 404, { error: 'not_found' });
+		if (url.searchParams.get('on') === '0') flagged.delete(id);
+		else flagged.add(id);
 		push('threads', threadsBody());
 		return send(res, 200, { ok: true });
 	}

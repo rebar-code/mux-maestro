@@ -44,6 +44,7 @@ describe('menuItems', () => {
 	it('lists each row kind and leaves the kills out without the switch', () => {
 		const row: MenuTarget = { kind: 'thread', thread: thread('localhost:1') };
 		expect(labels(row, true)).toEqual([
+			'Flag',
 			'New Window…',
 			'Rename Window…',
 			'Archive Window',
@@ -52,11 +53,14 @@ describe('menuItems', () => {
 		]);
 		// Archive stays without the kill switch: the Mac can undo it.
 		expect(labels(row, false)).toEqual([
+			'Flag',
 			'New Window…',
 			'Rename Window…',
 			'Archive Window',
 			'Zoom Pane'
 		]);
+		const kept: MenuTarget = { kind: 'thread', thread: thread('localhost:1', { flagged: true }) };
+		expect(labels(kept, false)[0]).toBe('Unflag');
 		const split: MenuTarget = { kind: 'thread', thread: thread('localhost:1', { panes: 2 }) };
 		expect(labels(split, true)).toContain('Kill Pane');
 		const session: MenuTarget = {

@@ -87,6 +87,7 @@ test('the menu button opens the menu a long press opens', async ({ page }) => {
 	const sheet = page.getByRole('dialog');
 	await expect(sheet.locator('.title')).toHaveText('docs-site · search');
 	await expect(sheet.getByRole('button')).toHaveText([
+		'Flag',
 		'New Window…',
 		'Rename Window…',
 		'Archive Window',

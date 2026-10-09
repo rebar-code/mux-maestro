@@ -154,7 +154,7 @@ test('grouping: the server default applies until this phone picks one', async ({
 	);
 });
 
-test('a finished thread is solid green until it is opened, then a ring', async ({ page }) => {
+test('a finished thread is solid green until it is opened, then a grey ring', async ({ page }) => {
 	const id = 'localhost:3';
 	const dot = drawer(page).locator(`[data-thread="${id}"] .dot`);
 	await page.getByRole('button', { name: 'Menu' }).click();
@@ -163,8 +163,10 @@ test('a finished thread is solid green until it is opened, then a ring', async (
 	expect(await dot.evaluate((el) => getComputedStyle(el, '::after').animationName)).toBe(
 		'dot-turn'
 	);
-	// One that finished before this visit is a ring already.
-	await expect(drawer(page).locator('[data-thread="localhost:7"] .dot')).toHaveClass(/viewed/);
+	// One that finished before this visit is a grey ring already.
+	const old = drawer(page).locator('[data-thread="localhost:7"] .dot');
+	await expect(old).toHaveClass(/viewed/);
+	await expect(old).toHaveCSS('border-top-color', 'rgb(85, 85, 85)');
 
 	await page.request.post(`/__fixture/status?id=${encodeURIComponent(id)}&value=idle`);
 	await expect(dot).toHaveClass(/unviewed/);
@@ -175,6 +177,7 @@ test('a finished thread is solid green until it is opened, then a ring', async (
 	await expect(page).toHaveURL(/\/t\/localhost(:|%3A)3$/);
 	await expect(dot).toHaveClass(/viewed/);
 	await expect(dot).not.toHaveClass(/unviewed/);
+	await expect(dot).toHaveCSS('border-top-color', 'rgb(85, 85, 85)');
 
 	// A turn that ends while the thread is on screen never shows as new.
 	await page.request.post(`/__fixture/status?id=${encodeURIComponent(id)}&value=busy`);
