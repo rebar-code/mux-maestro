@@ -307,11 +307,13 @@ enum Settings {
 
     private static let maestroResetAfterIdleKey = "maestro.resetAfterIdleMinutes"
     private static let maestroResetAboveTokensKey = "maestro.resetAboveTokens"
-    static let maestroResetAfterIdleDefault = 30
-    static let maestroResetAboveTokensDefault = 80_000
+    /// Both rules are off until the user sets a threshold: the app does not
+    /// clear the Maestro's conversation on its own.
+    static let maestroResetAfterIdleDefault = 0
+    static let maestroResetAboveTokensDefault = 0
 
     /// Minutes the Maestro may sit idle before its conversation is cleared;
-    /// 0 never clears for idleness. No row in Settings:
+    /// 0, the default, never clears for idleness. No row in Settings:
     /// `defaults write is.rebar.MuxMaestro maestro.resetAfterIdleMinutes <n>`.
     static func maestroResetAfterIdleMinutes(defaults: UserDefaults = .standard) -> Int {
         defaults.object(forKey: maestroResetAfterIdleKey) == nil
@@ -323,7 +325,7 @@ enum Settings {
     }
 
     /// The context size, in tokens, past which an idle Maestro's conversation
-    /// is cleared; 0 never clears for size. No row in Settings:
+    /// is cleared; 0, the default, never clears for size. No row in Settings:
     /// `defaults write is.rebar.MuxMaestro maestro.resetAboveTokens <n>`.
     static func maestroResetAboveTokens(defaults: UserDefaults = .standard) -> Int {
         defaults.object(forKey: maestroResetAboveTokensKey) == nil

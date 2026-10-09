@@ -280,9 +280,17 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(Settings.maestroAgent(defaults: defaults), .claude)
     }
 
-    func testTheMaestroResetThresholdsDefaultAndReadZeroAsOff() {
-        XCTAssertEqual(Settings.maestroResetAfterIdleMinutes(defaults: defaults), 30)
-        XCTAssertEqual(Settings.maestroResetAboveTokens(defaults: defaults), 80_000)
+    func testTheMaestroIsNeverClearedUntilAThresholdIsSet() {
+        XCTAssertEqual(Settings.maestroResetAfterIdleMinutes(defaults: defaults), 0)
+        XCTAssertEqual(Settings.maestroResetAboveTokens(defaults: defaults), 0)
+        XCTAssertEqual(
+            ManagerResetPolicy(
+                idleSeconds: Settings.maestroResetAfterIdleMinutes(defaults: defaults) * 60,
+                contextTokens: Settings.maestroResetAboveTokens(defaults: defaults)),
+            ManagerResetPolicy(idleSeconds: 0, contextTokens: 0))
+    }
+
+    func testTheMaestroResetThresholdsReadZeroAsOff() {
         Settings.setMaestroResetAfterIdleMinutes(5, defaults: defaults)
         Settings.setMaestroResetAboveTokens(120_000, defaults: defaults)
         XCTAssertEqual(Settings.maestroResetAfterIdleMinutes(defaults: defaults), 5)

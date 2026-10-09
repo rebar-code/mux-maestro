@@ -629,7 +629,8 @@ struct ManagerTurnWatcher {
     }
 }
 
-/// When the Maestro's conversation is cleared and started over. Its durable
+/// When the Maestro's conversation is cleared and started over, for a user
+/// who set a threshold; both rules are off by default. Its durable
 /// state (the review list, the work log, the sessions) lives in the DB, so
 /// the conversation is disposable: a long idle leaves it with a stale
 /// picture of the fleet, and a large one is slow and near the model's limit.

@@ -111,9 +111,10 @@ struct NeedsYouItem: Equatable {
 ///
 /// The agent is **on demand**: it acts when the human talks to it, and surveys
 /// the fleet from the snapshot this controller publishes rather than by
-/// shelling out per host. The one thing typed into the `mux-manager` session
-/// unasked is the reset (`checkReset`): `/clear` once the conversation has sat
-/// idle for a long time or grown large.
+/// shelling out per host. Nothing is typed into the `mux-manager` session
+/// unasked, unless the user sets a reset threshold (`checkReset`): then
+/// `/clear` goes in once the conversation has sat idle that long or grown
+/// that large.
 ///
 /// All store access runs on one serial queue (the store is not re-entrant);
 /// timers fire on the main run loop and hop over. Main-thread API unless noted.
@@ -343,7 +344,8 @@ final class ManagerController {
     }
 
     /// Clear the Maestro's conversation once it has sat idle for a long time or
-    /// grown large (`ManagerResetPolicy`). Claude only: the idle and size
+    /// grown large (`ManagerResetPolicy`). Off unless the user set a threshold
+    /// (`Settings.maestroResetAfterIdleMinutes`). Claude only: the idle and size
     /// signals are read from Claude's own status file and transcript, and a
     /// Codex Maestro has neither. The thresholds are re-read on every check,
     /// so a `defaults write` takes effect without a relaunch.
