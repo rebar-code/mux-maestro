@@ -47,6 +47,8 @@ final class MobileServer {
         /// The disk of a remote thread's host, for the artifact rules. nil,
         /// or a nil answer: a remote thread lists no files.
         var artifactDisk: ((MobileThread) -> MobileArtifactDisk?)? = nil
+        /// The folders of this Mac the user allowed besides a thread's own.
+        var artifactFolders: () -> [String] = { [] }
         /// What the thread's pane has running, or nil once the pane has gone.
         /// nil where nothing is scanned (the dev server): 503. May block.
         var running: ((MobileThread) -> RunningSet?)? = nil
@@ -1517,10 +1519,10 @@ final class MobileServer {
         }
     }
 
-    /// The disk of a remote thread's host. nil for a local thread, whose
-    /// disk is this Mac's, and for a host that cannot be asked.
+    /// The disk of the thread's host: this Mac's with the allowed folders,
+    /// or a remote host's. nil for a host that cannot be asked.
     private static func disk(of thread: MobileThread, _ sources: Sources) -> MobileArtifactDisk? {
-        thread.host.isLocal ? nil : sources.artifactDisk?(thread)
+        thread.host.isLocal ? .local(folders: sources.artifactFolders()) : sources.artifactDisk?(thread)
     }
 
     /// A pane's text as the screen routes answer it; 503 when it could not be read.

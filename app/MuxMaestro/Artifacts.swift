@@ -59,6 +59,13 @@ enum ArtifactMarkdown {
     }
 }
 
+/// A path the agent named with no folder to start from (`notes.md`,
+/// `out/chart.csv`), as it wrote it.
+struct ArtifactRelativeName: Equatable {
+    let raw: String
+    var at: Date
+}
+
 /// What a transcript says, before any disk check. `made` holds the paths an
 /// edit tool wrote; `imageCandidates` holds image paths that appeared anywhere
 /// the agent acted (tool input, tool result, its own text). `namedCandidates`
@@ -71,6 +78,11 @@ struct ArtifactMentions: Equatable {
     var made: [String: Date] = [:]
     var imageCandidates: [String: Date] = [:]
     var namedCandidates: [String: Date] = [:]
+    /// The named candidates that were relative, keyed by the same absolute
+    /// path. The agent may have meant another folder than the cwd: when
+    /// nothing is at the key, `ArtifactScanner.resolve` looks for `raw` next
+    /// to the files the thread already lists.
+    var relativeNamed: [String: ArtifactRelativeName] = [:]
     /// `http(s)` URLs from the agent's own text (never tool input or results:
     /// those are full of URLs the agent only read). URL → newest mention.
     var urls: [String: Date] = [:]
@@ -161,6 +173,9 @@ struct ArtifactMentions: Equatable {
             for path in ArtifactScanner.namedPaths(in: text) {
                 let abs = ArtifactScanner.absolute(path, cwd: cwd)
                 namedCandidates[abs] = max(namedCandidates[abs] ?? at, at)
+                if !path.hasPrefix("/"), !path.hasPrefix("~") {
+                    relativeNamed[abs] = ArtifactRelativeName(raw: path, at: max(relativeNamed[abs]?.at ?? at, at))
+                }
             }
         }
     }
@@ -193,8 +208,58 @@ enum ArtifactScanner {
     /// Made paths always list (missing ones marked). A candidate lists only
     /// when it exists and was modified at or after the thread's start: that is
     /// what separates a screenshot the agent took or a report it wrote from an
-    /// old file it merely mentioned. Newest first; ties by path.
+    /// old file it merely mentioned. A relative name with nothing at the cwd
+    /// lists from the folder of a listed file, under the same disk rule.
+    /// Newest first; ties by path.
     static func resolve(
+        _ mentions: ArtifactMentions,
+        fileExists: (String) -> Bool, mtime: (String) -> Date?
+    ) -> [Artifact] {
+        var out = direct(mentions, fileExists: fileExists, mtime: mtime)
+        var listed = Set(out.map(\.path))
+        for name in elsewhere(mentions, listed: out, fileExists: fileExists) {
+            let hit = name.paths.first { path in
+                guard fileExists(path), let modified = mtime(path) else { return false }
+                return modified >= (mentions.threadStart ?? .distantPast)
+            }
+            guard let hit, listed.insert(hit).inserted else { continue }
+            out.append(Artifact(kind: kind(of: hit), path: hit, at: name.at, exists: true))
+        }
+        return sorted(out)
+    }
+
+    /// The most folders, and the most names, `elsewhere` tries. Together they
+    /// stay under `RemoteArtifactFiles.maxPaths`: one run asks a host about all.
+    static let maxElsewhereFolders = 6
+    static let maxElsewhereNames = 60
+
+    /// Where else each relative name could be: it has nothing at the cwd, so
+    /// it is tried in the folders of the `listed` files, the newest file's
+    /// first. Most names in prose are not files, so both lists are cut short.
+    static func elsewhere(
+        _ mentions: ArtifactMentions, listed: [Artifact], fileExists: (String) -> Bool
+    ) -> [(at: Date, paths: [String])] {
+        var folders: [String] = []
+        for artifact in sorted(listed) where artifact.exists && !folders.contains(artifact.parentDir) {
+            folders.append(artifact.parentDir)
+            if folders.count == maxElsewhereFolders { break }
+        }
+        guard !folders.isEmpty else { return [] }
+        return mentions.relativeNamed
+            .sorted { $0.value.at != $1.value.at ? $0.value.at > $1.value.at : $0.key < $1.key }
+            .prefix(maxElsewhereNames)
+            .filter { !fileExists($0.key) }
+            .map { entry in
+                (entry.value.at, folders.map { absolute(entry.value.raw, cwd: $0) }.filter { $0 != entry.key })
+            }
+    }
+
+    private static func sorted(_ artifacts: [Artifact]) -> [Artifact] {
+        artifacts.sorted { $0.at != $1.at ? $0.at > $1.at : $0.path < $1.path }
+    }
+
+    /// What `resolve` lists before it looks elsewhere, in no order.
+    static func direct(
         _ mentions: ArtifactMentions,
         fileExists: (String) -> Bool, mtime: (String) -> Date?
     ) -> [Artifact] {
@@ -207,7 +272,7 @@ enum ArtifactScanner {
                   modified >= (mentions.threadStart ?? .distantPast) else { continue }
             out.append(Artifact(kind: kind(of: path), path: path, at: at, exists: true))
         }
-        return out.sorted { $0.at != $1.at ? $0.at > $1.at : $0.path < $1.path }
+        return out
     }
 
     static func kind(of path: String) -> Artifact.Kind {
