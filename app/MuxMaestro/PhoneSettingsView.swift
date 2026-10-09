@@ -15,6 +15,7 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
     var onVoice: ((MobileVoiceDefaults) -> Void)?
     var onUploadLimit: ((Int) -> Void)?
     var onUploadFolder: ((String) -> Void)?
+    var onArtifactFolders: ((String) -> Void)?
     var onPush: ((MobilePushOptions) -> Void)?
     /// "Send Test Notification" was clicked.
     var onTestPush: (() -> Void)?
@@ -40,6 +41,7 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
     private let upload = NSSwitch()
     private let uploadLimit = NSPopUpButton()
     private let uploadFolder = NSTextField(string: "")
+    private let artifactFolders = NSTextField(string: "")
     private let sessionActions = NSSwitch()
     private let kill = NSSwitch()
     private let find = NSSwitch()
@@ -198,6 +200,14 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
         uploadFolder.lineBreakMode = .byTruncatingMiddle
         uploadFolder.setContentHuggingPriority(.defaultLow, for: .horizontal)
         uploadFolder.setAccessibilityLabel("Upload folder")
+        artifactFolders.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        artifactFolders.controlSize = .small
+        artifactFolders.delegate = self
+        artifactFolders.target = self
+        artifactFolders.action = #selector(artifactFoldersCommitted)
+        artifactFolders.lineBreakMode = .byTruncatingMiddle
+        artifactFolders.placeholderString = "~/reports, ~/notes"
+        artifactFolders.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
         let grid = NSGridView()
         grid.rowSpacing = 8
@@ -221,6 +231,7 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
             ("Kill", NSGridCell.emptyContentView, kill),
             ("Find", NSGridCell.emptyContentView, find),
             ("Artifacts", NSGridCell.emptyContentView, artifacts),
+            ("Artifact folders", NSGridCell.emptyContentView, artifactFolders),
             ("Local servers", mappings, localServers),
             ("Notifications", NSGridCell.emptyContentView, notifications),
             ("Notify on", NSGridCell.emptyContentView, pushEvents),
@@ -246,13 +257,14 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
         }
 
         // A path is wider than the control column: it takes the status column's room too.
-        if let row = rows.firstIndex(where: { $0.2 === uploadFolder }) {
+        for field in [uploadFolder, artifactFolders] {
+            guard let row = rows.firstIndex(where: { $0.2 === field }) else { continue }
             // A merged cell shows the content of its first cell.
             grid.cell(atColumnIndex: 2, rowIndex: row).contentView = nil
             grid.mergeCells(
                 inHorizontalRange: NSRange(location: 1, length: 2), verticalRange: NSRange(location: row, length: 1))
             let cell = grid.cell(atColumnIndex: 1, rowIndex: row)
-            cell.contentView = uploadFolder
+            cell.contentView = field
             cell.xPlacement = .fill
         }
 
@@ -343,6 +355,7 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
         let limit = Settings.phoneUploadLimit()
         uploadLimit.selectItem(at: Self.uploadLimits.firstIndex { $0.0 == limit } ?? 0)
         uploadFolder.stringValue = (Settings.phoneUploadFolder() as NSString).abbreviatingWithTildeInPath
+        artifactFolders.stringValue = Self.shown(Settings.phoneArtifactFolders())
     }
 
     func render(_ state: PhoneLink.State) {
@@ -528,6 +541,18 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
         uploadFolder.stringValue = (Settings.phoneUploadFolder() as NSString).abbreviatingWithTildeInPath
     }
 
+    /// Return or a focus change commits the folders. What is not a path is dropped.
+    @objc private func artifactFoldersCommitted() {
+        if MobileArtifacts.folders(artifactFolders.stringValue) != Settings.phoneArtifactFolders() {
+            onArtifactFolders?(artifactFolders.stringValue)
+        }
+        artifactFolders.stringValue = Self.shown(Settings.phoneArtifactFolders())
+    }
+
+    private static func shown(_ folders: [String]) -> String {
+        folders.map { ($0 as NSString).abbreviatingWithTildeInPath }.joined(separator: ", ")
+    }
+
     @objc private func voicePicked() {
         let mode = voiceMode.indexOfSelectedItem, speaker = voiceSpeaker.indexOfSelectedItem
         guard Self.voiceModes.indices.contains(mode), Self.voiceSpeakers.indices.contains(speaker)
@@ -556,6 +581,7 @@ final class PhoneSettingsView: NSView, NSTextFieldDelegate {
         switch notification.object as? NSTextField {
         case pushSubject: pushPicked()
         case uploadFolder: uploadFolderCommitted()
+        case artifactFolders: artifactFoldersCommitted()
         default: portCommitted()
         }
     }

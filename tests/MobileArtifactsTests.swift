@@ -168,6 +168,64 @@ final class MobileArtifactsTests: XCTestCase {
         XCTAssertEqual(MobileArtifacts.files(([old], []), cwd: cwd.path), [])
     }
 
+    /// A report the agent wrote outside the repo is offered once the user
+    /// allows its folder. The other rules still hold inside that folder.
+    func testAFileInAnAllowedFolderIsOfferedAndRead() throws {
+        let fm = FileManager.default
+        let home = root.appendingPathComponent("home")
+        let reports = home.appendingPathComponent("reports")
+        let cwd = home.appendingPathComponent("code/acme-app")
+        for folder in [cwd, reports.appendingPathComponent("run-1"), reports.appendingPathComponent(".cache"),
+                       home.appendingPathComponent("code/other-app")] {
+            try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        }
+        let brief = artifact(try write("# Brief", to: reports.appendingPathComponent("run-1/brief.md")))
+        let hidden = artifact(try write("x", to: reports.appendingPathComponent(".cache/notes.md")))
+        let key = artifact(try write("x", to: reports.appendingPathComponent("run-1/server.pem")))
+        let sibling = artifact(try write("x", to: home.appendingPathComponent("code/other-app/notes.md")))
+        let loose = artifact(try write("x", to: home.appendingPathComponent("notes.txt")))
+        let source: MobileArtifactSource = ([brief, hidden, key, sibling, loose], [])
+        func names(_ folders: [String]) -> [String] {
+            MobileArtifacts.files(source, cwd: cwd.path, tempRoots: [], home: home.path, folders: folders)
+                .map(\.artifact.name)
+        }
+        func read(_ file: Artifact, _ folders: [String]) -> MobileArtifacts.FileRead {
+            MobileArtifacts.read(
+                path: file.path, cwd: cwd.path, image: false, tempRoots: [], home: home.path, folders: folders)
+        }
+
+        XCTAssertEqual(names([]), [])
+        XCTAssertEqual(read(brief, []), .missing)
+        XCTAssertEqual(names([reports.path]), ["brief.md"])
+        XCTAssertEqual(read(brief, [reports.path]), .data(Data("# Brief".utf8)))
+        for refused in [hidden, key, sibling, loose] {
+            XCTAssertEqual(read(refused, [reports.path]), .missing, refused.path)
+        }
+        // The home folder, a folder above it, and a path that is not absolute
+        // allow nothing.
+        for wide in [home.path, root.path, "/", "", "reports"] {
+            XCTAssertEqual(names([wide]), [], wide)
+            XCTAssertEqual(read(brief, [wide]), .missing, wide)
+        }
+
+        // The routes ask the disk they are given.
+        let disk = MobileArtifactDisk.local(tempRoots: [], home: home.path, folders: [reports.path])
+        let listed = try object(MobileArtifacts.list(thread: thread(cwd: cwd.path), source: { _ in source }, disk: disk))
+        XCTAssertEqual((listed["files"] as? [[String: Any]])?.map { $0["name"] as? String }, ["brief.md"])
+        let served = MobileArtifacts.file(
+            id: MobileArtifacts.id(path: brief.path), thread: thread(cwd: cwd.path), source: { _ in source },
+            disk: disk)
+        XCTAssertEqual(served.status, 200)
+        XCTAssertEqual(served.body, Data("# Brief".utf8))
+    }
+
+    func testTheFoldersFieldIsCommaSeparatedPathsAndDropsTheRest() {
+        XCTAssertEqual(
+            MobileArtifacts.folders(" ~/reports, /srv/notes ,reports,, ~/reports ", home: "/Users/me"),
+            ["/Users/me/reports", "/srv/notes"])
+        XCTAssertEqual(MobileArtifacts.folders("", home: "/Users/me"), [])
+    }
+
     /// A thread started in the home folder would make everything under it
     /// (`Documents`, `Library`) the thread's own. The home folder and the
     /// folders above it are never a root.

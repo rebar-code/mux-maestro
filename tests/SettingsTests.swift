@@ -22,6 +22,15 @@ final class SettingsTests: XCTestCase {
 
     private func host(_ name: String) -> Host { Host(name: name, sshAlias: name) }
 
+    func testPhoneArtifactFoldersStartEmptyAndRoundTrip() {
+        XCTAssertEqual(Settings.phoneArtifactFolders(defaults: defaults), [])
+        Settings.setPhoneArtifactFolders(" ~/reports, /srv/notes ", defaults: defaults)
+        XCTAssertEqual(
+            Settings.phoneArtifactFolders(defaults: defaults), [NSHomeDirectory() + "/reports", "/srv/notes"])
+        Settings.setPhoneArtifactFolders("not a path", defaults: defaults)
+        XCTAssertEqual(Settings.phoneArtifactFolders(defaults: defaults), [])
+    }
+
     // MARK: watch
 
     func testSortByRecentIsPerSessionAndClearedWithTheHost() {
