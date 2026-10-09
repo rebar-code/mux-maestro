@@ -144,8 +144,9 @@ struct MobileScreen: Equatable {
 
     /// How far above the choices the tool and its command are looked for.
     static let headerLines = 60
-    /// Lines between two choices that are not a choice: a question's option
-    /// may carry a description.
+    /// Lines between two choices that are not a choice and not a choice's
+    /// own text. A description is indented past the number and is not
+    /// counted: a narrow pane wraps one over any number of rows.
     static let maxGap = 4
     static let maxDetailLength = 1200
     /// The tallest input box that is looked for.
@@ -170,6 +171,11 @@ struct MobileScreen: Equatable {
         !line.isEmpty && line.unicodeScalars.allSatisfy {
             (0x2500...0x257F).contains($0.value) || (0x2580...0x259F).contains($0.value)
         }
+    }
+
+    /// The column of a line's first character that is not a box edge or a space.
+    private static func indent(_ line: Substring) -> Int {
+        line.prefix { $0.unicodeScalars.allSatisfy(frame.contains) }.count
     }
 
     /// `… +2 models`: a menu's count of the rows that do not fit.
@@ -255,7 +261,7 @@ struct MobileScreen: Equatable {
         if let found = box, cursorRow.map({ (found.top + 1..<found.bottom).contains($0) }) != true {
             box = nil
         }
-        var found = Self.list(lines)
+        var found = Self.list(lines, raw: raw)
         if let list = found, let box {
             if list.rows.upperBound < box.top {
                 // Above the live input box: an old prompt in the scrollback.
@@ -390,9 +396,15 @@ struct MobileScreen: Equatable {
     /// The last numbered list with the cursor on one of its lines, and the
     /// rows it covers. It starts at 1, or at a later number when the menu is
     /// scrolled and says so with its `↑` mark.
-    private static func list(_ lines: [String]) -> (prompt: MobilePrompt, rows: ClosedRange<Int>)? {
+    private static func list(
+        _ lines: [String], raw: [Substring]
+    ) -> (prompt: MobilePrompt, rows: ClosedRange<Int>)? {
         guard let at = lines.lastIndex(where: { option($0)?.selected == true }),
               let picked = option(lines[at]) else { return nil }
+        // A choice's own text: its description, or a label that wraps. It
+        // starts past the column of the numbers.
+        let number = raw[at].prefix { !($0.isASCII && $0.isNumber) }.count
+        let continues = { (index: Int) in !lines[index].isEmpty && indent(raw[index]) > number }
 
         var found: [(index: Int, row: Row)] = [(at, picked)]
         // Up to the first choice on screen.
@@ -404,7 +416,7 @@ struct MobileScreen: Equatable {
                 found.insert((index, other), at: 0)
                 want -= 1
                 gap = 0
-            } else {
+            } else if !continues(index) {
                 gap += 1
             }
             index -= 1
@@ -422,7 +434,7 @@ struct MobileScreen: Equatable {
                 found.append((index, other))
                 want += 1
                 gap = 0
-            } else {
+            } else if !continues(index) {
                 gap += 1
             }
             index += 1
