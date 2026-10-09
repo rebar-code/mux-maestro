@@ -355,6 +355,33 @@ enum DemoPrompt {
           3. Type something.
         ────────────────────────────────────────
         """
+
+    /// A question in a pane as narrow as a phone: a description wraps over
+    /// more rows than a short one takes, and a rule stands before the last
+    /// choice.
+    static let longDescriptions = """
+        ────────────────────────────────────────────
+         ☐ Cache
+
+        Which store should the cache use?
+
+        ❯ 1. Redis
+             Shared between instances. It needs
+             a server of its own and a password
+             in the Keychain. A restart of the
+             app keeps what is in it, and two
+             instances see the same entries.
+          2. In memory
+             Lost on restart. It needs nothing
+             else, and each instance has its
+             own entries.
+          3. Type something.
+        ────────────────────────────────────────────
+          4. Chat about this
+
+        Enter to select · Tab/Arrow keys to navigate
+        · Esc to cancel
+        """
 }
 
 final class MobileReplyTests: XCTestCase {
@@ -1107,6 +1134,44 @@ final class MobileReplyTests: XCTestCase {
         XCTAssertEqual(prompt.question, "Which store should the cache use?")
         XCTAssertEqual(prompt.options.map(\.label), ["Redis", "In memory", "Type something."])
         XCTAssertEqual(prompt.options.map(\.n), [1, 2, 3])
+    }
+
+    /// A phone-width pane wraps a description over five rows or more. The
+    /// card showed no choices then: the list ended at the first long one.
+    func testReadsAQuestionWhoseDescriptionsWrapOverManyRows() throws {
+        let prompt = try XCTUnwrap(seen(DemoPrompt.longDescriptions).prompt)
+        XCTAssertEqual(prompt.question, "Which store should the cache use?")
+        XCTAssertEqual(prompt.options.map(\.label), ["Redis", "In memory", "Type something."])
+        XCTAssertEqual(prompt.selected, 1)
+    }
+
+    /// The same with the cursor on a later row: the walk up passes the long
+    /// description too.
+    func testReadsLongDescriptionsAboveTheSelectedRow() throws {
+        let screen = DemoPrompt.longDescriptions
+            .replacingOccurrences(of: "❯ 1. Redis", with: "  1. Redis")
+            .replacingOccurrences(of: "  2. In memory", with: "❯ 2. In memory")
+        let prompt = try XCTUnwrap(seen(screen).prompt)
+        XCTAssertEqual(prompt.options.map(\.n), [1, 2, 3])
+        XCTAssertEqual(prompt.selected, 2)
+    }
+
+    /// Rows that are not a choice's own text still end a list: a numbered
+    /// line far under the choices is not one of them.
+    func testTextAtTheChoicesOwnColumnStillEndsTheList() throws {
+        let screen = """
+            Pick one
+
+            ❯ 1. Yes
+              2. No
+            a
+            b
+            c
+            d
+            e
+              3. Not a choice
+            """
+        XCTAssertEqual(try XCTUnwrap(seen(screen).prompt).options.map(\.n), [1, 2])
     }
 
     func testTheSelectedRowIsPartOfWhatThePhoneShows() throws {
