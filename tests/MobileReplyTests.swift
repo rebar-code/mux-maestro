@@ -378,6 +378,7 @@ final class MobileReplyTests: XCTestCase {
             ("GET", "prompt", .prompt(id: "localhost:12"), .replies),
             ("POST", "answer", .answer(id: "localhost:12"), .replies),
             ("GET", "commands", .commands(id: "localhost:12"), .replies),
+            ("POST", "model", .model(id: "localhost:12"), .replies),
             ("POST", "key", .key(id: "localhost:12"), .keyBar),
             ("POST", "upload", .upload(id: "localhost:12", name: "", paste: true), .upload),
         ]

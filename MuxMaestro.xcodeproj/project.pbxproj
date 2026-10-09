@@ -58,8 +58,11 @@
 		A0AB1022 /* LoopbackClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0AB1002 /* LoopbackClient.swift */; };
 		A0AB1023 /* TmuxOrphanGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0AB1003 /* TmuxOrphanGuard.swift */; };
 		A00D1011 /* MobileReply.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00D1001 /* MobileReply.swift */; };
+		A00D1F11 /* MobileModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00D1F01 /* MobileModel.swift */; };
 		A00D1021 /* MobileReply.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00D1001 /* MobileReply.swift */; };
+		A00D1F21 /* MobileModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00D1F01 /* MobileModel.swift */; };
 		A00D1022 /* MobileReplyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00D1002 /* MobileReplyTests.swift */; };
+		A00D1F22 /* MobileModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00D1F02 /* MobileModelTests.swift */; };
 		A00D2011 /* MobileActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00D2001 /* MobileActions.swift */; };
 		A00D3011 /* MobileArtifacts.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00D3001 /* MobileArtifacts.swift */; };
 		A00D4011 /* MobileServing.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00D4001 /* MobileServing.swift */; };
@@ -321,7 +324,9 @@
 		A0AB1002 /* LoopbackClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoopbackClient.swift; sourceTree = "<group>"; };
 		A0AB1003 /* TmuxOrphanGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TmuxOrphanGuard.swift; sourceTree = "<group>"; };
 		A00D1001 /* MobileReply.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileReply.swift; sourceTree = "<group>"; };
+		A00D1F01 /* MobileModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileModel.swift; sourceTree = "<group>"; };
 		A00D1002 /* MobileReplyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileReplyTests.swift; sourceTree = "<group>"; };
+		A00D1F02 /* MobileModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileModelTests.swift; sourceTree = "<group>"; };
 		A00D2001 /* MobileActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileActions.swift; sourceTree = "<group>"; };
 		A00D3001 /* MobileArtifacts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileArtifacts.swift; sourceTree = "<group>"; };
 		A00D4001 /* MobileServing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileServing.swift; sourceTree = "<group>"; };
@@ -536,6 +541,7 @@
 				A00F7203 /* RequestListView.swift */,
 				A00C1001 /* MobileVoice.swift */,
 				A00D1001 /* MobileReply.swift */,
+				A00D1F01 /* MobileModel.swift */,
 				A00D2001 /* MobileActions.swift */,
 				A00D3001 /* MobileArtifacts.swift */,
 				A00D4001 /* MobileServing.swift */,
@@ -664,6 +670,7 @@
 				A0AB1002 /* LoopbackClient.swift */,
 				A0AB1003 /* TmuxOrphanGuard.swift */,
 				A00D1002 /* MobileReplyTests.swift */,
+				A00D1F02 /* MobileModelTests.swift */,
 				A00D2002 /* MobileActionsTests.swift */,
 				A00D3002 /* MobileArtifactsTests.swift */,
 				A00D4002 /* MobileServingTests.swift */,
@@ -855,6 +862,7 @@
 				A00F7213 /* RequestListView.swift in Sources */,
 				A00C1011 /* MobileVoice.swift in Sources */,
 				A00D1011 /* MobileReply.swift in Sources */,
+				A00D1F11 /* MobileModel.swift in Sources */,
 				A00D2011 /* MobileActions.swift in Sources */,
 				A00D3011 /* MobileArtifacts.swift in Sources */,
 				A00D4011 /* MobileServing.swift in Sources */,
@@ -976,7 +984,9 @@
 				A0AB1022 /* LoopbackClient.swift in Sources */,
 				A0AB1023 /* TmuxOrphanGuard.swift in Sources */,
 				A00D1021 /* MobileReply.swift in Sources */,
+				A00D1F21 /* MobileModel.swift in Sources */,
 				A00D1022 /* MobileReplyTests.swift in Sources */,
+				A00D1F22 /* MobileModelTests.swift in Sources */,
 				A00D2021 /* MobileActions.swift in Sources */,
 				A00D3021 /* MobileArtifacts.swift in Sources */,
 				A00D4021 /* MobileServing.swift in Sources */,

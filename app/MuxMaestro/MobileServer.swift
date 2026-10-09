@@ -982,6 +982,13 @@ final class MobileServer {
                     prompt: answer.prompt, option: answer.option, target: thread.pane, io: io,
                     state: state())
             }
+        case .model(let id):
+            guard let ask = MobileModel.request(in: request.body) else {
+                return send(.error(400, "bad_request"), to: client, head: head)
+            }
+            write(to: id, client: client) { thread, io, state in
+                MobileModel.run(ask, target: thread.pane, io: io, state: state)
+            }
         case .viewed(let id):
             guard snapshot.thread(id: id) != nil else {
                 return send(.error(404, "not_found"), to: client, head: head)

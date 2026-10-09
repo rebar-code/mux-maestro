@@ -50,6 +50,15 @@
 		// Lucide `list-filter`.
 		filter: ['M3 6h18', 'M7 12h10', 'M10 18h4'],
 		chevronDown: ['m6 9 6 6 6-6'],
+		// Two sliders: the model and its effort.
+		sliders: [
+			'M4 7h10',
+			'M18 7h2',
+			'M14 7a2 2 0 1 0 4 0 2 2 0 1 0-4 0',
+			'M4 17h2',
+			'M10 17h10',
+			'M6 17a2 2 0 1 0 4 0 2 2 0 1 0-4 0'
+		],
 		micOff: [
 			'M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z',
 			'M5 11a7 7 0 0 0 14 0',

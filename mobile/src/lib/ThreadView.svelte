@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { applyModel, closeModelMenu, openModelMenu, pickModel } from './api';
 	import ArtifactInline from './ArtifactInline.svelte';
 	import { hasThumb, inlineArtifacts, resolveArtifact } from './artifacts';
 	import { ARTIFACTS, Artifacts } from './artifacts.svelte';
@@ -23,6 +24,9 @@
 	import { manager } from './manager.svelte';
 	import MaestroBack from './MaestroBack.svelte';
 	import Marked from './Marked.svelte';
+	import { modelReady } from './model';
+	import { ModelPicker } from './model.svelte';
+	import ModelSheet from './ModelSheet.svelte';
 	import NextBar from './NextBar.svelte';
 	import NoteLine from './NoteLine.svelte';
 	import PromptCard from './PromptCard.svelte';
@@ -195,6 +199,14 @@
 	const asks = listed || givenReply !== undefined;
 
 	// svelte-ignore state_referenced_locally
+	const picker = new ModelPicker(id, {
+		open: openModelMenu,
+		pick: pickModel,
+		apply: applyModel,
+		close: closeModelMenu
+	});
+
+	// svelte-ignore state_referenced_locally
 	const find = new Find(
 		id,
 		() => feed.messages ?? [],
@@ -228,6 +240,8 @@
 	};
 
 	const repliesOn = $derived(can('replies'));
+	/** The agent's model is picked here: a listed thread that runs one. */
+	const modelOn = $derived(listed && repliesOn && (thread?.chat ?? false));
 	const keysOn = $derived(can('keyBar'));
 	// A take goes to the thread as a reply, so voice needs that switch too.
 	const voiceOn = $derived(repliesOn && can('voice'));
@@ -368,6 +382,14 @@
 				<span class="skel" style:width="55%" style:height="14px" style:margin-bottom="5px"></span>
 				<span class="skel" style:width="35%" style:height="11px"></span>
 			</div>
+		{/if}
+		{#if modelOn}
+			<button
+				class="tb"
+				disabled={closed || !modelReady(thread)}
+				aria-label="Model"
+				onclick={picker.open}><Icon name="sliders" /></button
+			>
 		{/if}
 		<button
 			class="tb"
@@ -604,6 +626,7 @@
 </div>
 
 <ServeConfirm {servers} />
+<ModelSheet {picker} />
 
 {#snippet attach()}
 	{#if repliesOn}
