@@ -14,7 +14,7 @@
 		min-height: var(--hit);
 		margin: 0 max(10px, env(safe-area-inset-right)) 6px max(10px, env(safe-area-inset-left));
 		padding: 0 12px;
-		border: 1px dashed var(--border);
+		border: 1px solid var(--border);
 		border-radius: 12px;
 		background: none;
 		color: var(--muted);
