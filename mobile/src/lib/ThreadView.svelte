@@ -38,6 +38,7 @@
 	import { SERVERS, Servers } from './servers.svelte';
 	import ServersPage from './ServersPage.svelte';
 	import SlashList from './SlashList.svelte';
+	import SuggestionBar from './SuggestionBar.svelte';
 	import { BOARD, MAIN, REQUESTS, viewTabs } from './tabs';
 	import { text } from './textsize.svelte';
 	import { ThreadFeed, type Mode } from './thread.svelte';
@@ -642,6 +643,9 @@
 			<!-- The voice status sits above the keys; its controls stay below them. -->
 			{#if repliesOn && voiceOn && keysOn}
 				<VoiceBar target={id} sink={reply.voice} part="status" />
+			{/if}
+			{#if repliesOn && reply.suggestion && !reply.draft && !reply.blocked}
+				<SuggestionBar text={reply.suggestion} onpick={reply.takeSuggestion} />
 			{/if}
 			<!-- With a key bar the attach button is at its start; without one it is beside the text box. -->
 			{#if keysOn}<KeyBar {reply} composer={repliesOn} leading={attach} />{/if}

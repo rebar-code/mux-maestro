@@ -24,6 +24,8 @@ final class FakePane {
     private var _statusAfterPaste: AttentionStatus?
     private var _screen: String? = DemoPrompt.idle
     private var _screenAfterPaste: String?
+    private var _styled: String?
+    private var _styledReads = 0
     private var _existing = Set<String>()
     private var _failing = false
     private var _since: Int?
@@ -59,6 +61,13 @@ final class FakePane {
         get { locked { _screen } }
         set { locked { _screen = newValue } }
     }
+    /// The same screen with its colour codes. nil: it cannot be read.
+    var styled: String? {
+        get { locked { _styled } }
+        set { locked { _styled = newValue } }
+    }
+    /// How many times the styled screen was read.
+    var styledReads: Int { locked { _styledReads } }
     var cursor: Cursor {
         get { locked { _cursor } }
         set { locked { _cursor = newValue } }
@@ -144,7 +153,13 @@ final class FakePane {
                     return .saved
                 }
             },
-            cursorRow: { [self] in cursorRow })
+            cursorRow: { [self] in cursorRow },
+            styled: { [self] in
+                locked {
+                    _styledReads += 1
+                    return _styled
+                }
+            })
     }
 
     /// The four calls of one sent text, with the buffer's name left out.
@@ -174,6 +189,26 @@ enum DemoPrompt {
             \(box)
             ────────────────────────────────────────
               ? for shortcuts
+            """
+    }
+
+    /// A Claude Code pane as `capture-pane -e` gives it, with `text` in the
+    /// input box under the colour codes `style`. Dim (`2`) is how Claude Code
+    /// draws its suggested prompt; typed text has no code.
+    static func styled(_ text: String, style: String? = "2", mark: String = "❯\u{A0}") -> String {
+        let esc = "\u{1B}["
+        let rows = text.split(separator: "\n", omittingEmptySubsequences: false)
+        let on = style.map { "\(esc)\($0)m" } ?? ""
+        // tmux sets a style once: it holds over the rows that follow.
+        let box = (["\(esc)39m\(mark)\(on)\(rows.first ?? "")"] + rows.dropFirst().map { "  " + $0 })
+            .joined(separator: "\n")
+        return """
+            \(esc)38;5;231m⏺\(esc)39m Done. 4 files changed, tests pass.
+
+            \(esc)2m\(esc)38;5;244m────────────────────────────────────────\(esc)0m
+            \(box)\(esc)0m
+            \(esc)2m\(esc)38;5;244m────────────────────────────────────────\(esc)0m
+              \(esc)2m? for shortcuts\(esc)0m
             """
     }
 
@@ -459,6 +494,97 @@ final class MobileReplyTests: XCTestCase {
         XCTAssertEqual((json["upload"] as? [String: Any])?["maxBytes"] as? Int, 5_242_880)
         XCTAssertEqual((json["capabilities"] as? [String: Any])?["keyBar"] as? Bool, true)
         XCTAssertEqual((json["capabilities"] as? [String: Any])?["replies"] as? Bool, false)
+    }
+
+    // MARK: suggestion
+
+    func testADimInputBoxIsClaudesSuggestion() {
+        XCTAssertEqual(MobileSuggestion.read(DemoPrompt.styled("run the tests"), cursorRow: 3), "run the tests")
+        // Rows that wrap are one text; the dim code is set once for all of them.
+        XCTAssertEqual(
+            MobileSuggestion.read(DemoPrompt.styled("run the tests and\nopen a PR"), cursorRow: 3),
+            "run the tests and open a PR")
+        // The cursor is not in the box: something else is in front.
+        XCTAssertNil(MobileSuggestion.read(DemoPrompt.styled("run the tests"), cursorRow: 6))
+        XCTAssertNil(MobileSuggestion.read(DemoPrompt.styled("run the tests"), cursorRow: nil))
+    }
+
+    func testTypedTextIsNoSuggestion() {
+        XCTAssertNil(MobileSuggestion.read(DemoPrompt.styled("run the tests", style: nil), cursorRow: 3))
+        XCTAssertNil(MobileSuggestion.read(DemoPrompt.styled("", style: nil), cursorRow: 3))
+        XCTAssertNil(MobileSuggestion.read(DemoPrompt.styled(""), cursorRow: 3))
+        // Dim that ended before the text did.
+        XCTAssertNil(
+            MobileSuggestion.read(DemoPrompt.styled("run\u{1B}[22m the tests"), cursorRow: 3))
+        XCTAssertNil(
+            MobileSuggestion.read(DemoPrompt.styled("run the tests and\u{1B}[0m\nopen a PR"), cursorRow: 3))
+    }
+
+    func testAColourThatHoldsATwoIsNotDim() {
+        // `38;5;2` is green, `48;2;2;2;2` a background: neither is the code 2.
+        for style in ["38;5;2", "48;2;2;2;2", "38:5:2", "1;38;5;2"] {
+            XCTAssertNil(
+                MobileSuggestion.read(DemoPrompt.styled("run the tests", style: style), cursorRow: 3), style)
+        }
+        // Dim beside a colour is dim.
+        for style in ["2;38;5;244", "38;5;244;2", "38;2;9;9;9;2", "0;2"] {
+            XCTAssertEqual(
+                MobileSuggestion.read(DemoPrompt.styled("run the tests", style: style), cursorRow: 3),
+                "run the tests", style)
+        }
+    }
+
+    func testTheStartUpExampleIsNoSuggestion() {
+        XCTAssertNil(
+            MobileSuggestion.read(DemoPrompt.styled("Try \"fix the lint errors\""), cursorRow: 3))
+    }
+
+    func testACodexExampleIsNoSuggestion() {
+        let esc = "\u{1B}["
+        let screen = DemoPrompt.codexIdle.replacingOccurrences(
+            of: "› Ask Codex to do anything", with: "› \(esc)2mAsk Codex to do anything\(esc)0m")
+        XCTAssertTrue(seen(DemoPrompt.codexIdle, cursor: .row(8)).inputBox)
+        XCTAssertNil(MobileSuggestion.read(screen, cursorRow: 8))
+        XCTAssertNil(
+            MobileSuggestion.read(DemoPrompt.styled("run the tests", mark: "› "), cursorRow: 3))
+    }
+
+    func testThePromptBodyCarriesTheSuggestionOfAnIdlePane() {
+        let pane = FakePane()
+        pane.screen = DemoPrompt.input("run the tests")
+        pane.styled = DemoPrompt.styled("run the tests")
+        XCTAssertEqual(
+            MobileReply.promptBody(state: state(.idle), io: pane.io)["suggestion"] as? String, "run the tests")
+        XCTAssertEqual(pane.styledReads, 1)
+        // No hooks: the status says nothing, the screen does.
+        XCTAssertEqual(
+            MobileReply.promptBody(state: state(.unknown), io: pane.io)["suggestion"] as? String,
+            "run the tests")
+        // The styled screen cannot be read.
+        pane.styled = nil
+        XCTAssertTrue(MobileReply.promptBody(state: state(.idle), io: pane.io)["suggestion"] is NSNull)
+    }
+
+    func testABusyOrWaitingPaneIsNotReadForASuggestion() {
+        let pane = FakePane()
+        pane.screen = DemoPrompt.input("run the tests")
+        pane.styled = DemoPrompt.styled("run the tests")
+        for status in [AttentionStatus.busy, .waiting] {
+            XCTAssertTrue(
+                MobileReply.promptBody(state: state(status), io: pane.io)["suggestion"] is NSNull, "\(status)")
+        }
+        XCTAssertTrue(MobileReply.promptBody(state: nil, io: pane.io)["suggestion"] is NSNull)
+        // A prompt, or a screen with no live input box.
+        pane.screen = DemoPrompt.permission
+        XCTAssertTrue(MobileReply.promptBody(state: state(.idle), io: pane.io)["suggestion"] is NSNull)
+        pane.screen = DemoPrompt.input("run the tests")
+        pane.cursor = .lastLine
+        XCTAssertTrue(MobileReply.promptBody(state: state(.idle), io: pane.io)["suggestion"] is NSNull)
+        // The manager's pane asks for none.
+        pane.cursor = .inBox
+        XCTAssertTrue(
+            MobileReply.promptBody(state: state(.idle), io: pane.io, suggest: false)["suggestion"] is NSNull)
+        XCTAssertEqual(pane.styledReads, 0)
     }
 
     // MARK: keys

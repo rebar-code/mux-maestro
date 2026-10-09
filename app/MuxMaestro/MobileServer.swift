@@ -879,7 +879,7 @@ final class MobileServer {
         case .managerPrompt:
             guard let (manager, _, io) = managerPane(client) else { return }
             reply(to: client) {
-                .json(MobileReply.promptBody(state: Self.state(manager.pane().status), io: io))
+                .json(MobileReply.promptBody(state: Self.state(manager.pane().status), io: io, suggest: false))
             }
         case .managerAnswer:
             guard let answer = MobileReply.answer(in: request.body) else {

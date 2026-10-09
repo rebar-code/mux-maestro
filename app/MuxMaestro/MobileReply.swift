@@ -62,6 +62,9 @@ struct MobilePaneIO {
     /// answer, so the same words asked twice never share an id, even on a
     /// host that gives no time for the prompt.
     var sequence: (_ key: String?) -> Int = { _ in 0 }
+    /// The pane's visible text with its colour codes. nil when it cannot be
+    /// read.
+    var styled: () -> String? = { nil }
 }
 
 /// A prompt a pane waits on, read from its screen: the choices the phone shows
@@ -464,6 +467,87 @@ struct MobileScreen: Equatable {
     }
 }
 
+/// The prompt Claude Code suggests after a turn: dim text in its input box,
+/// which Tab takes. Only the colour tells it from text the human typed, so it
+/// is read from the screen with its colour codes.
+enum MobileSuggestion {
+    /// `styled` is the pane's screen as `capture-pane -e` gives it. nil when
+    /// the screen is not an idle Claude Code input box that holds dim text
+    /// and nothing else.
+    static func read(_ styled: String, cursorRow: Int?) -> String? {
+        let rows = cells(styled)
+        let plain = rows.map { String($0.map(\.character)) }.joined(separator: "\n")
+        let seen = MobileScreen(plain, cursorRow: cursorRow)
+        guard seen.inputBox, let box = seen.anchor else { return nil }
+        var parts: [String] = []
+        for (offset, row) in rows[(box.top + 1)..<box.bottom].enumerated() {
+            var cells = row.drop { $0.character.isWhitespace }
+            if offset == 0 {
+                // Claude Code's mark. Codex (`›`) draws dim examples there.
+                guard cells.first?.character == "❯" else { return nil }
+                cells = cells.dropFirst()
+            }
+            guard cells.allSatisfy({ $0.dim || $0.character.isWhitespace }) else { return nil }
+            let text = String(cells.map(\.character)).trimmingCharacters(in: .whitespaces)
+            if !text.isEmpty { parts.append(text) }
+        }
+        let text = parts.joined(separator: " ")
+        // The example a new session shows is dim too, and is no suggestion.
+        return text.isEmpty || text.hasPrefix("Try \"") ? nil : text
+    }
+
+    /// The screen's characters, row by row, each with whether it is dim. tmux
+    /// writes a style once: it holds over the rows that follow.
+    private static func cells(_ styled: String) -> [[(character: Character, dim: Bool)]] {
+        var rows: [[(character: Character, dim: Bool)]] = [[]]
+        var dim = false
+        var rest = Substring(styled)
+        while let character = rest.first {
+            rest = rest.dropFirst()
+            if character == "\n" {
+                rows.append([])
+            } else if character != "\u{1B}" {
+                rows[rows.count - 1].append((character, dim))
+            } else if rest.first == "[" {
+                // A control sequence: its arguments, then one final character.
+                let body = rest.dropFirst().prefix { !("\u{40}"..."\u{7E}").contains($0) }
+                rest = rest.dropFirst(body.count + 1)
+                if rest.first == "m" { dim = Self.dim(String(body), was: dim) }
+                rest = rest.dropFirst()
+            } else if rest.first == "]" {
+                // A link or a title: up to its end mark.
+                if let end = rest.firstIndex(where: { $0 == "\u{07}" || $0 == "\u{1B}" }) {
+                    rest = rest[end...].dropFirst(rest[end] == "\u{1B}" ? 2 : 1)
+                } else {
+                    rest = ""
+                }
+            } else {
+                rest = rest.dropFirst()
+            }
+        }
+        return rows
+    }
+
+    /// Whether text is dim after the colour codes `arguments`: `2` sets it,
+    /// `0` and `22` end it. A `2` that is an argument of a colour (`38;5;2`)
+    /// is not the code.
+    private static func dim(_ arguments: String, was: Bool) -> Bool {
+        var dim = was
+        var codes = arguments.split(separator: ";", omittingEmptySubsequences: false)[...]
+        while let code = codes.popFirst() {
+            switch code {
+            case "", "0", "22": dim = false
+            case "2": dim = true
+            case "38", "48", "58":
+                // `5;n` or `2;r;g;b` follows.
+                codes = codes.dropFirst(codes.first == "5" ? 2 : codes.first == "2" ? 4 : 0)
+            default: break
+            }
+        }
+        return dim
+    }
+}
+
 enum MobileReply {
     static let busyMessage = "Thread is busy"
     static let waitingMessage = "Thread is waiting on a prompt"
@@ -811,13 +895,27 @@ enum MobileReply {
         return "w" + hash([key, state.since.map(String.init) ?? "", String(io.sequence(key))])
     }
 
-    /// The `GET …/prompt` body: the card, and the id a key must carry.
-    static func promptBody(state: MobilePaneState?, io: MobilePaneIO) -> [String: Any] {
-        let seen = look(io)
+    /// The `GET …/prompt` body: the card, the id a key must carry, and the
+    /// prompt Claude Code suggests in its input box. The suggestion is read
+    /// only from a pane that is verified idle, so a pane that works or waits
+    /// costs no extra read. `suggest` is false for a pane whose page shows none.
+    static func promptBody(state: MobilePaneState?, io: MobilePaneIO, suggest: Bool = true) -> [String: Any] {
+        var row: Int?
+        let seen = io.screen().map { text -> MobileScreen in
+            row = io.cursorRow()
+            return MobileScreen(text, cursorRow: row)
+        }
         let prompt = prompt(state: state, seen: seen, io: io)
         var id = prompt?.id
         if id == nil, let state, let seen { id = waitingID(state: state, seen: seen, io: io) }
-        return ["prompt": prompt.map { $0.json as Any } ?? NSNull(), "id": id ?? NSNull()]
+        var suggestion: String?
+        if suggest, let state, state.status != .busy, state.status != .waiting, seen?.inputBox == true {
+            suggestion = io.styled().flatMap { MobileSuggestion.read($0, cursorRow: row) }
+        }
+        return [
+            "prompt": prompt.map { $0.json as Any } ?? NSNull(), "id": id ?? NSNull(),
+            "suggestion": suggestion ?? NSNull(),
+        ]
     }
 
     /// `{"prompt": "<id>", "option": <n>}`.

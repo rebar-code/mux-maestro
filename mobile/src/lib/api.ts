@@ -361,7 +361,7 @@ export async function sendKey(
 export async function fetchPrompt(base: string): Promise<PromptState> {
 	const body = await get<Partial<PromptState>>(`${base}/prompt`);
 	const prompt = body.prompt ?? null;
-	return { prompt, id: body.id ?? prompt?.id ?? null };
+	return { prompt, id: body.id ?? prompt?.id ?? null, suggestion: body.suggestion ?? null };
 }
 
 /**

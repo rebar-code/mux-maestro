@@ -20,7 +20,7 @@
 // /__fixture/push (the subscriptions and the thread each phone says it shows),
 // /__fixture/push-limit?on=1 (refuse the next subscription: the Mac holds its most),
 // /__fixture/push-forget (the Mac drops every subscription, as a new pairing code does),
-// /__fixture/prompt-delay?ms=,
+// /__fixture/prompt-delay?ms=, /__fixture/suggestion?id=&text= (the prompt Claude suggests in the pane; no text: none),
 // /__fixture/manager-prompt?kind=&bare=&scrolled=&pid=&quiet=, /__fixture/prompt-delay?ms=, /__fixture/upload-slow?chunk=&answer=,
 // /__fixture/upload-fail?status=&error=&message=, /__fixture/build?tag=, /__fixture/text-slow?ms=,
 // /__fixture/append?count= (adds lines to pane buildbox:8),
@@ -705,6 +705,8 @@ let started, threads, chats, sessions, grouping, deny, token, log, screenDefault
 let capabilities, manager, voice;
 // Per thread id: the prompt on the pane. And everything the phone wrote.
 let prompts, replies, uploadMax, promptSeq, notSent, noInput, pasted, keyLocks, promptDelay;
+// The prompt Claude Code suggests in a pane's input box, by thread.
+let suggestions;
 // Taps on cards that reached a pane, and the cards whose taps are refused.
 let acted, cardRefusals;
 // Makes one thread row; set by `reset`, used again for a new window or session.
@@ -776,6 +778,7 @@ function reset() {
 	requestsFail = null;
 	serveFails = null;
 	prompts = {};
+	suggestions = {};
 	// How the next text is refused after its paste, the panes with no input
 	// box, whether an upload's path reaches the pane, and the keys in flight.
 	notSent = null;
@@ -1034,14 +1037,17 @@ function promptOf(thread) {
 /** The body of `GET /prompt`: an id alone when the pane shows no readable choices. */
 function promptBody(thread) {
 	const asked = promptOf(thread);
-	if (!asked) return { prompt: null, id: null };
+	// The Mac reads a suggestion only from a pane that neither works nor waits.
+	const idle = thread.status !== 'busy' && thread.status !== 'waiting';
+	const suggestion = (!asked && idle && suggestions[thread.id]) || null;
+	if (!asked) return { prompt: null, id: null, suggestion };
 	// `bare` and `full` are the fixture's own notes.
 	const prompt = { ...asked };
 	delete prompt.bare;
 	delete prompt.full;
 	delete prompt.base;
 	delete prompt.first;
-	return { prompt: asked.bare ? null : prompt, id: asked.id };
+	return { prompt: asked.bare ? null : prompt, id: asked.id, suggestion };
 }
 
 function setStatus(thread, status) {
@@ -1083,6 +1089,8 @@ const threadReply = (text) => `Done: ${text}. 2 files changed, tests pass.`;
 function runThreadTurn(thread, text, onDelta = () => {}, onEnd = () => {}) {
 	chatRow(thread, 'user', text);
 	thread.lastPrompt = { text, at: nowSeconds() };
+	// The text took the suggestion's place in the input box.
+	delete suggestions[thread.id];
 	setStatus(thread, 'busy');
 	const reply = threadReply(text);
 	const words = reply.split(/(?<= )/);
@@ -2376,6 +2384,12 @@ function hook(res, url) {
 			if (!thread) return send(res, 404, { error: 'not_found' });
 			if (url.searchParams.get('on') === '0') noInput.delete(thread.id);
 			else noInput.add(thread.id);
+			return send(res, 200, { ok: true });
+		case '/__fixture/suggestion':
+			// The phone finds it by asking: the thread list says nothing of it.
+			if (!thread) return send(res, 404, { error: 'not_found' });
+			if (url.searchParams.get('text')) suggestions[thread.id] = url.searchParams.get('text');
+			else delete suggestions[thread.id];
 			return send(res, 200, { ok: true });
 		case '/__fixture/prompt-delay':
 			promptDelay = Number(url.searchParams.get('ms') ?? 0);

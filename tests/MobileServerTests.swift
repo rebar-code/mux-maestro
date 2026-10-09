@@ -1782,7 +1782,7 @@ final class MobileServerTests: XCTestCase {
         // A pane that shows its input box again has no prompt.
         pane.status = .idle
         pane.screen = DemoPrompt.permission + "\n" + DemoPrompt.idle
-        XCTAssertEqual(get(Self.thread + "/prompt").body, #"{"id":null,"prompt":null}"#)
+        XCTAssertEqual(get(Self.thread + "/prompt").body, #"{"id":null,"prompt":null,"suggestion":null}"#)
         XCTAssertEqual(pane.argv.count, 1)
     }
 
@@ -3256,7 +3256,7 @@ final class MobileServerTests: XCTestCase {
         manager.status = .idle
         manager.pane.screen = DemoPrompt.claudeIdle
         manager.pane.cursor = .inBox
-        XCTAssertEqual(get("/api/manager/prompt").body, #"{"id":null,"prompt":null}"#)
+        XCTAssertEqual(get("/api/manager/prompt").body, #"{"id":null,"prompt":null,"suggestion":null}"#)
     }
 
     func testCancelBacksOutOfThePromptTheCardShows() throws {
