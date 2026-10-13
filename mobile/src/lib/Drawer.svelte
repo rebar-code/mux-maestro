@@ -1,20 +1,23 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
-	import type { MenuTarget } from './actions';
+	import { sessionTarget } from './actions';
 	import { menu } from './actions.svelte';
 	import { isCollapsed, sessionDomId, SUMMARY_LABEL, summaryStatus } from './collapse';
 	import { collapse } from './collapse.svelte';
 	import { pullToRefresh, ui } from './gestures.svelte';
 	import FilterButton from './FilterButton.svelte';
-	import { counts, GROUPINGS, sections, visible, type SessionGroup } from './group';
+	import { counts, GROUPINGS, sections, visible } from './group';
 	import HostCard from './HostCard.svelte';
+	import Icon from './Icon.svelte';
 	import { can, live } from './live.svelte';
 	import { longPress } from './longpress';
 	import { manager } from './manager.svelte';
 	import NotifyRow from './NotifyRow.svelte';
 	import { maestroDot, maestroState } from './panel';
 	import PullIndicator from './PullIndicator.svelte';
+	import { SEARCH_MAX } from './search';
+	import SearchResults from './SearchResults.svelte';
 	import ThreadRow from './ThreadRow.svelte';
 
 	const PULL = 'threads';
@@ -45,12 +48,12 @@
 		scroller?.scrollTo({ top: 0 });
 	};
 
-	const sessionTarget = (session: SessionGroup): MenuTarget => ({
-		kind: 'session',
-		host: session.host,
-		session: session.name,
-		thread: session.threads[0].id
-	});
+	const searching = $derived(ui.search.trim() !== '');
+
+	function onkeydown(event: KeyboardEvent): void {
+		if (event.key === 'Escape') ui.search = '';
+		else if (event.key === 'Enter') (event.currentTarget as HTMLElement).blur();
+	}
 </script>
 
 <aside
@@ -171,23 +174,50 @@
 		<div class="end"></div>
 	</div>
 
-	<!-- Always here, in reach of a thumb: the way back to the home, whatever is switched on. -->
+	{#if searching}<SearchResults />{/if}
+
+	<!-- Always here, in reach of a thumb: the search, and the way back to the home. -->
 	<div class="dbar">
 		<FilterButton onchange={filterChanged} />
+		<label class="find" role="search">
+			<Icon name="search" size={16} />
+			<input
+				type="search"
+				enterkeyhint="search"
+				autocomplete="off"
+				autocapitalize="off"
+				autocorrect="off"
+				spellcheck="false"
+				maxlength={SEARCH_MAX}
+				placeholder="Search"
+				aria-label="Search"
+				bind:value={ui.search}
+				{onkeydown}
+			/>
+			{#if ui.search}
+				<button
+					class="tb clear"
+					type="button"
+					aria-label="Clear search"
+					onclick={() => (ui.search = '')}>✕</button
+				>
+			{/if}
+		</label>
 		<a
 			class="mrow"
 			class:sel={onHome}
+			class:sleep={maestro?.sleeps}
 			href={resolve('/')}
+			aria-label="Maestro"
 			aria-current={onHome ? 'page' : undefined}
+			title={maestro?.label}
 			data-home
 			data-state={maestro?.label}
 			onclick={() => ui.closeDrawer()}
 		>
-			<span class="who" class:sleep={maestro?.sleeps}>
-				{#if maestro}<span class="dot {maestro.dot}" title={maestro.label}></span>{/if}
-				<span>✦ Maestro</span>
-				{#if maestro?.sleeps}<span class="tag">💤</span>{/if}
-			</span>
+			<span aria-hidden="true">✦</span>
+			{#if maestro}<span class="stat"><span class="dot {maestro.dot}"></span></span>{/if}
+			{#if maestro?.sleeps}<span class="tag">💤</span>{/if}
 			{#if waiting}<span class="badge">{waiting}</span>{/if}
 		</a>
 	</div>
@@ -240,54 +270,113 @@
 		background: var(--bar);
 	}
 
-	.who {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		min-width: 0;
+	/* Over the search results, which lie over the rest of the sidebar. */
+	.dbar {
+		position: relative;
+		z-index: 3;
 	}
 
-	/* The row's own line is centred: the dot needs no offset here. */
-	.who .dot {
-		margin-top: 0;
-	}
-
-	.who.sleep {
-		color: #8a8a8a;
-	}
-
-	.who .tag {
-		font-size: 12px;
-	}
-
-	.mrow {
+	.find {
 		flex: 1;
 		min-width: 0;
 		display: flex;
 		align-items: center;
-		justify-content: space-between;
-		min-height: var(--hit);
-		padding: 9px 12px;
+		gap: 6px;
+		height: 46px;
+		padding-left: 10px;
+		border: 1px solid #2b2b3d;
 		border-radius: 10px;
+		background: var(--bg);
+		color: var(--muted);
+	}
+
+	.find:focus-within {
+		border-color: var(--accent);
+	}
+
+	.find input {
+		flex: 1;
+		min-width: 0;
+		height: 100%;
+		background: none;
+		border: 0;
+		padding: 0;
+		color: var(--text);
+		font: inherit;
+		/* Under 16px, iOS zooms the page when the box takes focus. */
+		font-size: 16px;
+		outline: none;
+		appearance: none;
+	}
+
+	.find input::-webkit-search-cancel-button {
+		display: none;
+	}
+
+	.clear {
+		min-width: 36px;
+		color: var(--muted);
+	}
+
+	.mrow {
+		flex: none;
+		position: relative;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 46px;
+		height: 46px;
+		border-radius: 50%;
 		background: var(--mgr);
 		border: 1px solid #2b2b3d;
-		font-weight: 600;
+		color: var(--purple);
+		font-size: 17px;
 	}
 
 	.mrow.sel {
 		background: #1b2333;
 	}
 
+	.mrow.sleep {
+		color: #8a8a8a;
+	}
+
+	/* The dot on a disc of the bar's colour, on the button's rim, as on an avatar. */
+	.stat {
+		position: absolute;
+		right: -2px;
+		bottom: -2px;
+		padding: 3px;
+		border-radius: 50%;
+		background: var(--bar);
+	}
+
+	.stat .dot {
+		display: block;
+		margin-top: 0;
+	}
+
+	.mrow .tag {
+		position: absolute;
+		left: -3px;
+		bottom: -3px;
+		font-size: 11px;
+	}
+
 	.badge {
-		min-width: 19px;
-		height: 19px;
-		border-radius: 10px;
+		position: absolute;
+		right: -4px;
+		top: -4px;
+		min-width: 17px;
+		height: 17px;
+		border-radius: 9px;
 		background: var(--red);
 		color: #fff;
-		font-size: 12px;
-		line-height: 19px;
+		font-size: 11px;
+		font-weight: 600;
+		line-height: 17px;
 		text-align: center;
-		padding: 0 5px;
+		padding: 0 4px;
 	}
 
 	.shead {

@@ -62,6 +62,9 @@ struct MobilePaneIO {
     /// answer, so the same words asked twice never share an id, even on a
     /// host that gives no time for the prompt.
     var sequence: (_ key: String?) -> Int = { _ in 0 }
+    /// The pane's visible text with its colour codes. nil when it cannot be
+    /// read.
+    var styled: () -> String? = { nil }
 }
 
 /// A prompt a pane waits on, read from its screen: the choices the phone shows
@@ -144,8 +147,9 @@ struct MobileScreen: Equatable {
 
     /// How far above the choices the tool and its command are looked for.
     static let headerLines = 60
-    /// Lines between two choices that are not a choice: a question's option
-    /// may carry a description.
+    /// Lines between two choices that are not a choice and not a choice's
+    /// own text. A description is indented past the number and is not
+    /// counted: a narrow pane wraps one over any number of rows.
     static let maxGap = 4
     static let maxDetailLength = 1200
     /// The tallest input box that is looked for.
@@ -170,6 +174,11 @@ struct MobileScreen: Equatable {
         !line.isEmpty && line.unicodeScalars.allSatisfy {
             (0x2500...0x257F).contains($0.value) || (0x2580...0x259F).contains($0.value)
         }
+    }
+
+    /// The column of a line's first character that is not a box edge or a space.
+    private static func indent(_ line: Substring) -> Int {
+        line.prefix { $0.unicodeScalars.allSatisfy(frame.contains) }.count
     }
 
     /// `… +2 models`: a menu's count of the rows that do not fit.
@@ -255,7 +264,7 @@ struct MobileScreen: Equatable {
         if let found = box, cursorRow.map({ (found.top + 1..<found.bottom).contains($0) }) != true {
             box = nil
         }
-        var found = Self.list(lines)
+        var found = Self.list(lines, raw: raw)
         if let list = found, let box {
             if list.rows.upperBound < box.top {
                 // Above the live input box: an old prompt in the scrollback.
@@ -390,9 +399,15 @@ struct MobileScreen: Equatable {
     /// The last numbered list with the cursor on one of its lines, and the
     /// rows it covers. It starts at 1, or at a later number when the menu is
     /// scrolled and says so with its `↑` mark.
-    private static func list(_ lines: [String]) -> (prompt: MobilePrompt, rows: ClosedRange<Int>)? {
+    private static func list(
+        _ lines: [String], raw: [Substring]
+    ) -> (prompt: MobilePrompt, rows: ClosedRange<Int>)? {
         guard let at = lines.lastIndex(where: { option($0)?.selected == true }),
               let picked = option(lines[at]) else { return nil }
+        // A choice's own text: its description, or a label that wraps. It
+        // starts past the column of the numbers.
+        let number = raw[at].prefix { !($0.isASCII && $0.isNumber) }.count
+        let continues = { (index: Int) in !lines[index].isEmpty && indent(raw[index]) > number }
 
         var found: [(index: Int, row: Row)] = [(at, picked)]
         // Up to the first choice on screen.
@@ -404,7 +419,7 @@ struct MobileScreen: Equatable {
                 found.insert((index, other), at: 0)
                 want -= 1
                 gap = 0
-            } else {
+            } else if !continues(index) {
                 gap += 1
             }
             index -= 1
@@ -422,7 +437,7 @@ struct MobileScreen: Equatable {
                 found.append((index, other))
                 want += 1
                 gap = 0
-            } else {
+            } else if !continues(index) {
                 gap += 1
             }
             index += 1
@@ -461,6 +476,87 @@ struct MobileScreen: Equatable {
             selected: picked.n, moreAbove: found[0].row.above || countAbove,
             moreBelow: found[found.count - 1].row.below || countBelow, truncated: truncated)
         return (prompt, found[0].index...found[found.count - 1].index)
+    }
+}
+
+/// The prompt Claude Code suggests after a turn: dim text in its input box,
+/// which Tab takes. Only the colour tells it from text the human typed, so it
+/// is read from the screen with its colour codes.
+enum MobileSuggestion {
+    /// `styled` is the pane's screen as `capture-pane -e` gives it. nil when
+    /// the screen is not an idle Claude Code input box that holds dim text
+    /// and nothing else.
+    static func read(_ styled: String, cursorRow: Int?) -> String? {
+        let rows = cells(styled)
+        let plain = rows.map { String($0.map(\.character)) }.joined(separator: "\n")
+        let seen = MobileScreen(plain, cursorRow: cursorRow)
+        guard seen.inputBox, let box = seen.anchor else { return nil }
+        var parts: [String] = []
+        for (offset, row) in rows[(box.top + 1)..<box.bottom].enumerated() {
+            var cells = row.drop { $0.character.isWhitespace }
+            if offset == 0 {
+                // Claude Code's mark. Codex (`›`) draws dim examples there.
+                guard cells.first?.character == "❯" else { return nil }
+                cells = cells.dropFirst()
+            }
+            guard cells.allSatisfy({ $0.dim || $0.character.isWhitespace }) else { return nil }
+            let text = String(cells.map(\.character)).trimmingCharacters(in: .whitespaces)
+            if !text.isEmpty { parts.append(text) }
+        }
+        let text = parts.joined(separator: " ")
+        // The example a new session shows is dim too, and is no suggestion.
+        return text.isEmpty || text.hasPrefix("Try \"") ? nil : text
+    }
+
+    /// The screen's characters, row by row, each with whether it is dim. tmux
+    /// writes a style once: it holds over the rows that follow.
+    private static func cells(_ styled: String) -> [[(character: Character, dim: Bool)]] {
+        var rows: [[(character: Character, dim: Bool)]] = [[]]
+        var dim = false
+        var rest = Substring(styled)
+        while let character = rest.first {
+            rest = rest.dropFirst()
+            if character == "\n" {
+                rows.append([])
+            } else if character != "\u{1B}" {
+                rows[rows.count - 1].append((character, dim))
+            } else if rest.first == "[" {
+                // A control sequence: its arguments, then one final character.
+                let body = rest.dropFirst().prefix { !("\u{40}"..."\u{7E}").contains($0) }
+                rest = rest.dropFirst(body.count + 1)
+                if rest.first == "m" { dim = Self.dim(String(body), was: dim) }
+                rest = rest.dropFirst()
+            } else if rest.first == "]" {
+                // A link or a title: up to its end mark.
+                if let end = rest.firstIndex(where: { $0 == "\u{07}" || $0 == "\u{1B}" }) {
+                    rest = rest[end...].dropFirst(rest[end] == "\u{1B}" ? 2 : 1)
+                } else {
+                    rest = ""
+                }
+            } else {
+                rest = rest.dropFirst()
+            }
+        }
+        return rows
+    }
+
+    /// Whether text is dim after the colour codes `arguments`: `2` sets it,
+    /// `0` and `22` end it. A `2` that is an argument of a colour (`38;5;2`)
+    /// is not the code.
+    private static func dim(_ arguments: String, was: Bool) -> Bool {
+        var dim = was
+        var codes = arguments.split(separator: ";", omittingEmptySubsequences: false)[...]
+        while let code = codes.popFirst() {
+            switch code {
+            case "", "0", "22": dim = false
+            case "2": dim = true
+            case "38", "48", "58":
+                // `5;n` or `2;r;g;b` follows.
+                codes = codes.dropFirst(codes.first == "5" ? 2 : codes.first == "2" ? 4 : 0)
+            default: break
+            }
+        }
+        return dim
     }
 }
 
@@ -811,13 +907,27 @@ enum MobileReply {
         return "w" + hash([key, state.since.map(String.init) ?? "", String(io.sequence(key))])
     }
 
-    /// The `GET …/prompt` body: the card, and the id a key must carry.
-    static func promptBody(state: MobilePaneState?, io: MobilePaneIO) -> [String: Any] {
-        let seen = look(io)
+    /// The `GET …/prompt` body: the card, the id a key must carry, and the
+    /// prompt Claude Code suggests in its input box. The suggestion is read
+    /// only from a pane that is verified idle, so a pane that works or waits
+    /// costs no extra read. `suggest` is false for a pane whose page shows none.
+    static func promptBody(state: MobilePaneState?, io: MobilePaneIO, suggest: Bool = true) -> [String: Any] {
+        var row: Int?
+        let seen = io.screen().map { text -> MobileScreen in
+            row = io.cursorRow()
+            return MobileScreen(text, cursorRow: row)
+        }
         let prompt = prompt(state: state, seen: seen, io: io)
         var id = prompt?.id
         if id == nil, let state, let seen { id = waitingID(state: state, seen: seen, io: io) }
-        return ["prompt": prompt.map { $0.json as Any } ?? NSNull(), "id": id ?? NSNull()]
+        var suggestion: String?
+        if suggest, let state, state.status != .busy, state.status != .waiting, seen?.inputBox == true {
+            suggestion = io.styled().flatMap { MobileSuggestion.read($0, cursorRow: row) }
+        }
+        return [
+            "prompt": prompt.map { $0.json as Any } ?? NSNull(), "id": id ?? NSNull(),
+            "suggestion": suggestion ?? NSNull(),
+        ]
     }
 
     /// `{"prompt": "<id>", "option": <n>}`.

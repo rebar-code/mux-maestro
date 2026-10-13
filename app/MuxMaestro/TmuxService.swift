@@ -2188,7 +2188,8 @@ final class TmuxService {
                 tmux(["display-message", "-p", "-t", target, "#{cursor_y}"])
                     .flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
             },
-            home: { [self] in resolveHome() })
+            home: { [self] in resolveHome() },
+            styled: { [self] in tmux(FileTransfer.captureStyledArgv(target: target)) })
     }
 
     /// The command that runs a tmux control client on this host for the

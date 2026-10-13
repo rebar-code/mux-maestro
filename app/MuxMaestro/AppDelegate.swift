@@ -168,6 +168,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             artifactDisk: { [registry] thread in
                 registry.service(for: thread.host).artifactFiles.disk()
             },
+            artifactFolders: { Settings.phoneArtifactFolders() },
             running: { [weak self] thread in
                 // The sidebar's scan caches belong to the main thread.
                 DispatchQueue.main.sync {
@@ -1151,6 +1152,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             setup.phone.onUploadFolder = { [weak self] folder in
                 Settings.setPhoneUploadFolder(folder)
                 self?.mobileServer.configure(Settings.phoneConfig())
+            }
+            setup.phone.onArtifactFolders = { folders in
+                Settings.setPhoneArtifactFolders(folders)
             }
             setup.phone.onPush = { [weak self] options in
                 Settings.setPhonePush(options)

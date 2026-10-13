@@ -158,6 +158,16 @@ enum SettingsSelfTest {
                 self.check("Upload folder is stored",
                            Settings.phoneUploadFolder() == NSHomeDirectory() + "/Screenshots"
                                && folder?.stringValue == "~/Screenshots", Settings.phoneUploadFolder())
+                let folders = self.window?.contentView.flatMap(self.all)?
+                    .first { $0 is NSTextField && $0.accessibilityLabel() == "Artifact folders" } as? NSTextField
+                if let folders {
+                    folders.stringValue = "~/reports, not a path"
+                    folders.sendAction(folders.action, to: folders.target)
+                }
+                self.check("Artifact folders are stored",
+                           Settings.phoneArtifactFolders() == [NSHomeDirectory() + "/reports"]
+                               && folders?.stringValue == "~/reports",
+                           folders?.stringValue ?? "no field")
                 self.shot("4-phone.png")
                 self.next(after: 0.2)
             }

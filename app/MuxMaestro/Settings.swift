@@ -457,6 +457,22 @@ enum Settings {
         }
     }
 
+    /// The folders outside a thread's own whose files the phone may be sent,
+    /// as absolute paths. None until the user names one.
+    static func phoneArtifactFolders(defaults: UserDefaults = .standard) -> [String] {
+        MobileArtifacts.folders(defaults.string(forKey: "phone.artifacts.folders") ?? "")
+    }
+
+    /// Stored as typed, so `~` stays the home folder.
+    static func setPhoneArtifactFolders(_ raw: String, defaults: UserDefaults = .standard) {
+        let typed = raw.trimmingCharacters(in: .whitespaces)
+        if MobileArtifacts.folders(typed).isEmpty {
+            defaults.removeObject(forKey: "phone.artifacts.folders")
+        } else {
+            defaults.set(typed, forKey: "phone.artifacts.folders")
+        }
+    }
+
     /// Which events notify the phone, what the text says, and the VAPID
     /// contact. Both events are on and the text is generic until changed.
     static func phonePush(defaults: UserDefaults = .standard) -> MobilePushOptions {

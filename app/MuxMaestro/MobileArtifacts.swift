@@ -41,6 +41,9 @@ struct MobileArtifactDisk {
     var home: String
     /// The folders screenshots are written to there.
     var tempRoots: [String]
+    /// Folders the user allowed besides the thread's own (Settings ▸ Phone).
+    /// They are on this Mac, so a remote host's disk has none.
+    var folders: [String] = []
     /// The path the host gives for what `path` names, links resolved. nil
     /// when nothing is there.
     var resolved: (String) -> String?
@@ -54,10 +57,11 @@ struct MobileArtifactDisk {
     static let local = local()
 
     static func local(
-        tempRoots: [String] = MobileArtifacts.tempRoots, home: String = NSHomeDirectory()
+        tempRoots: [String] = MobileArtifacts.tempRoots, home: String = NSHomeDirectory(),
+        folders: [String] = []
     ) -> MobileArtifactDisk {
         MobileArtifactDisk(
-            home: home, tempRoots: tempRoots, resolved: MobileArtifacts.resolved,
+            home: home, tempRoots: tempRoots, folders: folders, resolved: MobileArtifacts.resolved,
             size: MobileArtifacts.fileSize, open: MobileArtifacts.openLocal)
     }
 }
@@ -107,6 +111,18 @@ enum MobileArtifacts {
         relative.split(separator: "/").contains { $0.hasPrefix(".") }
     }
 
+    /// The folders of the Phone settings field: paths with a comma between
+    /// them, `~` for the home folder. What is not an absolute path is dropped.
+    static func folders(_ raw: String, home: String = NSHomeDirectory()) -> [String] {
+        var out: [String] = []
+        for part in raw.split(separator: ",") {
+            guard let folder = MobileReply.uploadFolder(String(part), home: home), !out.contains(folder)
+            else { continue }
+            out.append(folder)
+        }
+        return out
+    }
+
     /// The folders screenshots are written to. An image there is offered
     /// though it is outside the thread's folder; nothing else is.
     static let tempRoots: [String] = {
@@ -140,14 +156,16 @@ enum MobileArtifacts {
     }
 
     /// The one rule for what the phone may have, applied to a path whose links
-    /// are resolved: it lies in the thread's own folder, or it is an image in
-    /// a temp folder, and nothing below that root is hidden. The home folder
-    /// and the folders above it are never a thread's own folder. A transcript can
-    /// name any path on the Mac (an edit that was refused is still listed), so
-    /// being listed is not enough.
+    /// are resolved: it lies in the thread's own folder or in one of the
+    /// `folders` the user allowed, or it is an image in a temp folder, and
+    /// nothing below that root is hidden. The home folder and the folders
+    /// above it are never a root. A transcript can name any path on the Mac
+    /// (an edit that was refused is still listed), so being listed is not
+    /// enough.
     static func permitted(
         _ real: String, cwd: String, image: Bool, tempRoots: [String] = tempRoots,
-        home: String = NSHomeDirectory(), resolved: (String) -> String? = resolved
+        home: String = NSHomeDirectory(), folders: [String] = [],
+        resolved: (String) -> String? = resolved
     ) -> Bool {
         // Each root as it is named and as it resolves: a file that is gone
         // is judged by its name, one that is there by where it really is.
@@ -156,9 +174,16 @@ enum MobileArtifacts {
         // A thread started in the home folder, or above it, has no folder of
         // its own: everything the user keeps would be inside it.
         let homes = [(home as NSString).standardizingPath, resolved(home)].compactMap { $0 }
-        let tooWide = own.contains { root in homes.contains { $0 == root || $0.hasPrefix(root + "/") } }
+        func wide(_ root: String) -> Bool { homes.contains { $0 == root || $0.hasPrefix(root + "/") } }
+        let tooWide = own.contains(where: wide)
         let temp = image ? tempRoots + tempRoots.compactMap(resolved) : []
-        return ((tooWide ? [] : own) + temp).contains { root in
+        let allowed = folders.filter { $0.hasPrefix("/") }
+            .flatMap { folder -> [String] in
+                let named = (folder as NSString).standardizingPath
+                return [named, resolved(named)].compactMap { $0 }
+            }
+            .filter { !wide($0) }
+        return ((tooWide ? [] : own) + temp + allowed).contains { root in
             below(real, root: root).map { !hidden($0) } ?? false
         }
     }
@@ -221,14 +246,14 @@ enum MobileArtifacts {
     /// file that is gone is judged by the path it had.
     static func files(
         _ source: MobileArtifactSource?, cwd: String, size: (String) -> Int? = fileSize,
-        tempRoots: [String] = tempRoots, home: String = NSHomeDirectory(),
+        tempRoots: [String] = tempRoots, home: String = NSHomeDirectory(), folders: [String] = [],
         resolved: (String) -> String? = resolved
     ) -> [MobileArtifactFile] {
         (source?.artifacts ?? []).filter { artifact in
             !isSecret(artifact.path) && permitted(
                 resolved(artifact.path) ?? (artifact.path as NSString).standardizingPath,
                 cwd: cwd, image: isImage(artifact),
-                tempRoots: tempRoots, home: home, resolved: resolved)
+                tempRoots: tempRoots, home: home, folders: folders, resolved: resolved)
         }.map {
             MobileArtifactFile(artifact: $0, size: $0.exists ? size($0.path) : nil)
         }
@@ -240,7 +265,7 @@ enum MobileArtifacts {
     ) -> [MobileArtifactFile] {
         files(
             source, cwd: cwd, size: sizes ? disk.size : { _ in nil }, tempRoots: disk.tempRoots,
-            home: disk.home, resolved: disk.resolved)
+            home: disk.home, folders: disk.folders, resolved: disk.resolved)
     }
 
     static func fileSize(_ path: String) -> Int? {
@@ -337,9 +362,11 @@ enum MobileArtifacts {
     ///   is refused, and one written in another letter case is still found.
     static func read(
         path: String, cwd: String, image: Bool, limit: Int = maxFileBytes,
-        tempRoots: [String] = tempRoots, home: String = NSHomeDirectory()
+        tempRoots: [String] = tempRoots, home: String = NSHomeDirectory(), folders: [String] = []
     ) -> FileRead {
-        read(path: path, cwd: cwd, image: image, limit: limit, disk: .local(tempRoots: tempRoots, home: home))
+        read(
+            path: path, cwd: cwd, image: image, limit: limit,
+            disk: .local(tempRoots: tempRoots, home: home, folders: folders))
     }
 
     /// The same read on `disk`. The rules are applied here, to the real path
@@ -350,7 +377,7 @@ enum MobileArtifacts {
         disk.open(path, limit) { real in
             !isSecret(real) && permitted(
                 real, cwd: cwd, image: image, tempRoots: disk.tempRoots, home: disk.home,
-                resolved: disk.resolved)
+                folders: disk.folders, resolved: disk.resolved)
         }
     }
 
@@ -538,9 +565,13 @@ final class RemoteArtifactFiles {
         let paths = Array(mentions.made.keys) + Array(mentions.imageCandidates.keys)
             + Array(mentions.namedCandidates.keys)
         learn([cwd, (cwd as NSString).standardizingPath, home() ?? "", "/tmp"] + paths)
+        let exists: (String) -> Bool = { [self] in stat($0) != nil }
+        let modified: (String) -> Date? = { [self] in stat($0)?.modified }
+        // A second run for the other places a relative name could be.
+        let listed = ArtifactScanner.direct(mentions, fileExists: exists, mtime: modified)
+        learn(ArtifactScanner.elsewhere(mentions, listed: listed, fileExists: exists).flatMap(\.paths))
         return (
-            ArtifactScanner.resolve(
-                mentions, fileExists: { [self] in stat($0) != nil }, mtime: { [self] in stat($0)?.modified }),
+            ArtifactScanner.resolve(mentions, fileExists: exists, mtime: modified),
             ArtifactScanner.web(urls: mentions.urls, running: [], runningKnown: false).links)
     }
 }

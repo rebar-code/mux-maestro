@@ -96,6 +96,68 @@ final class ArtifactsTests: XCTestCase {
         XCTAssertEqual(found.map(\.kind), [.image, .file])
     }
 
+    /// The agent wrote a report outside the repo, then named its neighbours
+    /// with no folder. Nothing is at `<cwd>/<name>`, so each is found next to
+    /// a file the thread already lists.
+    func testARelativeNameWithNothingAtTheCwdListsFromTheFolderOfAListedFile() throws {
+        func line(_ block: [String: Any], at: String) throws -> String {
+            let record: [String: Any] = [
+                "type": "assistant", "timestamp": at, "cwd": "/work/repo",
+                "message": ["content": [block]],
+            ]
+            return String(data: try JSONSerialization.data(withJSONObject: record), encoding: .utf8)!
+        }
+        let lines = [
+            try line(
+                ["type": "tool_use", "name": "Write", "input": ["file_path": "/reports/run-1/summary.md"]],
+                at: "2026-10-02T10:00:00Z"),
+            try line(
+                ["type": "text",
+                 "text": "I also wrote `notes.md` and charts/q3.csv. See README.md, old.md and gone.md."],
+                at: "2026-10-02T10:05:00Z"),
+        ]
+        let fresh = date("2026-10-02T10:04:00Z")
+        let old = date("2025-01-01T00:00:00Z")
+        let mtimes = [
+            "/reports/run-1/summary.md": fresh, "/reports/run-1/notes.md": fresh,
+            "/reports/run-1/charts/q3.csv": fresh,
+            // At the cwd, so the report folder's copy is not what was meant.
+            "/work/repo/README.md": old, "/reports/run-1/README.md": fresh,
+            // Not changed during the thread.
+            "/reports/run-1/old.md": old,
+        ]
+        var asked = 0
+        let found = ArtifactScanner.scan(
+            lines: lines, cwd: "", threadStart: nil,
+            fileExists: { asked += 1; return mtimes[$0] != nil }, mtime: { mtimes[$0] })
+        XCTAssertEqual(found.map(\.path), [
+            "/reports/run-1/charts/q3.csv", "/reports/run-1/notes.md", "/reports/run-1/summary.md",
+        ])
+        XCTAssertLessThan(asked, 30)
+
+        // With no listed file there is no folder to look in.
+        let alone = ArtifactScanner.scan(
+            lines: [lines[1]], cwd: "", threadStart: nil,
+            fileExists: { mtimes[$0] != nil }, mtime: { mtimes[$0] })
+        XCTAssertEqual(alone, [])
+    }
+
+    func testLookingElsewhereIsCutShort() {
+        var mentions = ArtifactMentions()
+        let at = Date(timeIntervalSince1970: 1_700_000_000)
+        var listed: [Artifact] = []
+        for n in 0..<20 {
+            listed.append(Artifact(kind: .file, path: "/reports/run-\(n)/summary.md", at: at, exists: true))
+        }
+        for n in 0..<500 {
+            mentions.relativeNamed["/work/repo/name-\(n).md"] = ArtifactRelativeName(raw: "name-\(n).md", at: at)
+        }
+        let tries = ArtifactScanner.elsewhere(mentions, listed: listed, fileExists: { _ in false })
+        XCTAssertEqual(tries.count, ArtifactScanner.maxElsewhereNames)
+        XCTAssertTrue(tries.allSatisfy { $0.paths.count == ArtifactScanner.maxElsewhereFolders })
+        XCTAssertLessThanOrEqual(tries.flatMap(\.paths).count, RemoteArtifactFiles.maxPaths)
+    }
+
     func testNamedPathsSkipURLsAndReadSpacesOnlyInBackticks() {
         XCTAssertEqual(
             ArtifactScanner.namedPaths(

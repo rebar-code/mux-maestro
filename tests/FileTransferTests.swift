@@ -167,6 +167,11 @@ final class FileTransferTests: XCTestCase {
         XCTAssertEqual(FileTransfer.capturePaneArgv(target: "%12"), ["capture-pane", "-p", "-t", "%12"])
     }
 
+    func testCaptureStyledArgvIsTheVisibleScreenWithColour() {
+        XCTAssertEqual(
+            FileTransfer.captureStyledArgv(target: "%12"), ["capture-pane", "-p", "-e", "-t", "%12"])
+    }
+
     // MARK: capturePaneArgv
 
     func testCapturePaneArgv() {

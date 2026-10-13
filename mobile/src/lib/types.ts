@@ -143,6 +143,8 @@ export interface PromptState {
 	prompt: Prompt | null;
 	/** Names what the pane waits on, also when it has no readable choices. */
 	id: string | null;
+	/** The prompt Claude Code suggests in its input box. Left out by a Mac that does not read it. */
+	suggestion?: string | null;
 }
 
 /** A slash command of a thread. `name` has no leading slash. */

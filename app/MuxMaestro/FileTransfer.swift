@@ -69,6 +69,12 @@ enum FileTransfer {
         ["capture-pane", "-p", "-t", target]
     }
 
+    /// The tmux argv that captures a pane's visible screen with its colours
+    /// (`-e`): the rows `capturePaneArgv` gives, with SGR escapes.
+    static func captureStyledArgv(target: String) -> [String] {
+        ["capture-pane", "-p", "-e", "-t", target]
+    }
+
     /// The tmux argv that captures a pane's scrollback and screen with its
     /// colours: the last `lines` lines of history (`-S -<lines>`), then the
     /// visible screen, as text with SGR escapes (`-e`). Lines keep the pane's own

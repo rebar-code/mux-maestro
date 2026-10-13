@@ -1,4 +1,5 @@
 import { threadTitle } from './format';
+import type { SessionGroup } from './group';
 import type { ActionTarget, Thread } from './types';
 
 /** What a long press was on. */
@@ -7,6 +8,13 @@ export type MenuTarget =
 	/** `thread`: any thread of the session. It is how the Mac is told which session. */
 	| { kind: 'session'; host: string; session: string; thread: string }
 	| { kind: 'host'; host: string };
+
+export const sessionTarget = (session: SessionGroup): MenuTarget => ({
+	kind: 'session',
+	host: session.host,
+	session: session.name,
+	thread: session.threads[0].id
+});
 
 export type ItemKey =
 	| 'flag'

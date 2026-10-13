@@ -217,9 +217,9 @@ test('a list with no history opens to one line, and nothing on the page edits', 
 	page
 }) => {
 	await open(page);
-	await expect(page.locator('input, textarea, [contenteditable]')).toHaveCount(0);
+	await expect(page.locator('.view').locator('input, textarea, [contenteditable]')).toHaveCount(0);
 	await opener(page, 'req-016').click();
-	await expect(page.locator('input, textarea, [contenteditable]')).toHaveCount(0);
+	await expect(page.locator('.view').locator('input, textarea, [contenteditable]')).toHaveCount(0);
 
 	// A schema 1 list: no `history` on any row.
 	await page.route('**/api/requests', async (route) => {

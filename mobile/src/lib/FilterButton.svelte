@@ -75,14 +75,17 @@
 	}
 
 	.main {
-		gap: 6px;
-		padding: 0 4px 0 12px;
+		gap: 4px;
+		padding: 0 0 0 8px;
 		border-radius: 10px 0 0 10px;
 		font-size: 13px;
 		font-weight: 600;
 	}
 
 	.arrow {
+		/* The 44pt target is the main part; the arrow is the narrow one. */
+		min-width: 28px;
+		padding-right: 4px;
 		border-radius: 0 10px 10px 0;
 	}
 

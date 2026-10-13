@@ -21,11 +21,13 @@ import {
 	LIVE_MS,
 	needsPrompt,
 	paced,
+	pollsPrompt,
 	queueKey,
 	refusalLabel,
 	sendReduce,
 	slashQuery,
 	slashToken,
+	suggestionPolls,
 	textRefusal,
 	type BarKey,
 	type LiveTurn,
@@ -76,6 +78,8 @@ export interface ReplyTarget {
 	stamp: () => string;
 	/** Call `listener` when `stamp` may have changed. Returns the unsubscribe. */
 	subscribe: (listener: () => void) => () => void;
+	/** The pane's page shows the prompt Claude Code suggests: it is asked for after a turn. */
+	suggests?: boolean;
 }
 
 /** A listed thread, read from the live thread list. */
@@ -87,7 +91,8 @@ function threadTarget(id: string): ReplyTarget {
 			const thread = live.byId(id);
 			return `${thread?.status} ${thread?.since}`;
 		},
-		subscribe: (listener) => live.onThreads(listener)
+		subscribe: (listener) => live.onThreads(listener),
+		suggests: true
 	};
 }
 
@@ -128,6 +133,8 @@ export class Reply {
 	 * card is on screen for it, and the keys carry it: never an id with no card.
 	 */
 	promptId = $state<string | null>(null);
+	/** The prompt Claude Code suggests in the pane's input box. A tap takes it. */
+	suggestion = $state<string | null>(null);
 	/** The option an answer in flight picked, or that it cancels. */
 	answering = $state<number | 'cancel' | null>(null);
 	/** A spoken turn in flight. */
@@ -184,6 +191,8 @@ export class Reply {
 	private keys: QueuedKey[] = [];
 	/** A prompt was asked for while one was being fetched: fetch again after. */
 	private promptAgain = false;
+	/** Polls that remain for a suggestion to come. */
+	private polls = 0;
 	private pressing = false;
 	private loadingPrompt = false;
 	private answered: { id: string; at: number } | null = null;
@@ -235,6 +244,8 @@ export class Reply {
 				this.arm(true);
 			} else {
 				await sendText(this.id, text);
+				// The pane's box holds the sent text now, not what was suggested.
+				this.suggestion = null;
 			}
 			// What was sent goes; what was typed meanwhile stays.
 			if (text) this.draft = remainingDraft(this.draft, text);
@@ -393,8 +404,13 @@ export class Reply {
 			const off = this.target.subscribe(sync);
 			const timer = setInterval(() => {
 				if (document.visibilityState !== 'visible') return;
-				// A prompt that shows is asked for again, to see it go.
-				if (this.waiting || this.promptId !== null) void this.loadPrompt();
+				const left = this.polls;
+				this.polls = Math.max(left - 1, 0);
+				// A prompt that shows is asked for again, to see it go. So is a suggestion.
+				const prompt = this.promptId !== null;
+				const suggestion = this.suggestion !== null;
+				if (pollsPrompt({ waiting: this.waiting, prompt, suggestion, left }))
+					void this.loadPrompt();
 			}, POLL_MS);
 			return () => {
 				off();
@@ -416,6 +432,9 @@ export class Reply {
 		// Another turn, or none: the one that held the queued text is over. Nothing is armed.
 		this.queued = [];
 		this.arm(false);
+		// A pane that works or waits shows no suggestion; one that stopped draws it a little later.
+		this.polls = this.target.suggests ? suggestionPolls(this.target.state()) : 0;
+		if (this.polls === 0) this.suggestion = null;
 		void this.loadPrompt();
 	}
 
@@ -439,6 +458,7 @@ export class Reply {
 			const gone = answered?.id === state.id && Date.now() - answered.at < ANSWERED_MS;
 			const id = gone ? null : state.id;
 			const prompt = gone ? null : state.prompt;
+			this.suggestion = state.suggestion ?? null;
 			if (id !== this.promptId || JSON.stringify(prompt) !== JSON.stringify(this.prompt))
 				await this.host.stick(
 					() => {
@@ -454,6 +474,11 @@ export class Reply {
 		}
 		if (this.promptAgain) await this.loadPrompt();
 	}
+
+	/** A tap on the suggestion: it goes into the box, as Tab does in the pane. Nothing is sent. */
+	takeSuggestion = (): void => {
+		if (this.suggestion) this.draft = this.suggestion;
+	};
 
 	/** Pick an option of the card. */
 	answer = (option: number): Promise<void> => this.settlePrompt({ option });
