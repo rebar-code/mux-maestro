@@ -8,11 +8,14 @@ import type {
 	ChatPage,
 	Command,
 	Config,
+	EffortOption,
 	FindResult,
 	Host,
 	ManagerHome,
 	Mapping,
 	MappingList,
+	ModelMenu,
+	ModelOption,
 	PromptState,
 	RequestList,
 	RequestState,
@@ -378,6 +381,35 @@ export async function answerPrompt(
 
 export async function fetchCommands(id: string): Promise<Command[]> {
 	return (await get<{ commands: Command[] }>(`${threadPath(id)}/commands`)).commands;
+}
+
+/**
+ * One step of the agent's own `/model` menu in the thread's pane. The Mac
+ * opens the menu, reads it, and takes a pick for this session only.
+ */
+async function modelStep<T>(id: string, body: Record<string, unknown>): Promise<T> {
+	return (await (await post(`${threadPath(id)}/model`, body)).json()) as T;
+}
+
+/** Open the menu and list its models. Only an idle agent takes it. */
+export function openModelMenu(id: string): Promise<ModelMenu> {
+	return modelStep<ModelMenu>(id, { step: 'open' });
+}
+
+/** Put the menu on `model`; the answer is that model's effort levels. */
+export async function pickModel(id: string, model: ModelOption): Promise<EffortOption[]> {
+	const body = { step: 'model', n: model.n, label: model.label };
+	return (await modelStep<{ efforts: EffortOption[] }>(id, body)).efforts;
+}
+
+/** Take `model` at `effort` (null: it has no levels), and close the menu. */
+export async function applyModel(id: string, model: string, effort: string | null): Promise<void> {
+	await modelStep(id, { step: 'apply', model, ...(effort === null ? {} : { effort }) });
+}
+
+/** Close the menu; nothing changes. */
+export async function closeModelMenu(id: string): Promise<void> {
+	await modelStep(id, { step: 'cancel' });
 }
 
 /** What the Mac says of a file it saved. */

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { applyModel, closeModelMenu, openModelMenu, pickModel } from './api';
 	import ArtifactInline from './ArtifactInline.svelte';
 	import { hasThumb, inlineArtifacts, resolveArtifact } from './artifacts';
 	import { ARTIFACTS, Artifacts } from './artifacts.svelte';
@@ -18,11 +19,16 @@
 	import KeyBar from './KeyBar.svelte';
 	import { can, live, OFF_LABEL } from './live.svelte';
 	import LiveTerminal from './LiveTerminal.svelte';
+	import { longPress } from './longpress';
 	import { LiveTerm } from './liveterm.svelte';
 	import { maestro } from './maestro.svelte';
+	import { menu as actions } from './actions.svelte';
 	import { manager } from './manager.svelte';
 	import MaestroBack from './MaestroBack.svelte';
 	import Marked from './Marked.svelte';
+	import { modelReady } from './model';
+	import { ModelPicker } from './model.svelte';
+	import ModelSheet from './ModelSheet.svelte';
 	import NextBar from './NextBar.svelte';
 	import NoteLine from './NoteLine.svelte';
 	import PromptCard from './PromptCard.svelte';
@@ -195,6 +201,19 @@
 	// svelte-ignore state_referenced_locally
 	const asks = listed || givenReply !== undefined;
 
+	/** A long press on the header: the thread's menu, as on its row in the drawer. */
+	function openMenu(): void {
+		if (thread) actions.open({ kind: 'thread', thread });
+	}
+
+	// svelte-ignore state_referenced_locally
+	const picker = new ModelPicker(id, {
+		open: openModelMenu,
+		pick: pickModel,
+		apply: applyModel,
+		close: closeModelMenu
+	});
+
 	// svelte-ignore state_referenced_locally
 	const find = new Find(
 		id,
@@ -229,6 +248,8 @@
 	};
 
 	const repliesOn = $derived(can('replies'));
+	/** The agent's model is picked here: a listed thread that runs one. */
+	const modelOn = $derived(listed && repliesOn && (thread?.chat ?? false));
 	const keysOn = $derived(can('keyBar'));
 	// A take goes to the thread as a reply, so voice needs that switch too.
 	const voiceOn = $derived(repliesOn && can('voice'));
@@ -356,7 +377,7 @@
 		<button class="tb" aria-label="Menu" onclick={() => ui.openDrawer()}>☰</button>
 		{#if thread}
 			<span class="dot {dotClass(thread)}"></span>
-			<div class="title">
+			<div class="title" {@attach longPress(openMenu)}>
 				<b>{thread.session} · {thread.name}</b>
 				<span
 					><i class="hchip" style:background={color}>{thread.host}</i> {statusLabel(thread)}</span
@@ -369,6 +390,14 @@
 				<span class="skel" style:width="55%" style:height="14px" style:margin-bottom="5px"></span>
 				<span class="skel" style:width="35%" style:height="11px"></span>
 			</div>
+		{/if}
+		{#if modelOn}
+			<button
+				class="tb"
+				disabled={closed || !modelReady(thread)}
+				aria-label="Model"
+				onclick={picker.open}><Icon name="sliders" /></button
+			>
 		{/if}
 		<button
 			class="tb"
@@ -605,6 +634,7 @@
 </div>
 
 <ServeConfirm {servers} />
+<ModelSheet {picker} />
 
 {#snippet attach()}
 	{#if repliesOn}

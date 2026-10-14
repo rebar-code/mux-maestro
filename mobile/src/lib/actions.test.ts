@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
 	actionTarget,
+	copyValue,
+	isCopyKey,
 	killed,
 	menuItems,
 	menuTitle,
@@ -40,6 +42,43 @@ const thread = (id: string, over: Partial<Thread> = {}): Thread => ({
 const labels = (target: MenuTarget, canKill: boolean): string[] =>
 	menuItems(target, canKill).map((item) => item.label);
 
+describe('copy items', () => {
+	const AGENT = '0a1b2c3d-0000-4000-8000-000000000001';
+	const row = thread('localhost:1', { agent: AGENT, window: 3, pane: '%12' });
+	const copies = (target: MenuTarget, canAct: boolean): string[] =>
+		menuItems(target, true, canAct)
+			.filter((item) => isCopyKey(item.key))
+			.map((item) => item.label);
+
+	it('copies the session id and the tmux targets', () => {
+		expect(copyValue('copy-session-id', row)).toBe(AGENT);
+		expect(copyValue('copy-window', row)).toBe('acme-app:3');
+		expect(copyValue('copy-pane', row)).toBe('%12');
+	});
+
+	it('offers the session id only for a pane that runs an agent', () => {
+		const all = ['Copy Session ID', 'Copy tmux Window', 'Copy tmux Pane'];
+		expect(copies({ kind: 'thread', thread: row }, true)).toEqual(all);
+		const shell = thread('localhost:1', { agent: null });
+		expect(copyValue('copy-session-id', shell)).toBeNull();
+		expect(copies({ kind: 'thread', thread: shell }, true)).toEqual(all.slice(1));
+	});
+
+	it('is all a thread offers with session actions off', () => {
+		expect(
+			menuItems({ kind: 'thread', thread: row }, true, false).map((item) => item.label)
+		).toEqual(['Copy Session ID', 'Copy tmux Window', 'Copy tmux Pane']);
+		expect(menuItems({ kind: 'host', host: 'devbox' }, true, false)).toEqual([]);
+		const session: MenuTarget = {
+			kind: 'session',
+			host: 'devbox',
+			session: 'billing',
+			thread: 'devbox:2'
+		};
+		expect(menuItems(session, true, false)).toEqual([]);
+	});
+});
+
 describe('menuItems', () => {
 	it('lists each row kind and leaves the kills out without the switch', () => {
 		const row: MenuTarget = { kind: 'thread', thread: thread('localhost:1') };
@@ -49,6 +88,8 @@ describe('menuItems', () => {
 			'Rename Window…',
 			'Archive Window',
 			'Zoom Pane',
+			'Copy tmux Window',
+			'Copy tmux Pane',
 			'Kill Window'
 		]);
 		// Archive stays without the kill switch: the Mac can undo it.
@@ -57,7 +98,9 @@ describe('menuItems', () => {
 			'New Window…',
 			'Rename Window…',
 			'Archive Window',
-			'Zoom Pane'
+			'Zoom Pane',
+			'Copy tmux Window',
+			'Copy tmux Pane'
 		]);
 		const kept: MenuTarget = { kind: 'thread', thread: thread('localhost:1', { flagged: true }) };
 		expect(labels(kept, false)[0]).toBe('Unflag');

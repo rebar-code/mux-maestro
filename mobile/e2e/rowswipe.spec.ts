@@ -91,7 +91,10 @@ test('the menu button opens the menu a long press opens', async ({ page }) => {
 		'New Window…',
 		'Rename Window…',
 		'Archive Window',
-		'Zoom Pane'
+		'Zoom Pane',
+		'Copy Session ID',
+		'Copy tmux Window',
+		'Copy tmux Pane'
 	]);
 	await shot(page, 'row-menu');
 });
