@@ -2471,6 +2471,43 @@ final class TmuxService {
         return (slug, GitHubPR.parse(json: out))
     }
 
+    /// The repo slug, branch and origin ref for the checkout at `cwd` — git only,
+    /// never GitHub, so the sidebar can run it on every scan. `branch` is nil for
+    /// a detached HEAD; `originRef` is "" for an unpushed branch. Off the main thread.
+    func branchHead(cwd: String) -> (slug: String?, branch: String?, originRef: String) {
+        guard let slug = repoSlug(cwd: cwd) else { return (nil, nil, "") }
+        guard let branch = runHostCommand(
+                local: gitPath, remote: "git", GitHubPR.branchArgv(cwd: cwd))?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+              !branch.isEmpty, branch != "HEAD"
+        else { return (slug, nil, "") }
+        let ref = runHostCommand(
+            local: gitPath, remote: "git", GitHubPR.originRefArgv(cwd: cwd, branch: branch))?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return (slug, branch, ref)
+    }
+
+    /// The open PRs for many branches of one repo: one `gh api graphql` call per
+    /// `GitHubPR.headsPerQuery` branches, about a point each, instead of one
+    /// `gh pr list` per branch. nil when any batch fails, so the caller keeps its
+    /// last answer. `rate` is the freshest budget reading. Off the main thread.
+    func pullRequestsByHead(slug: String, branches: [String])
+        -> (prsByBranch: [String: [PullRequest]], rate: RateReading?)?
+    {
+        var prs: [String: [PullRequest]] = [:]
+        var rate: RateReading?
+        for start in stride(from: 0, to: branches.count, by: GitHubPR.headsPerQuery) {
+            let part = Array(branches[start..<min(start + GitHubPR.headsPerQuery, branches.count)])
+            guard let argv = GitHubPR.headsArgv(slug: slug, branches: part),
+                  let out = runHostCommand(local: ghPath, remote: "gh", argv),
+                  let answer = GitHubPR.parseHeads(json: out, branches: part)
+            else { return nil }
+            prs.merge(answer.prsByBranch) { _, new in new }
+            rate = answer.rate ?? rate
+        }
+        return (prs, rate)
+    }
+
     /// One pull request by number, in whatever state it is in — the validation
     /// step for a PR number parsed out of a tmux window's name. nil when the
     /// number doesn't exist in that repo (gh exits non-zero) or gh is missing.
@@ -2990,13 +3027,23 @@ final class TmuxService {
     private var catPath: String {
         FileManager.default.isExecutableFile(atPath: "/bin/cat") ? "/bin/cat" : "cat"
     }
-    /// Best-effort local `gh` (GitHub CLI) path — Homebrew first, then other
-    /// prefixes. Remote uses the bare `gh` on the remote PATH.
-    private var ghPath: String {
-        ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"].first {
+    /// Local `gh` (GitHub CLI) path. Remote uses the bare `gh` on the remote PATH.
+    private var ghPath: String { Self.localGhPath }
+
+    /// The `gh` the user's own shell runs, so a gh wrapper on their PATH (call
+    /// logging, account switching) sees the app's calls too; then Homebrew and the
+    /// other prefixes. Resolved once, on first use — keep that off the main thread.
+    private static let localGhPath: String = {
+        let shellVar = ProcessInfo.processInfo.environment["SHELL"] ?? ""
+        let shell = shellVar.isEmpty ? "/bin/zsh" : shellVar
+        let output = ProcessCommandRunner(timeout: 10)
+            .run(shell, ["-ilc", SetupTools.shellLookupScript(["gh"])], stdin: nil) ?? ""
+        let fromShell = SetupTools.parseShellLookup(output)["gh"]
+        return ([fromShell].compactMap { $0 }
+            + ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"]).first {
             FileManager.default.isExecutableFile(atPath: $0)
         } ?? "gh"
-    }
+    }()
     /// Best-effort local ripgrep path — Homebrew first (where it lives on this
     /// Mac), then other common prefixes. Remote uses the bare `rg` on the remote
     /// PATH (resolved on the remote, which may install it anywhere).
