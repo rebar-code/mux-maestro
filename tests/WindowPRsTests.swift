@@ -513,6 +513,74 @@ final class WindowPRServiceTests: XCTestCase {
         XCTAssertTrue(runner.calls.isEmpty)
     }
 
+    /// The per-scan half: git only, never gh. The origin ref is what tells the
+    /// sidebar a push happened, so it knows when GitHub is worth asking.
+    func testBranchHeadUsesGitOnly() {
+        let runner = FakeRunner()
+        runner.responses["-C /a/repo remote get-url origin"] = "git@github.com:o/r.git\n"
+        runner.responses["-C /a/repo rev-parse --abbrev-ref HEAD"] = "feat/x\n"
+        runner.responses["-C /a/repo rev-parse --verify --quiet refs/remotes/origin/feat/x"] =
+            "abc123\n"
+        let head = service(runner).branchHead(cwd: "/a/repo")
+        XCTAssertEqual(head.slug, "o/r")
+        XCTAssertEqual(head.branch, "feat/x")
+        XCTAssertEqual(head.originRef, "abc123")
+        XCTAssertFalse(runner.argSequences.contains { $0.first == "pr" || $0.first == "api" })
+    }
+
+    /// An unpushed branch has no origin ref; rev-parse --verify exits non-zero.
+    func testBranchHeadOfUnpushedBranchHasEmptyOriginRef() {
+        let runner = FakeRunner()
+        runner.responses["-C /a/repo remote get-url origin"] = "git@github.com:o/r.git\n"
+        runner.responses["-C /a/repo rev-parse --abbrev-ref HEAD"] = "wip\n"
+        runner.responses["-C /a/repo rev-parse --verify --quiet refs/remotes/origin/wip"] =
+            .some(nil)
+        let head = service(runner).branchHead(cwd: "/a/repo")
+        XCTAssertEqual(head.branch, "wip")
+        XCTAssertEqual(head.originRef, "")
+    }
+
+    func testBranchHeadOfDetachedHeadHasNoBranch() {
+        let runner = FakeRunner()
+        runner.responses["-C /a/repo remote get-url origin"] = "git@github.com:o/r.git\n"
+        runner.responses["-C /a/repo rev-parse --abbrev-ref HEAD"] = "HEAD\n"
+        let head = service(runner).branchHead(cwd: "/a/repo")
+        XCTAssertEqual(head.slug, "o/r")
+        XCTAssertNil(head.branch)
+        XCTAssertEqual(runner.argSequences.count, 2)
+    }
+
+    /// 120 branches in one repo cost 3 GraphQL calls (50 per document), not 120.
+    func testPullRequestsByHeadBatchesFiftyBranchesPerCall() {
+        let runner = FakeRunner()
+        runner.defaultResponse = nil
+        let branches = (0..<120).map { "b\($0)" }
+        for chunk in stride(from: 0, to: 120, by: 50) {
+            let part = Array(branches[chunk..<min(chunk + 50, 120)])
+            let aliases = part.indices.map { #""h\#($0)":{"nodes":[]}"# }
+            let first = #"{"number":\#(chunk + 1),"url":"u","isDraft":false}"#
+            let body = aliases.enumerated().map { i, a in
+                i == 0 ? #""h0":{"nodes":[\#(first)]}"# : a }.joined(separator: ",")
+            let remaining = 4000 - chunk
+            runner.responses[GitHubPR.headsArgv(slug: "o/r", branches: part)!
+                .joined(separator: " ")] =
+                #"{"data":{"rateLimit":{"remaining":\#(remaining),"resetAt":"2026-10-15T15:04:02Z"},"repository":{\#(body)}}}"#
+        }
+        let out = service(runner).pullRequestsByHead(slug: "o/r", branches: branches)
+        XCTAssertEqual(runner.argSequences.count, 3)
+        XCTAssertEqual(out?.prsByBranch.count, 120)
+        XCTAssertEqual(out?.prsByBranch["b50"]?.map(\.number), [51])
+        XCTAssertEqual(out?.prsByBranch["b51"], [])
+        // The last chunk's reading is the freshest balance.
+        XCTAssertEqual(out?.rate?.remaining, 3900)
+    }
+
+    func testPullRequestsByHeadIsNilWhenAnyChunkFails() {
+        let runner = FakeRunner()
+        runner.defaultResponse = nil
+        XCTAssertNil(service(runner).pullRequestsByHead(slug: "o/r", branches: ["a"]))
+    }
+
     func testRepoSlugFromCwd() {
         let runner = FakeRunner()
         runner.responses["-C /a/repo remote get-url origin"] = "git@github.com:o/r.git\n"

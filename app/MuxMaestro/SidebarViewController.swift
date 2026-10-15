@@ -1866,6 +1866,8 @@ final class SidebarViewController: NSViewController {
     /// Process-lifetime cache so a declared number costs one `gh pr view` ever;
     /// see `PRIdentityCache` for why merged/closed and misses are never re-asked.
     private let prIdentityCache = PRIdentityCache()
+    /// Branch PRs per repo, and when GitHub is worth asking again; see `BranchPRCache`.
+    private let branchPRCache = BranchPRCache()
     /// Set by the AppDelegate to refresh the toolbar "PRs" item when the set changes.
     var onPullRequestsChanged: (() -> Void)?
 
@@ -4381,13 +4383,15 @@ final class SidebarViewController: NSViewController {
     /// A window's PRs are the union of the numbers declared for it — the `@mm_prs`
     /// window option an agent set (resolved against `@mm_repo` when present), then
     /// the numbers in its NAME — and the open PR for its cwd's branch; see
-    /// `WindowPRs`. The branch half is one `gh pr list` per unique (host, cwd),
-    /// exactly as before. The declared half is one `gh pr view` per unresolved
+    /// `WindowPRs`. The branch half reads each unique (host, cwd)'s branch with git,
+    /// then asks GitHub once per repo — one batched GraphQL call for all its
+    /// branches — and only when `branchPRCache` says the answer may have moved.
+    /// The declared half is one `gh pr view` per unresolved
     /// (slug, number), cached by
     /// `prIdentityCache` so a number resolves once and merged/closed PRs and
     /// misses are never asked about again.
     ///
-    /// Throttled to ~20s between poll-driven scans so gh isn't hit every tree
+    /// Throttled to ~20s between poll-driven scans so git isn't run every tree
     /// refresh; pass `force` to bypass. Both fan-outs run through the same
     /// `maxConcurrentPRScans` gate — this repo already paid once for a subprocess
     /// storm on the 1.5s poll (PR #67).
@@ -4403,6 +4407,7 @@ final class SidebarViewController: NSViewController {
             let key: String
             let cwdKey: String
             let cwd: String
+            let hostName: String
             let sessionKey: String
             let session: String
             let window: Int
@@ -4421,6 +4426,7 @@ final class SidebarViewController: NSViewController {
                         key: windowKey(host: host, session: s.name, window: w.index),
                         cwdKey: "\(host.name)\n\(w.cwd)",
                         cwd: w.cwd,
+                        hostName: host.name,
                         sessionKey: "\(host.name)\n\(s.name)",
                         session: s.name,
                         window: w.index,
@@ -4435,15 +4441,15 @@ final class SidebarViewController: NSViewController {
         isScanningPRs = true
         lastPRScan = Date()
         let cache = prIdentityCache
+        let branchCache = branchPRCache
 
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            // Phase 1 — branch PRs. Dedupe by (host, cwd) so windows sharing a repo
-            // make one gh call; the call also hands back the repo slug, which
-            // phase 2 needs and would otherwise re-derive.
+            // Phase 1 — branch PRs. Dedupe by (host, cwd) and read each one's repo,
+            // branch and origin ref with git alone; the slug also feeds phase 2.
             var seen = Set<String>()
-            var uniques: [(cwdKey: String, cwd: String, service: TmuxService)] = []
+            var uniques: [(cwdKey: String, cwd: String, hostName: String, service: TmuxService)] = []
             for t in targets where !t.cwd.isEmpty && seen.insert(t.cwdKey).inserted {
-                uniques.append((t.cwdKey, t.cwd, t.service))
+                uniques.append((t.cwdKey, t.cwd, t.hostName, t.service))
             }
             // Cap concurrent `gh`/`git` fan-out. Each lookup runs a few subprocesses
             // (each spawning its own reader/waiter threads), so one async per repo
@@ -4454,22 +4460,64 @@ final class SidebarViewController: NSViewController {
             let gate = DispatchSemaphore(value: Self.maxConcurrentPRScans)
             let group = DispatchGroup()
             let lock = NSLock()
-            var prsByCwd: [String: [PullRequest]] = [:]
-            var slugByCwd: [String: String] = [:]
+            var heads: [String: (slug: String?, branch: String?, originRef: String)] = [:]
             for u in uniques {
                 gate.wait()
                 group.enter()
                 DispatchQueue.global(qos: .utility).async {
-                    let found = u.service.branchPullRequests(cwd: u.cwd)
+                    let head = u.service.branchHead(cwd: u.cwd)
                     lock.lock()
-                    prsByCwd[u.cwdKey] = found.prs
-                    if let slug = found.slug { slugByCwd[u.cwdKey] = slug }
+                    heads[u.cwdKey] = head
                     lock.unlock()
                     gate.signal()
                     group.leave()
                 }
             }
             group.wait()
+
+            // Group branches by repo, then ask GitHub once per repo that is due.
+            struct RepoScan {
+                let hostName: String
+                let slug: String
+                let service: TmuxService
+                var signatures: [String: String]
+            }
+            var slugByCwd: [String: String] = [:]
+            var repos: [String: RepoScan] = [:]
+            for u in uniques {
+                guard let head = heads[u.cwdKey], let slug = head.slug else { continue }
+                slugByCwd[u.cwdKey] = slug
+                guard let branch = head.branch else { continue }
+                repos["\(u.hostName)\n\(slug)", default: RepoScan(
+                    hostName: u.hostName, slug: slug, service: u.service, signatures: [:])]
+                    .signatures[branch] = head.originRef
+            }
+            for r in repos.values where branchCache.isDue(
+                host: r.hostName, slug: r.slug, signatures: r.signatures) {
+                gate.wait()
+                group.enter()
+                DispatchQueue.global(qos: .utility).async {
+                    if let answer = r.service.pullRequestsByHead(
+                        slug: r.slug, branches: r.signatures.keys.sorted()) {
+                        branchCache.record(host: r.hostName, slug: r.slug,
+                                           signatures: r.signatures,
+                                           prs: answer.prsByBranch, rate: answer.rate)
+                    } else {
+                        branchCache.recordFailure(host: r.hostName, slug: r.slug,
+                                                  signatures: r.signatures)
+                    }
+                    gate.signal()
+                    group.leave()
+                }
+            }
+            group.wait()
+
+            var prsByCwd: [String: [PullRequest]] = [:]
+            for u in uniques {
+                guard let head = heads[u.cwdKey], let slug = head.slug,
+                      let branch = head.branch else { continue }
+                prsByCwd[u.cwdKey] = branchCache.prs(host: u.hostName, slug: slug, branch: branch)
+            }
 
             // Phase 2 — validate the declared numbers. A window's `@mm_repo` names
             // the repo outright; otherwise a window whose own cwd isn't a checkout
