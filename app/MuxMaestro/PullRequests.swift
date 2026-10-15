@@ -189,9 +189,9 @@ extension GitHubPR {
 /// GitHub's GraphQL budget (5,000 points an hour) is shared by every gh, agent
 /// and app signed in as the user. Asking once per window cwd every 20s spent
 /// ~5,400 an hour on its own. So a repo is asked only when:
-/// - a window sits on a branch it has not asked about, or a push moved a
-///   branch's origin ref (then it stays hot for `hotWindow`, because
-///   `gh pr create` lands seconds after the push);
+/// - a window sits on a branch it has not asked about (asked once), or a push
+///   moved a known branch's origin ref (then it stays hot for `hotWindow`,
+///   because `gh pr create` lands seconds after the push);
 /// - or `refreshInterval` has passed, to catch merges and PRs opened elsewhere.
 /// A host whose budget drops below `reserve` pauses until GitHub's reset.
 final class BranchPRCache {
@@ -221,6 +221,9 @@ final class BranchPRCache {
         if let until = pausedUntil[host], now < until { return false }
         let key = Self.key(host: host, slug: slug)
         var repo = repos[key] ?? Repo()
+        // A branch never asked about: ask once. A known branch whose origin ref
+        // moved was just pushed: ask, and stay hot for the PR that follows.
+        if signatures.contains(where: { repo.signatures[$0.key] == nil }) { return true }
         if signatures.contains(where: { repo.signatures[$0.key] != $0.value }) {
             repo.hotUntil = now + Self.hotWindow
             repos[key] = repo

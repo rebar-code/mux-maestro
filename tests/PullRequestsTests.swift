@@ -182,6 +182,17 @@ final class BranchPRCacheTests: XCTestCase {
         XCTAssertFalse(cache.isDue(host: "local", slug: "o/r", signatures: pushed, now: cooled))
     }
 
+    /// First sight (app launch, a new window) is asked once, not kept hot: only
+    /// a push of a branch already asked about can mean a PR is about to appear.
+    func testFirstSightIsAskedOnceNotKeptHot() {
+        let cache = BranchPRCache()
+        XCTAssertTrue(cache.isDue(host: "local", slug: "o/r", signatures: ["a": "s1"], now: t0))
+        cache.record(host: "local", slug: "o/r", signatures: ["a": "s1"],
+                     prs: ["a": []], rate: nil, now: t0)
+        XCTAssertFalse(cache.isDue(host: "local", slug: "o/r", signatures: ["a": "s1"],
+                                   now: t0 + 20))
+    }
+
     func testANewBranchMakesTheRepoDue() {
         let cache = BranchPRCache()
         cache.record(host: "local", slug: "o/r", signatures: ["a": "s1"],
