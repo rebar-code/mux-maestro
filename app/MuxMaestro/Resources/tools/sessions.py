@@ -42,6 +42,9 @@ CODEX_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
 # What `list --full` found last time, so a transcript that did not change is
 # not read again. It holds prompt text: the file is private to the user.
 TAIL_CACHE = Path.home() / ".muxmaestro" / "cache" / "tails.json"
+# What `list` counted in each Claude transcript last time, so a run reads only
+# what was appended since. It holds prompt text too.
+SUMMARY_CACHE = Path.home() / ".muxmaestro" / "cache" / "summaries.json"
 # Where Linux lists each process's open files.
 PROC_DIR = "/proc"
 
@@ -112,32 +115,75 @@ def _index_for_path(project_path: str) -> dict[str, dict]:
     return result
 
 
-def _fallback_from_jsonl(project_path: str, session_id: str) -> dict:
+def _fallback_from_jsonl(
+    project_path: str, session_id: str, cache: dict, fresh: dict
+) -> dict:
     """Read summary fields straight from the session transcript.
 
     sessions-index.json is a lazily rebuilt cache — Claude Code can leave it
     days stale, so recent sessions are often missing from it and would come
     back with null firstPrompt/gitBranch/messageCount. The transcript itself
     is always current.
+
+    Transcripts grow to tens of megabytes and the app runs `list` every few
+    seconds, so a run reads only the whole lines appended since the last one
+    (`cache`), and parses a line only while the first prompt or the branch is
+    still unknown.
     """
     path = PROJECTS_DIR / _project_dirname(project_path) / f"{session_id}.jsonl"
-    first_prompt = None
-    git_branch = None
-    count = 0
     try:
-        with path.open() as f:
-            for line in f:
+        st = path.stat()
+    except OSError:
+        return {}
+    known = _known_summary(cache, str(path))
+    if known and known["size"] == st.st_size and known["mtime"] == st.st_mtime_ns:
+        entry = known
+    else:
+        # A shorter file was written again, not appended to: start over.
+        keep = known if known and st.st_size >= known["size"] else None
+        entry = dict(keep) if keep else {
+            "offset": 0, "count": 0, "firstPrompt": None, "gitBranch": None
+        }
+        entry["size"] = st.st_size
+        entry["mtime"] = st.st_mtime_ns
+        try:
+            _summarize(path, entry)
+        except OSError:
+            return {}
+    fresh[str(path)] = entry
+    if entry["count"] == 0:
+        return {}
+    return {
+        "firstPrompt": entry["firstPrompt"],
+        "gitBranch": entry["gitBranch"],
+        "messageCount": entry["count"],
+    }
+
+
+def _summarize(path: Path, entry: dict) -> None:
+    """Fold the whole lines of `path` from `entry["offset"]` up to
+    `entry["size"]` into `entry`. Claude Code writes compact JSON, so a
+    message's line holds `"type":"user"` or `"type":"assistant"` as is."""
+    with path.open("rb") as f:
+        f.seek(entry["offset"])
+        for line in f:
+            # The last line may still be being written.
+            if not line.endswith(b"\n") or entry["offset"] + len(line) > entry["size"]:
+                break
+            entry["offset"] += len(line)
+            if b'"type":"user"' not in line and b'"type":"assistant"' not in line:
+                continue
+            if entry["firstPrompt"] is None or entry["gitBranch"] is None:
                 try:
                     d = json.loads(line)
-                except json.JSONDecodeError:
+                except ValueError:
                     continue
                 kind = d.get("type")
                 if kind not in ("user", "assistant"):
                     continue
-                count += 1
-                if git_branch is None and d.get("gitBranch"):
-                    git_branch = d["gitBranch"]
-                if first_prompt is None and kind == "user" and not d.get("isMeta"):
+                if entry["gitBranch"] is None and d.get("gitBranch"):
+                    entry["gitBranch"] = d["gitBranch"]
+                if entry["firstPrompt"] is None and kind == "user" and not d.get("isMeta"):
                     content = (d.get("message") or {}).get("content")
                     if isinstance(content, list):
                         content = " ".join(
@@ -148,16 +194,23 @@ def _fallback_from_jsonl(project_path: str, session_id: str) -> dict:
                     text = (content or "").strip()
                     # Skip harness wrappers (slash-command echoes, caveats).
                     if text and not text.startswith(("<", "Caveat:")):
-                        first_prompt = text[:200]
-    except OSError:
-        return {}
-    if count == 0:
-        return {}
-    return {
-        "firstPrompt": first_prompt,
-        "gitBranch": git_branch,
-        "messageCount": count,
-    }
+                        entry["firstPrompt"] = text[:200]
+            entry["count"] += 1
+
+
+def _known_summary(cache: dict, path: str) -> dict | None:
+    """The cache's entry for `path` when it is one this script wrote."""
+    known = cache.get(path)
+    if not isinstance(known, dict):
+        return None
+    if not all(type(known.get(k)) is int for k in ("size", "mtime", "offset", "count")):
+        return None
+    if known["offset"] > known["size"]:
+        return None
+    for k in ("firstPrompt", "gitBranch"):
+        if known.get(k) is not None and not isinstance(known.get(k), str):
+            return None
+    return known
 
 
 def _ppid_map() -> dict[int, int]:
@@ -395,23 +448,23 @@ def _read_tail(path: str, codex: bool, size: int, floor: int):
     return prompt, searched_to, newest
 
 
-def _load_tail_cache() -> dict:
+def _load_tail_cache(path: Path = TAIL_CACHE) -> dict:
     try:
-        data = json.loads(TAIL_CACHE.read_text())
+        data = json.loads(path.read_text())
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
 
 
-def _save_tail_cache(cache: dict) -> None:
+def _save_tail_cache(cache: dict, path: Path = TAIL_CACHE) -> None:
     """Best effort, through a temp file and a rename. Mode 0600."""
-    tmp = f"{TAIL_CACHE}.{os.getpid()}.tmp"
+    tmp = f"{path}.{os.getpid()}.tmp"
     try:
-        TAIL_CACHE.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as f:
             json.dump(cache, f)
-        os.replace(tmp, TAIL_CACHE)
+        os.replace(tmp, path)
     except OSError:
         try:
             os.unlink(tmp)
@@ -666,12 +719,16 @@ def enrich(full: bool = False) -> list[dict]:
     panes = _pane_shells()
     cache = _load_tail_cache() if full else {}
     fresh: dict = {}
+    summaries = _load_tail_cache(SUMMARY_CACHE)
+    counted: dict = {}
     result: list[dict] = []
     for s in load_live_sessions():
         cwd = s.get("cwd", "")
         sid = s.get("sessionId", "")
         pid = s.get("pid")
-        index = _index_for_path(cwd).get(sid) or _fallback_from_jsonl(cwd, sid)
+        index = _index_for_path(cwd).get(sid) or _fallback_from_jsonl(
+            cwd, sid, summaries, counted
+        )
         row = (
             {
                 "sessionId": sid,
@@ -697,6 +754,8 @@ def enrich(full: bool = False) -> list[dict]:
         result.append({"agent": "meta", "schema": SCHEMA})
         if fresh != cache:
             _save_tail_cache(fresh)
+    if counted != summaries:
+        _save_tail_cache(counted, SUMMARY_CACHE)
     return result
 
 

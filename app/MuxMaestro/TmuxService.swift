@@ -746,6 +746,11 @@ final class TmuxService {
     /// enough that a wedged one can't hold a sweep thread for minutes.
     static let slowCommandTimeout: TimeInterval = 30
 
+    /// Ceiling for a local `sessions.py` run. A run cut short drops every pane's
+    /// status and session id until the next one lands, so it gets more time than
+    /// a tmux call. The scan refreshes off the poll, so a slow run only lags.
+    static let statusScanTimeout: TimeInterval = 10
+
     /// Serial queue for interactive driver shell-outs to THIS host (select /
     /// create / kill / rename / cwd / probe). Per-host so a wedged remote can't
     /// head-of-line-block a switch on another host: same-host ops stay ordered
@@ -785,7 +790,8 @@ final class TmuxService {
             host: .local,
             transport: LocalTmuxTransport(tmuxPath: path),
             runner: runner,
-            statusProvider: CachedStatusProvider(SessionsPyStatusProvider(runner: runner)),
+            statusProvider: CachedStatusProvider(SessionsPyStatusProvider(
+                runner: ProcessCommandRunner(timeout: Self.statusScanTimeout))),
             agentStates: AgentStateReader().rows,
             transcripts: TranscriptTailReader.shared.read(sessionCwds:codexRollouts:),
             slowRunner: ProcessCommandRunner(timeout: Self.slowCommandTimeout))
