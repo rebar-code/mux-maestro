@@ -153,8 +153,53 @@ final class RemoteSessionFieldsTests: XCTestCase {
             Set(rows[0].keys),
             ["sessionId", "pid", "cwd", "gitBranch", "status", "kind", "summary", "firstPrompt",
              "messageCount", "tmuxSession", "pane", "updatedAt"])
-        // Nothing was written to the host for it.
-        XCTAssertFalse(FileManager.default.fileExists(atPath: home.appendingPathComponent(".muxmaestro").path))
+        // What it counted is kept, private to the user; no tails are read for it.
+        let cache = home.appendingPathComponent(".muxmaestro/cache")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: cache.path), ["summaries.json"])
+        XCTAssertEqual(
+            (try FileManager.default.attributesOfItem(
+                atPath: cache.appendingPathComponent("summaries.json").path))[.posixPermissions] as? Int,
+            0o600)
+    }
+
+    /// The app runs `list` every few seconds over transcripts of tens of
+    /// megabytes, and stops waiting after a few seconds: a run reads only the
+    /// whole lines a transcript gained since the last one.
+    func testListReadsOnlyWhatATranscriptAppended() throws {
+        let first = #"{"type":"user","gitBranch":"main","timestamp":"2026-10-02T09:00:00.000Z","message":{"role":"user","content":"deploy the api"}}"#
+        let reply = #"{"type":"assistant","timestamp":"2026-10-02T09:00:01.000Z","message":{"role":"assistant","content":[]}}"#
+        try claudeSession([first, reply])
+        func summary() throws -> (String?, String?, Int?) {
+            let row = try list(["list"]).first { $0["sessionId"] as? String == claudeId }
+            return (row?["firstPrompt"] as? String, row?["gitBranch"] as? String, row?["messageCount"] as? Int)
+        }
+        var now = try summary()
+        XCTAssertEqual(now.0, "deploy the api")
+        XCTAssertEqual(now.1, "main")
+        XCTAssertEqual(now.2, 2)
+
+        // The reply is overwritten in place with a line of the same length that
+        // is no message, and a line is appended. Only the new line is read.
+        let blank = #"{"type":"system"# + String(repeating: " ", count: reply.utf8.count - 17) + "\"}"
+        XCTAssertEqual(blank.utf8.count, reply.utf8.count)
+        let user = #"{"type":"user","timestamp":"2026-10-02T09:01:00.000Z","message":{"role":"user","content":"and the web"}}"#
+        try write([first, blank, user], to: claudeTranscript)
+        XCTAssertEqual(try summary().2, 3)
+
+        // A line still being written is not counted until it ends.
+        let handle = try FileHandle(forWritingTo: claudeTranscript)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(reply.prefix(30).utf8))
+        XCTAssertEqual(try summary().2, 3)
+        try handle.write(contentsOf: Data((reply.dropFirst(30) + "\n").utf8))
+        try handle.close()
+        XCTAssertEqual(try summary().2, 4)
+
+        // A file written again shorter is read again from its start.
+        try write([first, user], to: claudeTranscript)
+        now = try summary()
+        XCTAssertEqual(now.0, "deploy the api")
+        XCTAssertEqual(now.2, 2)
     }
 
     /// A process named `codex` that holds `file` open, as a codex TUI holds its
