@@ -239,7 +239,7 @@ final class PhoneLinkTests: XCTestCase {
             now: { [unowned self] in self.clock }, keychainNotice: 0.05,
             forward: { [unowned self] in self.forwards.launch($0, onExit: $1) },
             portInUse: { [unowned self] in self.forwards.inUse($0) }, forwardWait: 0.3,
-            notify: { $0() })
+            signInRetry: 0.05, notify: { $0() })
         link.onMappings = { [weak self] mappings in
             guard let self else { return }
             self.lock.lock()
@@ -473,6 +473,34 @@ final class PhoneLinkTests: XCTestCase {
         link.turnOn()
         settle(link)
         XCTAssertEqual(link.state, .failed("Keychain refused the pairing token"))
+        XCTAssertFalse(tailscale.calls.contains { $0.contains("--bg") })
+    }
+
+    /// Bug: the phone showed old tabs all afternoon. The app started before
+    /// Tailscale was signed in, the one start failed, and nothing tried again.
+    func testASignInThatComesLaterStartsTheLink() {
+        tailscale.status = nil
+        let link = link()
+        link.turnOn()
+        settle(link)
+        XCTAssertEqual(link.state, .failed("Tailscale is not signed in"))
+
+        tailscale.status = FakeTailscale().status
+        let deadline = Date().addingTimeInterval(5)
+        while !link.isOn, Date() < deadline { usleep(10_000) }
+        guard case .on = link.state else { return XCTFail("\(link.state)") }
+        link.shutdown()
+    }
+
+    func testTurningOffStopsTheSignInRetry() {
+        tailscale.status = nil
+        let link = link()
+        link.turnOn()
+        settle(link)
+        link.turnOff()
+        tailscale.status = FakeTailscale().status
+        usleep(300_000)
+        XCTAssertEqual(link.state, .off)
         XCTAssertFalse(tailscale.calls.contains { $0.contains("--bg") })
     }
 

@@ -328,6 +328,10 @@ final class PhoneLink {
     private let portInUse: (Int) -> Bool
     /// How long a new forward may take to listen.
     private let forwardWait: TimeInterval
+    /// How often a link that found Tailscale signed out tries again.
+    private let signInRetry: TimeInterval
+    /// The next of those tries. Confined to `queue`.
+    private var retry: DispatchWorkItem?
     private let queue = DispatchQueue(label: "is.rebar.muxmaestro.phone")
     /// Where `loadPairing` reads the Keychain: a read that waits for the
     /// dialog must not hold `queue`, which the running link works on.
@@ -375,6 +379,7 @@ final class PhoneLink {
         forward: @escaping PhoneForwardLauncher = { SupervisedChild.launch($0, onExit: $1) },
         portInUse: @escaping (Int) -> Bool = LoopbackPort.inUse,
         forwardWait: TimeInterval = 10,
+        signInRetry: TimeInterval = 15,
         notify: @escaping (@escaping () -> Void) -> Void = { DispatchQueue.main.async(execute: $0) }
     ) {
         self.server = server
@@ -390,6 +395,7 @@ final class PhoneLink {
         self.forward = forward
         self.portInUse = portInUse
         self.forwardWait = forwardWait
+        self.signInRetry = signInRetry
         self.notify = notify
     }
 
@@ -515,7 +521,7 @@ final class PhoneLink {
         guard let tailscale = tailscalePath() else { return set(.failed("Tailscale is not installed")) }
         guard let status = runner.run(tailscale, MobileTailnet.statusArgv),
               let identity = MobileTailnet.identity(statusJSON: status)
-        else { return set(.failed("Tailscale is not signed in")) }
+        else { return retryAfterSignIn() }
         let wanted = port()
         if let serving = runner.run(tailscale, MobileTailnet.serveStatusArgv) {
             removeLeftoverPorts(tailscale: tailscale, serving: serving)
@@ -791,7 +797,21 @@ final class PhoneLink {
         publishMappings(removing: Array(stored.keys))
     }
 
+    /// At login the app can start before Tailscale has signed in. A link that
+    /// failed then stayed off, and the phone showed old tabs until someone
+    /// turned it off and on. Try again until Tailscale answers or the link is
+    /// turned off. A repeat of the same failure is not logged again.
+    private func retryAfterSignIn() {
+        let failure = State.failed("Tailscale is not signed in")
+        if state != failure { set(failure) }
+        let next = DispatchWorkItem { [weak self] in self?.start() }
+        retry = next
+        queue.asyncAfter(deadline: .now() + signInRetry, execute: next)
+    }
+
     private func teardown() {
+        retry?.cancel()
+        retry = nil
         unmap(Array(mapped.keys))
         // None is left without its mapping; were one, it would end here.
         for forward in forwards.values { forward.child.stop() }
