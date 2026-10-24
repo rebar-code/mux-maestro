@@ -27,7 +27,9 @@ window.orderFrontRegardless()
 
 var dismissed: [String] = []
 var opened = 0
+var approved: [String] = []
 rail.onDismiss = { dismissed.append($0) }
+rail.onApproveKeygate = { id, _ in approved.append(id) }
 rail.onOpenLink = { _ in opened += 1 }
 rail.onOpen = { _ in opened += 1 }
 
@@ -58,7 +60,7 @@ func views<T: NSView>(_ type: T.Type, in root: NSView) -> [T] {
 }
 
 /// Load one review row, then click at the window point `target` picks.
-func run(_ label: String, target: (NSButton) -> NSPoint) {
+func run(_ label: String, keygateID: String? = nil, target: (NSButton) -> NSPoint) {
     print("\n== \(label)")
     // Outlast the double-click interval, so this click is not read as the
     // second half of the previous run's.
@@ -69,7 +71,11 @@ func run(_ label: String, target: (NSButton) -> NSPoint) {
     window.makeKey()
     dismissed = []
     opened = 0
-    let item = review("k1")
+    approved = []
+    // An equal snapshot does not redraw: start each run from an empty one.
+    rail.setSnapshot(.empty)
+    var item = review("k1")
+    item.keygateID = keygateID
     rail.setSnapshot(ManagerSnapshot(
         needsYou: [NeedsYouItem(kind: .review(item), link: .open(
             session: "demo", window: 1, pane: nil, host: "localhost"),
@@ -84,7 +90,12 @@ func run(_ label: String, target: (NSButton) -> NSPoint) {
     app.postEvent(mouse(.leftMouseDown, at: p), atStart: false)
     app.postEvent(mouse(.leftMouseUp, at: p), atStart: false)
     pump(0.6)
-    print("  → dismissed \(dismissed), opened \(opened)×")
+    print("  → dismissed \(dismissed), opened \(opened)×, approved \(approved)")
+}
+
+/// The keygate row's Approve button, when it shows.
+func approveButton() -> NSButton? {
+    views(NSButton.self, in: rail.view).first { $0.title == "Approve" && !$0.isHiddenOrHasHiddenAncestor }
 }
 
 var failures: [String] = []
@@ -432,6 +443,25 @@ Timer.scheduledTimer(withTimeInterval: 0, repeats: false) { _ in
     window.setContentSize(NSSize(width: 420, height: 700))
     pump(0.3)
 
+    print("\n== a keygate row")
+    ManagerRailViewController.keygateTrusted = { false }
+    run("keygate fails its binary check", keygateID: "ab12") { b in
+        b.convert(NSPoint(x: b.bounds.midX, y: b.bounds.midY), to: nil)
+    }
+    expect(approveButton() == nil, "no Approve button without a trusted keygate")
+    ManagerRailViewController.keygateTrusted = { true }
+    run("click Approve", keygateID: "ab12") { _ in
+        let button = approveButton()!
+        return button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
+    }
+    expect(approved == ["ab12"], "Approve hands the request id on once")
+    expect(dismissed.isEmpty && opened == 0, "Approve neither dismisses nor opens the row")
+    expect(approveButton()?.isEnabled == false, "the button is off after a click")
+    run("a plain row", keygateID: nil) { b in
+        b.convert(NSPoint(x: b.bounds.midX, y: b.bounds.midY), to: nil)
+    }
+    expect(approveButton() == nil && dismissed == ["k1"], "a plain row has no Approve button")
+
     checkRequests()
     if let dir = ProcessInfo.processInfo.environment["RAIL_SHOT"] {
         print("\n== screenshots")
@@ -442,6 +472,11 @@ Timer.scheduledTimer(withTimeInterval: 0, repeats: false) { _ in
         let now = Int(Date().timeIntervalSince1970)
         rail.setSnapshot(ManagerSnapshot(
             needsYou: [
+                NeedsYouItem(kind: .review(ManagerReviewItem(
+                    key: "keygate:ab12cd34", host: "localhost", session: "acme-app", window: 1,
+                    severity: .blocked, text: "acme-app wants STRIPE_SECRET_KEY",
+                    updatedAt: now - 60, dismissed: false, keygateID: "ab12cd34")),
+                    link: nil, title: "acme-app", detail: "wants STRIPE_SECRET_KEY to run the migration"),
                 NeedsYouItem(kind: .review(ManagerReviewItem(
                     key: "a", host: "localhost", session: "acme-app", window: 2, severity: .blocked,
                     text: "PR 623 access model needs your review", updatedAt: now - 3_600, dismissed: false)),

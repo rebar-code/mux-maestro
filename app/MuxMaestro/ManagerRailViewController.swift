@@ -68,6 +68,12 @@ final class ManagerRailViewController: NSViewController, NSTextFieldDelegate, NS
     var onOpen: ((ManagerReviewItem) -> Void)?
     /// Click a row, or a `muxmaestro://` link inside one → open what it points at.
     var onOpenLink: ((ThreadLink) -> Void)?
+    /// Approve on a keygate row: the request id, already checked, and what to
+    /// call on the main thread when keygate is done (or did not start).
+    var onApproveKeygate: ((String, @escaping () -> Void) -> Void)?
+    /// Whether keygate passes its binary check. A seam for the click self-test,
+    /// which has no keygate to check.
+    static var keygateTrusted: () -> Bool = { Keygate.binaryIsTrusted() }
     /// The header's restart button — kill + recreate the manager session.
     var onRestart: (() -> Void)?
     /// ⏎ in the input: send this text to the manager pane.
@@ -462,6 +468,7 @@ final class ManagerRailViewController: NSViewController, NSTextFieldDelegate, NS
                 self?.activate(row, textLink: textLink)
             }
             view.onDismiss = { [weak self] key in self?.dismissClicked(key: key) }
+            view.onApprove = { [weak self] id, done in self?.onApproveKeygate?(id, done) }
             add(view)
         }
     }
@@ -504,7 +511,8 @@ final class ManagerRailViewController: NSViewController, NSTextFieldDelegate, NS
             }
             return ManagerRow(
                 color: color, title: item.title, prs: "", detail: item.detail,
-                time: review.updatedAt, link: item.link, review: review)
+                time: review.updatedAt, link: item.link, review: review,
+                keygateID: review.keygateID.flatMap { keygateTrusted() ? $0 : nil })
         }
     }
 
@@ -809,6 +817,9 @@ private struct ManagerRow {
     /// Set on a review row: it gets a dismiss checkbox, and a click with no link
     /// falls back to opening the item.
     let review: ManagerReviewItem?
+    /// A keygate request id, set only when keygate passes its binary check: the
+    /// row gets an Approve button.
+    var keygateID: String? = nil
 }
 
 /// A scroll view's document: flipped, so the content starts at the top of the
@@ -928,12 +939,13 @@ private final class ManagerRowView: NSView, NSGestureRecognizerDelegate {
     private let detail = LinkLabel(
         font: .systemFont(ofSize: 11), color: SidebarPalette.muted, maxLines: 2)
     private let check = NSButton(checkboxWithTitle: "", target: nil, action: nil)
-    private var checkWidth: NSLayoutConstraint?
+    private let approve = NSButton(title: "Approve", target: nil, action: nil)
     private var tracking: NSTrackingArea?
     private var row: ManagerRow?
 
     var onActivate: ((ManagerRow, ThreadLink?) -> Void)?
     var onDismiss: ((String) -> Void)?
+    var onApprove: ((String, @escaping () -> Void) -> Void)?
 
     init() {
         super.init(frame: .zero)
@@ -966,7 +978,19 @@ private final class ManagerRowView: NSView, NSGestureRecognizerDelegate {
 
         check.target = self
         check.action = #selector(checkClicked)
-        check.translatesAutoresizingMaskIntoConstraints = false
+
+        approve.target = self
+        approve.action = #selector(approveClicked)
+        approve.bezelStyle = .rounded
+        approve.controlSize = .small
+        approve.font = .systemFont(ofSize: 11)
+
+        // A hidden button leaves the stack, so a plain row's text runs to the edge.
+        let trail = NSStackView(views: [approve, check])
+        trail.orientation = .horizontal
+        trail.alignment = .centerY
+        trail.spacing = 6
+        trail.translatesAutoresizingMaskIntoConstraints = false
 
         // The time is pinned to the row's trailing edge rather than packed into
         // the stack, so every row's time reads down one column.
@@ -980,10 +1004,9 @@ private final class ManagerRowView: NSView, NSGestureRecognizerDelegate {
         addSubview(top)
         addSubview(time)
         addSubview(detail)
-        addSubview(check)
-        let checkW = check.widthAnchor.constraint(equalToConstant: 0)
-        checkWidth = checkW
+        addSubview(trail)
         NSLayoutConstraint.activate([
+            check.widthAnchor.constraint(equalToConstant: 16),
             dot.widthAnchor.constraint(equalToConstant: 8),
             dot.heightAnchor.constraint(equalToConstant: 8),
 
@@ -991,19 +1014,18 @@ private final class ManagerRowView: NSView, NSGestureRecognizerDelegate {
             top.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
             top.trailingAnchor.constraint(lessThanOrEqualTo: time.leadingAnchor, constant: -6),
 
-            time.trailingAnchor.constraint(equalTo: check.leadingAnchor, constant: -6),
+            time.trailingAnchor.constraint(equalTo: trail.leadingAnchor, constant: -6),
             time.centerYAnchor.constraint(equalTo: top.centerYAnchor),
 
             // Aligned with the title, not the dot: the detail is a second line of
             // the same thought.
             detail.topAnchor.constraint(equalTo: top.bottomAnchor, constant: 2),
             detail.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 26),
-            detail.trailingAnchor.constraint(equalTo: check.leadingAnchor, constant: -6),
+            detail.trailingAnchor.constraint(equalTo: trail.leadingAnchor, constant: -6),
             detail.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -7),
 
-            check.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
-            check.centerYAnchor.constraint(equalTo: centerYAnchor),
-            checkW,
+            trail.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            trail.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
 
         let click = NSClickGestureRecognizer(target: self, action: #selector(clicked(_:)))
@@ -1024,7 +1046,8 @@ private final class ManagerRowView: NSView, NSGestureRecognizerDelegate {
         detail.setText(row.detail)
         check.state = .off
         check.isHidden = row.review == nil
-        checkWidth?.constant = row.review == nil ? 0 : 16
+        approve.isHidden = row.keygateID == nil
+        approve.isEnabled = true
         toolTip = row.detail.isEmpty ? row.title : row.detail
     }
 
@@ -1060,11 +1083,14 @@ private final class ManagerRowView: NSView, NSGestureRecognizerDelegate {
 
     /// The recognizer delays the mouse-down, so a click it attempts never reaches
     /// the checkbox: the row opened instead of dismissing. It sits out any click
-    /// that lands on the checkbox, and the button tracks that click itself.
+    /// that lands on the checkbox or the Approve button, and the button tracks
+    /// that click itself.
     func gestureRecognizer(
         _ gestureRecognizer: NSGestureRecognizer, shouldAttemptToRecognizeWith event: NSEvent
     ) -> Bool {
-        check.isHidden || !check.bounds.contains(check.convert(event.locationInWindow, from: nil))
+        ![check, approve].contains { button in
+            !button.isHidden && button.bounds.contains(button.convert(event.locationInWindow, from: nil))
+        }
     }
 
     @objc private func clicked(_ gesture: NSClickGestureRecognizer) {
@@ -1075,5 +1101,13 @@ private final class ManagerRowView: NSView, NSGestureRecognizerDelegate {
     @objc private func checkClicked() {
         guard let key = row?.review?.key else { return }
         onDismiss?(key)
+    }
+
+    /// keygate opens its own dialog. The button stays off while keygate runs,
+    /// so a second click does not open a second dialog.
+    @objc private func approveClicked() {
+        guard let id = Keygate.validID(row?.keygateID) else { return }
+        approve.isEnabled = false
+        onApprove?(id) { [weak self] in self?.approve.isEnabled = true }
     }
 }

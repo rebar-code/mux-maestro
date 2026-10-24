@@ -38,7 +38,9 @@ usage: mux <command> …
   mux phone on|off [--no-wait]               # turn the Phone switch, as Setup does
   mux notify [--session S] [--host H] TEXT…
   mux review add --key K --text T [--session S] [--host H] [--window N]
-                 [--severity info|warn|blocked]
+                 [--severity info|warn|blocked] [--keygate-id ID]
+                                             # --keygate-id: a keygate request id (hex), the
+                                             # card gets an Approve button that opens keygate
   mux review done --key K
   mux review list [--json]
   mux point SESSION[:WINDOW] --reason TEXT [--host H]  # point the human at a session
@@ -81,7 +83,8 @@ CREATE TABLE IF NOT EXISTS review (
   text TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
-  dismissed INTEGER NOT NULL DEFAULT 0
+  dismissed INTEGER NOT NULL DEFAULT 0,
+  keygate_id TEXT                       -- a keygate request id (hex); NULL for other rows
 );
 CREATE TABLE IF NOT EXISTS review_card (
   key TEXT PRIMARY KEY,                 -- the review row this card belongs to
@@ -160,10 +163,14 @@ CREATE INDEX IF NOT EXISTS work_log_last_seen ON work_log(last_seen);"
 # way, and only ones that are nullable or have a default.
 init_db() {
     have=$(printf '.timeout 3000\n%s\n%s\n' "$SCHEMA" \
-        "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='window_indexes';" \
+        "SELECT (SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='window_indexes')
+  || '|' || (SELECT COUNT(*) FROM pragma_table_info('review') WHERE name='keygate_id');" \
         | "$SQLITE" "$DB" | tail -n 1)
-    [ "$have" = 1 ] || printf '.timeout 3000\n%s\n' \
+    [ "${have%|*}" = 1 ] || printf '.timeout 3000\n%s\n' \
         "ALTER TABLE sessions ADD COLUMN window_indexes TEXT;" \
+        | "$SQLITE" "$DB" >/dev/null 2>&1 || :
+    [ "${have#*|}" = 1 ] || printf '.timeout 3000\n%s\n' \
+        "ALTER TABLE review ADD COLUMN keygate_id TEXT;" \
         | "$SQLITE" "$DB" >/dev/null 2>&1 || :
 }
 
@@ -760,9 +767,12 @@ cmd_review_add() {
     host="localhost"
     window=""
     severity="info"
+    keygate_id=""
+    keygate_set=0
     while [ $# -gt 0 ]; do
         case "$1" in
             --key) [ $# -ge 2 ] || die "--key requires a value"; key=$2; shift 2;;
+            --keygate-id) [ $# -ge 2 ] || die "--keygate-id requires a value"; keygate_id=$2; keygate_set=1; shift 2;;
             --text) [ $# -ge 2 ] || die "--text requires a value"; text=$2; shift 2;;
             --session) [ $# -ge 2 ] || die "--session requires a value"; session=$2; shift 2;;
             --host) [ $# -ge 2 ] || die "--host requires a value"; host=$2; shift 2;;
@@ -788,15 +798,27 @@ cmd_review_add() {
     else
         window_sql=NULL
     fi
-    sql "INSERT INTO review(key, host, session, window, severity, text, created_at, updated_at)
-VALUES('$(sq "$key")', '$(sq "$host")', '$(sq "$session")', $window_sql, '$(sq "$severity")', '$(sq "$text")', $(now), $(now))
+    # The same check as Keygate.isValidID in the app: 1 to 64 lowercase hex.
+    # The set is spelled out: a range like a-f follows the locale's collation.
+    if [ "$keygate_set" = 1 ]; then
+        case "$keygate_id" in
+            ''|*[!0123456789abcdef]*) die "review add: --keygate-id must be 1 to 64 lowercase hex characters";;
+        esac
+        [ "${#keygate_id}" -le 64 ] || die "review add: --keygate-id must be 1 to 64 lowercase hex characters"
+        keygate_sql="'$keygate_id'"
+    else
+        keygate_sql=NULL
+    fi
+    sql "INSERT INTO review(key, host, session, window, severity, text, created_at, updated_at, keygate_id)
+VALUES('$(sq "$key")', '$(sq "$host")', '$(sq "$session")', $window_sql, '$(sq "$severity")', '$(sq "$text")', $(now), $(now), $keygate_sql)
 ON CONFLICT(key) DO UPDATE SET
   host=excluded.host,
   session=excluded.session,
   window=excluded.window,
   severity=excluded.severity,
   text=excluded.text,
-  updated_at=excluded.updated_at;"
+  updated_at=excluded.updated_at,
+  keygate_id=excluded.keygate_id;"
 }
 
 cmd_review_done() {
@@ -825,7 +847,7 @@ cmd_review_list() {
         sql "SELECT json_group_array(json(row)) FROM (SELECT json_object(
   'key', r.key, 'severity', r.severity, 'host', r.host, 'session', r.session,
   'window', r.window, 'dismissed', json(CASE WHEN r.dismissed THEN 'true' ELSE 'false' END),
-  'text', r.text,
+  'text', r.text, 'keygate_id', r.keygate_id,
   'card', CASE WHEN c.key IS NULL THEN NULL ELSE json_object(
       'v', c.v, 'pane', c.pane, 'body', c.body,
       'actions', (SELECT json_group_array(json_extract(value, '\$.label')) FROM json_each(c.actions)),

@@ -42,8 +42,11 @@ struct MobileManagerItem: Equatable {
     var pointer = false
     /// The pointer's buttons, when the Maestro gave it any.
     var card: MobileCard? = nil
+    /// The keygate request a review item points at.
+    var keygateID: String? = nil
 
-    func json(in snapshot: MobileSnapshot) -> [String: Any] {
+    /// `keygateOrigin` is what `keygate info` said, never anything from the row.
+    func json(in snapshot: MobileSnapshot, keygateOrigin: String? = nil) -> [String: Any] {
         let thread = MobileManager.threadID(for: link, in: snapshot)
         var out: [String: Any] = [
             "key": key ?? NSNull(), "title": title, "detail": detail,
@@ -53,6 +56,11 @@ struct MobileManagerItem: Equatable {
         // Left out of a row with no buttons: its shape is what it always was.
         if let key, let card {
             out["card"] = MobileCards.json(key: key, card: card, in: snapshot, opens: thread)
+        }
+        // Left out unless both pass their checks: the phone checks them again
+        // and links to keygate's own page, where Face ID decides.
+        if let id = Keygate.validID(keygateID), let origin = keygateOrigin.flatMap(Keygate.origin) {
+            out["keygate"] = ["id": id, "origin": origin]
         }
         return out
     }
@@ -72,6 +80,9 @@ struct MobileManagerItem: Equatable {
 struct MobileManagerBoard: Equatable {
     var items: [MobileManagerItem] = []
     var updates: [ManagerUpdate] = []
+    /// keygate's phone origin from `keygate info --json`; nil when keygate is
+    /// missing or has none.
+    var keygateOrigin: String? = nil
 }
 
 /// The turn in flight: one conversation, whichever side started it.
@@ -182,7 +193,7 @@ enum MobileManager {
         return [
             "needsYou": board.items.filter { $0.kind == .agent }.map { $0.json(in: snapshot) },
             "review": board.items.filter { $0.kind == .review && !$0.pointer }
-                .map { $0.json(in: snapshot) },
+                .map { $0.json(in: snapshot, keygateOrigin: board.keygateOrigin) },
             "points": newest(board.items.filter { $0.kind == .review && $0.pointer })
                 .map { $0.pointJSON(in: snapshot) },
             "updates": updates,

@@ -233,6 +233,9 @@
 		A0000796 /* manager in Resources */ = {isa = PBXBuildFile; fileRef = A0000792 /* manager */; };
 		A0000797 /* ManagerStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000790 /* ManagerStore.swift */; };
 		A0000798 /* ManagerStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000793 /* ManagerStoreTests.swift */; };
+		A0000CA1 /* Keygate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000CA3 /* Keygate.swift */; };
+		A0000CA2 /* Keygate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000CA3 /* Keygate.swift */; };
+		A0000CA5 /* KeygateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000CA4 /* KeygateTests.swift */; };
 		A000079C /* ManagerRailViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000799 /* ManagerRailViewController.swift */; };
 		A000079D /* ManagerController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A000079A /* ManagerController.swift */; };
 		A000079E /* ManagerToastOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = A000079B /* ManagerToastOverlay.swift */; };
@@ -448,6 +451,8 @@
 		A0000791 /* ManagerHome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManagerHome.swift; sourceTree = "<group>"; };
 		A0000792 /* manager */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Resources/manager; sourceTree = "<group>"; };
 		A0000793 /* ManagerStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManagerStoreTests.swift; sourceTree = "<group>"; };
+		A0000CA3 /* Keygate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Keygate.swift; sourceTree = "<group>"; };
+		A0000CA4 /* KeygateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeygateTests.swift; sourceTree = "<group>"; };
 		A0000799 /* ManagerRailViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManagerRailViewController.swift; sourceTree = "<group>"; };
 		A000079A /* ManagerController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManagerController.swift; sourceTree = "<group>"; };
 		A000079B /* ManagerToastOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManagerToastOverlay.swift; sourceTree = "<group>"; };
@@ -597,6 +602,7 @@
 				A0000762 /* SessionCyclerOverlay.swift */,
 				A0000E31 /* PullRequestsViewController.swift */,
 				A0000790 /* ManagerStore.swift */,
+				A0000CA3 /* Keygate.swift */,
 				A00F6001 /* ManagerPaneDriver.swift */,
 				A00F6101 /* ManagerPane.swift */,
 				A0000791 /* ManagerHome.swift */,
@@ -703,6 +709,7 @@
 				A0000764 /* SessionMRUTests.swift */,
 				A00C4002 /* SessionSwitcherTests.swift */,
 				A0000793 /* ManagerStoreTests.swift */,
+				A0000CA4 /* KeygateTests.swift */,
 				B0D00005 /* BundledToolsTests.swift */,
 				B0E00001 /* UserFacingTextTests.swift */,
 				B0D00006 /* SetupToolsTests.swift */,
@@ -922,6 +929,7 @@
 				A0000772 /* SessionCyclerOverlay.swift in Sources */,
 				A0000E30 /* PullRequestsViewController.swift in Sources */,
 				A0000794 /* ManagerStore.swift in Sources */,
+				A0000CA1 /* Keygate.swift in Sources */,
 				A0000795 /* ManagerHome.swift in Sources */,
 				A000079C /* ManagerRailViewController.swift in Sources */,
 				A000079D /* ManagerController.swift in Sources */,
@@ -1077,7 +1085,9 @@
 				A0000782 /* FaviconTests.swift in Sources */,
 				A0000783 /* SessionMRUTests.swift in Sources */,
 				A0000797 /* ManagerStore.swift in Sources */,
+				A0000CA2 /* Keygate.swift in Sources */,
 				A0000798 /* ManagerStoreTests.swift in Sources */,
+				A0000CA5 /* KeygateTests.swift in Sources */,
 				B0D00021 /* BundledTools.swift in Sources */,
 				B0D00022 /* SetupTools.swift in Sources */,
 				B0D00025 /* BundledToolsTests.swift in Sources */,

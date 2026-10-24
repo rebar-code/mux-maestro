@@ -70,6 +70,39 @@ final class MobileManagerTests: XCTestCase {
             ])
     }
 
+    // MARK: keygate
+
+    private func keygateBoard(id: String?, origin: String?) -> MobileManagerBoard {
+        MobileManagerBoard(
+            items: [MobileManagerItem(
+                kind: .review, key: "keygate:ab12", title: "acme-app", detail: "wants STRIPE_KEY",
+                severity: .blocked, at: 1_759_499_000, link: nil, keygateID: id)],
+            keygateOrigin: origin)
+    }
+
+    private func keygateField(_ board: MobileManagerBoard) -> Any? {
+        let live = MobileManager.live(board: board, snapshot: snapshot(), turn: nil)
+        return (live["review"] as? [[String: Any]])?.first?["keygate"]
+    }
+
+    func testAKeygateRowCarriesItsIDAndKeygatesOwnOrigin() throws {
+        let field = try XCTUnwrap(
+            keygateField(keygateBoard(id: "ab12", origin: "https://devbox.example.ts.net"))
+                as? [String: String])
+        XCTAssertEqual(field, ["id": "ab12", "origin": "https://devbox.example.ts.net"])
+    }
+
+    func testNoKeygateFieldWithoutAnOriginOrAValidID() {
+        XCTAssertNil(keygateField(keygateBoard(id: "ab12", origin: nil)))
+        XCTAssertNil(keygateField(keygateBoard(id: nil, origin: "https://devbox.example.ts.net")))
+        XCTAssertNil(keygateField(keygateBoard(id: "AB12", origin: "https://devbox.example.ts.net")))
+        XCTAssertNil(keygateField(keygateBoard(id: "ab12", origin: "http://devbox.example.ts.net")))
+        XCTAssertNil(keygateField(keygateBoard(id: "ab12", origin: "https://devbox.example.ts.net/x")))
+        // A plain row keeps the shape it always had.
+        let live = MobileManager.live(board: board(), snapshot: snapshot(), turn: nil)
+        for row in live["review"] as? [[String: Any]] ?? [] { XCTAssertNil(row["keygate"]) }
+    }
+
     // MARK: routes
 
     func testRoutesTheManagerAPIByMethod() {

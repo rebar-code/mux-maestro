@@ -270,6 +270,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var managerRailVC: ManagerRailViewController?
     private var managerRailItem: NSSplitViewItem?
     private var managerController: ManagerController?
+    /// keygate's phone origin, for the phone's keygate links.
+    private let keygateOrigin = KeygateOrigin()
+    /// The rail's last snapshot, sent to the phone again when the origin changes.
+    private var managerSnapshot = ManagerSnapshot.empty
     /// A manager turn is in flight, from the rail or from the phone.
     private var managerTurnRunning = false
     private var managerToast: ManagerToastOverlay?
@@ -548,7 +552,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let manager = ManagerController(service: registry.local)
         manager.onSnapshot = { [weak self, weak managerRail] snapshot in
             managerRail?.setSnapshot(snapshot)
-            self?.mobileServer.updateManager(snapshot.mobileBoard)
+            self?.publishManagerBoard(snapshot)
+        }
+        keygateOrigin.onChange = { [weak self] in
+            guard let self else { return }
+            self.publishManagerBoard(self.managerSnapshot)
         }
         manager.onToast = { [weak self] notification, extra in
             self?.showManagerToast(notification, extra: extra)
@@ -559,6 +567,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         managerRail.onRestart = { [weak self] in self?.actionRestartManager() }
         managerRail.onOpenLink = { [weak self] link in self?.openLink(link) }
+        managerRail.onApproveKeygate = { id, done in
+            // keygate opens its own dialog; Maestro only starts it.
+            DispatchQueue.global(qos: .userInitiated).async {
+                let started = Keygate.approve(id: id) { DispatchQueue.main.async(execute: done) }
+                guard !started else { return }
+                DispatchQueue.main.async {
+                    NSSound.beep()
+                    done()
+                }
+            }
+        }
         managerRail.onSend = { [weak self] text in self?.runManagerTurn(text) }
         managerRail.onTalk = { [weak self] in self?.actionTalk() }
         managerRail.onShowTerminal = { [weak self] in self?.installManagerTerminalIfNeeded() }
@@ -2919,6 +2938,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// The phone's manager home needs the manager running, rail shown or not.
+    /// The rail's rows, sent to the phone. keygate is asked for its origin only
+    /// while a keygate row is listed, so without keygate nothing runs.
+    private func publishManagerBoard(_ snapshot: ManagerSnapshot) {
+        managerSnapshot = snapshot
+        var board = snapshot.mobileBoard
+        if board.items.contains(where: { $0.keygateID != nil }) {
+            keygateOrigin.refreshIfStale()
+            board.keygateOrigin = keygateOrigin.value
+        }
+        mobileServer.updateManager(board)
+    }
+
     private func startManagerForPhoneIfNeeded() {
         guard Settings.phoneEnabled(), Settings.phoneCapability(.manager) else { return }
         startManagerMachinery()

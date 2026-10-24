@@ -199,6 +199,8 @@ export interface ManagerItem {
 	thread: string | null;
 	/** A pointer's buttons, as the Mac sent them. Not checked: `parseCard` reads it. */
 	card?: unknown;
+	/** A keygate request's `{ id, origin }`. Not checked: `keygateLink` reads it. */
+	keygate?: unknown;
 }
 
 export interface ManagerUpdate {

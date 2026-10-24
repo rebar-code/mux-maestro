@@ -82,7 +82,8 @@ extension ManagerSnapshot {
                     return MobileManagerItem(
                         kind: .review, key: review.key, title: item.title, detail: item.detail,
                         severity: review.severity, at: review.updatedAt, link: item.link,
-                        pointer: review.isPointer, card: MobileCard(review))
+                        pointer: review.isPointer, card: MobileCard(review),
+                        keygateID: review.keygateID)
                 }
             },
             updates: updates)

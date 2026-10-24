@@ -749,6 +749,86 @@ final class ManagerStoreTests: XCTestCase {
         XCTAssertEqual(try sqlite("SELECT key FROM review;"), ["point:localhost:acme-app:2"])
     }
 
+    // MARK: keygate rows
+
+    func testMuxReviewAddStoresAKeygateID() throws {
+        try store(mux: ["review", "add", "--key", "keygate:ab12", "--severity", "blocked",
+                        "--text", "acme-app wants STRIPE_KEY", "--keygate-id", "ab12"])
+        let item = try XCTUnwrap(try makeStore().reviewItems().first)
+        XCTAssertEqual(item.keygateID, "ab12")
+        let listed = try store(mux: ["review", "list", "--json"])
+        XCTAssertTrue(listed.contains(#""keygate_id":"ab12""#), listed)
+        // A row without the flag has none, and a re-add without it clears it.
+        try store(mux: ["review", "add", "--key", "plain", "--text", "a note"])
+        try store(mux: ["review", "add", "--key", "keygate:ab12", "--text", "again"])
+        XCTAssertEqual(try makeStore().reviewItems().map(\.keygateID), [nil, nil])
+    }
+
+    func testMuxReviewAddRefusesAKeygateIDThatIsNotHex() throws {
+        let bad = ["", "AB12", "ab-1", "g", "ab12'; DROP TABLE review; --", "ab\n12",
+                   String(repeating: "a", count: 65)]
+        for id in bad {
+            let result = runMux(["review", "add", "--key", "k", "--text", "t", "--keygate-id", id])
+            XCTAssertEqual(result.status, 2, id.debugDescription)
+            XCTAssertEqual(
+                result.output, "mux: review add: --keygate-id must be 1 to 64 lowercase hex characters\n")
+        }
+        // Locale ranges are not used: an upper-case letter fails in any locale.
+        let process = runMux(["review", "add", "--key", "k", "--text", "t", "--keygate-id", "B"],
+                             env: ["LANG": "en_US.UTF-8", "LC_ALL": "en_US.UTF-8"])
+        XCTAssertEqual(process.status, 2)
+        try store(mux: ["review", "add", "--key", "k", "--text", "t",
+                        "--keygate-id", String(repeating: "f", count: 64)])
+        XCTAssertEqual(try sqlite("SELECT COUNT(*) FROM review;"), ["1"])
+    }
+
+    /// Any process of this user can write the DB: the store drops an id that
+    /// is not one, and the row stays a plain row.
+    func testTheStoreDropsAKeygateIDThatIsNotHex() throws {
+        let store = try makeStore()
+        try store.upsertReview(key: "keygate:ab12", text: "ok", keygateID: "ab12")
+        try store.upsertReview(key: "bad", text: "bad", keygateID: "../../x")
+        let ids = Dictionary(uniqueKeysWithValues: try store.reviewItems().map { ($0.key, $0.keygateID) })
+        XCTAssertEqual(ids["keygate:ab12"], .some("ab12"))
+        XCTAssertEqual(ids["bad"], .some(nil))
+    }
+
+    /// The `review` table of a DB an older build made has no keygate column.
+    /// Both the CLI and the app add it, in either order, and keep the rows.
+    func testAnOlderDatabaseGainsTheKeygateColumn() throws {
+        let oldReview = """
+        CREATE TABLE review (
+          key TEXT PRIMARY KEY, host TEXT NOT NULL DEFAULT 'localhost',
+          session TEXT NOT NULL DEFAULT '', window INTEGER,
+          severity TEXT NOT NULL DEFAULT 'info', text TEXT NOT NULL,
+          created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+          dismissed INTEGER NOT NULL DEFAULT 0);
+        INSERT INTO review(key, text, created_at, updated_at) VALUES('old', 'kept', 1, 1);
+        """
+        let hasColumn = "SELECT COUNT(*) FROM pragma_table_info('review') WHERE name = 'keygate_id';"
+
+        // The CLI first.
+        _ = try sqlite(oldReview)
+        XCTAssertEqual(try sqlite(hasColumn), ["0"])
+        try store(mux: ["review", "add", "--key", "keygate:ab12", "--text", "t", "--keygate-id", "ab12"])
+        XCTAssertEqual(try sqlite(hasColumn), ["1"])
+        XCTAssertEqual(try sqlite("SELECT key, quote(keygate_id) FROM review ORDER BY key;"),
+                       ["keygate:ab12|'ab12'", "old|NULL"])
+        // Then the app: opening twice is safe.
+        _ = try makeStore()
+        XCTAssertEqual(try makeStore().reviewItems().map(\.keygateID).sorted { ($0 ?? "") < ($1 ?? "") },
+                       [nil, "ab12"])
+
+        // The app first.
+        try tearDownWithError()
+        _ = try sqlite(oldReview)
+        let store = try makeStore()
+        XCTAssertEqual(try sqlite(hasColumn), ["1"])
+        XCTAssertEqual(try store.reviewItems().map(\.text), ["kept"])
+        try self.store(mux: ["review", "add", "--key", "keygate:cd34", "--text", "t", "--keygate-id", "cd34"])
+        XCTAssertEqual(try sqlite("SELECT keygate_id FROM review WHERE key = 'keygate:cd34';"), ["cd34"])
+    }
+
     func testMuxPointKeepsAtMostTwentyPointers() throws {
         try seedPointSessions()
         let rows = (1...20).map { n in
@@ -841,11 +921,11 @@ final class ManagerStoreTests: XCTestCase {
         return result.output
     }
 
-    private func runMux(_ args: [String]) -> (status: Int32, output: String) {
+    private func runMux(_ args: [String], env extra: [String: String] = [:]) -> (status: Int32, output: String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = [muxPath.path] + args
-        var env = ProcessInfo.processInfo.environment
+        var env = ProcessInfo.processInfo.environment.merging(extra) { $1 }
         env["MUX_MANAGER_DB"] = dbPath
         process.environment = env
         let pipe = Pipe()

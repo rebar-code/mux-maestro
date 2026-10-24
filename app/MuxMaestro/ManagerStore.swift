@@ -27,6 +27,9 @@ struct ManagerReviewItem: Equatable {
     let dismissed: Bool
     /// What makes the row answerable from the phone; nil for a plain row.
     var card: ManagerCard? = nil
+    /// The keygate request this row points at (`mux review add --keygate-id`).
+    /// Only an id that passes `Keygate.isValidID`; nil for any other row.
+    var keygateID: String? = nil
 
     /// The key prefix `mux point` owns. `mux review add` refuses it, so a row
     /// with this prefix names a session the CLI checked.
@@ -201,6 +204,7 @@ final class ManagerStore {
             try exec("PRAGMA busy_timeout=3000;")
             try exec(Self.schemaSQL)
             try addColumn("window_indexes", "TEXT", to: "sessions")
+            try addColumn("keygate_id", "TEXT", to: "review")
         } catch {
             sqlite3_close(db)
             throw error
@@ -219,7 +223,7 @@ final class ManagerStore {
     func reviewItems(includeDismissed: Bool = false) throws -> [ManagerReviewItem] {
         let sql = """
         SELECT r.key, r.host, r.session, r.window, r.severity, r.text, r.updated_at, r.dismissed,
-               c.v, c.pane, c.body, c.actions, c.answer, c.answered_at
+               c.v, c.pane, c.body, c.actions, c.answer, c.answered_at, r.keygate_id
         FROM review r LEFT JOIN review_card c ON c.key = r.key
         \(includeDismissed ? "" : "WHERE r.dismissed = 0")
         ORDER BY r.dismissed ASC,
@@ -244,7 +248,10 @@ final class ManagerStore {
                     version: Int(sqlite3_column_int64(stmt, 8)), pane: column(stmt, 9),
                     body: column(stmt, 10), actions: column(stmt, 11), answer: column(stmt, 12),
                     answeredAt: sqlite3_column_type(stmt, 13) == SQLITE_NULL
-                        ? nil : Int(sqlite3_column_int64(stmt, 13)))
+                        ? nil : Int(sqlite3_column_int64(stmt, 13))),
+                // Any process of this user can write the DB: an id that fails
+                // the check is dropped, and the row is a plain row.
+                keygateID: Keygate.validID(column(stmt, 14))
             ))
         }
         return items
@@ -501,19 +508,21 @@ final class ManagerStore {
         session: String = "",
         window: Int? = nil,
         severity: ManagerReviewItem.Severity = .info,
-        text: String
+        text: String,
+        keygateID: String? = nil
     ) throws {
         let now = Int(Date().timeIntervalSince1970)
         let stmt = try prepare("""
-        INSERT INTO review(key, host, session, window, severity, text, created_at, updated_at)
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO review(key, host, session, window, severity, text, created_at, updated_at, keygate_id)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(key) DO UPDATE SET
           host = excluded.host,
           session = excluded.session,
           window = excluded.window,
           severity = excluded.severity,
           text = excluded.text,
-          updated_at = excluded.updated_at;
+          updated_at = excluded.updated_at,
+          keygate_id = excluded.keygate_id;
         """)
         defer { sqlite3_finalize(stmt) }
         bindText(stmt, 1, key)
@@ -528,6 +537,11 @@ final class ManagerStore {
         bindText(stmt, 6, text)
         bindInt(stmt, 7, now)
         bindInt(stmt, 8, now)
+        if let keygateID {
+            bindText(stmt, 9, keygateID)
+        } else {
+            sqlite3_bind_null(stmt, 9)
+        }
         _ = try step(stmt)
     }
 
@@ -627,7 +641,8 @@ final class ManagerStore {
       text TEXT NOT NULL,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
-      dismissed INTEGER NOT NULL DEFAULT 0
+      dismissed INTEGER NOT NULL DEFAULT 0,
+      keygate_id TEXT                       -- a keygate request id (hex); NULL for other rows
     );
     CREATE TABLE IF NOT EXISTS review_card (
       key TEXT PRIMARY KEY,                 -- the review row this card belongs to

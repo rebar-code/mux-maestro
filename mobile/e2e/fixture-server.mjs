@@ -29,6 +29,7 @@
 // /__fixture/screen?default=&max= (the screen endpoint's default and cap)
 // /__fixture/point?key=&thread=&title=&reason= (the Maestro points at a session; no thread: one that is gone),
 // /__fixture/no-updates (the Maestro's updates list is empty),
+// /__fixture/keygate?id=&origin=&thread= (a keygate review row, as the Mac sends it; no origin: keygate has none),
 // /__fixture/card?key=&thread=&title=&reason=&body=&actions=Yes|No&refuse=&message= (a pointer with buttons, as
 // `mux point --action` records it; `refuse` is the error a tap gets), /__fixture/acted (the taps that landed),
 // /__fixture/maestro-say?text= (the Maestro says something in its chat),
@@ -2728,6 +2729,26 @@ function hook(res, url) {
 		case '/__fixture/no-updates':
 			manager.updates = [];
 			break;
+		case '/__fixture/keygate': {
+			// As `mux review add --keygate-id` records it. The origin is what
+			// `keygate info` told the Mac; the test may send a bad one.
+			const id = url.searchParams.get('id') ?? 'ab12';
+			const origin = url.searchParams.get('origin');
+			const key = `keygate:${id}`;
+			manager.review = [
+				{
+					key,
+					title: 'acme-app',
+					detail: 'wants STRIPE_SECRET_KEY to run the migration',
+					severity: 'blocked',
+					at: now,
+					thread: url.searchParams.get('thread'),
+					...(origin === null ? {} : { keygate: { id, origin } })
+				},
+				...manager.review.filter((item) => item.key !== key)
+			];
+			break;
+		}
 		case '/__fixture/manager-status':
 			manager.status = url.searchParams.get('value') ?? 'idle';
 			manager.stage = url.searchParams.get('stage') ?? 'awake';
