@@ -8,7 +8,7 @@
 # is optional: the build works without it.
 -include local.mk
 
-.PHONY: libghostty clean-libghostty app run install signing-identity signing-selftest demo-names-check test clean-app diff-bundle mobile vendor-beam beam-selftest vendor-tools tools-selftest
+.PHONY: libghostty libghostty-source clean-libghostty app run install signing-identity signing-selftest demo-names-check test clean-app diff-bundle mobile vendor-beam beam-selftest vendor-tools tools-selftest
 
 # Xcode to build with. Overridable so CI can point at its Xcode_16.2.app; the
 # Swift packages need tools version 6.0, which the runner's default Xcode lacks.
@@ -62,9 +62,15 @@ signing-identity:
 signing-selftest:
 	bash scripts/signing-selftest.sh
 
-# Build GhosttyKit.xcframework from pinned Ghostty source with a pinned,
-# project-local Zig toolchain. Output is symlinked to ./GhosttyKit.xcframework.
+# Download the prebuilt GhosttyKit.xcframework from this repo's release and
+# check its pinned SHA-256. Output is symlinked to ./GhosttyKit.xcframework.
 libghostty:
+	scripts/fetch-libghostty.sh
+
+# Build GhosttyKit.xcframework from pinned Ghostty source with a pinned,
+# project-local Zig toolchain. Same output as `libghostty`. Zig 0.15.2 does not
+# link on macOS 26.6+; the release workflow runs this on macos-14.
+libghostty-source:
 	scripts/build-libghostty.sh
 
 # Remove the built xcframework symlink and Zig build artifacts (keeps the
