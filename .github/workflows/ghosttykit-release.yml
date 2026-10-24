@@ -1,0 +1,45 @@
+name: GhosttyKit release
+
+# Builds GhosttyKit.xcframework from the pinned Ghostty source and publishes it
+# as a release asset, so `make libghostty` can download it instead of building
+# with Zig. Zig 0.15.2 cannot link on macOS 26.6+, so a fresh clone on a current
+# Mac cannot build the engine itself.
+#
+# Run it by pushing a tag: `git tag ghosttykit-v1.3.1 && git push origin ghosttykit-v1.3.1`.
+# Then pin the printed SHA-256 in scripts/fetch-libghostty.sh.
+on:
+  push:
+    tags: ['ghosttykit-*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build GhosttyKit (macos-14, arm64)
+    runs-on: macos-14
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.2.app
+
+      - name: Build libghostty from pinned source
+        run: make libghostty-source
+
+      - name: Package
+        run: |
+          ASSET="GhosttyKit-macos-arm64.tar.gz"
+          COPYFILE_DISABLE=1 tar -czf "$ASSET" -C vendor/ghostty/macos GhosttyKit.xcframework
+          shasum -a 256 "$ASSET" | tee "$ASSET.sha256"
+          echo "ASSET=$ASSET" >> "$GITHUB_ENV"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" "$ASSET" "$ASSET.sha256" \
+            --title "$GITHUB_REF_NAME" \
+            --notes "Prebuilt GhosttyKit.xcframework (macOS arm64) from pinned Ghostty source, built by this workflow. Used by \`make libghostty\`." \
+            --latest=false
