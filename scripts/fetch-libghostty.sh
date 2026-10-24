@@ -15,7 +15,7 @@ set -euo pipefail
 # Ghostty v1.3.1 @ 332b2aefc6e72d363aa93ab6ecfc86eeeeb5ed28 (as in build-libghostty.sh)
 RELEASE_TAG="ghosttykit-v1.3.1"
 ASSET="GhosttyKit-macos-arm64.tar.gz"
-ASSET_SHA256="__PENDING__"
+ASSET_SHA256="a651c01b3437e1bd14efb15f54164436b313ec8266dfa6f8fcf2dda82f3268a0"
 URL="https://github.com/rebar-code/mux-maestro/releases/download/${RELEASE_TAG}/${ASSET}"
 
 # --- Paths -----------------------------------------------------------------
