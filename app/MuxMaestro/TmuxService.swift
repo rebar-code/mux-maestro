@@ -133,6 +133,8 @@ func exitSignal(for proc: Process) -> DispatchSemaphore {
 struct ProcessCommandRunner: CommandRunner {
     /// Hard ceiling on a single command's wall-clock time.
     var timeout: TimeInterval = 4.0
+    /// The child's whole environment, in place of `childEnvironment`.
+    var environment: [String: String]? = nil
 
     /// Environment for spawned children with a usable `PATH`. A Finder/Xcode-
     /// launched GUI app inherits a minimal PATH (no `/opt/homebrew/bin`), so a
@@ -164,7 +166,7 @@ struct ProcessCommandRunner: CommandRunner {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: path)
         proc.arguments = args
-        proc.environment = Self.childEnvironment
+        proc.environment = environment ?? Self.childEnvironment
         let outPipe = Pipe()
         proc.standardOutput = outPipe
         proc.standardError = FileHandle.nullDevice

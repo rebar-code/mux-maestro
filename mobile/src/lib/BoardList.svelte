@@ -6,6 +6,7 @@
 	import { maestro } from './maestro.svelte';
 	import { boardSummary, needsYouCards } from './manager';
 	import { manager } from './manager.svelte';
+	import { keygateLink } from './keygate';
 	import { needCount, pointCards } from './panel';
 	import type { Thread } from './types';
 
@@ -110,6 +111,7 @@
 		{#each review as item (item.key)}
 			{@const thread = item.thread ? live.byId(item.thread) : undefined}
 			{@const key = item.key ?? ''}
+			{@const approve = keygateLink(item.keygate)}
 			<div class="item" data-review={key} {@attach swipeAway(() => void manager.dismiss(key))}>
 				<svelte:element
 					this={thread ? 'a' : 'div'}
@@ -122,6 +124,18 @@
 						<span>{item.detail}</span>
 					</span>
 				</svelte:element>
+				{#if approve}
+					<!-- eslint-disable svelte/no-navigation-without-resolve -- keygate's own page, where Face ID decides; not a route -->
+					<a
+						href={approve}
+						class="kg"
+						target="_blank"
+						rel="noopener noreferrer"
+						data-keygate
+						onclick={(event) => event.stopPropagation()}>Approve with Face ID</a
+					>
+					<!-- eslint-enable svelte/no-navigation-without-resolve -->
+				{/if}
 				<button
 					class="tb done"
 					aria-label="Dismiss {thread ? `${thread.session} · ${thread.name}` : item.title}"
@@ -223,6 +237,8 @@
 	.item .body span {
 		font-size: 13px;
 		color: var(--muted);
+		/* A long name (STRIPE_SECRET_KEY) breaks rather than run under the buttons. */
+		overflow-wrap: anywhere;
 	}
 
 	.item .dot {
@@ -263,6 +279,22 @@
 	.go.off {
 		background: #2b2b3d;
 		color: var(--muted);
+	}
+
+	.kg {
+		flex: none;
+		align-self: center;
+		display: inline-flex;
+		align-items: center;
+		min-height: var(--hit);
+		padding: 0 12px;
+		border-radius: 999px;
+		background: var(--purple);
+		color: #0d0d14;
+		font-size: 13px;
+		font-weight: 600;
+		white-space: nowrap;
+		text-decoration: none;
 	}
 
 	/* A 44pt touch area that does not make the card taller. */
