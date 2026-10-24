@@ -96,13 +96,14 @@ hidden or falls back.
 
 ## Build and run
 
-There is no prebuilt release yet; you build it yourself. The first step builds
-`GhosttyKit.xcframework` from pinned Ghostty source with a project-local Zig
-toolchain (no global installs). It takes several minutes the first time, then it
-is cached.
+There is no prebuilt app yet; you build it yourself. The first step downloads
+the embedded terminal engine, `GhosttyKit.xcframework`, prebuilt from pinned
+Ghostty source by CI, and checks its SHA-256. To build the engine from source
+instead, run `make libghostty-source` (a pinned, project-local Zig; Zig 0.15.2
+does not link on macOS 26.6 or later).
 
 ```sh
-make libghostty        # build the embedded terminal engine (once)
+make libghostty        # download the embedded terminal engine (once)
 make signing-identity  # optional, once: a stable local signing identity
 make app               # build MuxMaestro.app
 make install           # build, copy to /Applications, and relaunch
