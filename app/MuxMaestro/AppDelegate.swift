@@ -3126,9 +3126,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let service = target.service
         quickOpenService = service
         vc.setStatus("Loading files…")
+        // The selected pane's artifacts join the list, wherever they are on
+        // disk. Like the Artifacts panel, only for a pane on this Mac.
+        let agent = sidebarVC?.selectedAgentPane.flatMap { selected in
+            selected.host == service.host && selected.host.isLocal ? selected.pane : nil
+        }
+        let reader = artifactReader
         service.driverQueue.async { [weak self] in
             let cwd = service.sessionCwd(session) ?? ""
-            let files = cwd.isEmpty ? [] : service.repoFiles(cwd: cwd)
+            let listed = cwd.isEmpty ? [] : service.repoFiles(cwd: cwd)
+            let fm = FileManager.default
+            let artifacts = reader.transcript(
+                claudeSessionId: agent?.claudeSessionId, codexSessionId: agent?.codexSessionId)
+                .flatMap { reader.mentions(transcript: $0) }
+                .map { mentions in
+                    ArtifactScanner.resolve(
+                        mentions, fileExists: { fm.fileExists(atPath: $0) },
+                        mtime: { (try? fm.attributesOfItem(atPath: $0))?[.modificationDate] as? Date })
+                } ?? []
+            let files = QuickOpenFiles.merge(
+                listed: listed, artifacts: artifacts.filter(\.exists).map(\.path),
+                cwd: cwd, home: NSHomeDirectory())
             DispatchQueue.main.async {
                 guard let self, self.quickOpenService?.host == service.host else { return }
                 self.quickOpenCwd = cwd
@@ -5519,12 +5537,13 @@ extension AppDelegate: ArtifactsPaneDelegate {
 // MARK: - FilePaletteDelegate (⌘P quick-open → open file)
 
 extension AppDelegate: FilePaletteDelegate {
-    /// Open the picked file at its top in the default editor. `relativePath` is
-    /// repo-relative; join it onto the cached quick-open cwd.
-    func filePaletteDidActivate(relativePath: String) {
-        guard let editor = defaultEditor, let host = quickOpenService?.host,
-              !quickOpenCwd.isEmpty else { return }
-        let absPath = GitDiff.joinPath(cwd: quickOpenCwd, relative: relativePath)
+    /// Open the picked file at its top in the default editor. `path` is
+    /// relative to the cached quick-open cwd, or an artifact's `~/…` or
+    /// absolute path (`QuickOpenFiles.merge`).
+    func filePaletteDidActivate(path: String) {
+        guard let editor = defaultEditor, let host = quickOpenService?.host else { return }
+        let absPath = QuickOpenFiles.absolutePath(path, cwd: quickOpenCwd, home: NSHomeDirectory())
+        guard absPath.hasPrefix("/") else { return }
         open(file: absPath, line: nil, host: host, in: editor)
     }
 }
@@ -5532,14 +5551,25 @@ extension AppDelegate: FilePaletteDelegate {
 // MARK: - SessionPaletteDelegate (⌘K switcher → attach)
 
 extension AppDelegate: SessionPaletteDelegate {
-    /// Attach the terminal to the picked session, switch to the picked window or
-    /// pane, and highlight its sidebar row — mirroring a click on that row.
-    /// A scrollback hit: the same jump as a pane hit in ⇧⌘F — attach, select the
-    /// pane, and open the find bar on the query so the pane lands on the line.
+    /// A scrollback hit: a jump to its pane, like a pane row. Unlike a ⇧⌘F pane
+    /// hit it opens no find bar: the terminal takes focus, so typing goes to
+    /// the pane.
     func sessionPaletteDidActivateScrollback(_ hit: PaneMatch, needle: String) {
-        treePaneDidActivatePane(hit.pane, needle: needle)
+        let pane = hit.pane
+        let service = registry.service(for: pane.host)
+        sidebarDidSelectSession(pane.session, service: service)
+        sidebarVC?.selectSession(pane.session, host: pane.host)
+        service.driverQueue.async {
+            service.selectWindow(session: pane.session, window: pane.window)
+            service.selectPane(
+                session: pane.session, window: pane.window, pane: pane.paneId, zoom: false)
+        }
+        detailVC?.focusTerminal()
     }
 
+    /// Attach the terminal to the picked session, switch to the picked window or
+    /// pane, and highlight its sidebar row — mirroring a click on that row. The
+    /// terminal takes focus.
     func sessionPaletteDidActivate(_ entry: SwitcherEntry, service: TmuxService) {
         sidebarDidSelectSession(entry.session, service: service)
         switch entry.target {
@@ -5552,6 +5582,7 @@ extension AppDelegate: SessionPaletteDelegate {
             sidebarDidSelectPane(session: entry.session, window: window, pane: pane, service: service)
             sidebarVC?.selectPane(id: pane.id, host: entry.host)
         }
+        detailVC?.focusTerminal()
     }
 
     /// No session matched what was typed → create a new local tmux session by that
