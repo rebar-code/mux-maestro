@@ -19,9 +19,10 @@ messages, branch names, PR text and screenshots.
   files (`SidebarViewController`, `AppDelegate`, ...), so a change there also
   needs `make app`.
 - `make app` needs `GhosttyKit.xcframework` in the repo root. It is gitignored.
-  `make libghostty` builds it from pinned source and takes many minutes; run it
-  once per machine. In a new worktree, symlink the framework from a checkout
-  that already has it instead of rebuilding.
+  When it is missing, `make app` runs `make libghostty`, which downloads the
+  prebuilt framework and checks its pinned SHA-256. So `make install` works
+  from a fresh checkout. `make libghostty-source` builds it from source instead
+  and takes many minutes.
 - The phone web app's bundle (`app/MuxMaestro/Resources/mobile/`) is gitignored.
   `make app` and `make test` build it from `mobile/` when a source changed
   (`make mobile` does only that); it needs node and pnpm. Never commit it. A
