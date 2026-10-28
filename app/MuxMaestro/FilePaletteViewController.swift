@@ -2,7 +2,7 @@ import Cocoa
 
 /// Raised by the ⌘P quick-open palette when the user picks a file.
 protocol FilePaletteDelegate: AnyObject {
-    func filePaletteDidActivate(relativePath: String)
+    func filePaletteDidActivate(path: String)
 }
 
 /// An NSPanel that can become key so its field accepts typing.
@@ -12,8 +12,8 @@ private final class FloatingPalettePanel: NSPanel {
 }
 
 /// The ⌘P quick-open palette: a Zed/VS-Code-style floating command menu that
-/// fuzzy-matches the selected session's repo file *names* and opens the chosen
-/// file in the editor. Distinct from the ⌘⇧F in-tree content search — this is a
+/// fuzzy-matches the selected session's file *names*, plus its pane's artifacts,
+/// and opens the chosen file in the editor. Distinct from the ⌘⇧F in-tree content search — this is a
 /// fast "go to file" by name. Matching is `FuzzyMatch` over an in-memory file
 /// list (loaded once when the palette opens), so filtering is instant per
 /// keystroke with no debounce.
@@ -26,7 +26,7 @@ final class FilePaletteViewController: NSViewController {
     private let tableView = NSTableView()
     private let scroll = NSScrollView()
 
-    /// The full candidate list (repo-relative paths) set by the AppDelegate.
+    /// The full candidate list (`QuickOpenFiles.merge` entries) set by the AppDelegate.
     private var files: [String] = []
     /// The current ranked rows (path + matched char indices) shown in the table.
     private var rows: [(path: String, indices: [Int])] = []
@@ -141,12 +141,13 @@ final class FilePaletteViewController: NSViewController {
         p.setFrameOrigin(NSPoint(x: pf.midX - size.width / 2, y: pf.maxY - size.height - 80))
         p.makeKeyAndOrderFront(nil)
         p.makeFirstResponder(searchField)
-        searchField.currentEditor()?.selectedRange = NSRange(location: currentQuery.count, length: 0)
+        // Select the last query, so typing replaces it.
+        searchField.selectText(nil)
     }
 
     private func close() { panel.close() }
 
-    /// Set the candidate file list (repo-relative paths) and re-filter for the
+    /// Set the candidate file list (`QuickOpenFiles.merge` entries) and re-filter for the
     /// current query. Called by the AppDelegate once the list is loaded.
     func setFiles(_ files: [String]) {
         self.files = files
@@ -183,7 +184,7 @@ final class FilePaletteViewController: NSViewController {
     private func activateSelected() {
         let r = tableView.selectedRow
         guard r >= 0, r < rows.count else { return }
-        delegate?.filePaletteDidActivate(relativePath: rows[r].path)
+        delegate?.filePaletteDidActivate(path: rows[r].path)
         close()
     }
 

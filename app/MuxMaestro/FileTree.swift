@@ -106,3 +106,72 @@ enum FileTree {
         }
     }
 }
+
+/// The ⌘P quick-open palette's file list beyond `git ls-files`: a capped walk
+/// for a folder that is not a git repo, and the merge with the pane's
+/// artifacts, which can live anywhere on disk. Pure, like `FileTree`.
+enum QuickOpenFiles {
+    /// Cap on the walk, so a huge folder such as `$HOME` stays quick: `head`
+    /// closes the pipe at the cap and `find` stops there.
+    static let maxFiles = 20_000
+    static let maxDepth = 8
+
+    /// Folders the walk never enters: dot-folders (`.git`, caches) and
+    /// dependency, build and macOS library trees.
+    static let skippedFolders = [
+        ".*", "node_modules", "Library", "build", "dist", "target",
+        "DerivedData", "Pods", "__pycache__", "venv",
+    ]
+
+    /// `sh` argv that lists the files under `cwd` as `./`-prefixed lines.
+    /// `cwd` goes in as `$1`, so it needs no quoting inside the script, and the
+    /// script has no single quotes, so it survives `Ssh.shellQuote` for a
+    /// remote host. Errors (unreadable folders) are dropped; `head` sets the
+    /// exit status, so a partial walk still counts as success.
+    static func walkArgv(cwd: String) -> [String] {
+        let names = skippedFolders.map { "-name \"\($0)\"" }.joined(separator: " -o ")
+        let script = "cd \"$1\" && find . -mindepth 1 -maxdepth \(maxDepth)"
+            + " \\( -type d \\( \(names) \\) \\) -prune -o -type f -print 2>/dev/null"
+            + " | head -n \(maxFiles)"
+        return ["-c", script, "sh", cwd]
+    }
+
+    /// The walk's lines as paths relative to the walked folder.
+    static func parseWalk(_ output: String) -> [String] {
+        output.split(separator: "\n", omittingEmptySubsequences: true).map { line in
+            line.hasPrefix("./") ? String(line.dropFirst(2)) : String(line)
+        }
+    }
+
+    /// The palette's entries: the artifacts first, then the listed files.
+    /// An artifact under `cwd` shows as a relative path and is not listed
+    /// twice; one elsewhere shows as `~/…` under `home`, else absolute.
+    static func merge(listed: [String], artifacts: [String], cwd: String, home: String) -> [String] {
+        var seen = Set<String>()
+        var out: [String] = []
+        for entry in artifacts.map({ display($0, cwd: cwd, home: home) }) + listed
+        where seen.insert(entry).inserted {
+            out.append(entry)
+        }
+        return out
+    }
+
+    /// The absolute path of a `merge` entry.
+    static func absolutePath(_ entry: String, cwd: String, home: String) -> String {
+        if entry.hasPrefix("/") { return entry }
+        if entry.hasPrefix("~/") { return home + entry.dropFirst() }
+        return GitDiff.joinPath(cwd: cwd, relative: entry)
+    }
+
+    private static func display(_ path: String, cwd: String, home: String) -> String {
+        if let rest = relative(path, under: cwd) { return rest }
+        if let rest = relative(path, under: home) { return "~/" + rest }
+        return path
+    }
+
+    private static func relative(_ path: String, under folder: String) -> String? {
+        guard !folder.isEmpty else { return nil }
+        let prefix = folder.hasSuffix("/") ? folder : folder + "/"
+        return path.hasPrefix(prefix) ? String(path.dropFirst(prefix.count)) : nil
+    }
+}

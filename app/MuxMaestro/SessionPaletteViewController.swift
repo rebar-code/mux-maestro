@@ -203,7 +203,8 @@ final class SessionPaletteViewController: NSViewController {
         p.setFrameOrigin(NSPoint(x: pf.midX - size.width / 2, y: pf.maxY - size.height - 80))
         p.makeKeyAndOrderFront(nil)
         p.makeFirstResponder(searchField)
-        searchField.currentEditor()?.selectedRange = NSRange(location: currentQuery.count, length: 0)
+        // Select the last query, so typing replaces it.
+        searchField.selectText(nil)
     }
 
     private func close() { panel.close() }

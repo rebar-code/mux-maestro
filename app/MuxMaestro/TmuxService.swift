@@ -2446,10 +2446,14 @@ final class TmuxService {
     /// The repo's tracked + untracked-non-ignored files as a flat list of
     /// relative paths, for the ⌘P quick-open palette. Same `git ls-files` argv as
     /// the file tree (honoring `.gitignore`); routes over ssh for a remote host.
-    /// Empty when `cwd` isn't a repo / git fails. Call off the main thread.
+    /// Outside a repo (git fails) it walks the folder instead, capped and
+    /// skipping heavy folders (`QuickOpenFiles.walkArgv`). Call off the main thread.
     func repoFiles(cwd: String) -> [String] {
-        let out = runHostCommand(local: gitPath, remote: "git", FileTree.listArgv(cwd: cwd)) ?? ""
-        return out.split(separator: "\u{0}", omittingEmptySubsequences: true).map(String.init)
+        if let out = runHostCommand(local: gitPath, remote: "git", FileTree.listArgv(cwd: cwd)) {
+            return out.split(separator: "\u{0}", omittingEmptySubsequences: true).map(String.init)
+        }
+        let walk = runHostCommand(local: "/bin/sh", remote: "sh", QuickOpenFiles.walkArgv(cwd: cwd))
+        return QuickOpenFiles.parseWalk(walk ?? "")
     }
 
     /// The open PR(s) for whatever branch the session at `cwd` is on. Resolves the

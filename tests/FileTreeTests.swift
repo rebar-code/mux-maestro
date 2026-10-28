@@ -141,4 +141,76 @@ final class FileTreeTests: XCTestCase {
         XCTAssertNotNil(call)
         XCTAssertTrue(call!.args.contains("buildbox"))
     }
+
+    // MARK: TmuxService.repoFiles — the ⌘P list, with a walk outside git
+
+    func testRepoFilesInRepoUsesGitLsFiles() {
+        let runner = FakeRunner()
+        runner.responses["-C /repo ls-files --cached --others --exclude-standard -z"] =
+            "src/app.ts\u{0}readme.md\u{0}"
+        XCTAssertEqual(makeLocalService(runner).repoFiles(cwd: "/repo"), ["src/app.ts", "readme.md"])
+        XCTAssertFalse(runner.calls.contains { $0.path == "/bin/sh" })
+    }
+
+    func testRepoFilesOutsideRepoWalksTheFolder() {
+        let runner = FakeRunner()
+        runner.responses["-C /work ls-files --cached --others --exclude-standard -z"] = String?.none
+        runner.responses[QuickOpenFiles.walkArgv(cwd: "/work").joined(separator: " ")] =
+            "./notes/listing.md\n./brief.md\n"
+        XCTAssertEqual(makeLocalService(runner).repoFiles(cwd: "/work"), ["notes/listing.md", "brief.md"])
+        let walk = runner.calls.first { $0.args == QuickOpenFiles.walkArgv(cwd: "/work") }
+        XCTAssertEqual(walk?.path, "/bin/sh")
+    }
+
+    func testRepoFilesRemoteWalkRunsOverSsh() {
+        let runner = FakeRunner()
+        runner.defaultResponse = nil  // git fails, so the walk runs
+        _ = makeRemoteService(runner).repoFiles(cwd: "/work")
+        XCTAssertTrue(runner.calls.contains {
+            $0.path == "/usr/bin/ssh" && $0.args.contains("'sh'") && $0.args.contains("'/work'")
+        })
+    }
+
+    // MARK: QuickOpenFiles — the walk and the artifact merge
+
+    func testWalkSkipsHeavyFoldersAndCapsTheList() {
+        let script = QuickOpenFiles.walkArgv(cwd: "/work")[1]
+        for name in [".*", "node_modules", "Library"] {
+            XCTAssertTrue(script.contains("-name \"\(name)\""), name)
+        }
+        XCTAssertTrue(script.contains("-prune"))
+        XCTAssertTrue(script.contains("head -n \(QuickOpenFiles.maxFiles)"))
+        XCTAssertEqual(QuickOpenFiles.walkArgv(cwd: "/work").last, "/work")
+    }
+
+    func testWalkFindsFilesInARealFolder() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("quickopen-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        for path in ["a.md", "docs/listing.md", "node_modules/x/index.js", ".git/config", ".cache/blob"] {
+            let url = root.appendingPathComponent(path)
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data().write(to: url)
+        }
+        let out = ProcessCommandRunner().run("/bin/sh", QuickOpenFiles.walkArgv(cwd: root.path)) ?? ""
+        XCTAssertEqual(Set(QuickOpenFiles.parseWalk(out)), ["a.md", "docs/listing.md"])
+    }
+
+    func testMergePutsArtifactsFirstAndDedupes() {
+        let merged = QuickOpenFiles.merge(
+            listed: ["src/app.ts", "notes.md"],
+            artifacts: ["/Users/me/acme-app/notes.md", "/Users/me/.handoff/brief.md", "/tmp/out.png"],
+            cwd: "/Users/me/acme-app", home: "/Users/me")
+        XCTAssertEqual(merged, ["notes.md", "~/.handoff/brief.md", "/tmp/out.png", "src/app.ts"])
+    }
+
+    func testAbsolutePathResolvesEveryEntryForm() {
+        let cwd = "/Users/me/acme-app", home = "/Users/me"
+        XCTAssertEqual(QuickOpenFiles.absolutePath("src/app.ts", cwd: cwd, home: home),
+                       "/Users/me/acme-app/src/app.ts")
+        XCTAssertEqual(QuickOpenFiles.absolutePath("~/.handoff/brief.md", cwd: cwd, home: home),
+                       "/Users/me/.handoff/brief.md")
+        XCTAssertEqual(QuickOpenFiles.absolutePath("/tmp/out.png", cwd: cwd, home: home), "/tmp/out.png")
+    }
 }
