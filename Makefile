@@ -79,13 +79,14 @@ clean-libghostty:
 	rm -rf GhosttyKit.xcframework vendor/ghostty/macos/GhosttyKit.xcframework
 	rm -rf vendor/ghostty/zig-out vendor/ghostty/.zig-cache
 
-# Build MuxMaestro.app. Requires GhosttyKit.xcframework at the repo root
-# (run `make libghostty` first). Builds with the full Xcode toolchain.
+# Build MuxMaestro.app. Needs GhosttyKit.xcframework at the repo root; a fresh
+# checkout without it downloads the prebuilt one (`make libghostty`). Builds
+# with the full Xcode toolchain.
 # ARCHS is pinned on the command line so the Swift packages (FluidAudio,
 # WhisperKit) build arm64 only: the project-level setting does not reach
 # them, and FluidAudio uses Float16, which x86_64 macOS lacks.
 app: mobile
-	@test -e GhosttyKit.xcframework || { echo "GhosttyKit.xcframework missing — run 'make libghostty'"; exit 1; }
+	@test -e GhosttyKit.xcframework || { echo "GhosttyKit.xcframework missing — downloading the prebuilt one"; scripts/fetch-libghostty.sh; }
 	@$(HAVE_IDENTITY) || echo "warning: no signing identity named" $(call shq,$(SIGN_IDENTITY)) "— ad-hoc signing, so macOS re-asks for every permission after this build. Fix once with 'make signing-identity'."
 	DEVELOPER_DIR=$(DEVELOPER_DIR) \
 	xcodebuild \

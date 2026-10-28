@@ -103,7 +103,7 @@ instead, run `make libghostty-source` (a pinned, project-local Zig; Zig 0.15.2
 does not link on macOS 26.6 or later).
 
 ```sh
-make libghostty        # download the embedded terminal engine (once)
+make libghostty        # download the embedded terminal engine (make app also does this when it is missing)
 make signing-identity  # optional, once: a stable local signing identity
 make app               # build MuxMaestro.app
 make install           # build, copy to /Applications, and relaunch
