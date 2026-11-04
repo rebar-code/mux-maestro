@@ -65,3 +65,20 @@ enum CardTint {
         return hostHex
     }
 }
+
+/// The pinned copy of a session row that stays at the top of the sidebar while
+/// the session's windows scroll under it, as the phone's session header does.
+/// Values are in the outline's flipped coordinates: y grows downward.
+enum StickyHeader {
+    /// The pinned header's top edge, or nil when nothing is pinned: the session
+    /// row is not cut by the top edge, or no row of its card is below the row.
+    /// `cardBottom` is where the session's last visible row ends. The header
+    /// rides up with it, so the next card pushes it out.
+    static func top(
+        visibleTop: CGFloat, rowTop: CGFloat, rowHeight: CGFloat, cardBottom: CGFloat
+    ) -> CGFloat? {
+        guard rowTop < visibleTop, cardBottom > rowTop + rowHeight, cardBottom > visibleTop
+        else { return nil }
+        return min(visibleTop, cardBottom - rowHeight)
+    }
+}

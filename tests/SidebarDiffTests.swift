@@ -333,3 +333,35 @@ final class CardHeaderServerColorTests: XCTestCase {
         XCTAssertNil(CardTint.accentHex(segment: .single, isSession: true, hostHex: nil))
     }
 }
+
+/// The pinned session header: a session row 40pt tall at y 100, its card ending
+/// at y 400.
+final class StickyHeaderTests: XCTestCase {
+    private func top(_ visibleTop: CGFloat, cardBottom: CGFloat = 400) -> CGFloat? {
+        StickyHeader.top(visibleTop: visibleTop, rowTop: 100, rowHeight: 40, cardBottom: cardBottom)
+    }
+
+    func testNothingPinsWhileTheRowIsOnScreen() {
+        XCTAssertNil(top(50))
+        XCTAssertNil(top(100))
+    }
+
+    func testTheHeaderPinsToTheTopOnceTheRowScrollsUnder() {
+        XCTAssertEqual(top(101), 101)
+        XCTAssertEqual(top(300), 300)
+    }
+
+    func testTheNextCardPushesTheHeaderOut() {
+        XCTAssertEqual(top(360), 360)
+        XCTAssertEqual(top(380), 360)
+        XCTAssertEqual(top(399), 360)
+    }
+
+    func testNothingPinsOnceTheCardIsGone() {
+        XCTAssertNil(top(400))
+    }
+
+    func testACollapsedSessionNeverPins() {
+        XCTAssertNil(top(120, cardBottom: 140))
+    }
+}

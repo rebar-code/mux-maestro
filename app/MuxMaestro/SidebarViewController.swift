@@ -674,7 +674,12 @@ final class CardRowView: NSTableRowView {
         for case let cell as RowCell in subviews { cell.isRowHovered = isHovered }
     }
 
+    /// The segment to draw outside the outline: the pinned session header has no
+    /// row to work it out from.
+    var fixedSegment: CardSegment? { didSet { if fixedSegment != oldValue { needsDisplay = true } } }
+
     private var segment: CardSegment? {
+        if let fixedSegment { return fixedSegment }
         guard let outline = superview as? SidebarOutlineView else { return nil }
         return outline.cardSegment(atRow: outline.row(for: self))
     }
@@ -1013,6 +1018,8 @@ final class SessionCellView: NSTableCellView {
     /// Switches the session's windows between index order and newest prompt
     /// first. Wired by the delegate; hidden where it has no target.
     let sortButton = SidebarAddButton.make(tooltip: "Sorted by index")
+    /// How many windows the session shows under it, as the phone's header does.
+    let countField = NSTextField(labelWithString: "")
 
     init() {
         super.init(frame: .zero)
@@ -1035,13 +1042,19 @@ final class SessionCellView: NSTableCellView {
         // is the first thing that should give up room.
         statusField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         statusField.setContentHuggingPriority(.required, for: .horizontal)
+        countField.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        countField.textColor = SidebarPalette.muted
+        countField.setContentCompressionResistancePriority(.required, for: .horizontal)
 
         // Trailing accessories in a stack so a hidden PR chip collapses cleanly
         // (no leftover gap) without juggling constraints.
-        let accessories = NSStackView(views: [statusField, worktreeChip, prChip, sortButton, addButton])
+        let accessories = NSStackView(
+            views: [statusField, worktreeChip, prChip, countField, sortButton, addButton])
         accessories.orientation = .horizontal
         accessories.alignment = .centerY
         accessories.spacing = 6
+        // The count reads with the sort icon beside it; keep the name's room.
+        accessories.setCustomSpacing(2, after: countField)
         accessories.translatesAutoresizingMaskIntoConstraints = false
         accessories.setHuggingPriority(.required, for: .horizontal)
         accessories.setContentCompressionResistancePriority(.required, for: .horizontal)
@@ -1114,7 +1127,7 @@ final class SessionCellView: NSTableCellView {
 
     func configure(
         _ session: TmuxSession, host: Host? = nil, pr: PullRequest? = nil,
-        favicon: NSImage? = nil, worktree: WorktreeBadge? = nil
+        favicon: NSImage? = nil, worktree: WorktreeBadge? = nil, windows: Int? = nil
     ) {
         // The cell is pooled across rows, so this is set on every configure —
         // never left over from the session that used it last.
@@ -1126,7 +1139,8 @@ final class SessionCellView: NSTableCellView {
         }
         // A chip already tells you something specific about this row; the status
         // word only repeats the dot. Drop it rather than let it crowd the name.
-        statusField.isHidden = worktree != nil || pr != nil
+        // An idle session has no word at all; hidden, it gives its gap to the name.
+        statusField.isHidden = worktree != nil || pr != nil || session.attention.label.isEmpty
         // A resolved favicon takes the leading slot as the row's identity icon
         // (rendered in its own color); otherwise fall back to the muted host glyph.
         if let favicon {
@@ -1144,6 +1158,8 @@ final class SessionCellView: NSTableCellView {
             typeIcon.toolTip = nil
         }
         dot.indicator = session.indicator
+        countField.stringValue = windows.map(String.init) ?? ""
+        countField.isHidden = windows == nil
         nameField.stringValue = session.name
         // Remote-host sessions read a step dimmer than local so the two are
         // distinguishable at a glance (defaults to local when host is unknown).
@@ -1819,6 +1835,13 @@ final class SidebarViewController: NSViewController {
     private let herdr: HerdrService
     private let outline = SidebarOutlineView()
     private let scroll = NSScrollView()
+    /// The pinned copy of the session row whose windows fill the top of the
+    /// list, as the phone pins its session headers. See `updateStickyHeader`.
+    private let stickyRow = CardRowView()
+    private let stickyCell = SessionCellView()
+    private let stickyFold = NSButton()
+    /// The session the pinned header shows; nil while it is hidden.
+    private var stickyNode: SidebarNode?
     private let emptyState = NSTextField(labelWithString: "")
     private var roots: [SidebarNode] = []
     private var pollTimer: Timer?
@@ -2132,6 +2155,27 @@ final class SidebarViewController: NSViewController {
         scroll.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(scroll)
 
+        // Inside the scroll view, under its scroller: a scroll-wheel over the
+        // header still scrolls the list.
+        stickyRow.isHidden = true
+        stickyFold.bezelStyle = .disclosure
+        stickyFold.setButtonType(.onOff)
+        stickyFold.title = ""
+        stickyFold.state = .on
+        stickyFold.target = self
+        stickyFold.action = #selector(foldStickySession)
+        stickyRow.addSubview(stickyFold)
+        stickyRow.addSubview(stickyCell)
+        stickyRow.addGestureRecognizer(
+            NSClickGestureRecognizer(target: self, action: #selector(clickStickyHeader(_:))))
+        scroll.addSubview(stickyRow, positioned: .below, relativeTo: scroll.verticalScroller)
+        scroll.contentView.postsBoundsChangedNotifications = true
+        scroll.contentView.postsFrameChangedNotifications = true
+        for name in [NSView.boundsDidChangeNotification, NSView.frameDidChangeNotification] {
+            NotificationCenter.default.addObserver(
+                self, selector: #selector(listScrolled), name: name, object: scroll.contentView)
+        }
+
         // Empty state shown when no tmux server is running.
         emptyState.translatesAutoresizingMaskIntoConstraints = false
         emptyState.stringValue = "No tmux sessions.\nStart one with + below."
@@ -2167,18 +2211,111 @@ final class SidebarViewController: NSViewController {
     /// context-appropriate add: host → new session, session → new window.
     /// Switch the clicked session's windows between index order and newest
     /// activity first.
-    @objc private func toggleSortOnRow(_ sender: NSButton) {
+    /// Fill a session cell for `node`: the outline's session row, or the pinned
+    /// header that copies it.
+    private func configureSessionCell(
+        _ cell: SessionCellView, node: SidebarNode, host: Host, session: TmuxSession
+    ) {
+        // PR chips live on the window rows now (each window can be a different
+        // branch), so the session row itself shows no chip. The favicon (when
+        // the session's repo has one) replaces the host glyph as the row icon.
+        cell.configure(session, host: host, pr: nil,
+                       favicon: favicon(for: session.cwd, host: host),
+                       worktree: node.worktree,
+                       windows: node.children.filter(\.isWindow).count)
+        // "+" adds a window to this session.
+        cell.addButton.isHidden = false
+        cell.addButton.target = self
+        cell.addButton.action = #selector(addOnRow(_:))
+        cell.setSortsByRecent(Settings.sortsByRecent(session: session.name, host: host))
+        cell.sortButton.target = self
+        cell.sortButton.action = #selector(toggleSortOnRow(_:))
+    }
+
+    /// The node a row's button acts on: its outline row's, or the pinned header's.
+    private func node(forRowButton sender: NSView) -> SidebarNode? {
+        if sender.isDescendant(of: stickyRow) { return stickyNode }
         let row = outline.row(for: sender)
-        guard row >= 0, case .session(let host, let s)? = (outline.item(atRow: row) as? SidebarNode)?.kind
+        return row >= 0 ? outline.item(atRow: row) as? SidebarNode : nil
+    }
+
+    @objc private func listScrolled() { updateStickyHeader(reconfigure: false) }
+
+    /// Pin a copy of the session row to the top of the list while its windows
+    /// scroll under it. The next card pushes it out, as on the phone, where the
+    /// header is `position: sticky` inside its session.
+    private func updateStickyHeader(reconfigure: Bool) {
+        let visibleTop = scroll.contentView.bounds.minY
+        let probe = outline.row(at: NSPoint(x: outline.bounds.midX, y: max(visibleTop, 0)))
+        var item = probe >= 0 ? outline.item(atRow: probe) : nil
+        while let node = item as? SidebarNode, !node.isSession { item = outline.parent(forItem: node) }
+        guard let node = item as? SidebarNode, case .session(let host, let session) = node.kind
+        else { return hideStickyHeader() }
+
+        let row = outline.row(forItem: node)
+        let level = outline.level(forRow: row)
+        var last = row
+        while last + 1 < outline.numberOfRows, outline.level(forRow: last + 1) > level { last += 1 }
+        let rowRect = outline.rect(ofRow: row)
+        guard let top = StickyHeader.top(
+            visibleTop: visibleTop, rowTop: rowRect.minY, rowHeight: rowRect.height,
+            cardBottom: outline.rect(ofRow: last).maxY)
+        else { return hideStickyHeader() }
+
+        if reconfigure || node !== stickyNode {
+            stickyNode = node
+            configureSessionCell(stickyCell, node: node, host: host, session: session)
+            stickyRow.backgroundColor = SidebarPalette.bg
+            stickyRow.fixedSegment = outline.cardSegment(atRow: row)
+            Self.colorCard(stickyRow, node: node)
+            stickyRow.needsDisplay = true
+        }
+        var frame = rowRect
+        frame.origin.y = top
+        stickyRow.frame = scroll.convert(frame, from: scroll.contentView)
+        stickyCell.frame = outline.frameOfCell(atColumn: 0, row: row)
+            .offsetBy(dx: -rowRect.minX, dy: -rowRect.minY)
+        stickyFold.frame = outline.frameOfOutlineCell(atRow: row)
+            .offsetBy(dx: -rowRect.minX, dy: -rowRect.minY)
+        stickyRow.isHidden = false
+    }
+
+    private func hideStickyHeader() {
+        stickyNode = nil
+        stickyRow.isHidden = true
+    }
+
+    /// A click on the pinned header selects its session, as a click on the row
+    /// does. Its buttons handle their own clicks.
+    @objc private func clickStickyHeader(_ recognizer: NSClickGestureRecognizer) {
+        let point = recognizer.location(in: stickyRow)
+        guard let node = stickyNode,
+              !(stickyRow.hitTest(stickyRow.convert(point, to: stickyRow.superview)) is NSButton)
         else { return }
+        let row = outline.row(forItem: node)
+        guard row >= 0 else { return }
+        outline.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        selectionDelegate?.sidebarDidClickTerminalRow()
+    }
+
+    /// The pinned header's chevron folds its session, as the row's chevron does.
+    @objc private func foldStickySession() {
+        stickyFold.state = .on
+        guard let node = stickyNode else { return }
+        outline.collapseItem(node)
+        let row = outline.row(forItem: node)
+        if row >= 0 { outline.scrollRowToVisible(row) }
+    }
+
+    @objc private func toggleSortOnRow(_ sender: NSButton) {
+        guard case .session(let host, let s)? = node(forRowButton: sender)?.kind else { return }
         Settings.setSortsByRecent(
             !Settings.sortsByRecent(session: s.name, host: host), session: s.name, host: host)
         applyRefresh(buildHostNodes())
     }
 
     @objc private func addOnRow(_ sender: NSButton) {
-        let row = outline.row(for: sender)
-        guard row >= 0, let node = outline.item(atRow: row) as? SidebarNode else { return }
+        guard let node = node(forRowButton: sender) else { return }
         let service = registry.service(for: node.host)
         switch node.kind {
         case .host(let h, _):
@@ -2531,6 +2668,7 @@ final class SidebarViewController: NSViewController {
             else { continue }
             resized.insert(row)
         }
+        defer { updateStickyHeader(reconfigure: true) }
         guard !resized.isEmpty else { return }
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0
@@ -3641,11 +3779,13 @@ final class SidebarViewController: NSViewController {
         autoExpand(animated: true)
         // Surviving rows took their new data above without a reload, so a line 2
         // that changed in the same poll would keep a stale cell and height. Root
-        // headers too: their counts ("WORKTREES (2)") change with every add/remove.
+        // headers and session rows too: their counts ("WORKTREES (2)", a session's
+        // window count) change with every add/remove.
         var lineRows = IndexSet()
         for row in 0..<outline.numberOfRows {
             guard let node = outline.item(atRow: row) as? SidebarNode,
-                  node.isWindow || node.isPane || outline.parent(forItem: node) == nil
+                  node.isWindow || node.isPane || node.isSession
+                    || outline.parent(forItem: node) == nil
             else { continue }
             outline.reloadItem(node)
             lineRows.insert(row)
@@ -5442,19 +5582,7 @@ extension SidebarViewController: NSOutlineViewDelegate {
             let id = NSUserInterfaceItemIdentifier("sessionCell")
             let cell = outlineView.makeView(withIdentifier: id, owner: self) as? SessionCellView
                 ?? { let c = SessionCellView(); c.identifier = id; return c }()
-            // PR chips live on the window rows now (each window can be a different
-            // branch), so the session row itself shows no chip. The favicon (when
-            // the session's repo has one) replaces the host glyph as the row icon.
-            cell.configure(session, host: host, pr: nil,
-                           favicon: favicon(for: session.cwd, host: host),
-                           worktree: node.worktree)
-            // "+" adds a window to this session.
-            cell.addButton.isHidden = false
-            cell.addButton.target = self
-            cell.addButton.action = #selector(addOnRow(_:))
-            cell.setSortsByRecent(Settings.sortsByRecent(session: session.name, host: host))
-            cell.sortButton.target = self
-            cell.sortButton.action = #selector(toggleSortOnRow(_:))
+            configureSessionCell(cell, node: node, host: host, session: session)
             return cell
         }
         // herdr session rows reuse the attention-dot cell, fed herdr's rolled-up
