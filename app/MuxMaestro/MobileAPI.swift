@@ -1065,16 +1065,19 @@ enum MobileChat {
     /// pane has many agent sessions over its life (`/clear`, a crash, a new
     /// run), each with its own file. A cursor into an earlier one says nothing
     /// about this one, so the live file is read from its tail and the client is
-    /// told to start over. nil when the file does not read.
+    /// told to start over. nil when the file does not read. `maxText` cuts
+    /// each row's text; the Mac's own chat reads longer replies than the phone.
     static func page(
-        file: (path: String, codex: Bool)?, after: UInt64?, session: String?
+        file: (path: String, codex: Bool)?, after: UInt64?, session: String?,
+        maxText: Int = maxTextLength
     ) -> MobileChatPage? {
         let live = file.map { self.session(path: $0.path) } ?? ""
         let moved = session.map { $0 != live } ?? false
         // No transcript yet is an empty chat, not a missing thread: an agent
         // writes its file with the first message.
         guard let file else { return MobileChatPage(reset: moved) }
-        guard var page = read(path: file.path, codex: file.codex, after: moved ? nil : after)
+        guard var page = read(
+            path: file.path, codex: file.codex, after: moved ? nil : after, maxText: maxText)
         else { return nil }
         page.reset = page.reset || moved
         page.session = live
@@ -1082,7 +1085,9 @@ enum MobileChat {
     }
 
     /// Read `path` from the cursor `after` (nil: the recent tail).
-    static func read(path: String, codex: Bool, after: UInt64?) -> MobileChatPage? {
+    static func read(
+        path: String, codex: Bool, after: UInt64?, maxText: Int = maxTextLength
+    ) -> MobileChatPage? {
         guard let handle = FileHandle(forReadingAtPath: path) else { return nil }
         defer { try? handle.close() }
         guard let size = try? handle.seekToEnd() else { return nil }
@@ -1103,7 +1108,8 @@ enum MobileChat {
         }
         let tail = after == nil || page.reset
         // A read that starts mid-file starts mid-line: drop that partial line.
-        let parsed = messages(in: data, offset: start, codex: codex, skipFirstLine: tail && start > 0)
+        let parsed = messages(
+            in: data, offset: start, codex: codex, skipFirstLine: tail && start > 0, maxText: maxText)
         page.messages = tail ? Array(parsed.messages.suffix(firstPageLimit)) : parsed.messages
         page.next = parsed.next
         return page
@@ -1148,7 +1154,8 @@ enum MobileChat {
     /// `next` is the end of the last whole line, so a line still being written
     /// is read on the next call.
     static func messages(
-        in data: Data, offset: UInt64, codex: Bool, skipFirstLine: Bool = false
+        in data: Data, offset: UInt64, codex: Bool, skipFirstLine: Bool = false,
+        maxText: Int = maxTextLength
     ) -> (messages: [MobileChatMessage], next: UInt64) {
         var out: [MobileChatMessage] = []
         var lineStart = data.startIndex
@@ -1167,7 +1174,8 @@ enum MobileChat {
             // unique and increasing across lines.
             for (index, row) in rows.enumerated() {
                 out.append(MobileChatMessage(
-                    n: at + UInt64(index), role: row.role, text: clip(row.text), tool: row.tool))
+                    n: at + UInt64(index), role: row.role, text: clip(row.text, to: maxText),
+                    tool: row.tool))
             }
         }
         return (out, offset + UInt64(data.distance(from: data.startIndex, to: lineStart)))
@@ -1281,8 +1289,8 @@ enum MobileChat {
         return ""
     }
 
-    private static func clip(_ text: String) -> String {
-        text.count > maxTextLength ? text.prefixString(maxTextLength) + "…" : text
+    private static func clip(_ text: String, to length: Int) -> String {
+        text.count > length ? text.prefixString(length) + "…" : text
     }
 }
 

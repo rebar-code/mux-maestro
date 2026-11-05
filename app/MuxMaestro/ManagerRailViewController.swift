@@ -3,13 +3,14 @@ import Cocoa
 /// The 🤖 Manager rail: a far-right collapsible column that IS the manager view.
 /// Two cards. One lists the agent's read of the fleet (what needs you, what the
 /// agents have been doing, what they said), or the request list in its place;
-/// the other is the chat with the `mux-manager` pane. The cards stack or sit side by side, and the divider
-/// between them drags.
+/// the other is the chat with the `mux-manager` pane, read from its transcript
+/// the way the phone reads it. The cards stack or sit side by side, and the
+/// divider between them drags.
 ///
 /// The pane's terminal lives behind the chat header's toggle. It is installed
 /// once (lazily, on first reveal) and never torn down, so the agent's scrollback
 /// survives every toggle and every collapse of the rail.
-final class ManagerRailViewController: NSViewController, NSTextFieldDelegate, NSSplitViewDelegate {
+final class ManagerRailViewController: NSViewController, NSSplitViewDelegate {
     private let split = RailSplitView()
     private let listScroll = NSScrollView()
     private let sections = FlippedStackView()
@@ -18,28 +19,22 @@ final class ManagerRailViewController: NSViewController, NSTextFieldDelegate, NS
     private let listSwitch = NSSegmentedControl(
         labels: ["Board", "Requests"], trackingMode: .selectOne, target: nil, action: nil)
     private let requestList = RequestListView()
-    private let chatScroll = NSScrollView()
-    private let chatLog = FlippedStackView()
+    private let chat = ChatTranscriptView()
     private let terminalHost = NSView()
     private let terminalToggle = NSButton()
     private let layoutToggle = NSButton()
-    private let input = NSTextField()
+    private let input = ChatComposer()
 
     /// The header's push-to-talk slot and the button in it.
     let talkButtonSlot = NSView()
     private let talkButton = NSButton()
     /// Spins around the talk button while a take is transcribing or replying.
     private let talkSpinner = NSProgressIndicator()
-    /// Spins under the reply while a turn is in flight.
-    private var workingSpinner: NSView?
 
     private var snapshot = ManagerSnapshot.empty
     /// The prompt of the turn in flight, so a refused or unreachable turn can
     /// hand it back to the input instead of making the human retype it.
     private var pendingPrompt = ""
-    /// The reply of the turn in flight: its message view and the text so far.
-    private var replyMessage: ChatMessageView?
-    private var replyText = ""
     /// Whether the saved divider position has been applied. It needs real
     /// bounds, which the rail only has once it is shown and laid out.
     private var positionApplied = false
@@ -78,6 +73,11 @@ final class ManagerRailViewController: NSViewController, NSTextFieldDelegate, NS
     var onRestart: (() -> Void)?
     /// ⏎ in the input: send this text to the manager pane.
     var onSend: ((String) -> Void)?
+    /// Where the chat reads the Maestro's transcript, spinner and prompt.
+    var chatSource: ChatSource? {
+        get { chat.source }
+        set { chat.source = newValue }
+    }
     /// The talk button: start, send, or stop a voice take.
     var onTalk: (() -> Void)?
     /// The terminal is being shown for the first time; install the surface now.
@@ -217,7 +217,6 @@ final class ManagerRailViewController: NSViewController, NSTextFieldDelegate, NS
             input.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 8),
             input.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -8),
             input.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -8),
-            input.heightAnchor.constraint(equalToConstant: 28),
         ])
         return card
     }
@@ -313,16 +312,9 @@ final class ManagerRailViewController: NSViewController, NSTextFieldDelegate, NS
     /// same rectangle, one of them hidden. The terminal keeps its constraints (and
     /// so its surface) while hidden, because swapping views must never detach it.
     private func buildChatContent() -> NSView {
-        chatLog.orientation = .vertical
-        chatLog.alignment = .centerX
-        chatLog.spacing = 8
-        chatLog.edgeInsets = NSEdgeInsets(top: 2, left: 0, bottom: 4, right: 0)
-        chatLog.translatesAutoresizingMaskIntoConstraints = false
-
-        chatScroll.documentView = chatLog
-        chatScroll.hasVerticalScroller = true
-        chatScroll.drawsBackground = false
-        chatScroll.translatesAutoresizingMaskIntoConstraints = false
+        chat.translatesAutoresizingMaskIntoConstraints = false
+        chat.onOpenLink = { [weak self] link in self?.onOpenLink?(link) }
+        chat.onShowTerminal = { [weak self] in self?.showTerminal(true) }
 
         terminalHost.wantsLayer = true
         terminalHost.layer?.backgroundColor = SidebarPalette.managerSurface.cgColor
@@ -330,17 +322,13 @@ final class ManagerRailViewController: NSViewController, NSTextFieldDelegate, NS
         terminalHost.isHidden = true
 
         let content = NSView()
-        content.addSubview(chatScroll)
+        content.addSubview(chat)
         content.addSubview(terminalHost)
         NSLayoutConstraint.activate([
-            chatLog.topAnchor.constraint(equalTo: chatScroll.contentView.topAnchor),
-            chatLog.leadingAnchor.constraint(equalTo: chatScroll.contentView.leadingAnchor),
-            chatLog.trailingAnchor.constraint(equalTo: chatScroll.contentView.trailingAnchor),
-
-            chatScroll.topAnchor.constraint(equalTo: content.topAnchor),
-            chatScroll.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            chatScroll.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            chatScroll.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            chat.topAnchor.constraint(equalTo: content.topAnchor),
+            chat.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            chat.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            chat.bottomAnchor.constraint(equalTo: content.bottomAnchor),
             terminalHost.topAnchor.constraint(equalTo: content.topAnchor),
             terminalHost.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             terminalHost.trailingAnchor.constraint(equalTo: content.trailingAnchor),
@@ -350,12 +338,8 @@ final class ManagerRailViewController: NSViewController, NSTextFieldDelegate, NS
     }
 
     private func buildInput() {
-        input.placeholderString = "Message"
-        input.font = .systemFont(ofSize: 13)
-        input.isBezeled = true
-        input.bezelStyle = .roundedBezel
-        input.focusRingType = .none
-        input.delegate = self
+        input.placeholder = "Message"
+        input.onSend = { [weak self] text in self?.onSend?(text) }
     }
 
     // MARK: Layout
@@ -598,77 +582,63 @@ final class ManagerRailViewController: NSViewController, NSTextFieldDelegate, NS
         terminalToggle.state = on ? .on : .off
         terminalToggle.contentTintColor = on ? SidebarPalette.accent : SidebarPalette.muted
         terminalHost.isHidden = !on
-        chatScroll.isHidden = on
+        chat.isHidden = on
         if on && !hasTerminal { onShowTerminal?() }
+        if !on { chat.refresh() }
     }
 
     // MARK: Chat
 
-    /// A turn is starting: show the message, hold a place for the reply, and hold
-    /// the input until the turn ends.
+    /// A turn is starting: its text shows until the transcript has it. The
+    /// reply, the agent's tools and its spinner come from the transcript and
+    /// the pane, so the input stays open: text sent mid-turn queues.
     func beginTurn(_ prompt: String) {
         loadViewIfNeeded()
         pendingPrompt = prompt
-        addMessage(.you, prompt)
-        replyText = ""
-        replyMessage = addMessage(.manager, "")
-        showWorking(true)
-        input.isEnabled = false
+        chat.addPending(prompt)
+        chat.refreshSoon()
     }
 
-    /// Stream more reply text in.
-    func appendReply(_ delta: String) {
-        guard !delta.isEmpty else { return }
-        replyText += delta
-        replyMessage?.setText(replyText, streaming: true)
-        scrollChatToEnd()
+    /// Text queued into a busy Maestro: shown until the transcript has it.
+    func showQueued(_ text: String) {
+        loadViewIfNeeded()
+        chat.addPending(text)
     }
 
-    /// The turn settled. A permission prompt is the one outcome the human has to
-    /// act on, and only the terminal can take that answer, so it comes forward.
+    /// Text that did not reach the pane: back into the input, with the reason.
+    func notSent(_ text: String, reason: String) {
+        chat.dropPending(text)
+        chat.addNote(reason)
+        if input.text.isEmpty { input.text = text }
+    }
+
+    /// The turn settled. A permission prompt shows in the chat with its
+    /// choices, read from the pane on the next refresh.
     func endTurn(_ outcome: ManagerTurnOutcome) {
-        var reply = ""
-        var note: String?
         switch outcome {
-        case .done(let text):
-            reply = text
-        case .permission(let text):
-            reply = text
-            note = "Waiting at the keyboard"
-            showTerminal(true)
-        case .timeout(let text):
-            reply = text
-            note = "Still working"
+        case .done, .permission:
+            break
+        case .timeout:
+            chat.addNote("Still working")
         case .refused(let message), .unreachable(let message):
-            note = message
-            if input.stringValue.isEmpty { input.stringValue = pendingPrompt }
+            notSent(pendingPrompt, reason: message)
         }
-        if replyText.isEmpty { replyText = reply }
-        if replyText.isEmpty {
-            replyMessage?.removeFromSuperview()
-        } else {
-            replyMessage?.setText(replyText)
-        }
-        showWorking(false)
-        if let note { addMessage(.note, note) }
-        replyMessage = nil
         pendingPrompt = ""
-        input.isEnabled = true
-        view.window?.makeFirstResponder(input)
+        chat.refreshSoon()
     }
 
     /// A one-line note in the chat, for a voice take that went nowhere.
     func addNote(_ text: String) {
         loadViewIfNeeded()
-        addMessage(.note, text)
+        chat.addNote(text)
     }
 
     /// The reply could not be spoken: bring the messages forward, where the
-    /// reply has been streaming in as text all along.
+    /// reply shows as text.
     func showReplyAsText() {
         loadViewIfNeeded()
         showTerminal(false)
-        addMessage(.note, "Voice failed")
+        chat.addNote("Voice failed")
     }
 
     /// The talk button shows what a press does next; the spinner around it
@@ -703,56 +673,6 @@ final class ManagerRailViewController: NSViewController, NSTextFieldDelegate, NS
         if spinning { talkSpinner.startAnimation(nil) } else { talkSpinner.stopAnimation(nil) }
     }
 
-    /// A small spinner under the reply while the manager's turn runs.
-    private func showWorking(_ on: Bool) {
-        workingSpinner?.removeFromSuperview()
-        workingSpinner = nil
-        guard on else { return }
-        let spinner = NSProgressIndicator()
-        spinner.style = .spinning
-        spinner.controlSize = .small
-        spinner.startAnimation(nil)
-        let row = NSView()
-        row.translatesAutoresizingMaskIntoConstraints = false
-        spinner.translatesAutoresizingMaskIntoConstraints = false
-        row.addSubview(spinner)
-        chatLog.addArrangedSubview(row)
-        NSLayoutConstraint.activate([
-            row.widthAnchor.constraint(equalTo: chatLog.widthAnchor, constant: -16),
-            row.heightAnchor.constraint(equalToConstant: 16),
-            spinner.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 8),
-            spinner.centerYAnchor.constraint(equalTo: row.centerYAnchor),
-            spinner.widthAnchor.constraint(equalToConstant: 16),
-            spinner.heightAnchor.constraint(equalToConstant: 16),
-        ])
-        workingSpinner = row
-        scrollChatToEnd()
-    }
-
-    @discardableResult
-    private func addMessage(_ role: ChatMessageView.Role, _ text: String) -> ChatMessageView {
-        let message = ChatMessageView(role: role)
-        message.setText(text)
-        message.onOpenLink = { [weak self] link in self?.onOpenLink?(link) }
-        chatLog.addArrangedSubview(message)
-        message.widthAnchor.constraint(equalTo: chatLog.widthAnchor, constant: -16).isActive = true
-        scrollChatToEnd()
-        return message
-    }
-
-    /// Keep the newest message in view. A message only knows its height after a
-    /// layout pass, so the scroll waits for one.
-    private func scrollChatToEnd() {
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.view.layoutSubtreeIfNeeded()
-            let clip = self.chatScroll.contentView
-            let bottom = max(0, self.chatLog.frame.height - clip.bounds.height)
-            clip.scroll(to: NSPoint(x: 0, y: bottom))
-            self.chatScroll.reflectScrolledClipView(clip)
-        }
-    }
-
     // MARK: Actions
 
     @objc private func restartClicked() { onRestart?() }
@@ -785,23 +705,6 @@ final class ManagerRailViewController: NSViewController, NSTextFieldDelegate, NS
         rebuildSections()
         onDismiss?(key)
     }
-
-    /// ⏎ sends. Handled here rather than through the field's action so the field
-    /// keeps focus for the next message and never ends editing mid-turn.
-    func control(
-        _ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector
-    ) -> Bool {
-        guard commandSelector == #selector(NSResponder.insertNewline(_:)) else { return false }
-        sendInput()
-        return true
-    }
-
-    private func sendInput() {
-        let text = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        input.stringValue = ""
-        onSend?(text)
-    }
 }
 
 /// What one rendered row draws and what a click on it does.
@@ -833,97 +736,6 @@ final class FlippedStackView: NSStackView {
 private final class RailSplitView: NSSplitView {
     override var dividerThickness: CGFloat { 10 }
     override func drawDivider(in rect: NSRect) {}
-}
-
-/// One chat message. Yours sits on a tinted block; the manager's reply is
-/// rendered markdown; a note (a turn that failed or is still going) is muted.
-/// The height follows the wrapped text, and a click on a link opens it.
-private final class ChatMessageView: NSView {
-    enum Role { case you, manager, note }
-
-    private let role: Role
-    private let label: LinkLabel
-    private var labelHeight: NSLayoutConstraint?
-
-    var onOpenLink: ((ThreadLink) -> Void)?
-
-    init(role: Role) {
-        self.role = role
-        label = LinkLabel(
-            font: .systemFont(ofSize: role == .note ? 11 : 12),
-            color: role == .note ? SidebarPalette.muted : SidebarPalette.text,
-            maxLines: 0)
-        super.init(frame: .zero)
-        translatesAutoresizingMaskIntoConstraints = false
-        if role == .you {
-            wantsLayer = true
-            layer?.cornerRadius = 8
-            layer?.backgroundColor = SidebarPalette.surface.cgColor
-        }
-
-        label.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(label)
-        let vertical: CGFloat = role == .you ? 6 : 0
-        let height = label.heightAnchor.constraint(equalToConstant: 0)
-        labelHeight = height
-        NSLayoutConstraint.activate([
-            label.topAnchor.constraint(equalTo: topAnchor, constant: vertical),
-            label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -vertical),
-            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
-            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            height,
-        ])
-        addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(clicked(_:))))
-    }
-
-    required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
-
-    /// `streaming`: the reply is still arriving (see `ChatMarkdown.settle`).
-    func setText(_ text: String, streaming: Bool = false) {
-        if role == .manager {
-            label.setAttributedText(
-                ChatMarkdown.render(text, style: Self.markdownStyle, streaming: streaming))
-        } else {
-            label.setText(text)
-        }
-        updateHeight()
-    }
-
-    private static var markdownStyle: ChatMarkdown.Style {
-        ChatMarkdown.Style(
-            font: .systemFont(ofSize: 12),
-            color: SidebarPalette.text,
-            muted: SidebarPalette.muted,
-            link: SidebarPalette.accent,
-            codeBackground: SidebarPalette.bg)
-    }
-
-    override func layout() {
-        super.layout()
-        updateHeight()
-    }
-
-    /// The label reports a fixed-lines intrinsic height, so the real height is
-    /// measured from the laid-out glyphs at the label's current width.
-    private func updateHeight() {
-        guard let labelHeight, let layout = label.layoutManager,
-              let container = label.textContainer, label.bounds.width > 1
-        else { return }
-        container.size = NSSize(width: label.bounds.width, height: CGFloat.greatestFiniteMagnitude)
-        layout.ensureLayout(for: container)
-        let height = ceil(layout.usedRect(for: container).height)
-        guard labelHeight.constant != height else { return }
-        labelHeight.constant = height
-    }
-
-    @objc private func clicked(_ gesture: NSClickGestureRecognizer) {
-        guard let target = label.linkTarget(at: gesture.location(in: label)) else { return }
-        if let link = ThreadLinks.parse(target) {
-            onOpenLink?(link)
-        } else if let url = URL(string: target), ["http", "https", "mailto"].contains(url.scheme) {
-            NSWorkspace.shared.open(url)
-        }
-    }
 }
 
 /// One row: status dot, title (+ PR numbers), a detail line that may carry

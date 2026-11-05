@@ -95,14 +95,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 registry.service(for: thread.host).captureScrollback(target: thread.pane, lines: lines)
             },
             transcript: { [registry, transcriptMirror] thread in
-                guard thread.host.isLocal else {
-                    // A remote agent session: its transcript as a copy here.
-                    return registry.service(for: thread.host).transcriptCopy(
-                        claudeSessionId: thread.claudeSessionId, codexSessionId: thread.codexSessionId,
-                        in: transcriptMirror)
-                }
-                return [thread.claudeSessionId, thread.codexSessionId].compactMap { $0 }
-                    .compactMap { TranscriptTailReader.shared.transcript(sessionId: $0) }.first
+                Self.agentTranscript(
+                    host: thread.host, claude: thread.claudeSessionId, codex: thread.codexSessionId,
+                    registry: registry, mirror: transcriptMirror)
             },
             pane: { [registry, agentStates = AgentStateReader()] thread in
                 registry.service(for: thread.host).phonePane(target: thread.pane) { latest in
@@ -393,6 +388,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.showAgentToasts()
             self?.retryPendingLink()
             self?.refreshArtifacts()
+            self?.followThreadChat()
             self?.pushMobileSnapshot()
             guard let manager = self?.managerController, let sidebar else { return }
             manager.publishSessions(sidebar.managerSessionSnapshot())
@@ -447,6 +443,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let detail = DetailViewController(
             terminal: terminal, rightSidebar: rightSidebar, runningDrawer: drawer)
         self.detailVC = detail
+        detail.threadChat.transcript = { [registry, transcriptMirror] target in
+            Self.agentTranscript(
+                host: target.host, claude: target.claudeSessionId, codex: target.codexSessionId,
+                registry: registry, mirror: transcriptMirror)
+        }
+        detail.threadChat.paneIO = { [registry] target in
+            registry.service(for: target.host).phonePane(target: target.pane) { thread in
+                MobilePaneState(status: thread.status, since: thread.since)
+            }
+        }
+        detail.threadChat.onOpenLink = { [weak self] link in self?.openLink(link) }
+        detail.threadChat.onShowTerminal = { [weak detail] in detail?.setShowsChat(false) }
         detail.handoffCommands.onCopyContext = { [weak self] in
             self?.copyHandoffContext()
         }
@@ -578,7 +586,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
-        managerRail.onSend = { [weak self] text in self?.runManagerTurn(text) }
+        managerRail.onSend = { [weak self] text in self?.sendFromRail(text) }
+        managerRail.chatSource = managerChatSource()
         managerRail.onTalk = { [weak self] in self?.actionTalk() }
         managerRail.onShowTerminal = { [weak self] in self?.installManagerTerminalIfNeeded() }
         managerRail.requests = ManagerHome.defaultHome().map {
@@ -2908,7 +2917,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             text,
             requireIdle: requireIdle,
             onDelta: { [weak self] delta in
-                self?.managerRailVC?.appendReply(delta)
                 if tracked { self?.mobileServer.managerTurnAppended(delta) }
                 onDelta(delta)
             },
@@ -2919,6 +2927,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self?.mobileServer.managerTurnEnded()
                 }
                 completion(outcome)
+            })
+    }
+
+    /// The rail's input. While a turn runs the text is queued in the pane, the
+    /// way the phone queues one: the Maestro takes it up when its turn ends.
+    private func sendFromRail(_ text: String) {
+        guard managerTurnRunning else { return runManagerTurn(text) }
+        managerRailVC?.showQueued(text)
+        let source = managerChatSource()
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let response = source.pane().map {
+                MobileReply.send(text, queue: true, target: $0.target, io: $0.io, state: $0.state)
+            } ?? .error(503, "unavailable", message: MobileManager.offMessage)
+            guard response.status != 200 else { return }
+            DispatchQueue.main.async {
+                self?.managerRailVC?.notSent(text, reason: ChatTranscriptView.message(of: response))
+            }
+        }
+    }
+
+    /// The Maestro's pane for the rail's chat: its transcript, and the pane
+    /// itself for its spinner, its prompt and a queued send.
+    private func managerChatSource() -> ChatSource {
+        let reader = { [weak self] in
+            // The controller belongs to the main thread; its readers do not.
+            DispatchQueue.main.sync { self?.managerController?.paneReader() }
+        }
+        return ChatSource(
+            transcript: { reader()?.transcript().map { ($0.path, false) } },
+            pane: { [registry] in
+                guard let reader = reader(),
+                      let pane = ManagerPane.resolve(run: { registry.local.runTmux($0) })
+                else { return nil }
+                let io = registry.local.phonePane(target: pane) { thread in
+                    MobilePaneState(status: thread.status, since: thread.since)
+                }
+                return ChatPane(target: pane, io: io, state: {
+                    switch reader.status() {
+                    case .idle: return MobilePaneState(status: .idle)
+                    case .busy: return MobilePaneState(status: .busy)
+                    case .waiting: return MobilePaneState(status: .waiting)
+                    case nil: return MobilePaneState(status: .unknown)
+                    }
+                })
             })
     }
 
@@ -4758,6 +4810,29 @@ extension AppDelegate: SidebarSelectionDelegate {
         // kind-specific callbacks, which would run it two or three times a click.
         refreshRunning()
         refreshArtifacts()
+        followThreadChat()
+        // The terminal takes focus on a new selection; in chat the input does.
+        if detailVC?.showsChat == true { DispatchQueue.main.async { self.detailVC?.focusTerminal() } }
+    }
+
+    /// The main pane's chat follows the pane the Artifacts panel follows.
+    private func followThreadChat() {
+        let selected = sidebarVC?.selectedAgentPane
+        detailVC?.threadChat.follow(selected?.pane, host: selected?.host)
+    }
+
+    /// An agent session's transcript: the local file, or a copy of a remote
+    /// one. Blocking for a remote host; call off the main thread.
+    private static func agentTranscript(
+        host: Host, claude: String?, codex: String?, registry: HostRegistry,
+        mirror: RemoteTranscriptMirror
+    ) -> (path: String, codex: Bool)? {
+        guard host.isLocal else {
+            return registry.service(for: host).transcriptCopy(
+                claudeSessionId: claude, codexSessionId: codex, in: mirror)
+        }
+        return [claude, codex].compactMap { $0 }
+            .compactMap { TranscriptTailReader.shared.transcript(sessionId: $0) }.first
     }
 
     /// Commit an inline breadcrumb rename against the current selection's service.
