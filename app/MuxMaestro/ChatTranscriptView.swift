@@ -470,7 +470,15 @@ private final class ChatTextRow: ChatRowView {
         case .user, .pending:
             // Yours sits on the right, as wide as its text, at most most of the row.
             let padX: CGFloat = 10, padY: CGFloat = 6
-            let text = Self.measure(label, width: floor(width * 0.86) - padX * 2)
+            let maxText = floor(width * 0.86) - padX * 2
+            // The layout's used rect spans the container; the text's own
+            // bounds give the width a short message needs.
+            let fit = label.textStorage.map {
+                ceil($0.boundingRect(
+                    with: NSSize(width: maxText, height: .greatestFiniteMagnitude),
+                    options: [.usesLineFragmentOrigin, .usesFontLeading]).width)
+            } ?? maxText
+            let text = Self.measure(label, width: min(maxText, fit + 1))
             let boxSize = NSSize(width: text.width + padX * 2, height: text.height + padY * 2)
             box.frame = NSRect(x: width - boxSize.width, y: 0, width: boxSize.width, height: boxSize.height)
             label.frame = NSRect(x: box.frame.minX + padX, y: padY, width: text.width, height: text.height)
