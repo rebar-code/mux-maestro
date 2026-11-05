@@ -129,7 +129,8 @@ final class TerminalViewController: NSViewController {
     /// Re-wired onto each swapped-in surface.
     var onOpenLink: ((_ url: String) -> Bool)?
 
-    /// Called after the pointer rests on a web URL. nil turns hover detection off.
+    /// Called after the pointer rests on a web URL with ⌘ held. nil turns hover
+    /// detection off.
     /// Applied to every cached surface and each new one.
     var onHoverLink: ((URL) -> Void)? {
         didSet { surfaceCache.values.forEach(wireHoverLink) }

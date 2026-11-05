@@ -199,8 +199,8 @@ enum Settings {
         defaults.set(on, forKey: rightSidebarColumnsKey)
     }
 
-    /// Whether resting the pointer on a URL in the terminal opens the web
-    /// preview in the right sidebar. Defaults to on.
+    /// Whether resting the pointer on a URL in the terminal with ⌘ held opens the
+    /// web preview in the right sidebar. Defaults to on.
     static func linkHoverPreview(defaults: UserDefaults = .standard) -> Bool {
         defaults.object(forKey: linkHoverPreviewKey) as? Bool ?? true
     }

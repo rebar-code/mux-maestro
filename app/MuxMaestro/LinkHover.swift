@@ -1,8 +1,8 @@
 import Foundation
 
-/// Finds the web URL under the pointer in one terminal row. Ghostty reports a
-/// plain-text URL as a link only while ⌘ is held, so plain hover reads the row
-/// text and matches it here.
+/// Finds the web URL under the pointer in one terminal row, for the ⌘-hover
+/// preview. Ghostty's own link match is not exposed to the app, so the preview
+/// reads the row text and matches it here.
 enum LinkHover {
     /// The `http(s)` URL in `row` that covers cell `column` (0-based), or nil.
     /// Columns count terminal cells: a wide character takes two.

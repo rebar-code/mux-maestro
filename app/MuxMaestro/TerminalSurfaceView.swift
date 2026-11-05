@@ -190,10 +190,10 @@ final class TerminalSurfaceView: NSView {
     /// handled; false ⇒ Ghostty's own fallback (`open <url>`). Set by the controller.
     var onOpenLink: ((_ url: String) -> Bool)?
 
-    // MARK: Links (plain hover)
+    // MARK: Links (⌘-hover preview)
 
-    /// Called after the pointer rests on a web URL in the terminal text. nil
-    /// turns hover detection off. Set by the controller.
+    /// Called after the pointer rests on a web URL in the terminal text while ⌘
+    /// is held. nil turns hover detection off. Set by the controller.
     var onHoverLink: ((URL) -> Void)?
 
     /// How long the pointer must rest on a URL before `onHoverLink` fires.
@@ -204,11 +204,13 @@ final class TerminalSurfaceView: NSView {
     private var hoverURL: URL?
     private var hoverTimer: Timer?
 
-    /// Look up the URL under the pointer and start the rest timer when it changes.
-    /// Moving off a URL only stops the timer; the preview stays open.
-    private func trackHoverLink(_ pos: NSPoint) {
+    /// With ⌘ held (and not ⇧, the rearrange chord), look up the URL under the
+    /// pointer and start the rest timer when it changes. Moving off a URL or
+    /// releasing ⌘ only stops the timer; the preview stays open.
+    private func trackHoverLink(_ pos: NSPoint, _ flags: NSEvent.ModifierFlags) {
         guard onHoverLink != nil else { return }
-        guard NSEvent.pressedMouseButtons == 0, dragSource == nil, bounds.contains(pos),
+        guard flags.contains(.command), !flags.contains(.shift),
+              NSEvent.pressedMouseButtons == 0, dragSource == nil, bounds.contains(pos),
               let cell = cellSizePoints
         else { return clearHoverLink() }
         let col = Int(pos.x / cell.width)
@@ -446,6 +448,10 @@ final class TerminalSurfaceView: NSView {
         // Forward modifier changes so libghostty tracks held modifiers.
         keyAction(GHOSTTY_ACTION_PRESS, event: event)
         refreshLinkHover(event.modifierFlags)
+        if let window {
+            trackHoverLink(
+                convert(window.mouseLocationOutsideOfEventStream, from: nil), event.modifierFlags)
+        }
         // Holding ⌘⇧ (with ≥2 panes) reveals the pane outlines for rearranging.
         rearrangeDelegate?.paneRearrangeSetRevealed(
             event.modifierFlags.contains([.command, .shift]) && rearrangePanes.count >= 2)
@@ -509,7 +515,7 @@ final class TerminalSurfaceView: NSView {
     override func mouseMoved(with event: NSEvent) {
         let pos = convert(event.locationInWindow, from: nil)
         sendHoverPos(pos, event.modifierFlags)
-        trackHoverLink(pos)
+        trackHoverLink(pos, event.modifierFlags)
     }
 
     override func mouseExited(with event: NSEvent) {

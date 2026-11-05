@@ -1048,7 +1048,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         sidebarLayout.keyEquivalentModifierMask = [.command, .control]
         sessionMenu.addItem(sidebarLayout)
         let linkHover = NSMenuItem(
-            title: "Preview Links on Hover", action: #selector(actionToggleLinkHoverPreview),
+            title: "Preview Links on ⌘-Hover", action: #selector(actionToggleLinkHoverPreview),
             keyEquivalent: "")
         linkHover.target = self
         linkHover.state = Settings.linkHoverPreview() ? .on : .off
@@ -1563,7 +1563,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         wireLinkHoverPreview()
     }
 
-    /// Plain hover on a URL in the main terminal opens it in the sidebar preview,
+    /// ⌘-hover on a URL in the main terminal opens it in the sidebar preview,
     /// without taking focus. Off ⇒ the terminal skips the lookup entirely.
     private func wireLinkHoverPreview() {
         terminalVC?.onHoverLink = Settings.linkHoverPreview()
