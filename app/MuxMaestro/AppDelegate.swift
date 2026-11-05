@@ -4114,7 +4114,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let byRecent = NSMenuItem(
             title: "Most Recent", action: #selector(actionGroupByRecent), keyEquivalent: "")
         byRecent.target = self
-        byRecent.state = .on
+        let current = Settings.sidebarGrouping()
+        byHost.state = current == .host ? .on : .off
+        byDir.state = current == .directory ? .on : .off
+        byRecent.state = current == .recent ? .on : .off
         menu.addItem(byHost)
         menu.addItem(byDir)
         menu.addItem(byRecent)
@@ -4210,7 +4213,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func actionToggleGrouping() {
         // Cycle the button through the three modes; the menu picks a specific one.
         let order: [SidebarViewController.GroupMode] = [.host, .recent, .directory]
-        let cur = sidebarVC?.groupMode ?? .recent
+        let cur = sidebarVC?.groupMode ?? Settings.sidebarGrouping()
         let next = order[((order.firstIndex(of: cur) ?? 0) + 1) % order.count]
         applyGroupMode(next)
     }

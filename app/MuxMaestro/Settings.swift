@@ -385,9 +385,18 @@ enum Settings {
         defaults.set(filter.rawValue, forKey: "sidebar.filter")
     }
 
+    /// How the Mac's session sidebar is grouped. By host until one is picked.
+    static func sidebarGrouping(defaults: UserDefaults = .standard) -> MobileGrouping {
+        defaults.string(forKey: "sidebar.grouping").flatMap(MobileGrouping.init) ?? .host
+    }
+
+    static func setSidebarGrouping(_ grouping: MobileGrouping, defaults: UserDefaults = .standard) {
+        defaults.set(grouping.rawValue, forKey: "sidebar.grouping")
+    }
+
     /// The grouping the phone's sidebar opens with until it is changed there.
     static func phoneGrouping(defaults: UserDefaults = .standard) -> MobileGrouping {
-        defaults.string(forKey: "phone.grouping").flatMap(MobileGrouping.init) ?? .recent
+        defaults.string(forKey: "phone.grouping").flatMap(MobileGrouping.init) ?? .host
     }
 
     static func setPhoneGrouping(_ grouping: MobileGrouping, defaults: UserDefaults = .standard) {

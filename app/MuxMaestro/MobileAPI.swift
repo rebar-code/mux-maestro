@@ -370,7 +370,7 @@ enum MobileGrouping: String, CaseIterable {
 struct MobileConfig: Equatable {
     /// Nothing is on unless its switch was turned on.
     var capabilities: Set<MobileCapability> = []
-    var grouping = MobileGrouping.recent
+    var grouping = MobileGrouping.host
     var voice = MobileVoiceDefaults()
     /// The largest file the phone may upload, in bytes.
     var uploadLimit = MobileReply.defaultUploadLimit

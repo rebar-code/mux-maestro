@@ -246,13 +246,24 @@ final class SettingsTests: XCTestCase {
         XCTAssertTrue(Settings.runningDrawerExpanded(defaults: defaults))
     }
 
+    func testSidebarGroupingDefaultsToHostAndKeepsASavedChoice() {
+        XCTAssertEqual(Settings.sidebarGrouping(defaults: defaults), .host)
+        Settings.setSidebarGrouping(.recent, defaults: defaults)
+        XCTAssertEqual(Settings.sidebarGrouping(defaults: defaults), .recent)
+    }
+
+    func testPhoneGroupingKeepsASavedChoice() {
+        defaults.set("recent", forKey: "phone.grouping")
+        XCTAssertEqual(Settings.phoneGrouping(defaults: defaults), .recent)
+    }
+
     // MARK: phone
 
     func testPhoneIsOffWithEveryFeatureOffByDefault() {
         XCTAssertFalse(Settings.phoneEnabled(defaults: defaults))
         XCTAssertFalse(Settings.phoneKeepAwake(defaults: defaults))
         XCTAssertEqual(Settings.phonePort(defaults: defaults), Settings.phonePortDefault)
-        XCTAssertEqual(Settings.phoneGrouping(defaults: defaults), .recent)
+        XCTAssertEqual(Settings.phoneGrouping(defaults: defaults), .host)
         XCTAssertEqual(Settings.phoneConfig(defaults: defaults), MobileConfig())
         for capability in MobileCapability.allCases {
             XCTAssertFalse(Settings.phoneCapability(capability, defaults: defaults))
