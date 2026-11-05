@@ -23,7 +23,7 @@ final class DetailViewController: NSViewController {
     /// Names the two side contents. Kept as a stable enum so the toolbar/menu call
     /// sites (`toggle(.diff)`, `show(.tree)`, …) read the same as before, even
     /// though each shows/hides independently instead of swapping one slot.
-    enum SidePanel { case diff, tree, artifacts }
+    enum SidePanel { case diff, tree, artifacts, preview }
 
     private let split = NSSplitView()
     private let terminalPane = NSView()  // holds the terminal (left, always shown)
@@ -275,6 +275,7 @@ final class DetailViewController: NSViewController {
         case .diff: return .diff
         case .tree: return .tree
         case .artifacts: return .artifacts
+        case .preview: return .preview
         }
     }
 
@@ -294,6 +295,18 @@ final class DetailViewController: NSViewController {
         rightSidebar.show(item(side))
         reconcileRail()
         focus(side)
+    }
+
+    /// Open `side` without focus, so keystrokes stay in the terminal.
+    func reveal(_ side: SidePanel) {
+        rightSidebar.show(item(side))
+        reconcileRail()
+    }
+
+    /// Close `side`. The rail collapses when it was the last pane.
+    func hide(_ side: SidePanel) {
+        rightSidebar.hide(item(side))
+        reconcileRail()
     }
 
     /// Master collapse/expand for the whole right sidebar (⌘B / the toolbar

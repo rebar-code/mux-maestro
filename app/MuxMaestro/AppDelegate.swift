@@ -14,6 +14,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
     private weak var launchAtLoginItem: NSMenuItem?
     private weak var recoveryAutoResumeItem: NSMenuItem?
+    private weak var linkHoverPreviewItem: NSMenuItem?
+    private var linkPreviewVC: LinkPreviewViewController?
     private var ghostty: GhosttyApp?
     private var tickTimer: Timer?
     private var terminalVC: TerminalViewController?
@@ -439,10 +441,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let artifacts = ArtifactsViewController()
         artifacts.delegate = self
         self.artifactsVC = artifacts
-        let rightSidebar = RightSidebarViewController(diff: diff, tree: tree, artifacts: artifacts)
+        let linkPreview = LinkPreviewViewController()
+        self.linkPreviewVC = linkPreview
+        let rightSidebar = RightSidebarViewController(
+            diff: diff, tree: tree, artifacts: artifacts, preview: linkPreview)
         let detail = DetailViewController(
             terminal: terminal, rightSidebar: rightSidebar, runningDrawer: drawer)
         self.detailVC = detail
+        linkPreview.onClose = { [weak detail] in detail?.hide(.preview) }
+        wireLinkHoverPreview()
         detail.threadChat.transcript = { [registry, transcriptMirror] target in
             Self.agentTranscript(
                 host: target.host, claude: target.claudeSessionId, codex: target.codexSessionId,
@@ -1049,6 +1056,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             title: "Toggle Sidebar Layout", action: #selector(actionToggleSidebarLayout), keyEquivalent: "l")
         sidebarLayout.keyEquivalentModifierMask = [.command, .control]
         sessionMenu.addItem(sidebarLayout)
+        let linkHover = NSMenuItem(
+            title: "Preview Links on ⌘-Hover", action: #selector(actionToggleLinkHoverPreview),
+            keyEquivalent: "")
+        linkHover.target = self
+        linkHover.state = Settings.linkHoverPreview() ? .on : .off
+        linkHoverPreviewItem = linkHover
+        sessionMenu.addItem(linkHover)
         let toggleManager = NSMenuItem(
             title: "Toggle Maestro", action: #selector(actionToggleManager), keyEquivalent: "m")
         toggleManager.keyEquivalentModifierMask = [.command, .shift]
@@ -1549,6 +1563,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             launchAtLoginItem?.state = SMAppService.mainApp.status == .enabled ? .on : .off
             presentError("Couldn’t update Mux Maestro’s Login Item: \(error.localizedDescription)")
         }
+    }
+
+    @objc private func actionToggleLinkHoverPreview() {
+        let enabled = !Settings.linkHoverPreview()
+        Settings.setLinkHoverPreview(enabled)
+        linkHoverPreviewItem?.state = enabled ? .on : .off
+        wireLinkHoverPreview()
+    }
+
+    /// ⌘-hover on a URL in the main terminal opens it in the sidebar preview,
+    /// without taking focus. Off ⇒ the terminal skips the lookup entirely.
+    private func wireLinkHoverPreview() {
+        terminalVC?.onHoverLink = Settings.linkHoverPreview()
+            ? { [weak self] url in
+                guard let self, let detail = self.detailVC else { return }
+                detail.reveal(.preview)
+                self.linkPreviewVC?.load(url)
+            }
+            : nil
     }
 
     @objc private func actionToggleRecoveryAutoResume() {
