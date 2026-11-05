@@ -108,6 +108,18 @@ enum Settings {
         defaults.set(on, forKey: managerRailShownKey)
     }
 
+    private static let threadChatShownKey = "threadChatShown"
+
+    /// Whether the main pane shows the selected agent as chat rather than its
+    /// terminal. One choice for the app, not one per session. Off by default.
+    static func threadChatShown(defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: threadChatShownKey) as? Bool ?? false
+    }
+
+    static func setThreadChatShown(_ on: Bool, defaults: UserDefaults = .standard) {
+        defaults.set(on, forKey: threadChatShownKey)
+    }
+
     private static let runningDrawerExpandedKey = "runningDrawerExpanded"
 
     /// Whether the Running drawer over the terminal is open. Defaults to closed:
