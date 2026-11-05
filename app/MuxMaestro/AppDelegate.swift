@@ -578,7 +578,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
-        managerRail.onSend = { [weak self] text in self?.runManagerTurn(text) }
+        managerRail.onSend = { [weak self] text in self?.sendFromRail(text) }
+        managerRail.chatSource = managerChatSource()
         managerRail.onTalk = { [weak self] in self?.actionTalk() }
         managerRail.onShowTerminal = { [weak self] in self?.installManagerTerminalIfNeeded() }
         managerRail.requests = ManagerHome.defaultHome().map {
@@ -2908,7 +2909,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             text,
             requireIdle: requireIdle,
             onDelta: { [weak self] delta in
-                self?.managerRailVC?.appendReply(delta)
                 if tracked { self?.mobileServer.managerTurnAppended(delta) }
                 onDelta(delta)
             },
@@ -2919,6 +2919,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self?.mobileServer.managerTurnEnded()
                 }
                 completion(outcome)
+            })
+    }
+
+    /// The rail's input. While a turn runs the text is queued in the pane, the
+    /// way the phone queues one: the Maestro takes it up when its turn ends.
+    private func sendFromRail(_ text: String) {
+        guard managerTurnRunning else { return runManagerTurn(text) }
+        managerRailVC?.showQueued(text)
+        let source = managerChatSource()
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let response = source.pane().map {
+                MobileReply.send(text, queue: true, target: $0.target, io: $0.io, state: $0.state)
+            } ?? .error(503, "unavailable", message: MobileManager.offMessage)
+            guard response.status != 200 else { return }
+            DispatchQueue.main.async {
+                self?.managerRailVC?.notSent(text, reason: ChatTranscriptView.message(of: response))
+            }
+        }
+    }
+
+    /// The Maestro's pane for the rail's chat: its transcript, and the pane
+    /// itself for its spinner, its prompt and a queued send.
+    private func managerChatSource() -> ChatSource {
+        let reader = { [weak self] in
+            // The controller belongs to the main thread; its readers do not.
+            DispatchQueue.main.sync { self?.managerController?.paneReader() }
+        }
+        return ChatSource(
+            transcript: { reader()?.transcript().map { ($0.path, false) } },
+            pane: { [registry] in
+                guard let reader = reader(),
+                      let pane = ManagerPane.resolve(run: { registry.local.runTmux($0) })
+                else { return nil }
+                let io = registry.local.phonePane(target: pane) { thread in
+                    MobilePaneState(status: thread.status, since: thread.since)
+                }
+                return ChatPane(target: pane, io: io, state: {
+                    switch reader.status() {
+                    case .idle: return MobilePaneState(status: .idle)
+                    case .busy: return MobilePaneState(status: .busy)
+                    case .waiting: return MobilePaneState(status: .waiting)
+                    case nil: return MobilePaneState(status: .unknown)
+                    }
+                })
             })
     }
 

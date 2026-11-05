@@ -258,6 +258,10 @@
 		A11C0012 /* LinkRoute.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11C0001 /* LinkRoute.swift */; };
 		A11C0013 /* LinkRouteTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11C0002 /* LinkRouteTests.swift */; };
 		A0071E14 /* LinkLabel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0071E03 /* LinkLabel.swift */; };
+		A0C7A102 /* ChatRows.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0C7A101 /* ChatRows.swift */; };
+		A0C7A103 /* ChatRows.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0C7A101 /* ChatRows.swift */; };
+		A0C7A105 /* ChatTranscriptView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0C7A104 /* ChatTranscriptView.swift */; };
+		A0C7A107 /* ChatRowsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0C7A106 /* ChatRowsTests.swift */; };
 		A00C4D11 /* ChatMarkdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00C4D01 /* ChatMarkdown.swift */; };
 		A00C4D12 /* ChatMarkdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00C4D01 /* ChatMarkdown.swift */; };
 		A00C4D13 /* ChatMarkdownTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00C4D02 /* ChatMarkdownTests.swift */; };
@@ -471,6 +475,9 @@
 		A11C0001 /* LinkRoute.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkRoute.swift; sourceTree = "<group>"; };
 		A11C0002 /* LinkRouteTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkRouteTests.swift; sourceTree = "<group>"; };
 		A0071E03 /* LinkLabel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkLabel.swift; sourceTree = "<group>"; };
+		A0C7A101 /* ChatRows.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatRows.swift; sourceTree = "<group>"; };
+		A0C7A104 /* ChatTranscriptView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatTranscriptView.swift; sourceTree = "<group>"; };
+		A0C7A106 /* ChatRowsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatRowsTests.swift; sourceTree = "<group>"; };
 		A00C4D01 /* ChatMarkdown.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatMarkdown.swift; sourceTree = "<group>"; };
 		A00C4D02 /* ChatMarkdownTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatMarkdownTests.swift; sourceTree = "<group>"; };
 		A70A5701 /* ToastClick.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToastClick.swift; sourceTree = "<group>"; };
@@ -618,6 +625,8 @@
 				A11C0001 /* LinkRoute.swift */,
 				A0071E03 /* LinkLabel.swift */,
 				A00C4D01 /* ChatMarkdown.swift */,
+				A0C7A104 /* ChatTranscriptView.swift */,
+				A0C7A101 /* ChatRows.swift */,
 				A70A5701 /* ToastClick.swift */,
 				E1A00010 /* VoiceModels.swift */,
 				E1A00011 /* VoiceEngine.swift */,
@@ -717,6 +726,7 @@
 				A0071E02 /* ThreadLinksTests.swift */,
 				A11C0002 /* LinkRouteTests.swift */,
 				A00C4D02 /* ChatMarkdownTests.swift */,
+				A0C7A106 /* ChatRowsTests.swift */,
 				A70A5702 /* ToastClickTests.swift */,
 				E1A00016 /* SpeechifyTests.swift */,
 				F1B0A002 /* VoiceControllerTests.swift */,
@@ -943,6 +953,8 @@
 				A11C0011 /* LinkRoute.swift in Sources */,
 				A0071E14 /* LinkLabel.swift in Sources */,
 				A00C4D11 /* ChatMarkdown.swift in Sources */,
+				A0C7A105 /* ChatTranscriptView.swift in Sources */,
+				A0C7A102 /* ChatRows.swift in Sources */,
 				A70A5711 /* ToastClick.swift in Sources */,
 				E1A00020 /* VoiceModels.swift in Sources */,
 				E1A00021 /* VoiceEngine.swift in Sources */,
@@ -1100,6 +1112,8 @@
 				A11C0013 /* LinkRouteTests.swift in Sources */,
 				A00C4D12 /* ChatMarkdown.swift in Sources */,
 				A00C4D13 /* ChatMarkdownTests.swift in Sources */,
+				A0C7A107 /* ChatRowsTests.swift in Sources */,
+				A0C7A103 /* ChatRows.swift in Sources */,
 				A70A5712 /* ToastClick.swift in Sources */,
 				A70A5713 /* ToastClickTests.swift in Sources */,
 				E1A00030 /* Speechify.swift in Sources */,
