@@ -1975,10 +1975,11 @@ final class SidebarViewController: NSViewController {
         "W:\(host.name):\(session):\(window)"
     }
 
-    /// How the top level is organized: by host (default) or by the working
-    /// directory the sessions live in. The header toggle flips this.
-    enum GroupMode { case host, directory, recent }
-    private(set) var groupMode: GroupMode = .recent
+    /// How the top level is organized: by host (default), by the working
+    /// directory the sessions live in, or most recent first. The toolbar's
+    /// Group button flips this; the choice is saved.
+    typealias GroupMode = MobileGrouping
+    private(set) var groupMode: GroupMode = Settings.sidebarGrouping()
 
     /// The session name of the currently-selected row (session/window/pane), or
     /// nil (including when a host row is selected).
@@ -5238,6 +5239,7 @@ final class SidebarViewController: NSViewController {
     func setGroupMode(_ mode: GroupMode) {
         guard mode != groupMode else { return }
         groupMode = mode
+        Settings.setSidebarGrouping(mode)
         applyRefresh(buildHostNodes())
     }
 
