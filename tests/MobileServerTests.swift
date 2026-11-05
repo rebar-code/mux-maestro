@@ -455,7 +455,7 @@ final class MobileServerTests: XCTestCase {
         XCTAssertTrue(get("/api/hosts").body.contains(#""name":"localhost""#))
         let config = get("/api/config")
         XCTAssertEqual(config.status, 200)
-        XCTAssertTrue(config.body.contains(#""grouping":"recent""#))
+        XCTAssertTrue(config.body.contains(#""grouping":"host""#))
         XCTAssertTrue(config.body.contains(#""replies":false"#))
     }
 

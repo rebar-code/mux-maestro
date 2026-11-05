@@ -14,6 +14,11 @@ final class DetailViewController: NSViewController {
     let runningDrawer: RunningDrawer
     /// Commands for carrying the current agent turn into a fresh conversation.
     let handoffCommands = HandoffCommandButton()
+    /// The selected agent as chat, over the terminal while the corner switch
+    /// says Chat. The terminal stays attached under it.
+    let threadChat = ThreadChatView()
+    private let modeSwitch = NSSegmentedControl()
+    private(set) var showsChat = Settings.threadChatShown()
 
     /// Names the two side contents. Kept as a stable enum so the toolbar/menu call
     /// sites (`toggle(.diff)`, `show(.tree)`, …) read the same as before, even
@@ -121,6 +126,18 @@ final class DetailViewController: NSViewController {
             fill,
         ])
 
+        // The chat covers the terminal exactly; the corner switch picks one.
+        threadChat.translatesAutoresizingMaskIntoConstraints = false
+        threadChat.isHidden = !showsChat
+        terminalPane.addSubview(threadChat)
+        NSLayoutConstraint.activate([
+            threadChat.topAnchor.constraint(equalTo: term.topAnchor),
+            threadChat.bottomAnchor.constraint(equalTo: term.bottomAnchor),
+            threadChat.leadingAnchor.constraint(equalTo: term.leadingAnchor),
+            threadChat.trailingAnchor.constraint(equalTo: term.trailingAnchor),
+        ])
+        buildModeSwitch()
+
         // The Running drawer floats over the pane's top-right corner, above the
         // surface. Absolute: it covers the terminal rather than pushing it, and
         // never grows past the pane's bottom — its list scrolls instead.
@@ -129,7 +146,7 @@ final class DetailViewController: NSViewController {
         terminalPane.addSubview(runningDrawer)
         NSLayoutConstraint.activate([
             runningDrawer.topAnchor.constraint(equalTo: terminalPane.topAnchor, constant: 8),
-            runningDrawer.trailingAnchor.constraint(equalTo: terminalPane.trailingAnchor, constant: -16),
+            runningDrawer.trailingAnchor.constraint(equalTo: modeSwitch.leadingAnchor, constant: -8),
             runningDrawer.bottomAnchor.constraint(
                 lessThanOrEqualTo: terminalPane.bottomAnchor, constant: -8),
         ])
@@ -137,7 +154,7 @@ final class DetailViewController: NSViewController {
         handoffCommands.translatesAutoresizingMaskIntoConstraints = false
         terminalPane.addSubview(handoffCommands)
         let handoffAtRight = handoffCommands.trailingAnchor.constraint(
-            equalTo: term.trailingAnchor, constant: -16)
+            equalTo: modeSwitch.leadingAnchor, constant: -8)
         let handoffBesideRunning = handoffCommands.trailingAnchor.constraint(
             equalTo: runningDrawer.leadingAnchor, constant: -8)
         handoffAtRight.isActive = true
@@ -156,7 +173,7 @@ final class DetailViewController: NSViewController {
             equalTo: runningDrawer.leadingAnchor, constant: -8)
         let besideHandoff = findBar.trailingAnchor.constraint(
             equalTo: handoffCommands.leadingAnchor, constant: -8)
-        let inCorner = findBar.trailingAnchor.constraint(equalTo: term.trailingAnchor, constant: -16)
+        let inCorner = findBar.trailingAnchor.constraint(equalTo: modeSwitch.leadingAnchor, constant: -8)
         let positionFloaters = { [weak self] in
             guard let self else { return }
             let showHandoff = !self.handoffCommands.isHidden
@@ -189,7 +206,48 @@ final class DetailViewController: NSViewController {
     /// or pane from the sidebar, where first responder is still the outline view
     /// and the user's next keystroke would otherwise go nowhere useful.
     func focusTerminal() {
+        if showsChat { return threadChat.focus() }
         if let surface = terminal.surfaceView { view.window?.makeFirstResponder(surface) }
+    }
+
+    // MARK: Terminal | Chat
+
+    /// The corner switch: Terminal or Chat, at the top-right of the pane. The
+    /// Running drawer, the handoff button and the find bar sit to its left.
+    private func buildModeSwitch() {
+        modeSwitch.segmentCount = 2
+        for (index, (symbol, name)) in [("terminal", "Terminal"), ("bubble.left.and.bubble.right", "Chat")]
+            .enumerated() {
+            modeSwitch.setImage(
+                NSImage(systemSymbolName: symbol, accessibilityDescription: name), forSegment: index)
+            modeSwitch.setToolTip(name, forSegment: index)
+            modeSwitch.setWidth(26, forSegment: index)
+        }
+        modeSwitch.trackingMode = .selectOne
+        modeSwitch.segmentStyle = .roundRect
+        modeSwitch.controlSize = .small
+        modeSwitch.selectedSegment = showsChat ? 1 : 0
+        modeSwitch.target = self
+        modeSwitch.action = #selector(modeSwitched)
+        modeSwitch.translatesAutoresizingMaskIntoConstraints = false
+        terminalPane.addSubview(modeSwitch)
+        NSLayoutConstraint.activate([
+            modeSwitch.topAnchor.constraint(equalTo: terminalPane.topAnchor, constant: 8),
+            modeSwitch.trailingAnchor.constraint(equalTo: terminalPane.trailingAnchor, constant: -16),
+        ])
+    }
+
+    @objc private func modeSwitched() {
+        setShowsChat(modeSwitch.selectedSegment == 1)
+    }
+
+    /// Show the chat or the terminal, remembered for the next launch.
+    func setShowsChat(_ on: Bool) {
+        showsChat = on
+        Settings.setThreadChatShown(on)
+        modeSwitch.selectedSegment = on ? 1 : 0
+        threadChat.isHidden = !on
+        focusTerminal()
     }
 
     /// Hide the bar and hand keyboard focus back to the terminal surface.

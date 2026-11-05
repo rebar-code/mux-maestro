@@ -66,7 +66,7 @@ class Live {
 	config = $state.raw<Config | null>(read<Config>(CONFIG_KEY));
 	/** The grouping picked on this phone. Until there is one, the Mac's default applies. */
 	private picked = $state<Grouping | null>(read<Grouping>(GROUPING_KEY));
-	readonly grouping: Grouping = $derived(this.picked ?? this.config?.grouping ?? 'recent');
+	readonly grouping: Grouping = $derived(this.picked ?? this.config?.grouping ?? 'host');
 
 	/** What the sidebar leaves out. */
 	filter = $state<Filter>(storedFilter());
