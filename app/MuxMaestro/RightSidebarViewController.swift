@@ -16,12 +16,13 @@ final class RightSidebarViewController: NSViewController {
     let diff: DiffViewController
     let tree: TreeViewController
     let artifacts: ArtifactsViewController
+    let preview: LinkPreviewViewController
 
-    enum Item { case diff, tree, artifacts }
+    enum Item { case diff, tree, artifacts, preview }
 
     /// Top-to-bottom (or left-to-right) order, regardless of which was toggled on
     /// first.
-    private static let order: [Item] = [.tree, .diff, .artifacts]
+    private static let order: [Item] = [.tree, .diff, .artifacts, .preview]
 
     /// Floor for any one pane while dragging, and the room the others are
     /// guaranteed by the divider constraints.
@@ -31,15 +32,18 @@ final class RightSidebarViewController: NSViewController {
     private let treeHost = NSView()
     private let diffHost = NSView()
     private let artifactsHost = NSView()
+    private let previewHost = NSView()
 
     /// Whether the two panes lay out as columns (side by side) vs rows (stacked).
     /// A vertical divider means columns. Restored from the persisted preference.
     private(set) var isColumns: Bool = Settings.rightSidebarColumns()
 
-    init(diff: DiffViewController, tree: TreeViewController, artifacts: ArtifactsViewController) {
+    init(diff: DiffViewController, tree: TreeViewController, artifacts: ArtifactsViewController,
+         preview: LinkPreviewViewController) {
         self.diff = diff
         self.tree = tree
         self.artifacts = artifacts
+        self.preview = preview
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -49,9 +53,11 @@ final class RightSidebarViewController: NSViewController {
         addChild(diff)
         addChild(tree)
         addChild(artifacts)
+        addChild(preview)
         embed(tree.view, in: treeHost)
         embed(diff.view, in: diffHost)
         embed(artifacts.view, in: artifactsHost)
+        embed(preview.view, in: previewHost)
 
         split.isVertical = isColumns
         split.dividerStyle = .thin
@@ -92,6 +98,7 @@ final class RightSidebarViewController: NSViewController {
         case .tree: return treeHost
         case .diff: return diffHost
         case .artifacts: return artifactsHost
+        case .preview: return previewHost
         }
     }
 
@@ -130,6 +137,7 @@ final class RightSidebarViewController: NSViewController {
         case .tree: return tree
         case .diff: return diff
         case .artifacts: return artifacts
+        case .preview: return preview
         }
     }
 

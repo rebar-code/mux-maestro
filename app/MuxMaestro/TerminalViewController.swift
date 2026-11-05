@@ -129,6 +129,12 @@ final class TerminalViewController: NSViewController {
     /// Re-wired onto each swapped-in surface.
     var onOpenLink: ((_ url: String) -> Bool)?
 
+    /// Called after the pointer rests on a web URL. nil turns hover detection off.
+    /// Applied to every cached surface and each new one.
+    var onHoverLink: ((URL) -> Void)? {
+        didSet { surfaceCache.values.forEach(wireHoverLink) }
+    }
+
     init(ghostty: GhosttyApp, command: String?, useManagerTheme: Bool = false) {
         self.ghostty = ghostty
         self.command = command
@@ -233,7 +239,12 @@ final class TerminalViewController: NSViewController {
         surface.rearrangeDelegate = self
         surface.onFileDrop = { [weak self] urls in self?.onFileDrop?(urls) ?? false }
         surface.onOpenLink = { [weak self] url in self?.onOpenLink?(url) ?? false }
+        wireHoverLink(surface)
         return surface
+    }
+
+    private func wireHoverLink(_ surface: TerminalSurfaceView) {
+        surface.onHoverLink = onHoverLink == nil ? nil : { [weak self] url in self?.onHoverLink?(url) }
     }
 
     /// Move `key` to the most-recently-shown end of the LRU order.

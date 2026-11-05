@@ -94,6 +94,7 @@ enum Settings {
 
     private static let pollIntervalKey = "pollInterval"
     private static let rightSidebarColumnsKey = "rightSidebarColumns"
+    private static let linkHoverPreviewKey = "linkHoverPreview"
     private static let managerRailShownKey = "managerRailShown"
     private static let sessionRecoveryEnabledKey = "sessionRecoveryEnabled"
     private static let sessionRecoveryAutoResumeAgentsKey = "sessionRecoveryAutoResumeAgents"
@@ -196,6 +197,16 @@ enum Settings {
 
     static func setRightSidebarColumns(_ on: Bool, defaults: UserDefaults = .standard) {
         defaults.set(on, forKey: rightSidebarColumnsKey)
+    }
+
+    /// Whether resting the pointer on a URL in the terminal opens the web
+    /// preview in the right sidebar. Defaults to on.
+    static func linkHoverPreview(defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: linkHoverPreviewKey) as? Bool ?? true
+    }
+
+    static func setLinkHoverPreview(_ on: Bool, defaults: UserDefaults = .standard) {
+        defaults.set(on, forKey: linkHoverPreviewKey)
     }
 
     /// Whether `host` is kept polling even when its sidebar row is collapsed. The
