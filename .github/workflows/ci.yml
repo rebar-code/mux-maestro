@@ -33,7 +33,7 @@ concurrency:
 
 jobs:
   build-and-test:
-    name: build + test (macos-14, arm64)
+    name: build + test (macos-15, arm64)
     # Draft PRs do not build - CI resumes when the PR is marked ready. This is
     # preventative, not a fix for observed spend: the 2026-09-10 spike was six
     # non-draft PRs opened in 23 minutes, and every one of those builds was
@@ -42,7 +42,7 @@ jobs:
     # `github.event.pull_request` is null, and `null == false` is false, so
     # testing the draft flag alone would silently disable CI on main.
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    runs-on: macos-14
+    runs-on: macos-15
     # Cost guardrail: macOS bills at 10x, so a hung job here is the most expensive
     # minute in the org. Healthy runs are p95 2.5 min / max 28 min over Jul-Aug.
     timeout-minutes: 40
@@ -122,7 +122,7 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     # macOS, as the tests were written on: some compare a box to the pixel,
     # and text is a pixel or two wider in another system's fonts.
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
