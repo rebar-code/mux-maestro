@@ -12,6 +12,7 @@ import {
 import { tokenFrom } from './pairing';
 import type { Frame } from './sse';
 import { isFilter, type Filter, type Grouping } from './group';
+import { pullRequestStates } from './links';
 import { manager } from './manager.svelte';
 import type { Capability, Config, Host, ManagerLive, Thread } from './types';
 
@@ -67,6 +68,8 @@ class Live {
 	/** The grouping picked on this phone. Until there is one, the Mac's default applies. */
 	private picked = $state<Grouping | null>(read<Grouping>(GROUPING_KEY));
 	readonly grouping: Grouping = $derived(this.picked ?? this.config?.grouping ?? 'host');
+	/** The state of every pull request on a window, for the links to them in messages. */
+	readonly pullRequests = $derived(pullRequestStates(this.threads ?? []));
 
 	/** What the sidebar leaves out. */
 	filter = $state<Filter>(storedFilter());

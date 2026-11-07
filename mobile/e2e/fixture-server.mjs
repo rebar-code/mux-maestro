@@ -2458,6 +2458,14 @@ function hook(res, url) {
 			if (thread.status !== 'waiting') delete prompts[thread.id];
 			if (thread.status === 'idle') takeUpHeld(thread);
 			break;
+		case '/__fixture/pr': {
+			// A pull request on a window changes state, as GitHub would say on the next poll.
+			const number = Number(url.searchParams.get('number'));
+			const pr = threads.flatMap((t) => t.prs ?? []).find((p) => p.number === number);
+			if (!pr) return send(res, 404, { error: 'not_found' });
+			pr.state = url.searchParams.get('state') ?? 'open';
+			break;
+		}
 		case '/__fixture/find-busy':
 			findBusy = Number(url.searchParams.get('value') ?? 1);
 			return send(res, 200, { ok: true });

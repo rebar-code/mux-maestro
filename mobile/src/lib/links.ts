@@ -1,4 +1,4 @@
-import type { Thread } from './types';
+import type { Thread, ThreadPR } from './types';
 
 /**
  * A `muxmaestro://` link: how the Maestro points at a pane. On the Mac the app
@@ -69,4 +69,26 @@ export function linkLabel(link: ThreadLink): string {
 	if (link.kind === 'agent') return `thread ${link.id.slice(0, 8)}`;
 	const address = link.window === null ? link.session : `${link.session}:${link.window}`;
 	return link.host === LOCAL ? address : `${link.host}/${address}`;
+}
+
+/** A GitHub pull request page, or a tab of one: `/files`, `/commits`, `#diff-…`. */
+const PULL_REQUEST =
+	/^https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)(?:\/[\w/-]*)?(?:[?#].*)?$/i;
+
+/** `owner/repo#n`, in lower case, for a link to a GitHub pull request; null for any other address. */
+export function pullRequestKey(href: string): string | null {
+	const match = PULL_REQUEST.exec(href.trim());
+	return match ? `${match[1]}/${match[2]}#${Number(match[3])}`.toLowerCase() : null;
+}
+
+/** The state of each pull request the Mac shows on a window, by `pullRequestKey`. */
+export function pullRequestStates(threads: readonly Thread[]): Map<string, ThreadPR['state']> {
+	const states = new Map<string, ThreadPR['state']>();
+	for (const thread of threads) {
+		for (const pr of thread.prs ?? []) {
+			const key = pullRequestKey(pr.url);
+			if (key) states.set(key, pr.state);
+		}
+	}
+	return states;
 }

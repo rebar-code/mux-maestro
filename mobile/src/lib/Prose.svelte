@@ -1,8 +1,17 @@
 <script lang="ts">
 	import { hasThumb, resolveArtifact } from './artifacts';
 	import type { Hit } from './find';
+	import { live as threadList } from './live.svelte';
 	import { proseTaps, type ProseLinks } from './prose';
 	import { renderer } from './renderer.svelte';
+	import type { ThreadPR } from './types';
+
+	const PR_STATES: Record<ThreadPR['state'], string> = {
+		open: 'Open',
+		draft: 'Draft',
+		merged: 'Merged',
+		closed: 'Closed'
+	};
 
 	const {
 		text,
@@ -37,6 +46,18 @@
 	function known(node: HTMLElement): void {
 		if (!blocks?.length) return;
 		const files = links?.files ?? [];
+		// A pull request the Mac shows on a window: its state, which changes as GitHub's does.
+		const states = threadList.pullRequests;
+		for (const el of node.querySelectorAll<HTMLElement>('a[data-pr]')) {
+			const state = states.get(el.dataset.pr ?? '');
+			if (state) {
+				el.dataset.prState = state;
+				el.title = PR_STATES[state];
+			} else {
+				delete el.dataset.prState;
+				el.removeAttribute('title');
+			}
+		}
 		for (const el of node.querySelectorAll<HTMLElement>('[data-local]')) {
 			el.toggleAttribute('data-known', Boolean(links?.local));
 		}

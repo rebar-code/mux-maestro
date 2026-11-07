@@ -1,7 +1,7 @@
 import hljs from 'highlight.js/lib/common';
 import MarkdownIt from 'markdown-it';
 import type { Hit } from './find';
-import { linkLabel, parseThreadLink } from './links';
+import { linkLabel, parseThreadLink, pullRequestKey } from './links';
 
 // The text is untrusted: an artifact, or what an agent said. Raw HTML in
 // markdown is off, so it comes out as text. Everything this file returns is
@@ -181,6 +181,9 @@ md.renderer.rules.link_open = (tokens, index, options, _env, self) => {
 			['target', '_blank'],
 			['rel', 'noopener noreferrer']
 		];
+		// A pull request: the view colours it by its state, when the Mac knows it.
+		const pr = pullRequestKey(target.href);
+		if (pr !== null) token.attrs.push(['data-pr', pr]);
 	} else if (target.kind === 'thread') {
 		// No `href`: the view finds the thread and opens it inside the app.
 		token.attrs = [
