@@ -119,6 +119,8 @@ export interface PromptOption {
 	/** The number the pane takes for this answer. Past 9 it has no key: read-only. */
 	n: number;
 	label: string;
+	/** The pane's own text field: the answer is typed into this row, then sent. */
+	input?: boolean;
 }
 
 /** What a waiting pane asks: a permission, or a question. */

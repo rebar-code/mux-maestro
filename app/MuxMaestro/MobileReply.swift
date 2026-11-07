@@ -76,6 +76,10 @@ struct MobilePrompt: Equatable {
         /// The digit that picks it.
         let n: Int
         let label: String
+
+        /// Claude Code's own free answer to a question: the cursor on this
+        /// row makes it a text field, and Enter sends what is typed in it.
+        var input: Bool { label == "Type something." }
     }
 
     let kind: Kind
@@ -115,7 +119,10 @@ struct MobilePrompt: Equatable {
             "id": id, "kind": kind.rawValue, "title": title, "detail": detail,
             "question": question, "truncated": truncated, "selected": selected,
             "moreAbove": moreAbove, "moreBelow": moreBelow,
-            "options": options.map { ["n": $0.n, "label": $0.label] as [String: Any] },
+            "options": options.map { option -> [String: Any] in
+                option.input ? ["n": option.n, "label": option.label, "input": true]
+                    : ["n": option.n, "label": option.label]
+            },
         ]
     }
 
@@ -930,15 +937,16 @@ enum MobileReply {
         ]
     }
 
-    /// `{"prompt": "<id>", "option": <n>}`.
-    /// Or `{"prompt": "<id>", "cancel": true}` to back out: `option` is nil.
-    static func answer(in body: Data) -> (prompt: String, option: Int?)? {
+    /// `{"prompt": "<id>", "option": <n>}`, with `"text": "…"` for a choice
+    /// that takes text. Or `{"prompt": "<id>", "cancel": true}` to back out:
+    /// `option` is nil.
+    static func answer(in body: Data) -> (prompt: String, option: Int?, text: String?)? {
         guard let object = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any],
               let prompt = object["prompt"] as? String, !prompt.isEmpty
         else { return nil }
-        if object["option"] == nil, object["cancel"] as? Bool == true,
+        if object["option"] == nil, object["text"] == nil, object["cancel"] as? Bool == true,
            let cancel = object["cancel"] as? NSNumber, CFGetTypeID(cancel) == CFBooleanGetTypeID() {
-            return (prompt, nil)
+            return (prompt, nil, nil)
         }
         guard object["cancel"] == nil,
               let number = object["option"] as? NSNumber,
@@ -946,15 +954,23 @@ enum MobileReply {
               CFGetTypeID(number) != CFBooleanGetTypeID(),
               number.doubleValue == Double(number.intValue)
         else { return nil }
-        return (prompt, number.intValue)
+        guard object["text"] != nil else { return (prompt, number.intValue, nil) }
+        // The same filter as any text pasted into a pane. One line: the field
+        // is a single row, and Enter is what sends it.
+        guard case .value(let text) = MobileManager.text(in: body), !text.contains("\n"),
+              !text.trimmingCharacters(in: .whitespaces).isEmpty
+        else { return nil }
+        return (prompt, number.intValue, text)
     }
 
     /// Pick `option` of the prompt the phone showed. The pane's screen is read
     /// again first: when it shows another prompt, or none, nothing is sent.
     /// With no `option` it backs out instead: Escape, for the prompt the
-    /// phone showed, card or not.
+    /// phone showed, card or not. With `text`, the option must be one that
+    /// takes text (`MobilePrompt.Option.input`), and `text` is typed into it.
     static func answer(
-        prompt id: String, option: Int?, target: String, io: MobilePaneIO, state: MobilePaneState?
+        prompt id: String, option: Int?, text: String? = nil, target: String, io: MobilePaneIO,
+        state: MobilePaneState?, pause: (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }
     ) -> MobileResponse {
         guard let state else { return .error(404, "not_found") }
         guard let option else {
@@ -964,13 +980,47 @@ enum MobileReply {
             return .error(409, "stale")
         }
         // A choice on the card, and one a digit key can pick.
-        guard (1...9).contains(option), prompt.options.contains(where: { $0.n == option }) else {
+        guard (1...9).contains(option), let picked = prompt.options.first(where: { $0.n == option }) else {
             return .error(400, "bad_request")
+        }
+        if let text {
+            guard picked.input else { return .error(400, "bad_request") }
+            return type(text, into: option, of: prompt, target: target, io: io, pause: pause)
         }
         let response = send(key: String(option), target: target, io: io)
         // The prompt is answered: the same words after this are a new prompt.
         if response.status == 200 { _ = io.sequence(nil) }
         return response
+    }
+
+    /// Type `text` into the choice `option` of `prompt`, and send it. The
+    /// digit moves the cursor into the row; it is not pressed when the cursor
+    /// is there already, or it would be typed. Before the paste and before the
+    /// Enter, the same question must be on the pane with the cursor still in
+    /// that row: a digit or an Enter that lands anywhere else picks a choice.
+    private static func type(
+        _ text: String, into option: Int, of prompt: MobilePrompt, target: String, io: MobilePaneIO,
+        pause: (TimeInterval) -> Void
+    ) -> MobileResponse {
+        let inRow = { () -> Bool in
+            guard let now = look(io)?.prompt else { return false }
+            return now.question == prompt.question && now.selected == option
+        }
+        if prompt.selected != option {
+            let moved = send(key: String(option), target: target, io: io)
+            guard moved.status == 200 else { return moved }
+            pause(enterDelay)
+        }
+        guard inRow() else { return .error(409, "stale") }
+        if let failure = paste(text, target: target, io: io) { return failure }
+        pause(enterDelay)
+        guard inRow() else { return .error(409, "stale") }
+        guard io.tmux(TmuxCommands.submitPastedText(target: target), nil) != nil else {
+            return .error(503, "unavailable", message: unreachable)
+        }
+        // The prompt is answered: the same words after this are a new prompt.
+        _ = io.sequence(nil)
+        return .json(["ok": true])
     }
 
     // MARK: Upload
