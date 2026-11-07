@@ -1669,6 +1669,92 @@ final class MobileReplyTests: XCTestCase {
         XCTAssertEqual(pane.argv.count, 1)
     }
 
+    /// `DemoPrompt.question` with the cursor on its last choice, which shows `label`.
+    private static func questionOnThree(_ label: String) -> String {
+        DemoPrompt.question
+            .replacingOccurrences(of: "❯ 1. Redis", with: "  1. Redis")
+            .replacingOccurrences(of: "  3. Type something.", with: "❯ 3. \(label)")
+    }
+
+    /// The reported bug: a question's "Type something." row could not take
+    /// text from the phone. The digit moved the cursor into the row, and the
+    /// text was then refused because the pane was still on a prompt.
+    func testATypedAnswerGoesIntoTheChoiceThatTakesText() throws {
+        let pane = FakePane()
+        pane.screen = DemoPrompt.question
+        let waiting = state(.waiting, since: 100)
+        let prompt = try XCTUnwrap(shown(waiting, DemoPrompt.question, io: pane.io))
+        XCTAssertEqual(prompt.options.map(\.input), [false, false, true])
+        pane.onKeys = { args in
+            if args.last == "3" { pane.screen = Self.questionOnThree("Type something.") }
+        }
+        pane.screenAfterPaste = Self.questionOnThree("Valkey")
+
+        let response = MobileReply.answer(
+            prompt: prompt.id, option: 3, text: "Valkey", target: "%12", io: pane.io, state: waiting,
+            pause: { _ in })
+        XCTAssertEqual(response.status, 200, body(response))
+        let argv = pane.argv
+        XCTAssertEqual(argv.first, ["send-keys", "-t", "%12", "3"])
+        XCTAssertTrue(FakePane.sendArgv(Array(argv.dropFirst()), target: "%12"), "\(argv)")
+        XCTAssertEqual(pane.calls.first { $0.args.first == "load-buffer" }?.stdin, "Valkey")
+    }
+
+    func testATypedAnswerIsCheckedBeforeEachStep() throws {
+        let waiting = state(.waiting, since: 100)
+        let answer = { (pane: FakePane, id: String, option: Int) in
+            MobileReply.answer(
+                prompt: id, option: option, text: "Valkey", target: "%12", io: pane.io, state: waiting,
+                pause: { _ in })
+        }
+
+        // A choice that takes no text.
+        let plain = FakePane()
+        plain.screen = DemoPrompt.question
+        let id = try XCTUnwrap(shown(waiting, DemoPrompt.question, io: plain.io)).id
+        XCTAssertEqual(answer(plain, id, 2).status, 400)
+        XCTAssertEqual(plain.argv, [])
+
+        // The digit did not move the cursor into the row: no paste.
+        let stuck = FakePane()
+        stuck.screen = DemoPrompt.question
+        XCTAssertEqual(answer(stuck, id, 3).status, 409)
+        XCTAssertEqual(stuck.argv, [["send-keys", "-t", "%12", "3"]])
+
+        // The prompt went away during the paste: no Enter.
+        let gone = FakePane()
+        gone.screen = DemoPrompt.question
+        gone.onKeys = { args in
+            if args.last == "3" { gone.screen = Self.questionOnThree("Type something.") }
+        }
+        gone.screenAfterPaste = DemoPrompt.idle
+        XCTAssertEqual(answer(gone, id, 3).status, 409)
+        XCTAssertFalse(gone.argv.contains(["send-keys", "-t", "%12", "Enter"]))
+
+        // The cursor is in the row already: a digit would be typed into it.
+        let there = FakePane()
+        let onThree = Self.questionOnThree("Type something.")
+        there.screen = onThree
+        let thereID = try XCTUnwrap(shown(waiting, onThree, io: there.io)).id
+        there.screenAfterPaste = Self.questionOnThree("Valkey")
+        XCTAssertEqual(answer(there, thereID, 3).status, 200)
+        XCTAssertFalse(there.argv.contains(["send-keys", "-t", "%12", "3"]))
+    }
+
+    func testReadsATypedAnswerBody() {
+        let answer = MobileReply.answer(in: Data(#"{"prompt":"9f2c","option":3,"text":"Valkey"}"#.utf8))
+        XCTAssertEqual(answer?.option, 3)
+        XCTAssertEqual(answer?.text, "Valkey")
+        XCTAssertNil(MobileReply.answer(in: Data(#"{"prompt":"9f2c","option":2}"#.utf8))?.text)
+        for body in [
+            #"{"prompt":"9f2c","option":3,"text":""}"#, #"{"prompt":"9f2c","option":3,"text":"  "}"#,
+            #"{"prompt":"9f2c","option":3,"text":"a\nb"}"#, #"{"prompt":"9f2c","option":3,"text":"a\u001bb"}"#,
+            #"{"prompt":"9f2c","option":3,"text":3}"#, #"{"prompt":"9f2c","cancel":true,"text":"a"}"#,
+        ] {
+            XCTAssertNil(MobileReply.answer(in: Data(body.utf8)), body)
+        }
+    }
+
     func testReadsAnAnswerBody() {
         let answer = MobileReply.answer(in: Data(#"{"prompt":"9f2c","option":2}"#.utf8))
         XCTAssertEqual(answer?.prompt, "9f2c")

@@ -26,7 +26,7 @@ interface Replies {
 	keys: { thread: string; key: string; prompt?: string }[];
 	/** Texts the pane was left holding, unsent. */
 	left: { thread: string; text: string }[];
-	answers: { thread: string; prompt: string; option: number }[];
+	answers: { thread: string; prompt: string; option: number; text?: string }[];
 	commandFetches: number;
 }
 
@@ -580,6 +580,24 @@ test('a question card shows in the terminal view and is answered', async ({ page
 	expect((await received(page)).answers).toMatchObject([{ thread: QUESTION, option: 2 }]);
 });
 
+test('a question takes a typed answer in its "Type something" row', async ({ page }) => {
+	await open(page, QUESTION, ['replies', 'keyBar']);
+	await card(page).locator('button[data-option="3"]').tap();
+	// Opening the field sends nothing.
+	expect((await received(page)).answers).toEqual([]);
+	const field = card(page).locator('[data-answer-text]');
+	await expect(field).toBeFocused();
+	await expect(card(page).getByRole('button', { name: 'Send' })).toBeDisabled();
+	await field.fill('Prorate to the day');
+	await card(page).scrollIntoViewIfNeeded();
+	await shot(page, 'question-typed-answer');
+	await card(page).getByRole('button', { name: 'Send' }).tap();
+	await expect(card(page)).toHaveCount(0);
+	expect((await received(page)).answers).toMatchObject([
+		{ thread: QUESTION, option: 3, text: 'Prorate to the day' }
+	]);
+});
+
 test('buttons are off while an answer is in flight', async ({ page }) => {
 	await open(page, PERMISSION, ['replies']);
 	let release: () => void = () => {};
@@ -620,10 +638,10 @@ test('a stale card is replaced, and nothing is sent again', async ({ page }) => 
 	expect((await received(page)).answers).toEqual([]);
 
 	// The new card is answered as itself.
-	await card(page).getByRole('button').nth(2).tap();
+	await card(page).getByRole('button').nth(1).tap();
 	await expect(card(page)).toHaveCount(0);
 	expect((await received(page)).answers).toEqual([
-		{ thread: PERMISSION, prompt: 'q-next', option: 3 }
+		{ thread: PERMISSION, prompt: 'q-next', option: 2 }
 	]);
 });
 

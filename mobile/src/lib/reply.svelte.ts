@@ -480,13 +480,16 @@ export class Reply {
 		if (this.suggestion) this.draft = this.suggestion;
 	};
 
-	/** Pick an option of the card. */
-	answer = (option: number): Promise<void> => this.settlePrompt({ option });
+	/** Pick an option of the card, or type `text` into the option that takes it. */
+	answer = (option: number, text?: string): Promise<void> =>
+		this.settlePrompt(text === undefined ? { option } : { option, text });
 
 	/** Cancel what the pane asks: the card's, or a prompt with no readable choices. */
 	cancel = (): Promise<void> => this.settlePrompt({ cancel: true });
 
-	private async settlePrompt(choice: { option: number } | { cancel: true }): Promise<void> {
+	private async settlePrompt(
+		choice: { option: number; text?: string } | { cancel: true }
+	): Promise<void> {
 		// The id of the card on screen: a bare card has one too.
 		const id = this.promptId;
 		if (id === null || this.answering !== null) return;

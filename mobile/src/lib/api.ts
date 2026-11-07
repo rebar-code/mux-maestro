@@ -374,7 +374,7 @@ export async function fetchPrompt(base: string): Promise<PromptState> {
 export async function answerPrompt(
 	base: string,
 	prompt: string,
-	choice: { option: number } | { cancel: true }
+	choice: { option: number; text?: string } | { cancel: true }
 ): Promise<void> {
 	await post(`${base}/answer`, { prompt, ...choice });
 }

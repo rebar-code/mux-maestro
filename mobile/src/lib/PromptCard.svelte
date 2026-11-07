@@ -19,7 +19,8 @@
 		readonly?: boolean;
 		/** The option an answer in flight picked, or that it cancels. */
 		answering?: number | 'cancel' | null;
-		onanswer?: (option: number) => void;
+		/** `text` only for an option that takes it (`input`). */
+		onanswer?: (option: number, text?: string) => void;
 		/** Dismiss what the pane asks. Not given on a card that only shows. */
 		oncancel?: () => void;
 		/** Open the pane's own text. Not given when it is already showing. */
@@ -37,6 +38,17 @@
 	// A scrolled menu: the pane has rows the card does not list.
 	const scrolled = $derived(prompt?.moreAbove === true || prompt?.moreBelow === true);
 	const more = $derived(prompt === null || prompt.truncated === true || scrolled);
+
+	// The row whose field is open, for this card only: a new prompt starts closed.
+	let typing = $state<{ id: string; n: number } | null>(null);
+	let draft = $state('');
+	const open = $derived(typing?.id === id ? typing.n : null);
+	const ready = $derived(draft.trim() !== '' && answering === null);
+
+	function sendTyped(event: SubmitEvent): void {
+		event.preventDefault();
+		if (open !== null && ready) onanswer?.(open, draft.trim());
+	}
 </script>
 
 <div
@@ -77,12 +89,33 @@
 						data-option={option.n}
 						disabled={answering !== null}
 						aria-busy={answering === option.n}
-						onclick={() => onanswer?.(option.n)}
+						aria-expanded={option.input ? open === option.n : undefined}
+						onclick={() => {
+							if (!option.input) return onanswer?.(option.n);
+							if (open !== option.n) draft = '';
+							typing = { id, n: option.n };
+						}}
 					>
 						{#if option.n === selected}<span class="mark" aria-hidden="true">❯</span>{/if}
 						<span class="label">{option.label}</span>
 						<span class="k" aria-hidden="true">{option.n}</span>
 					</button>
+					{#if open === option.n}
+						<form class="typed" onsubmit={sendTyped}>
+							<input
+								type="text"
+								bind:value={draft}
+								enterkeyhint="send"
+								aria-label={option.label}
+								data-answer-text
+								disabled={answering !== null}
+								{@attach (node) => node.focus()}
+							/>
+							<button type="submit" disabled={!ready} aria-busy={answering === option.n}
+								>Send</button
+							>
+						</form>
+					{/if}
 				{/if}
 			{/each}
 			{#if scrolled}<p class="rest" data-rest>More choices in the terminal</p>{/if}
@@ -141,6 +174,38 @@
 	.q.main {
 		font-size: 1.0667em;
 		font-weight: 600;
+	}
+
+	.typed {
+		display: flex;
+		gap: 8px;
+	}
+
+	.typed input {
+		flex: 1;
+		min-width: 0;
+		min-height: var(--hit);
+		padding: 0 12px;
+		border-radius: 10px;
+		background: #0a0a0a;
+		border: 1px solid var(--accent);
+		color: var(--text);
+		font: inherit;
+		/* iOS zooms into a field whose text is under 16px. */
+		font-size: max(16px, 1em);
+	}
+
+	.typed button {
+		min-height: var(--hit);
+		padding: 0 16px;
+		border-radius: 10px;
+		background: var(--accent);
+		color: #fff;
+		font-weight: 600;
+	}
+
+	.typed button:disabled {
+		opacity: 0.5;
 	}
 
 	.opts {

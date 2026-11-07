@@ -571,7 +571,7 @@ const QUESTION = {
 	options: [
 		{ n: 1, label: 'Credit the unused days' },
 		{ n: 2, label: 'No credit until renewal' },
-		{ n: 3, label: 'Type something else' }
+		{ n: 3, label: 'Type something else', input: true }
 	]
 };
 const LONG_COMMAND =
@@ -1325,7 +1325,18 @@ function answerRoute(res, json, prompt, on) {
 	// The pane has a key for 1 to 9 only, and a prompt with no readable choices has none.
 	if (prompt.bare || json.option > 9 || !prompt.options.some((option) => option.n === json.option))
 		return send(res, 400, { error: 'bad_request' });
-	on.option(json.option);
+	// Text goes only into the row that takes it, and only as one line with words in it.
+	if (json.text !== undefined) {
+		const row = prompt.options.find((option) => option.n === json.option);
+		if (
+			typeof json.text !== 'string' ||
+			!json.text.trim() ||
+			json.text.includes('\n') ||
+			!row.input
+		)
+			return send(res, 400, { error: 'bad_request' });
+	}
+	on.option(json.option, json.text);
 	on.done(false);
 	return send(res, 200, { ok: true });
 }
@@ -1429,7 +1440,13 @@ function replyApi(req, res, url, thread, route, body) {
 		});
 	if (route === 'answer')
 		return answerRoute(res, json, promptOf(thread), {
-			option: (option) => replies.answers.push({ thread: thread.id, prompt: json.prompt, option }),
+			option: (option, text) =>
+				replies.answers.push({
+					thread: thread.id,
+					prompt: json.prompt,
+					option,
+					...(text ? { text } : {})
+				}),
 			cancel: () => replies.cancels.push({ thread: thread.id, prompt: json.prompt }),
 			// Answered: the pane works on. Cancelled: it is back at its input box.
 			done: (cancelled) => setStatus(thread, cancelled ? 'idle' : 'busy')

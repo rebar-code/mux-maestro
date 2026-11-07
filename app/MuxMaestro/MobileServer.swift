@@ -889,7 +889,8 @@ final class MobileServer {
             }
             managerWrite(client) { target, io, state in
                 MobileReply.answer(
-                    prompt: answer.prompt, option: answer.option, target: target, io: io, state: state)
+                    prompt: answer.prompt, option: answer.option, text: answer.text, target: target, io: io,
+                    state: state)
             }
         case .managerKey:
             guard let press = MobileReply.key(in: request.body) else {
@@ -981,8 +982,8 @@ final class MobileServer {
             }
             write(to: id, client: client) { thread, io, state in
                 MobileReply.answer(
-                    prompt: answer.prompt, option: answer.option, target: thread.pane, io: io,
-                    state: state())
+                    prompt: answer.prompt, option: answer.option, text: answer.text, target: thread.pane,
+                    io: io, state: state())
             }
         case .model(let id):
             guard let ask = MobileModel.request(in: request.body) else {
