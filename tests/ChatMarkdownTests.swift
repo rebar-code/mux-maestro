@@ -119,6 +119,67 @@ final class ChatMarkdownTests: XCTestCase {
         XCTAssertNil(linkTarget(text, at: "See"))
     }
 
+    // MARK: Pull request links
+
+    private func prStyle(_ prs: [PullRequest]) -> ChatMarkdown.Style {
+        var style = style
+        style.pullRequests = PRLinks.index(prs)
+        style.pullRequestLook = { pr in
+            pr.state == .merged ? (.purple, "arrow.triangle.merge") : (.green, "arrow.triangle.pull")
+        }
+        return style
+    }
+
+    private func color(_ text: NSAttributedString, at needle: String) -> NSColor? {
+        let range = (text.string as NSString).range(of: needle)
+        guard range.location != NSNotFound else { return nil }
+        return text.attribute(.foregroundColor, at: range.location, effectiveRange: nil) as? NSColor
+    }
+
+    /// An icon then a thin space stand before `needle`, and the icon opens the same link.
+    private func icon(_ text: NSAttributedString, before needle: String) -> String? {
+        let range = (text.string as NSString).range(of: needle)
+        guard range.location > 1 else { return nil }
+        let at = range.location - 2
+        guard text.attribute(.attachment, at: at, effectiveRange: nil) is NSTextAttachment else { return nil }
+        return text.attribute(.muxLink, at: at, effectiveRange: nil) as? String
+    }
+
+    func testPullRequestKeyNamesRepoAndNumber() {
+        XCTAssertEqual(PRLinks.key("https://github.com/Rebar-Code/mux-maestro/pull/98"), "rebar-code/mux-maestro#98")
+        XCTAssertEqual(PRLinks.key("https://github.com/a/b.c/pull/7/files#diff-1"), "a/b.c#7")
+        for other in [
+            "https://github.com/a/b/issues/7", "https://github.com/a/b/pull/", "https://gitlab.com/a/b/pull/7",
+            "https://github.com.evil.example/a/b/pull/7", "muxmaestro://thread/abc",
+        ] {
+            XCTAssertNil(PRLinks.key(other), other)
+        }
+    }
+
+    func testABarePullRequestURLIsALinkInTheColourOfItsState() {
+        let url = "https://github.com/a/b/pull/7"
+        let merged = PullRequest(number: 7, title: "Fix", url: url, isDraft: false, state: .merged)
+        let text = ChatMarkdown.render("Opened \(url) today.", style: prStyle([merged]))
+        XCTAssertEqual(linkTarget(text, at: url), url)
+        XCTAssertEqual(color(text, at: url), .purple)
+        XCTAssertEqual(icon(text, before: url), url)
+
+        // A PR on no window is an ordinary link, with no icon.
+        let unknown = ChatMarkdown.render("Opened \(url) today.", style: prStyle([]))
+        XCTAssertEqual(linkTarget(unknown, at: url), url)
+        XCTAssertEqual(color(unknown, at: url), .blue)
+        XCTAssertNil(icon(unknown, before: url))
+    }
+
+    func testAMarkdownLinkToAPullRequestTakesItsStateToo() {
+        let url = "https://github.com/a/b/pull/7"
+        let open = PullRequest(number: 7, title: "Fix", url: url, isDraft: false)
+        let text = ChatMarkdown.render("See [the fix](\(url)).", style: prStyle([open]))
+        XCTAssertEqual(text.string.hasSuffix("the fix."), true)
+        XCTAssertEqual(color(text, at: "the fix"), .green)
+        XCTAssertEqual(icon(text, before: "the fix"), url)
+    }
+
     func testBareMuxLinkBecomesItsLabel() {
         let url = "muxmaestro://open?session=my_web_app&window=2"
         let text = render("Look at \(url) now")
