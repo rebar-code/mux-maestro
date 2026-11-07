@@ -16,8 +16,8 @@ permissions:
 
 jobs:
   build:
-    name: build GhosttyKit (macos-14, arm64)
-    runs-on: macos-14
+    name: build GhosttyKit (macos-15, arm64)
+    runs-on: macos-15
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
