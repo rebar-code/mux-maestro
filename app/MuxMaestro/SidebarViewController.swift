@@ -1887,7 +1887,7 @@ final class SidebarViewController: NSViewController {
     private static let maxConcurrentPRScans = 4
     /// PRs resolved **by number** (from window names), keyed by (slug, number).
     /// Process-lifetime cache so a declared number costs one `gh pr view` ever;
-    /// see `PRIdentityCache` for why merged/closed and misses are never re-asked.
+    /// see `PRIdentityCache` for why merged/closed are never re-asked and misses rarely.
     private let prIdentityCache = PRIdentityCache()
     /// Branch PRs per repo, and when GitHub is worth asking again; see `BranchPRCache`.
     private let branchPRCache = BranchPRCache()
@@ -4529,8 +4529,8 @@ final class SidebarViewController: NSViewController {
     /// branches — and only when `branchPRCache` says the answer may have moved.
     /// The declared half is one `gh pr view` per unresolved
     /// (slug, number), cached by
-    /// `prIdentityCache` so a number resolves once and merged/closed PRs and
-    /// misses are never asked about again.
+    /// `prIdentityCache` so a number resolves once, merged/closed PRs are never
+    /// asked about again, and misses only after `PRIdentityCache.missTTL`.
     ///
     /// Throttled to ~20s between poll-driven scans so git isn't run every tree
     /// refresh; pass `force` to bypass. Both fan-outs run through the same
@@ -4689,8 +4689,8 @@ final class SidebarViewController: NSViewController {
                     gate.wait()
                     group2.enter()
                     DispatchQueue.global(qos: .utility).async {
-                        // nil is a real answer here: that number is not a PR in that
-                        // repo, and the cache remembers the miss so we never re-ask.
+                        // nil is a miss or a failed call; the cache keeps a PR it
+                        // already knows and re-asks a miss after `missTTL`.
                         let pr = w.service.pullRequest(slug: w.slug, number: w.number)
                         cache.store(slug: w.slug, number: w.number, pr: pr)
                         gate.signal()

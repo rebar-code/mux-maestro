@@ -228,7 +228,19 @@ final class WindowPRMergeTests: XCTestCase {
 
     func testNameDeclaredPRsComeFirst() {
         let out = WindowPRs.merge(declared: [pr(393), pr(394)], branch: [pr(411)])
-        XCTAssertEqual(out.map(\.number), [393, 394, 411])
+        XCTAssertEqual(out.map(\.number), [394, 393, 411])
+    }
+
+    /// `@mm_prs` only grows, oldest first. The one chip must go to the window's
+    /// newest PR, not to the first number it ever declared.
+    func testNewestDeclaredPRTakesTheChip() {
+        let merged = WindowPRs.merge(
+            declared: [pr(84, .merged), pr(1230, .merged), pr(1250, .merged)], branch: [])
+        XCTAssertEqual(merged.map(\.number), [1250, 1230, 84])
+
+        let open = WindowPRs.merge(
+            declared: [pr(1210, .merged), pr(1208), pr(1219), pr(1225)], branch: [])
+        XCTAssertEqual(open.map(\.number), [1225, 1219, 1208, 1210])
     }
 
     func testDedupesWhenTheBranchPRIsAlsoNamed() {
@@ -242,7 +254,7 @@ final class WindowPRMergeTests: XCTestCase {
         let out = WindowPRs.merge(
             declared: [pr(393, .merged), pr(394), pr(395, .closed)],
             branch: [pr(411), pr(393)])
-        XCTAssertEqual(out.map(\.number), [394, 411, 393, 395])
+        XCTAssertEqual(out.map(\.number), [394, 411, 395, 393])
     }
 
     // MARK: allMerged — the row's trash shows without hover
@@ -359,13 +371,30 @@ final class PRIdentityCacheTests: XCTestCase {
         XCTAssertTrue(PRIdentityCache().needsFetch(slug: "o/r", number: 1, now: t0))
     }
 
-    /// A number that isn't a PR never becomes one — the miss is permanent.
-    func testMissIsNeverRefetched() {
+    /// gh exits non-zero for a timeout or no network too, so a miss is retried,
+    /// slowly. A permanent miss dropped a real PR off its row for good.
+    func testMissIsRetriedAfterTheMissTTL() {
         let c = PRIdentityCache()
         c.store(slug: "o/r", number: 9999, pr: nil, now: t0)
         XCTAssertNil(c.pr(slug: "o/r", number: 9999))
         XCTAssertFalse(c.needsFetch(slug: "o/r", number: 9999,
-                                    now: t0.addingTimeInterval(86_400)))
+                                    now: t0.addingTimeInterval(PRIdentityCache.missTTL - 1)))
+        XCTAssertTrue(c.needsFetch(slug: "o/r", number: 9999,
+                                   now: t0.addingTimeInterval(PRIdentityCache.missTTL)))
+    }
+
+    /// A PR that resolved once still exists. A failed re-check keeps it, and asks
+    /// again after another `openTTL`.
+    func testFailedRecheckKeepsTheKnownPR() {
+        let c = PRIdentityCache()
+        c.store(slug: "o/r", number: 411, pr: pr(411, .open), now: t0)
+        let recheck = t0.addingTimeInterval(PRIdentityCache.openTTL)
+        c.store(slug: "o/r", number: 411, pr: nil, now: recheck)
+        XCTAssertEqual(c.pr(slug: "o/r", number: 411)?.number, 411)
+        XCTAssertFalse(c.needsFetch(slug: "o/r", number: 411,
+                                    now: recheck.addingTimeInterval(PRIdentityCache.openTTL - 1)))
+        XCTAssertTrue(c.needsFetch(slug: "o/r", number: 411,
+                                   now: recheck.addingTimeInterval(PRIdentityCache.openTTL)))
     }
 
     func testMergedAndClosedAreTerminal() {

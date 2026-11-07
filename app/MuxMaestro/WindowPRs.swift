@@ -130,16 +130,19 @@ enum WindowPRs {
     // MARK: - Union
 
     /// Open PRs first, then merged/closed ones. Within each group, declared PRs
-    /// come first (they are what the window is *about*), then the cwd-branch PRs
-    /// that aren't already listed. Deduped by number.
+    /// come first (they are what the window is *about*), newest number first,
+    /// then the cwd-branch PRs that aren't already listed. Deduped by number.
     ///
     /// Open-first because declared numbers are sticky — an agent's `@mm_prs` keeps
     /// a PR after it merges — and a row shows only `maxChips` (one) chip, so a
     /// stale merged PR must not take that chip from the window's current open one.
+    /// Newest-first for the same reason: `@mm_prs` only grows, oldest first, so
+    /// its order gave the chip to the first PR a window ever had.
     static func merge(declared: [PullRequest], branch: [PullRequest]) -> [PullRequest] {
         var seen = Set<Int>()
         var out: [PullRequest] = []
-        for pr in declared + branch where seen.insert(pr.number).inserted {
+        let newestFirst = declared.sorted { $0.number > $1.number }
+        for pr in newestFirst + branch where seen.insert(pr.number).inserted {
             out.append(pr)
         }
         return out.filter { $0.state == .open } + out.filter { $0.state != .open }
@@ -246,15 +249,18 @@ extension PullRequest {
 /// Resolved pull requests keyed by (repo slug, number).
 ///
 /// A PR number's *identity* — title, url — never changes, and merged/closed are
-/// terminal, so those are cached for the life of the process; so are misses (a
-/// number that doesn't exist never will). Only an **open** PR is re-checked, and
-/// only after `openTTL`, so a merge eventually repaints the chip. This keeps the
-/// name-declared lookups off the 1.5s poll's subprocess budget (see PR #67).
+/// terminal, so those are cached for the life of the process. An **open** PR is
+/// re-checked after `openTTL`, so a merge eventually repaints the chip. A miss
+/// is re-checked after `missTTL`, because a failed `gh` call looks the same.
+/// This keeps the name-declared lookups off the 1.5s poll's subprocess budget (see PR #67).
 ///
 /// Thread-safe: the sidebar reads/writes it from the off-main scan workers.
 final class PRIdentityCache {
     /// How long a PR that is still open may be trusted before re-asking `gh`.
     static let openTTL: TimeInterval = 300
+    /// How long a miss may be trusted. gh exits non-zero for "no such PR" and for
+    /// a timeout or no network alike, so a miss is not proof.
+    static let missTTL: TimeInterval = 900
 
     private struct Entry {
         let pr: PullRequest?
@@ -276,16 +282,19 @@ final class PRIdentityCache {
     func needsFetch(slug: String, number: Int, now: Date = Date()) -> Bool {
         lock.lock(); defer { lock.unlock() }
         guard let entry = entries[Self.key(slug: slug, number: number)] else { return true }
-        guard let pr = entry.pr else { return false }
+        guard let pr = entry.pr else { return now.timeIntervalSince(entry.fetched) >= Self.missTTL }
         switch pr.state {
         case .merged, .closed: return false
         case .open: return now.timeIntervalSince(entry.fetched) >= Self.openTTL
         }
     }
 
-    /// Record a lookup. `pr == nil` records a miss (no such PR in that repo).
+    /// Record a lookup. `pr == nil` records a miss (no such PR in that repo), unless
+    /// the number resolved before: a PR does not stop existing, so that nil was a
+    /// failed call, and the known PR is kept until the next check.
     func store(slug: String, number: Int, pr: PullRequest?, now: Date = Date()) {
         lock.lock(); defer { lock.unlock() }
-        entries[Self.key(slug: slug, number: number)] = Entry(pr: pr, fetched: now)
+        let key = Self.key(slug: slug, number: number)
+        entries[key] = Entry(pr: pr ?? entries[key]?.pr, fetched: now)
     }
 }
