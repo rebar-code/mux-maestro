@@ -309,3 +309,212 @@ final class SshConfigTests: XCTestCase {
         XCTAssertTrue(hosts.first!.isLocal)
     }
 }
+
+// MARK: - SshHostGate
+
+// The per-host guard in front of every background ssh. A host that accepts the
+// login and then hangs in session setup must not get a fresh login every poll.
+
+final class SshHostGateTests: XCTestCase {
+    private let t0 = Date(timeIntervalSince1970: 1_000_000)
+
+    /// A gate that has seen one answer, so it admits concurrent commands.
+    private func healthyGate() -> SshHostGate {
+        let gate = SshHostGate()
+        gate.end(gate.begin(now: t0)!, outcome: .answered, now: t0)
+        return gate
+    }
+
+    // MARK: Backoff
+
+    func testFailureSkipsHostUntilBackoffPasses() {
+        let gate = healthyGate()
+        gate.end(gate.begin(now: t0)!, outcome: .noSession, now: t0)
+        XCTAssertNil(gate.begin(now: t0.addingTimeInterval(29)))
+        XCTAssertTrue(gate.isBackingOff(now: t0.addingTimeInterval(29)))
+        XCTAssertNotNil(gate.begin(now: t0.addingTimeInterval(30)))
+    }
+
+    func testConsecutiveFailuresGrowToCap() {
+        let gate = SshHostGate()
+        var now = t0
+        for expected in [30.0, 60.0, 120.0, 240.0, 300.0, 300.0] {
+            gate.end(gate.begin(now: now)!, outcome: .noSession, now: now)
+            XCTAssertNil(gate.begin(now: now.addingTimeInterval(expected - 1)), "\(expected)")
+            now = now.addingTimeInterval(expected)
+        }
+    }
+
+    func testSuccessResetsBackoff() {
+        let gate = SshHostGate()
+        var now = t0
+        for _ in 0..<3 {
+            gate.end(gate.begin(now: now)!, outcome: .noSession, now: now)
+            now = now.addingTimeInterval(300)
+        }
+        gate.end(gate.begin(now: now)!, outcome: .answered, now: now)
+        XCTAssertFalse(gate.isBackingOff(now: now))
+        // The next failure starts the ladder again at 30s, not 4 minutes.
+        gate.end(gate.begin(now: now)!, outcome: .noSession, now: now)
+        XCTAssertNotNil(gate.begin(now: now.addingTimeInterval(30)))
+    }
+
+    func testStragglerFailureDoesNotClimbTheLadder() {
+        // Three polls started on a healthy host all hit the same outage: one
+        // step of backoff, not three.
+        let gate = healthyGate()
+        let tickets = (0..<3).map { _ in gate.begin(now: t0)! }
+        for ticket in tickets { gate.end(ticket, outcome: .noSession, now: t0.addingTimeInterval(8)) }
+        XCTAssertNotNil(gate.begin(now: t0.addingTimeInterval(38)))
+    }
+
+    func testResetClearsBackoff() {
+        let gate = SshHostGate()
+        gate.end(gate.begin(now: t0)!, outcome: .noSession, now: t0)
+        gate.reset()
+        XCTAssertNotNil(gate.begin(now: t0.addingTimeInterval(1)))
+    }
+
+    // MARK: Single attempt in flight
+
+    func testUnknownHostAdmitsOneAttemptAtATime() {
+        let gate = SshHostGate()
+        let first = gate.begin(now: t0)
+        XCTAssertNotNil(first)
+        XCTAssertNil(gate.begin(now: t0), "a second login while the first is still running")
+        gate.end(first!, outcome: .answered, now: t0)
+        XCTAssertNotNil(gate.begin(now: t0))
+    }
+
+    func testFailedHostAdmitsOneAttemptAfterBackoff() {
+        let gate = SshHostGate()
+        gate.end(gate.begin(now: t0)!, outcome: .noSession, now: t0)
+        let later = t0.addingTimeInterval(30)
+        XCTAssertNotNil(gate.begin(now: later))
+        XCTAssertNil(gate.begin(now: later))
+    }
+
+    func testHealthyHostRunsCommandsConcurrently() {
+        // Healthy hosts are unchanged: commands ride the ControlMaster together.
+        let gate = healthyGate()
+        XCTAssertNotNil(gate.begin(now: t0))
+        XCTAssertNotNil(gate.begin(now: t0))
+    }
+
+    func testNeutralEndFreesTheSlot() {
+        let gate = SshHostGate()
+        gate.end(gate.begin(now: t0)!, outcome: nil, now: t0)
+        XCTAssertNotNil(gate.begin(now: t0))
+    }
+}
+
+// MARK: - SshGatedRunner
+
+private final class EndScriptedRunner: EndReportingRunner {
+    private let lock = NSLock()
+    private var _calls = 0
+    var calls: Int { lock.lock(); defer { lock.unlock() }; return _calls }
+    var end: RunEnd = .exited(0)
+    var output: Data? = Data("ok\n".utf8)
+    /// When set, every run waits on it: a login that hangs.
+    var hold: DispatchSemaphore?
+    let started = DispatchSemaphore(value: 0)
+
+    func runDataReportingEnd(_ path: String, _ args: [String], stdin: Data?)
+        -> (data: Data?, end: RunEnd)
+    {
+        lock.lock(); _calls += 1; lock.unlock()
+        started.signal()
+        hold?.wait()
+        return (end == .exited(0) ? output : nil, end)
+    }
+
+    func run(_ path: String, _ args: [String], stdin: Data?) -> String? {
+        runDataReportingEnd(path, args, stdin: stdin).data
+            .flatMap { String(data: $0, encoding: .utf8) }
+    }
+}
+
+final class SshGatedRunnerTests: XCTestCase {
+    private let t0 = Date(timeIntervalSince1970: 1_000_000)
+
+    private func remoteService(_ runner: CommandRunner) -> TmuxService {
+        TmuxService(
+            host: Host(name: "devbox", sshAlias: "devbox"),
+            transport: SshTmuxTransport(host: "devbox"),
+            runner: runner,
+            statusProvider: nil)
+    }
+
+    func testHungLoginBacksOffInsteadOfReconnectingEveryPoll() {
+        let inner = EndScriptedRunner()
+        inner.end = .timedOut
+        var clock = t0
+        let runner = SshGatedRunner(inner: inner, gate: SshHostGate(), now: { clock })
+        let service = remoteService(runner)
+
+        XCTAssertEqual(service.probeReachability(), .unreachable)
+        XCTAssertEqual(inner.calls, 1)
+        // The next polls inside the backoff spawn no ssh and read as unreachable.
+        for step in [4.5, 9.0, 29.0] {
+            clock = t0.addingTimeInterval(step)
+            XCTAssertEqual(service.probeReachability(), .unreachable)
+        }
+        XCTAssertEqual(inner.calls, 1)
+        // Once it passes, one retry; the host answers and polling resumes.
+        clock = t0.addingTimeInterval(31)
+        inner.end = .exited(0)
+        XCTAssertEqual(service.probeReachability(), .reachable)
+        XCTAssertEqual(inner.calls, 2)
+        XCTAssertEqual(service.probeReachability(), .reachable)
+        XCTAssertEqual(inner.calls, 3)
+    }
+
+    func testKeepaliveTeardownCountsAsNoSession() {
+        let inner = EndScriptedRunner()
+        inner.end = .exited(255)
+        let gate = SshHostGate()
+        let runner = SshGatedRunner(inner: inner, gate: gate, now: { self.t0 })
+        XCTAssertNil(runner.run("/usr/bin/ssh", ["devbox", "true"]))
+        XCTAssertTrue(gate.isBackingOff(now: t0))
+    }
+
+    func testRemoteCommandFailureIsNotABackoff() {
+        // `tmux list-sessions` with no server exits 1: the host answered.
+        let inner = EndScriptedRunner()
+        inner.end = .exited(1)
+        let gate = SshHostGate()
+        let runner = SshGatedRunner(inner: inner, gate: gate, now: { self.t0 })
+        XCTAssertNil(runner.run("/usr/bin/ssh", ["devbox", "tmux", "ls"]))
+        XCTAssertFalse(gate.isBackingOff(now: t0))
+    }
+
+    func testSlowRunnerTimeoutIsNotABackoff() {
+        let inner = EndScriptedRunner()
+        inner.end = .timedOut
+        let gate = SshHostGate()
+        let runner = SshGatedRunner(
+            inner: inner, gate: gate, timeoutMeansNoSession: false, now: { self.t0 })
+        XCTAssertNil(runner.run("/usr/bin/ssh", ["devbox", "docker", "ps"]))
+        XCTAssertFalse(gate.isBackingOff(now: t0))
+    }
+
+    func testNoSecondSshWhileTheFirstLoginHangs() {
+        let inner = EndScriptedRunner()
+        let hold = DispatchSemaphore(value: 0)
+        inner.hold = hold
+        let runner = SshGatedRunner(inner: inner, gate: SshHostGate(), now: { self.t0 })
+
+        let firstDone = expectation(description: "first ssh returns")
+        DispatchQueue.global().async {
+            _ = runner.run("/usr/bin/ssh", ["devbox", "echo", "ok"])
+            firstDone.fulfill()
+        }
+        XCTAssertEqual(inner.started.wait(timeout: .now() + 5), .success)
+        // The first login is still hanging: more polls must not spawn ssh.
+        for _ in 0..<5 { XCTAssertNil(runner.run("/usr/bin/ssh", ["devbox", "echo", "ok"])) }
+        XCTAssertEqual(inner.calls, 1)
+        hold.signal()
+        wait(for: [firstDone], timeout: 5)
+    }
+}

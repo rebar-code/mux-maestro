@@ -526,3 +526,136 @@ enum SshIdentity {
         lock.unlock()
     }
 }
+
+/// Per-host guard in front of every background ssh command: backoff after a
+/// host fails to open a session, and one connection attempt at a time while the
+/// host is not known to answer.
+///
+/// Why: a host can accept the login and then hang in session setup (a PAM
+/// module stuck on the server). The ControlMaster never comes up, so every poll
+/// starts a fresh login. The keepalive or the per-command ceiling ends the
+/// client, but the server-side session stays stuck, and the polls pile them up
+/// by the thousand. ConnectTimeout does not help: the connection did connect.
+///
+/// A host that answered last time runs commands concurrently, exactly as
+/// before: they ride its ControlMaster and log in nothing. A host that has not
+/// answered yet (launch) or failed last time gets one attempt in flight; every
+/// other command is refused at once. A failure blocks the host for
+/// `baseBackoff`, doubling per consecutive failure to `maxBackoff`. A refused
+/// command returns nil like any failed command, so the sidebar shows the host
+/// as unreachable and keeps its last tree.
+///
+/// Thread-safe: commands run on many queues. Clock-injected for the tests.
+final class SshHostGate {
+    struct Policy {
+        var baseBackoff: TimeInterval = 30
+        var maxBackoff: TimeInterval = 300
+        var backoffFactor: Double = 2
+    }
+
+    /// How one admitted command ended, as far as the gate cares.
+    enum Outcome {
+        /// ssh opened a session: the remote command ran, whatever it exited.
+        case answered
+        /// ssh never got a session: timeout, or ssh's own error (exit 255).
+        case noSession
+    }
+
+    /// What `begin` hands out; give it back to `end`. `exclusive` marks the one
+    /// attempt allowed while the host is not known to answer.
+    struct Ticket {
+        fileprivate let exclusive: Bool
+    }
+
+    /// `pow` past this is already clamped to `maxBackoff`.
+    private static let maxExponent = 16
+
+    private let policy: Policy
+    private let lock = NSLock()
+    /// The last outcome was an answer: commands may run side by side.
+    private var healthy = false
+    /// Consecutive failures; 0 after any answer. Drives the backoff exponent.
+    private var failures = 0
+    private var blockedUntil: Date?
+    /// The one attempt allowed while the host is not `healthy` is running.
+    private var attemptInFlight = false
+
+    init(policy: Policy = Policy()) { self.policy = policy }
+
+    /// A ticket to run one command now, or nil to skip it.
+    func begin(now: Date) -> Ticket? {
+        lock.lock()
+        defer { lock.unlock() }
+        if let blockedUntil, now < blockedUntil { return nil }
+        if healthy { return Ticket(exclusive: false) }
+        guard !attemptInFlight else { return nil }
+        attemptInFlight = true
+        return Ticket(exclusive: true)
+    }
+
+    /// Record how an admitted command ended. A nil `outcome` (it never
+    /// launched, or the result says nothing about the link) only frees the slot.
+    func end(_ ticket: Ticket, outcome: Outcome?, now: Date) {
+        lock.lock()
+        defer { lock.unlock() }
+        if ticket.exclusive { attemptInFlight = false }
+        switch outcome {
+        case .answered?:
+            healthy = true
+            failures = 0
+            blockedUntil = nil
+        case .noSession?:
+            healthy = false
+            // Commands started together hit the same outage: the first failure
+            // sets the backoff, the stragglers do not climb it.
+            if let blockedUntil, now < blockedUntil { return }
+            failures += 1
+            let exponent = Double(min(failures - 1, Self.maxExponent))
+            let delay = min(
+                policy.baseBackoff * pow(policy.backoffFactor, exponent), policy.maxBackoff)
+            blockedUntil = now.addingTimeInterval(delay)
+        case nil:
+            break
+        }
+    }
+
+    /// Whether the host is blocked at `now`.
+    func isBackingOff(now: Date) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return blockedUntil.map { now < $0 } ?? false
+    }
+
+    /// Forget every failure: the SERVERS refresh button. The host still gets
+    /// one attempt at a time until it answers.
+    func reset() {
+        lock.lock()
+        defer { lock.unlock() }
+        failures = 0
+        blockedUntil = nil
+    }
+
+    // MARK: Shared gates
+
+    private static var gates: [String: SshHostGate] = [:]
+    private static let gatesLock = NSLock()
+
+    /// The one gate for `alias`, shared by every service and runner that talks
+    /// to it — so two `TmuxService`s for one host still get one attempt.
+    static func shared(for alias: String) -> SshHostGate {
+        gatesLock.lock()
+        defer { gatesLock.unlock() }
+        if let gate = gates[alias] { return gate }
+        let gate = SshHostGate()
+        gates[alias] = gate
+        return gate
+    }
+
+    /// Clear the backoff on every host.
+    static func resetAll() {
+        gatesLock.lock()
+        let all = Array(gates.values)
+        gatesLock.unlock()
+        all.forEach { $0.reset() }
+    }
+}
