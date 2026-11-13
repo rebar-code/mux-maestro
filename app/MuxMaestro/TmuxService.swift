@@ -127,10 +127,26 @@ func exitSignal(for proc: Process) -> DispatchSemaphore {
     return exited
 }
 
+/// How one subprocess run ended.
+enum RunEnd: Equatable {
+    case notLaunched
+    /// Killed at the runner's deadline.
+    case timedOut
+    case exited(Int32)
+}
+
+/// A runner that can also say how a run ended — what `SshGatedRunner` needs to
+/// tell "the remote command failed" from "ssh never got a session".
+protocol EndReportingRunner: CommandRunner {
+    /// `runData`'s result, plus how the process ended.
+    func runDataReportingEnd(_ path: String, _ args: [String], stdin: Data?)
+        -> (data: Data?, end: RunEnd)
+}
+
 /// Runs a real subprocess. A `timeout` bounds how long any single command may
 /// block — a slow or hung `sessions.py`/`tmux` can't wedge the caller. On
 /// timeout the process is terminated and nil is returned.
-struct ProcessCommandRunner: CommandRunner {
+struct ProcessCommandRunner: EndReportingRunner {
     /// Hard ceiling on a single command's wall-clock time.
     var timeout: TimeInterval = 4.0
     /// The child's whole environment, in place of `childEnvironment`.
@@ -157,6 +173,12 @@ struct ProcessCommandRunner: CommandRunner {
     }
 
     func runData(_ path: String, _ args: [String], stdin: Data?) -> Data? {
+        runDataReportingEnd(path, args, stdin: stdin).data
+    }
+
+    func runDataReportingEnd(_ path: String, _ args: [String], stdin: Data?)
+        -> (data: Data?, end: RunEnd)
+    {
         let started = Date()
         defer {
             Diag.recordSpawn(
@@ -180,7 +202,7 @@ struct ProcessCommandRunner: CommandRunner {
         do {
             try proc.run()
         } catch {
-            return nil
+            return (nil, .notLaunched)
         }
         if let stdin, let inPipe {
             // Modern throwing API + try?: writing to a child that already exited
@@ -214,19 +236,20 @@ struct ProcessCommandRunner: CommandRunner {
             // The reader self-bounds at `deadline`, so it can't leak; give it a
             // beat to settle before returning.
             _ = readDone.wait(timeout: .now() + 0.5)
-            return nil
+            return (nil, .timedOut)
         }
         // The reader must have published before we read its box — otherwise we'd
         // race it, and under the thread-starvation that makes this timeout fire at
         // all, we'd read `nil` and call it output.
-        guard readDone.wait(timeout: .now() + 0.5) == .success else { return nil }
-        guard proc.terminationStatus == 0 else { return nil }
+        let end = RunEnd.exited(proc.terminationStatus)
+        guard readDone.wait(timeout: .now() + 0.5) == .success else { return (nil, end) }
+        guard proc.terminationStatus == 0 else { return (nil, end) }
         // Exit status alone is not enough: a clean exit whose stdout drain was cut
         // short yields a prefix of the real output — usually empty. Callers key
         // behavior off "" vs nil (an empty `list-sessions` blanks the sidebar; nil
         // preserves the last good tree), so a partial read must report failure.
-        guard let read = dataBox.load(), read.complete else { return nil }
-        return read.data
+        guard let read = dataBox.load(), read.complete else { return (nil, end) }
+        return (read.data, end)
     }
 
     /// Run capturing stdout+stderr merged and the success flag, with a generous
@@ -286,6 +309,53 @@ struct ProcessCommandRunner: CommandRunner {
             lock.lock(); defer { lock.unlock() }
             return value
         }
+    }
+}
+
+/// Puts a remote host's `SshHostGate` in front of a runner: a command the gate
+/// refuses returns nil (or a failed capture) without spawning ssh, and every
+/// admitted command reports back whether ssh got a session.
+struct SshGatedRunner: CommandRunner {
+    let inner: EndReportingRunner
+    let gate: SshHostGate
+    /// Whether a run killed at the deadline counts as "no session". True for
+    /// the interactive 8s ceiling, which a session that opened does not reach.
+    /// False for the 30s `slow` runner: a wedged remote `docker ps` times out
+    /// over a working link, and a hung login still ends in ssh's exit 255 when
+    /// the keepalive gives up (~10s), well inside its ceiling.
+    var timeoutMeansNoSession = true
+    var now: () -> Date = Date.init
+
+    /// ssh exits 255 for its own errors (connect, auth, keepalive teardown),
+    /// and with the remote command's status otherwise.
+    static let sshErrorStatus: Int32 = 255
+
+    func outcome(_ end: RunEnd) -> SshHostGate.Outcome? {
+        switch end {
+        case .notLaunched: return nil
+        case .timedOut: return timeoutMeansNoSession ? .noSession : nil
+        case .exited(let status): return status == Self.sshErrorStatus ? .noSession : .answered
+        }
+    }
+
+    func run(_ path: String, _ args: [String], stdin: Data?) -> String? {
+        runData(path, args, stdin: stdin).flatMap { String(data: $0, encoding: .utf8) }
+    }
+
+    func runData(_ path: String, _ args: [String], stdin: Data?) -> Data? {
+        guard let ticket = gate.begin(now: now()) else { return nil }
+        let (data, end) = inner.runDataReportingEnd(path, args, stdin: stdin)
+        gate.end(ticket, outcome: outcome(end), now: now())
+        return data
+    }
+
+    /// The capture hides the exit status, so only a success is recorded; a
+    /// failure frees the slot and leaves the backoff to the polls.
+    func runCapturing(_ path: String, _ args: [String]) -> (ok: Bool, text: String) {
+        guard let ticket = gate.begin(now: now()) else { return (false, "host unreachable") }
+        let result = inner.runCapturing(path, args)
+        gate.end(ticket, outcome: result.ok ? .answered : nil, now: now())
+        return result
     }
 }
 
@@ -811,18 +881,24 @@ final class TmuxService {
         let alias = host.sshAlias ?? host.name
         let transport = SshTmuxTransport(host: alias)
         Ssh.ensureControlDir()
+        // Every ssh this service runs passes the host's one gate: backoff after
+        // a failed login, one login attempt at a time (see `SshHostGate`).
+        let gate = SshHostGate.shared(for: alias)
+        let runner = SshGatedRunner(
+            inner: ProcessCommandRunner(timeout: transport.timeout), gate: gate)
         self.init(
             host: host,
             transport: transport,
-            runner: ProcessCommandRunner(timeout: transport.timeout),
+            runner: runner,
             statusProvider: CachedStatusProvider(RemoteSessionsPyStatusProvider(
-                host: alias,
-                runner: ProcessCommandRunner(timeout: transport.timeout))),
+                host: alias, runner: runner)),
             // Remote `docker ps` goes through `slow` like the local one: the ssh
             // hop is fast (0.7s for 96 containers on `devbox`), but a wedged
             // remote daemon must hit an explicit ceiling, not the 8s one meant
             // for interactive tmux calls.
-            slowRunner: ProcessCommandRunner(timeout: Self.slowCommandTimeout))
+            slowRunner: SshGatedRunner(
+                inner: ProcessCommandRunner(timeout: Self.slowCommandTimeout), gate: gate,
+                timeoutMeansNoSession: false))
     }
 
     /// Designated init for testing/injection. Pass a `LocalTmuxTransport` with a

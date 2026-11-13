@@ -3193,6 +3193,7 @@ final class SidebarViewController: NSViewController {
     @objc private func refreshServersClicked(_ sender: NSButton) {
         guard !isColdScanning else { return }
         scanner.forceAll()
+        SshHostGate.resetAll()
         let expanded = expandedIdentities
         let remotes = hosts.filter { !$0.isLocal && !isHotRemote($0, expanded: expanded) }
         startColdScan(Self.dedupedByMachine(remotes))
