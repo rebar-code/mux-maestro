@@ -4737,6 +4737,7 @@ final class SidebarViewController: NSViewController {
                 guard self.prByWindow != found else { return }
                 let old = self.prByWindow
                 self.prByWindow = found
+                KnownPullRequests.update(found)
                 // Reload only the window rows whose PR set actually changed.
                 var rows = IndexSet()
                 for row in 0..<self.outline.numberOfRows {

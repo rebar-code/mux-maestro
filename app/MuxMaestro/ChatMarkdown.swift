@@ -21,6 +21,11 @@ enum ChatMarkdown {
         let muted: NSColor
         let link: NSColor
         let codeBackground: NSColor
+        /// The pull requests the sidebar shows on its windows, by `PRLinks.key`.
+        /// A link to one of them takes its colour, and its icon before the text.
+        var pullRequests: [String: PullRequest] = [:]
+        /// The colour and SF Symbol for a pull request's state.
+        var pullRequestLook: ((PullRequest) -> (color: NSColor, symbol: String))?
     }
 
     /// `streaming` is a reply still arriving: its tail is settled first, so a
@@ -146,7 +151,7 @@ private struct Renderer {
                 attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
                 attrs[.muxLink] = url.absoluteString
                 let shown = text == url.absoluteString ? ThreadLinks.parse(text).map(ThreadLinks.label) ?? text : text
-                out.append(NSAttributedString(string: shown, attributes: attrs))
+                appendLink(shown, to: url.absoluteString, attributes: attrs, out: out)
             } else if run.inlinePresentationIntent?.contains(.code) == true {
                 out.append(NSAttributedString(string: text, attributes: attrs))
             } else {
@@ -287,7 +292,8 @@ private struct Renderer {
         }
     }
 
-    /// Append `text`, each bare `muxmaestro://` URL in it shown as its label.
+    /// Append `text`, each bare `muxmaestro://` URL in it shown as its label,
+    /// and each bare pull request URL made a link.
     private func appendLinkingMuxURLs(
         _ text: String, attributes: [NSAttributedString.Key: Any], to out: NSMutableAttributedString
     ) {
@@ -295,14 +301,104 @@ private struct Renderer {
         linked[.foregroundColor] = style.link
         linked[.underlineStyle] = NSUnderlineStyle.single.rawValue
         let ns = text as NSString
+        let threads = ThreadLinks.matches(in: text).map {
+            (range: $0.range, url: ThreadLinks.url(for: $0.link), label: ThreadLinks.label(for: $0.link))
+        }
+        let prs = PRLinks.matches(in: text).filter { pr in
+            !threads.contains { NSIntersectionRange($0.range, pr).length > 0 }
+        }.map { (range: $0, url: ns.substring(with: $0), label: ns.substring(with: $0)) }
         var cursor = 0
-        for match in ThreadLinks.matches(in: text) {
+        for match in (threads + prs).sorted(by: { $0.range.location < $1.range.location }) {
             let before = NSRange(location: cursor, length: match.range.location - cursor)
             out.append(NSAttributedString(string: ns.substring(with: before), attributes: attributes))
-            linked[.muxLink] = ThreadLinks.url(for: match.link)
-            out.append(NSAttributedString(string: ThreadLinks.label(for: match.link), attributes: linked))
+            linked[.muxLink] = match.url
+            appendLink(match.label, to: match.url, attributes: linked, out: out)
             cursor = match.range.upperBound
         }
         out.append(NSAttributedString(string: ns.substring(from: cursor), attributes: attributes))
+    }
+
+    /// Append a link. One to a pull request the sidebar knows takes the colour
+    /// of its state, behind the icon for it; the icon opens the link too.
+    private func appendLink(
+        _ text: String, to url: String, attributes: [NSAttributedString.Key: Any], out: NSMutableAttributedString
+    ) {
+        var attrs = attributes
+        if let key = PRLinks.key(url), let pr = style.pullRequests[key], let look = style.pullRequestLook?(pr) {
+            attrs[.foregroundColor] = look.color
+            let font = attrs[.font] as? NSFont ?? style.font
+            if let image = NSImage(systemSymbolName: look.symbol, accessibilityDescription: nil)?
+                .withSymbolConfiguration(
+                    NSImage.SymbolConfiguration(pointSize: font.pointSize, weight: .semibold)
+                        .applying(NSImage.SymbolConfiguration(paletteColors: [look.color])))
+            {
+                let attachment = NSTextAttachment()
+                attachment.image = image
+                // The symbol's own size for the font, centred on the capitals.
+                let size = image.size
+                attachment.bounds = CGRect(
+                    x: 0, y: ((font.capHeight - size.height) / 2).rounded(), width: size.width, height: size.height)
+                var iconAttrs = attrs
+                iconAttrs[.underlineStyle] = nil
+                let icon = NSMutableAttributedString(attachment: attachment)
+                icon.addAttributes(iconAttrs, range: NSRange(location: 0, length: icon.length))
+                out.append(icon)
+                out.append(NSAttributedString(string: "\u{2009}", attributes: iconAttrs))
+            }
+        }
+        out.append(NSAttributedString(string: text, attributes: attrs))
+    }
+}
+
+/// Links to GitHub pull requests, and the ones the sidebar knows.
+enum PRLinks {
+    /// A pull request page, or a tab of one: `/files`, `/commits`, `#diff-…`.
+    private static let pattern = #"https://github\.com/([\w.-]+)/([\w.-]+)/pull/(\d+)(?:/[\w/-]*)?(?:[?#][^\s)\]>]*)?"#
+
+    /// `owner/repo#n`, in lower case, for a pull request URL; nil for any other.
+    static func key(_ url: String) -> String? {
+        let ns = url as NSString
+        guard let match = try? NSRegularExpression(pattern: "^" + pattern + "$", options: .caseInsensitive)
+            .firstMatch(in: url, range: NSRange(location: 0, length: ns.length))
+        else { return nil }
+        let part = { ns.substring(with: match.range(at: $0)) }
+        guard let number = Int(part(3)) else { return nil }
+        return "\(part(1))/\(part(2))#\(number)".lowercased()
+    }
+
+    /// The ranges of bare pull request URLs in `text`. A full stop or comma that
+    /// ends a sentence is not part of the URL.
+    static func matches(in text: String) -> [NSRange] {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else { return [] }
+        let ns = text as NSString
+        return regex.matches(in: text, range: NSRange(location: 0, length: ns.length)).map { match in
+            var range = match.range
+            while range.length > 0, ".,;:!?".contains(ns.substring(with: NSRange(location: range.upperBound - 1, length: 1))) {
+                range.length -= 1
+            }
+            return range
+        }
+    }
+
+    /// Pull requests by `key`.
+    static func index(_ prs: [PullRequest]) -> [String: PullRequest] {
+        var out: [String: PullRequest] = [:]
+        for pr in prs { if let key = key(pr.url) { out[key] = pr } }
+        return out
+    }
+}
+
+/// The pull requests the sidebar shows on its windows, for the links to them in
+/// a chat. Set on the main thread after each PR scan; `changed` is posted only
+/// when a state or a PR changed.
+enum KnownPullRequests {
+    static let changed = Notification.Name("MuxMaestroKnownPullRequestsChanged")
+    private(set) static var byKey: [String: PullRequest] = [:]
+
+    static func update(_ byWindow: [String: [PullRequest]]) {
+        let next = PRLinks.index(byWindow.values.flatMap { $0 })
+        guard next != byKey else { return }
+        byKey = next
+        NotificationCenter.default.post(name: changed, object: nil)
     }
 }

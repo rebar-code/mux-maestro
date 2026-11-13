@@ -374,6 +374,34 @@ test('a link whose text names another host shows the host it goes to', async ({ 
 	await shot(page, 'markdown-host');
 });
 
+test('a link to a pull request has the colour and icon of its state, and follows it', async ({
+	page
+}) => {
+	const open128 = 'https://github.com/acme/acme-app/pull/128';
+	await open(page, [
+		`Opened ${open128} and [the old one](https://github.com/acme/acme-app/pull/99).`
+	]);
+	const prose = last(page);
+	const known = prose.locator(`a[href="${open128}"]`);
+	await expect(known).toHaveAttribute('data-pr-state', 'open');
+	await expect(known).toHaveCSS('color', 'rgb(69, 212, 131)');
+	const icon = await known.evaluate((el) => getComputedStyle(el, '::before').maskImage);
+	expect(icon).toContain('svg');
+	// A pull request on no window: an ordinary link.
+	await expect(prose.locator('a[data-pr="acme/acme-app#99"]')).not.toHaveAttribute(
+		'data-pr-state',
+		/./
+	);
+	await known.scrollIntoViewIfNeeded();
+	await shot(page, 'markdown-pr-open');
+
+	await page.request.post('/__fixture/pr?number=128&state=merged');
+	await expect(known).toHaveAttribute('data-pr-state', 'merged');
+	await expect(known).toHaveCSS('color', 'rgb(163, 113, 247)');
+	await known.scrollIntoViewIfNeeded();
+	await shot(page, 'markdown-pr-merged');
+});
+
 const box = (page: Page): Locator => page.getByRole('textbox', { name: 'Reply' });
 const DRAFT = ['first line', 'second line', 'third line', 'fourth line', 'fifth line'].join('\n');
 

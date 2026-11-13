@@ -547,6 +547,42 @@ p.plain {
 	cursor: inherit;
 }
 
+/*
+ * A pull request the Mac shows on a window: the colour of its state, as on the
+ * thread list, and Lucide's icon for it before the text.
+ */
+.prose a[data-pr-state] {
+	--pr-icon: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><circle cx='18' cy='18' r='3'/><circle cx='6' cy='6' r='3'/><path d='M13 6h3a2 2 0 0 1 2 2v7'/><path d='M6 9v12'/></svg>");
+	color: var(--green);
+}
+
+.prose a[data-pr-state]::before {
+	content: '';
+	display: inline-block;
+	width: 1em;
+	height: 1em;
+	margin-right: 0.2em;
+	vertical-align: -0.14em;
+	background: currentColor;
+	-webkit-mask: var(--pr-icon) center / contain no-repeat;
+	mask: var(--pr-icon) center / contain no-repeat;
+}
+
+.prose a[data-pr-state='draft'] {
+	--pr-icon: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><circle cx='18' cy='18' r='3'/><circle cx='6' cy='6' r='3'/><path d='M18 6V5'/><path d='M18 11v-1'/><path d='M6 9v12'/></svg>");
+	color: var(--muted);
+}
+
+.prose a[data-pr-state='merged'] {
+	--pr-icon: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><circle cx='18' cy='18' r='3'/><circle cx='6' cy='6' r='3'/><path d='M6 21V9a9 9 0 0 0 9 9'/></svg>");
+	color: var(--purple);
+}
+
+.prose a[data-pr-state='closed'] {
+	--pr-icon: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><circle cx='6' cy='6' r='3'/><path d='M6 9v12'/><path d='m21 3-6 6'/><path d='m21 9-6-6'/><path d='M18 11.5V15'/><circle cx='18' cy='18' r='3'/></svg>");
+	color: var(--red);
+}
+
 /* A link to a session the thread list does not have: tapped, and it went nowhere. */
 .prose a[data-thread-link][data-missing] {
 	color: var(--muted);

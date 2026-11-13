@@ -97,6 +97,8 @@ final class ChatTranscriptView: NSView {
 
         addSubview(scroll)
         addSubview(emptyLabel)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(pullRequestsChanged), name: KnownPullRequests.changed, object: nil)
         NSLayoutConstraint.activate([
             stack.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
             stack.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
@@ -241,6 +243,13 @@ final class ChatTranscriptView: NSView {
     private var atBottom: Bool {
         let clip = scroll.contentView
         return clip.bounds.maxY >= stack.frame.height - 24
+    }
+
+    /// A pull request on a window changed: the messages that link to one draw
+    /// again, in the colour of its state now.
+    @objc private func pullRequestsChanged() {
+        rowViews = rowViews.filter { !$0.key.hasPrefix("m") }
+        render()
     }
 
     private func render(scrollToEnd: Bool = false) {
@@ -460,9 +469,13 @@ private final class ChatTextRow: ChatRowView {
     required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
 
     private static var markdownStyle: ChatMarkdown.Style {
-        ChatMarkdown.Style(
+        var style = ChatMarkdown.Style(
             font: .systemFont(ofSize: 12), color: SidebarPalette.text, muted: SidebarPalette.muted,
             link: SidebarPalette.accent, codeBackground: SidebarPalette.bg)
+        // A link to a PR on a window looks like that window's chip.
+        style.pullRequests = KnownPullRequests.byKey
+        style.pullRequestLook = { (PRChipButton.tint($0), PRChipButton.symbolName($0)) }
+        return style
     }
 
     override func arrange(width: CGFloat) -> CGFloat {

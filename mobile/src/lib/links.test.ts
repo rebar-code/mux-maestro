@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { linkLabel, parseThreadLink, threadForLink } from './links';
+import {
+	linkLabel,
+	parseThreadLink,
+	pullRequestKey,
+	pullRequestStates,
+	threadForLink
+} from './links';
 import { renderMarkdown } from './markdown';
 import type { Thread } from './types';
 
@@ -147,5 +153,56 @@ describe('a session link in a message', () => {
 
 	it('still refuses the schemes it refused', () => {
 		expect(renderMarkdown('[x](javascript:alert(1))')).not.toContain('<a');
+	});
+});
+
+describe('pull request links', () => {
+	it('names a GitHub pull request by its repository and number', () => {
+		expect(pullRequestKey('https://github.com/rebar-code/mux-maestro/pull/98')).toBe(
+			'rebar-code/mux-maestro#98'
+		);
+		expect(pullRequestKey('https://github.com/Rebar-Code/Mux.Maestro/pull/98/files#diff-1')).toBe(
+			'rebar-code/mux.maestro#98'
+		);
+		expect(pullRequestKey('https://github.com/a/b/pull/7?w=1')).toBe('a/b#7');
+	});
+
+	it('names nothing else', () => {
+		for (const href of [
+			'https://github.com/a/b/issues/7',
+			'https://github.com/a/b/pull/',
+			'https://github.com/a/b/pulls',
+			'https://gitlab.com/a/b/pull/7',
+			'https://github.com.evil.example/a/b/pull/7',
+			'http://github.com/a/b/pull/7x',
+			'muxmaestro://thread/abc'
+		])
+			expect(pullRequestKey(href), href).toBeNull();
+	});
+
+	it('reads the state of each pull request the Mac shows on a window', () => {
+		const pr = (number: number, state: 'open' | 'merged') => ({
+			number,
+			state,
+			url: `https://github.com/Acme/app/pull/${number}`,
+			title: ''
+		});
+		const threads = [
+			{ prs: [pr(1, 'open'), pr(2, 'merged')] },
+			{ prs: undefined },
+			{ prs: [] }
+		] as unknown as Thread[];
+		expect(pullRequestStates(threads)).toEqual(
+			new Map([
+				['acme/app#1', 'open'],
+				['acme/app#2', 'merged']
+			])
+		);
+	});
+
+	it('marks a link to a pull request, and no other link', () => {
+		expect(renderMarkdown('See https://github.com/a/b/pull/7 now.')).toContain('data-pr="a/b#7"');
+		expect(renderMarkdown('[the fix](https://github.com/a/b/pull/7)')).toContain('data-pr="a/b#7"');
+		expect(renderMarkdown('https://github.com/a/b/issues/7')).not.toContain('data-pr');
 	});
 });
